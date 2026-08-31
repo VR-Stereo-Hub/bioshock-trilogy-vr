@@ -40,12 +40,28 @@ void on_calcview(const FrameContext& ctx);
 // s67 CROSSHAIR trim, for the in-headset tuner (BRVR calls it CursorOffset).
 // This is the AIM ray: the laser, the dot and the bullet all come off it, so
 // moving it moves all three together by construction.
-// set_aim_trim_all writes the LIVE trim; the weapon profile stash/apply then
-// carries it PER WEAPON, like grip and placement. It was briefly global (s67)
-// on the hope that one crosshair would serve every gun - it does not, for the
-// same reason the grip offsets are per weapon.
+// s70d: PER WEAPON AGAIN. The global crosshair was tried and reverted.
+//
+// s70 made it global at the tester's request - "the crosshair is a global
+// position", the one deviation they wanted from BRVR. Tested, and the report was
+// "now my crosshair is way off for all of my weapons".
+//
+// It is the third independent time this answer has come back the same way:
+// s67 tried a global crosshair and recorded that it "does not [serve every gun],
+// for the same reason the grip offsets are per weapon"; BRVR itself keys
+// cursorRot per slot AND per plasmid, in the config the tester calls perfect;
+// and now s70. The seeded table says why in one line - the weapons span 0.83 to
+// -6.67 in pitch and -6.70 to -14.70 in yaw, and the plasmids sit at -11.00 and
+// +37.00. A single number cannot be right for a set that wide.
+//
+// If it is wanted global again, the thing to change is not this: give the tuner
+// a way to copy one weapon's trim to all of them, so they are all THE SAME by
+// choice while each stays individually settable.
 void aim_trim_deg(int hand, float* pitchDeg, float* yawDeg);
 void set_aim_trim_all(float pitchDeg, float yawDeg);
+// s70n: per hand. set_aim_trim_all writes hand 1 whatever you ask, which is why
+// the numpad's crosshair mode could never move a plasmid.
+void set_aim_trim(int hand, float pitchDeg, float yawDeg);
 
 // Seam command handler: args after the "vraim" verb (game thread).
 //   on | off | status

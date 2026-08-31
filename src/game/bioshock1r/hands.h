@@ -140,12 +140,31 @@ bool weapon_scan_in_progress();
 // the stale weapon). False = the rig is unknown/unreadable (fall back to
 // the legacy paths); true with *out possibly null. The per-weapon profile
 // layer's identity source - it validates by CLASS NAME, not vtable.
+// s70l: the actor transform WE INTEND, as last written by the drive.
+//
+// bones::drive() runs BEFORE the actor write each frame, so anything in drive()
+// that reads the actor's live loc/rot reads whatever the ENGINE last left there
+// - and the engine rewrites that rotator every frame by tens of degrees
+// (measured: ACTORWATCH, 27-60 pitch / up to 80 yaw / 40-60 roll). Any world <->
+// component conversion built on the live read is therefore wrong by that much,
+// intermittently. Use this instead.
+//
+// Returns false before the first write, when there is nothing to report.
+bool last_actor_write(float loc[3], int32_t rot[3]);
+
 bool current_holdable(void** out);
 
 // Is a weapon OR a plasmid equipped? Ported from BRVR, which gates its crosshair
 // on exactly this. Returns TRUE on every failure path - the consumer is a
 // cosmetic suppression and must fail towards the crosshair being shown.
 bool armed();
+
+// s69: the equipped PLASMID actor, from Hands.CurrentAbility (+0x454). Abilities
+// live in their own slot, which is why current_holdable() reads NULL with a
+// plasmid up. The profile layer resolves this pointer's CLASS NAME to key a
+// per-plasmid profile, the same way it keys weapons. False when the rig is
+// unreadable; *out null means no plasmid equipped.
+bool current_ability(void** out);
 
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
@@ -155,8 +174,13 @@ void save_offsets();
 // s67 view-frame placement (where the gun SITS; cannot create an orbit, unlike
 // the grip offset which is the pivot). Per weapon since s67 - the shotgun sits
 // differently in the hand from the pistol.
-void view_offset_cm(float* fwdCm, float* rightCm, float* upCm);
-void set_view_offset_cm(float fwdCm, float rightCm, float upCm);
+//
+// s68: and PER HAND. It was one global triple serving both hands while the
+// per-weapon profiles rewrote it from the RIGHT hand on every weapon change, so
+// switching to a gun and back left the left-hand PLASMIDS parked at the gun's
+// placement with nothing to restore them. hand 0 = left/plasmid, 1 = right/weapon.
+void view_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm);
+void set_view_offset_cm(int hand, float fwdCm, float rightCm, float upCm);
 
 // s67: re-apply the viewmodel rotation AFTER the game tick has reset it.
 //

@@ -2,6 +2,297 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## KNOWN ISSUE: the viewmodel desyncs when the HEAD moves (open, s70)
+
+**Reported, reproducible, not fixed.** Moving the view in the headset pulls the
+hand off the position it should hold. Three properties, all from the tester:
+
+- it desyncs **opposite** to the direction the head turns;
+- it appears to affect the **wrench** and not the other weapons;
+- *"I dont know how far back this bug goes"* - and neither do we. It is older
+  than s70; every fix this session sat on top of it.
+
+**What is ruled out.** The bones are not the problem: `ROLLCHECK` reports our
+cluster writes holding 62 to 3. The XR->game conversion is not the problem
+either: `xr_pose_to_game()` builds the hand target on `base[XYZ]` (the camera
+BEFORE the head offset) from a recenter-relative controller offset, so the target
+is head-independent by construction.
+
+**What is suspected, and why.**
+
+1. `late_write()` replayed the actor's ROTATION and never its LOCATION, while
+   the engine's `Hands.UpdateLocation` puts the actor back on the CAMERA every
+   frame - and the camera carries the head offset. Fixed in `c0983d1`; the
+   symptom SURVIVED it, so either the replay is not landing or this is not the
+   whole cause. `LATEWRITE` (`e569735`) measures which.
+2. **A reversal is a frame error, not an offset.** Session 12 recorded this exact
+   signature - *"the user saw the gun move REVERSED, which is exactly
+   actor-frame rendering composed against the camera frame"* - and fixed it by
+   composing against the ACTOR fields. Something is still composed against the
+   camera somewhere.
+3. **"Only the wrench" is probably not about the wrench.** It is the one weapon
+   with `animOn=0`, so it never adopts, so `g_lastBigDeltaHandMs` never updates
+   for it - making it the only weapon whose anchor pin is engaged PERMANENTLY.
+   Every other weapon releases the pin whenever an animation fires. Read the clue
+   as *"only when the pin is continuously on"*.
+
+**Next step is a measurement, not a patch.** Equip the wrench, turn the head, and
+read `LATEWRITE`: no lines means the engine is not moving the actor and the cause
+is elsewhere; a large delta every frame means something writes it AFTER us and
+the seam is wrong rather than the write.
+
+**Do not attempt a fourth fix from reasoning alone.** Three have been tried
+(`117f10c`, `4ff7bd7`, `c0983d1`), each sound in its own terms, none sufficient -
+because each reasoned about where the actor *is* rather than checking what
+reaches the renderer.
+
+## Session 2026-08-28 - s70: BRVR's chain, ported - the state mask was the root
+
+**Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against
+`staging`, still not merged.** Two commits this session (`7372ed9`, `669ac72`)
+plus this handoff. `git diff a1ffa22..HEAD -- src/core/` is EMPTY.
+
+### Current state
+
+**NOTHING THIS SESSION HAS BEEN RUN.** Both commits are built and installed and
+neither has been in a headset. The tester's report that opened the session -
+"the animation is still off in a few different ways that are hard to describe" -
+is unaddressed until someone plays it.
+
+**s68/s69's machinery is deleted, not disabled.** Tracing BRVR end to end showed
+the two mods are the same architecture that diverged at ONE decision, and every
+layer s67-s69 added is downstream compensation for it. 580 lines out, 499 in.
+
+| Was | Now |
+|---|---|
+| Per-state animation mask (Firing/PostFiring only) | gone - threshold + hold window, as BRVR |
+| Canonical rest pose + eased restore | gone - the hold window lands on the settled pose by construction |
+| Anchor pin + its quaternion normalisation | gone - it was correcting a moving anchor and an apex-stuck reference |
+| Freeze anchored on bone 43 (weapon attach) | bone 27, the wrist - BRVR's, and F10-switchable |
+| Adoption probe sampled bone 43 | probes the wrists |
+| Adopt threshold 25 deg | 5.0 deg, BRVR's HandAnimMinDeg |
+| No key debounce | 150 ms, BRVR's WeaponKeyDebounceMs |
+| Idling-edge capture | BRVR's settle: position stillness, 350 floor, 600 ceiling, MEAN of the window |
+| Crosshair per weapon/plasmid | global per hand |
+
+**The one thing s68 was missing.** s68 measured that a plasmid rig never goes
+still (2156 ms to reach 1.24 deg against a +-1.2 deg envelope) and concluded "a
+stillness test cannot work here", abandoning it after nine builds. BRVR reached
+the identical observation - "a looping idle never goes still" - and answered it
+by latching the MEAN of the settle window, the centre of the loop rather than a
+point on its circumference. That is now ported.
+
+**Full trace of BRVR's chain, with its own numbers, is in
+`docs/bioshock1/ENGINE_NOTES.md` "Session 70".**
+
+### THE FIRST TEST IS THE ANCHOR A/B, ALONE
+
+F10 -> FREEZE ANCHOR radio, `wrist 27` vs `attach 43`, same weapon, no rebuild
+between halves. It is the highest-information test available and it may account
+for much of the symptom on its own: a frozen cluster anchored on bone 43 is
+anchored on the one bone the engine keeps animating.
+
+**Judge it on whether the hand STAYS PUT through recoil and reload, NOT on where
+it sits.** The cluster is scaled to 0.80 about the anchor, so moving it shifts
+the whole hand by 0.2 x the bone separation. The per-weapon placement offsets
+were tuned against the old anchor and will need a re-tune either way.
+
+### Next steps
+
+1. **Anchor A/B** as above.
+2. Equip each weapon and both plasmids - no idle-fidget cycle, pose lands the
+   same place every time.
+3. Fire repeatedly - recoil plays AND the hand returns; no apex freeze.
+4. Plasmid -> plasmid, and plasmid -> weapon -> plasmid (s68: the only
+   transition that recaptured).
+5. **Read the settle log's SAMPLE COUNT.** `equip settled after N ms over K
+   engine evaluation(s)`. The settle only samples on frames the engine
+   re-evaluated the bone array, and s68 measured that at ~1 frame in 19 - so
+   BRVR's millisecond constants may not transfer. If K reads 2 or 3 the window is
+   too short to mean anything and the ceiling wants raising (F10, no rebuild).
+6. **Re-measure the idle envelope on the new probe.** `ANIMREJECT` reports the
+   largest movement rejected in the last 3 s. The threshold is back to 5.0 and
+   the old objection to it (s67: "the shotgun's idle crosses 5") was measured
+   through the bone-43 probe, so it needs re-taking, not assuming.
+
+### Live F10 knobs, all no-rebuild
+
+FREEZE ANCHOR radio (27/43); EQUIP SETTLE sliders (floor, still-for, ceiling,
+still-under UU/frame, switch debounce); ANIMATION adopt-threshold and hold.
+Commands: `vrbones settle [min still ceil uu debounce]`, `vrbones sway`,
+`vrbones anchor <n>`.
+
+### Diagnostics still ARMED in the shipping build
+
+`FOVPROBE`, `ANIMREJECT`, `LEFTBONE`, `ROLLCHECK` (now normalised - `7372ed9`),
+plus the settle line. `ANIMPIN`, `RESTREF` and `RESTORE` are gone with their
+machinery; their absence from the binary was verified by grep.
+
+### Session log 2026-08-28
+
+- `7372ed9` - normalised `quat_angle_deg` and `ROLLCHECK`, the two always-on
+  probes that read the bone bank raw. 825ced6 stated the rule and did not apply
+  it to them. `quat_angle_deg` GATED the ANIMPIN line it was reporting, so the
+  verification of 825ced6 depended on an instrument that commit condemned.
+- `669ac72` - the BRVR port above.
+- **825ced6 was verified STATICALLY only** and is now moot: it normalised the
+  anchor pin, and the pin is deleted. Its install was confirmed genuine (the
+  binary carried its string, hash matched the build) before that.
+
+
+## Session 2026-08-27 - s68: the plasmid viewmodel, and nine wrong answers
+
+**Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against
+`staging`, still not merged.** 28 commits. `git diff a1ffa22..HEAD -- src/core/`
+is EMPTY - everything is inside `src/game/bioshock1r/`. BS2 and Infinite are
+untouched, not merely unverified.
+
+### Current state
+
+**The recoil apex freeze is fixed and headset-confirmed** (`09322b5`). Tester:
+*"that worked extremely well, pretty much all perfectly how I wanted it"*. s67
+gated adoption on the Hands state machine, but ceasing to adopt is not returning:
+`Hands.uc` leaves `WeaponFiring` at the TOP of the recoil, so the reference froze
+at the apex. One canonical rest per holdable, captured at `WeaponIdling`, eased
+back to when an adopted state ends.
+
+**Plasmids render from the LEFT hand, and that was the whole plasmid story.**
+Hand 0 carried ONE shared set of values while the per-weapon profile layer read
+and wrote hand 1 - so profiles were completely INERT for plasmids, every plasmid
+edit landed in the same shared slot, and tuning Telekinesis moved Electrobolt.
+Nine attempts to find a capture instant that suited both plasmids were searching
+for something that could not exist. Fixed in `5a93e58`: `profile_hand()` sends
+plasmid keys to hand 0.
+
+| Landed | Evidence |
+|---|---|
+| Canonical rest pose, restored on leaving an adopted state | headset: the apex freeze is gone |
+| Per-hand view placement (was ONE global for both hands) | `61c4983` - tuning a weapon moved the plasmids |
+| Seed table unscrambled: field order + a stale duplicate block | a FRESH INSTALL had no recoil on any weapon, and the wrench's animOn read ON |
+| Per-plasmid profiles, keyed on the ability class name | log: `weapon profile 'Telekinesis' applied` |
+| Plasmid profiles own hand 0 | headset: tuning one plasmid no longer moves the other; Telekinesis good |
+| Numpad tunes `active_hand()`, not a hardcoded 1 | it had never moved a plasmid at all |
+| Anchor pinned (position AND rotation) while an animation plays | headset: *"position and rotation are correct"* |
+
+**How the plasmid identity resolves, and why no pawn scan was needed.**
+`Hands.CurrentHoldable` is NULL with a plasmid equipped - abilities live in
+`CurrentAbility` (+0x454, already derived, previously used only by
+`hands::armed()`). `object_class_name()` names an Ability instance exactly as it
+names a Shotgun, so the key is its class name with `Ability` and any
+`Zero/Two/Three` tier stripped. BRVR scans the pawn for `AvailableAbilities` and
+matches `ActiveAbility` into it for an index; that route is NOT needed here and
+was deliberately not ported.
+
+### NINE FAILED PATHS - do not re-derive these
+
+Every one was committed, built, and tested in a headset. They are recorded
+because each looked correct in isolation and several were re-attempted after
+being tried once.
+
+**The root error, which took the whole session to see:** the plasmid position was
+assumed to be a *reference-capture timing* problem, so nine builds changed WHEN
+the reference was captured. The symptom was bit-identical every time. It was
+never timing - the offsets being tuned were on a hand that rendered nothing.
+
+| Attempt | Why it was wrong |
+|---|---|
+| Capture on the `Idling` edge (`9c3fe50`) | right shape, but adoption continuing past the edge plays one idle-fidget cycle into the rig on every equip |
+| Settle detector, count-based (`bbbfc47`) | the engine evaluates the bone array on ~1 frame in 19, so "2 consecutive settled evaluations" is a race against its scheduling, not a measurement |
+| Settle on wall-clock (`5ef84d3`) | correct unit, but the threshold was `g_swayAngThreshDeg` - the 25 deg ANIMATION ADOPTION threshold. Any two evaluations of a smooth ease read as "still", so the test never gated at all |
+| Real stillness threshold (`3439a36`) | still probed `kBoneWeaponAttach`, which a PLASMID never moves - it asked "has it stopped?" of a bone that never started |
+| Probe the driven cluster (`1d973f9`) | correct probe, and it made things WORSE - which is how it proved a plasmid rig never goes still at all (2156 ms to reach 1.24 deg against a +-1.2 deg idle envelope). A stillness test cannot work here |
+| Fixed delay after Idling (`22abb1a`) | deterministic, but still sampling into the fidget |
+| Freeze at the edge, snapshot later (`30c0a42`) | same - anything sampled AFTER `Idling` samples the fidget |
+| `active_hand()` follows `CurrentAbility` (`fa62674`) | partly right - plasmids ARE hand 0 - but bundled with two other changes so nothing was learnable, and reverted (`5ecbd49`). The real fix was `profile_hand()`, not `active_hand()` |
+| `(CurrentHoldable, CurrentAbility)` capture identity (`422f735`) | reverted (`5ca2ced`) because plasmid-to-plasmid sharing one reference was the behaviour that WORKED; later re-added (`d19f3e8`) once per-plasmid offsets existed to justify it |
+
+**Also refuted, with the measurement that killed it:** the left cluster's anchor
+is NOT wrong. Bone names dumped live - `6 = Bip01_L_Hand` (the palm), `7-21` are
+nothing but finger joints. There is no better anchor to move to, and the
+asymmetry with the right cluster's 43 (the point a WEAPON hangs from) is not a
+defect.
+
+### THREE INSTRUMENTS THAT LIED, and cost more than the bugs did
+
+- **`equip settled ... held still 19246078 ms across 0 evaluations`** - the log
+  read its counters AFTER zeroing them. 19,246,078 ms is 5.3 hours and "0
+  evaluations" cannot coexist with a rule requiring two; it was read as evidence
+  through two rounds of diagnosis anyway.
+- **Nine captures, all at 250-266 ms.** A flat line across four different
+  holdables is not a distribution - it was the engine's evaluation cadence. It
+  read as clean data twice. **Check whether a measurement VARIES before believing
+  what it says.**
+- **`ROLLCHECK: drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)`** - those
+  cannot both be true of a unit quaternion. The ease-in leaves NON-UNIT quats in
+  the bone bank, so the rotation was unchanged and only the magnitude differed.
+  Read as "the engine is overwriting our write" twice, which produced `137a44b`,
+  a fix for a non-problem. Full note in `ENGINE_NOTES.md`.
+
+### Method notes worth more than the fixes
+
+- **A symptom that is bit-identical across changes to four subsystems means NONE
+  of them is involved.** That should have redirected the search after the second
+  attempt. Instead each round produced a new plausible mechanism, and
+  plausibility kept beating the fact that the evidence had not moved.
+- **When a fix's premise is disproved, DELETE the fix.** Three commits of settle
+  machinery survived the disproof of their own premise because each round
+  *refined* it rather than re-asking whether it should exist. 116 lines came out
+  in `a78f877`, and one of them was actively causing the next bug.
+- **A revert must be defined against a BUILD, not a commit.** "Revert the hand
+  stuff" undid one axis while three others stayed rewritten, and the result was
+  then read as evidence about the hand.
+- **An accidental property can be the load-bearing one.** Nothing intended
+  plasmids to share a reference pose; it fell out of watching a field that is
+  null for all of them. "Fixing" the accident regressed the feature.
+- **The tester's A/B across two builds beat every measurement taken here.** "I
+  specifically called out which one fixed that" is a bisect. Behaviour a tester
+  has attributed to a commit should be treated as a REGRESSION TEST for every
+  later commit.
+- **A hand that aims wrong while the shot lands right is a viewmodel-frame
+  problem, never an aim one.**
+
+### Next steps
+
+**Verify `825ced6` - it is BUILT AND INSTALLED BUT NEVER RUN.** The anchor pin
+was producing vertex spikes because `conj()` is not the inverse of a non-unit
+quaternion, so `qFix` came out non-unit, `qts_rotate()` scaled every offset by
+`|qFix|^2` and `quat_mul()` compounded it into every bone. Both `qFix` and the
+per-bone product are now normalised, with a degeneracy guard. Expect: position
+and rotation still correct, spikes gone, fingers animating.
+
+If a spike survives, look for `ANIMPIN: anchor quat is degenerate` - that would
+mean the quat arrives as garbage rather than merely un-normalised, which is a
+different search.
+
+Then: PR #54 is still open and unmerged. Lower value, still open: the equip idle
+cycle's other half (`Holdable`'s `EquippingHandsAnim` / `IdlingHandsAnim[]` are
+`config travel` and settable BY NAME through the Exec seam, no offsets); and
+`set_anim_state_mask()` is still dead API with nothing wired to it.
+
+### Session log 2026-08-27
+
+**Headset-verified by the tester:** the recoil apex freeze fixed; per-plasmid
+tuning no longer cross-contaminates; Telekinesis positioned correctly;
+Electrobolt's own pose restored; the equip idle cycle gone; the anchor pin holds
+position AND rotation.
+
+**Built but NOT verified:** `825ced6` (quaternion normalisation). The tester said
+explicitly they had not run it.
+
+**Config files edited by the assistant, backups kept alongside:**
+`weapons.ini.s68b-backup`, `weapons.ini.s69b-backup`, `weapons.ini.pre-restore`,
+`hands.ini.pre-restore` in `%LOCALAPPDATA%\BioshockVR\`. The plasmid blocks were
+stripped twice, because values written under a key that later changed HANDS are
+not merely stale - they are in the wrong frame.
+
+**Diagnostics left ARMED in the shipping build**, all read-only, all always-on
+because the tester cannot type in the headset - strip or gate before release:
+`ROLLCHECK` (now known to misreport during a blend - see above), `FOVPROBE`,
+`ANIMREJECT`, `LEFTBONE` (one-shot per skeleton), `ANIMPIN`.
+
+**The simulator cannot see any of this.** Its aim pose is synthesised as
+`grip + aimtrim`, so the whole class of defect is absent there by construction.
+
 ## Session 2026-08-26/27 - s67: the viewmodel desync is SOLVED, and it was the drive architecture
 
 **Same branch `fix/bs1-bathysphere-cine-quad`.** Two commits: `f39187f` (the

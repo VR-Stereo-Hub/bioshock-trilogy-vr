@@ -2320,3 +2320,537 @@ trusted-sample logic.
 the reference mod's docs, and it was - `INVARIANTS.md` offers "hide through
 `DrawScale3D`, **or measure something the write does not touch**". Three rounds
 went into the first clause. The second clause was the one that applied.
+
+### 2026-08-27 (session 68) - "stop adopting" is not "go back"
+
+s67 replaced the movement threshold with the engine's own `Hands` state machine,
+so recoil could be adopted and a reload refused by NAME instead of by size. The
+read works. The policy on top of it shipped a defect that the threshold never
+had, and the shape of the mistake is worth keeping.
+
+**The defect.** When the state leaves the adopt mask the drive stopped adopting -
+and stopping is not returning. `g_ref` kept whatever frame it last took, and
+`Hands.uc` leaves `WeaponFiring` at the TOP of the recoil, not after the gun has
+come back down. So the pistol froze at its recoil apex and stayed there until a
+weapon switch. The ammo-out freeze and the shotgun's first reload are the same
+bug through different doors: `Firing -> Reloading` is a mask exit like any other.
+
+**Why the threshold never had it.** BRVR gates on `adopt = (now - lastBigDelta) <
+holdMs`, so it keeps tracking for ~1.2 s past the animation's last big frame and
+re-freezes on the SETTLED pose. The settle window was the whole mechanism, and
+the state branch is what threw it away. That is the general lesson: a per-state
+gate answers "may this animation reach the rig", and silently drops the answer to
+"where does the rig go when it stops" - which the thing it replaced was quietly
+handling all along. **When replacing a heuristic, enumerate what it was doing
+incidentally, not just what it was for.**
+
+**Why we did not just reinstate the settle window.** It would re-freeze onto
+whatever the idle animation had drifted to, and `Holdable::GetIdlingHandsAnim()`
+draws a WEIGHTED RANDOM entry from `IdlingHandsAnim[]` every time `WeaponIdling`'s
+loop comes round (Holdable.uc:32). That randomness is precisely the "crosshair
+moves randomly between shots" report s67 fixed, so BRVR's answer is not portable
+here - its threshold gate never had a per-weapon crosshair riding on the pose.
+
+**What was built instead.** A CANONICAL rest pose: one snapshot per holdable,
+taken the first time the engine reports `WeaponIdling`, restored when an adopted
+state ends. Once per holdable rather than per return-to-idle, which is what makes
+it deterministic and what keeps the per-weapon crosshair true between shots.
+
+Three details that are policy, not incidental:
+
+- **Position and rotation only.** The scale rows stay with the `g_scaleWrote`
+  pinning bank; restoring them would undo session 61's pin-vs-adopt architecture.
+- **The edge is only trusted on a KNOWN state.** The engine parks `StateNode` at
+  null between transitions, and reading that blip as "the animation ended" would
+  abort a recoil halfway through it.
+- **The return is BLENDED (120 ms smoothstep), not snapped.** The pose being left
+  is a recoil apex; cutting straight to rest reads as a jerk, where easing is the
+  recovery the animation would have played. 0 ms = snap, and the F10 checkbox is
+  a live A/B back to the s67 behaviour, because this is a perceptual question and
+  the simulator cannot answer it.
+
+### 2026-08-27 (session 68) - a shared global behind a per-instance setting
+
+The viewmodel's view-frame PLACEMENT (`g_viewFwdCm/RightCm/UpCm` in `hands.cpp`)
+was a single global triple applied to both hands. The per-weapon profile system
+added in s67 then wrote it on every weapon change, from the RIGHT hand's profile.
+
+Plasmids are the LEFT hand and have no per-weapon profile, so nothing ever put
+the value back. The tester's report is the exact signature of that shape:
+
+> correct as I switch back and forth between the plasmids, but then they **both**
+> get locked to another position when I switch to a weapon and switch back
+
+Every clause is diagnostic. *Plasmid to plasmid is fine* - no weapon profile
+applies, so nothing overwrites it. *Locked after a weapon round trip* - the
+weapon's placement was written and there is no plasmid profile to restore it.
+And **both**, which is the clincher: two plasmids cannot share a fault unless the
+thing they share is one variable.
+
+**The rule: when a setting becomes per-instance, every global it reads or writes
+becomes a candidate.** s67 made placement per-WEAPON without making its storage
+per-HAND, so the weapon lane silently acquired write access to the plasmid lane.
+The sibling values had already been converted - `g_posFwdCm[2]`, `g_rotPitchDeg[2]`,
+and the aim trims - which is why this one was invisible: every call around it
+already passed a hand index, so the one that did not read as intentional.
+
+The fix makes it `[2]` like its siblings, routes the ini through the existing
+`store_hand_key()` (so a suffix-less key from an older file loads into BOTH hands
+- exactly what the shared global used to mean), and passes hand 1 at all five
+`aim.cpp` call sites, since `WeaponProfile` is a right-hand record by construction.
+
+**Also settled here:** plasmid position and plasmid crosshair are GLOBAL across
+all plasmids, not per plasmid (tester's call, 2026-08-27). That falls out of the
+same structure - only the right hand has per-weapon profiles - so the left hand's
+model offset, view placement and aim trim are each one value for every plasmid.
+The F10 sliders' L/R radio is the whole tuning surface for them; the numpad tuner
+stays the WEAPON hand's tuner, which is why it now writes index 1 rather than the
+old shared index 0.
+
+### 2026-08-27 (session 68) - the plasmid had no key, so it wore the weapon's profile
+
+**The engine parks `Hands.CurrentHoldable` at NULL while a PLASMID is equipped.**
+That one fact produced two defects that looked unrelated, and it is why the s68
+per-hand placement fix - correct in itself - did not cure the reported symptom.
+
+The proof is in the log, not in reasoning. Every plasmid switch prints bones'
+`wscale rigid: released (holdable gone)`, whose test is literally `!hold`, and
+prints **no `[aim] weapon profile ... applied` line at all**. `update_weapon_profile()`
+turned that null into an EMPTY key, and `apply_weapon_key()` dropped an empty key
+on the floor with `if (key.empty()) return;` - no log, nothing applied. So the
+outgoing WEAPON's entire profile stayed live: aim trim, placement, grip, and
+`animOn`.
+
+Both reports fall out of that:
+
+- *"the plasmids move to a different position after switching to a weapon and
+  switching back"* - they were wearing the weapon's profile, because nothing had
+  replaced it.
+- *"the animations aren't playing for the plasmids"* - `bones::set_anim_allowed()`
+  is one global, and the WRENCH sets it to 0. After a wrench, the gate stayed shut
+  and nothing reopened it. The run that reported this shows wrench<->plasmid
+  switching throughout.
+
+**The rule: a silent early return on a "nothing here" value is a bug waiting for a
+second meaning.** `key.empty()` meant "unresolvable" when it was written; the
+plasmid then made it also mean "a plasmid is equipped", and the branch could not
+tell them apart because it did nothing and said nothing either way. Both now have
+a name - `"Plasmid"` is a real profile key, and the genuinely-unknown case logs
+that the previous profile is still applied.
+
+**One key for every plasmid**, not one per plasmid (tester's call, 2026-08-27), so
+they share one position and one crosshair.
+
+**And a method note.** The first fix this session went in on a diagnosis that fit
+the symptom perfectly - a shared global behind a per-instance setting, which was
+also real and is also fixed - but was never checked against a log. The log had the
+answer the whole time, in a line about a scale lane that nobody would think to
+grep for. **Read the run before designing the fix, and grep for the absence of the
+line you expect, not just for the presence of the one you fear.**
+
+### 2026-08-27 (session 68) - the default profiles were scrambled twice over
+
+`seed_default_profiles()` wrote bare aggregate initialisers in the order given by
+the comment above it - trim, pos, animOn, view, grip, model - while `WeaponProfile`
+declares grip BEFORE view and `animOn` AFTER both. Every field past `posUp` was
+silently assigned to the wrong member. The Wrench ended up with `animOn = -16.70`:
+nonzero, so its animation gate read as ON, which is the one thing it must not be.
+
+Underneath it, a stale duplicate block re-assigned all eight weapons with FIVE
+values each. Aggregate init zero-fills the remainder, so grip, view, `animOn` and
+the model trims all went to zero and the second block won. **A fresh install had
+no recoil on any weapon and no placement on any of them.**
+
+Neither bug could be seen by anyone whose `weapons.ini` already overrode every
+field by name - which is every machine this has ever been tested on. The tester's
+own tuning file was hiding the shipping defaults.
+
+Now designated initialisers, which cannot drift out of order again. **When a
+struct's field order is load-bearing for a literal, name the fields** - the
+compiler is the only reader that will reliably notice.
+
+### 2026-08-27 (session 68b) - a timer standing in for a state the engine reports
+
+s68's rest-pose fix armed a fresh reference capture on a holdable change and then
+tracked for a FIXED 1200 ms (`g_swaySettleMs`) before freezing. That timer was the
+wrong instrument, and it produced three reports that looked like three bugs:
+
+| Report | Mechanism |
+|---|---|
+| "the wrench position was super off with a massive pivot on launch" | animOn=0, so once the timer expired the state branch refused forever - and the rest capture was gated on `g_animAllowed`, so it never ran either. The reference was whatever the timer froze, mid-equip |
+| "it did an equip animation but froze it before it finished" | the equip outlasted 1200 ms; adoption stopped part-way through |
+| "it applied it to both plasmids" | `CurrentHoldable` is NULL for EVERY plasmid, so plasmid-to-plasmid is `null != null` == false. The holdable-change test never fired, so one bad pose served all of them |
+
+**The engine already reports both edges we were guessing at**: `State::Equipping`
+starts the window, `State::Idling` ends it. Tracking until Idling means an
+animation longer than any timer still plays out in full, and there is no constant
+to tune. The Equipping EDGE also arms the capture, which is the only signal that
+can see one plasmid replace another - the holdable pointer is blind to it.
+
+**Two lessons, and the first is the one that keeps recurring here.**
+
+**A timer is a guess about a state.** If the system publishes that state, read it.
+s67 built the `Hands` state machine reader precisely so animation decisions could
+stop being inferred from magnitudes and durations - and then s68 put a duration
+back in the one place the state machine was most directly applicable. A timeout
+survives, but only as a backstop that LOGS when it bites; a silent expiry is what
+made this hard to see.
+
+**Gates must not be reused for questions they were not asked.** `animOn` answers
+"does this weapon FOLLOW its firing animation" - the wrench does not, because a
+swing animation fights manual melee. s68 also used it to gate "does this weapon
+get a correct resting pose", which is a different question with a different
+answer, and starving the wrench of a rest capture is what put the s67 defect back.
+When reaching for an existing flag, check that the question is the same one.
+
+### 2026-08-27 (session 68b) - the hand was inferred from the trigger, not read from the game
+
+`active_hand()` decided which hand was live from the last bumper or trigger the
+player touched. Both the crosshair and the viewmodel follow it. A plasmid SHOT
+does not - it is routed to `Hand::Left` by pointer identity, from the learned
+object map.
+
+So switching to a plasmid **without firing it** left auto-hand on the RIGHT, and
+two reports that sounded unrelated came out of that one gap:
+
+- *"it seems that it shoots slightly up and to the right of the crosshair"* - the
+  dot was drawn from `g_ray[1]` while the bolt left on `g_ray[0]`. Two rays, two
+  trims, one crosshair.
+- *"the other plasmid still had the wrong position and nothing fixed it"* - the
+  plasmid was being drawn with the RIGHT hand's offsets, which are the equipped
+  weapon's profile.
+
+And it explains why one plasmid was fine and the other was not, with no
+difference between them: the tester had been **firing** the good one.
+
+**The engine knows which hand it is.** `Hands.uc` parks the rig in an `Ability*`
+state while a plasmid is equipped, so `hands_state` now carries an `ability` flag
+per row and `active_hand()` reads it instead of guessing. An explicit hand mode
+still wins - this replaces only the inference.
+
+**The rule, again, and it is the third time this session: a value the game
+publishes should not be inferred from a side effect.** s67 replaced "guess the
+animation from movement magnitude" with the state machine. s68 replaced "guess
+the equip is over from a 1200 ms timer" with the same state machine. This
+replaces "guess the hand from the last trigger" with it too. Every one of these
+was a proxy that agreed with the truth most of the time, which is exactly what
+made each one survive so long.
+
+**Profiles now own a hand.** `profile_hand()` maps the `"Plasmid"` key to hand 0
+and everything else to hand 1. Before this the Plasmid profile wrote the RIGHT
+hand's trims and offsets - values a plasmid never reads - so tuning its crosshair
+moved the weapon's ray and the bolt kept leaving on the untouched left one. The
+seeded Plasmid row is correspondingly rebuilt from the tester's left-hand tuning
+(`vrpreset.ini`'s `aimTrimL*`/`aimPosL*`, `hands.ini`'s `*L`).
+
+**Migration note:** a `Plasmid.*` block written by the s68 build holds right-hand
+values under a key that now means the left hand. Those entries must be deleted,
+not carried - a stale one is not merely old, it is in the wrong frame.
+
+### 2026-08-27 (session 68c) - Idling is where the idle animation STARTS
+
+s68b replaced the equip-capture timer with the engine's own `Idling` edge, which
+was the right direction and still landed too early. `Hands.uc` starts the idle
+animation with `PlayAnimationOnChannelInstantEaseIn` - a BLEND - so on the first
+`Idling` frame the rig is still easing out of the equip pose. Capturing there
+captures a partial blend.
+
+**And the blend rate differs per path.** `AbilityIdling` eases at 4;
+`AbilityGenericIdling` eases at 8. A fixed capture instant therefore lands
+correctly for one plasmid and wrong for another with nothing configurable between
+them - which is precisely the report that made no sense for three rounds: *"the
+other plasmid is still wrong"*, with both sharing one global profile.
+
+The tester supplied the decisive clue by pointing back at their own earlier
+message: the positions were *perfect* on the build whose 1200 ms timer happened
+to outlast the blend, and wrong only the once it expired early. That is not an
+argument for the timer - it is the observation that **the correct capture moment
+is "after the pose stops moving", which the timer approximated and the state edge
+does not.**
+
+So the capture now waits for the pose to be STILL, measured on the same probe
+bones and the same thresholds the idle-sway kill already uses - two consecutive
+settled evaluations, bounded by the existing 4 s backstop. No new constant, and
+it adapts to whatever rate the engine picked.
+
+**The refinement of the rule this session keeps teaching.** "Read the state the
+engine publishes, don't infer it" got us here, and it was right - but a state
+edge answers *when the engine changed its mind*, not *when the consequences have
+finished arriving*. Those are different instants whenever a transition is
+animated. Read the state to know WHAT is happening; measure the geometry to know
+when it is DONE.
+
+**Regression fixed in the same pass.** 9c3fe50 pinned the numpad tuner to hand 1
+on the reasoning that it is the weapon hand's tuner. Once `active_hand()` began
+reporting 0 for a plasmid, that made the tuner silently inert while one was
+equipped - "none of the numpad modes change anything for the plasmids". It now
+follows `active_hand()`. The tester cannot type mid-session, so an in-headset
+tuner that does nothing for half of what you can hold is not a small loss.
+
+### 2026-08-27 (session 68d) - the engine evaluates the bone array 5% of the time
+
+**Measured:** 7 `engineEval=1` against 127 `engineEval=0` in one run. The engine
+re-evaluates the hands bone array on roughly **one frame in nineteen**, and
+irregularly.
+
+Everything in `drive()` that reasons about "the pose changed" runs only on those
+frames, because the whole recapture block is gated on `engineEvaluated`. So a
+condition expressed as *a count of evaluations* is really a condition on the
+engine's scheduling, which nothing in this mod controls or observes.
+
+s68c's settle detector required "two consecutive settled evaluations". With
+evaluations that sparse, where those two land - after the equip ease or in the
+middle of it - is a RACE. That is the whole of "it was really close earlier, but
+it would just break at a certain point": nothing about the holdable differed
+between a good capture and a bad one, only the timing did. It also explains why
+one plasmid looked right and another looked wrong while sharing one profile and
+one code path, and why FOUR successive fixes to identity, hand, profile and
+capture-edge changed the symptom not at all - none of them was in the loop.
+
+**The unit matters more than the threshold.** The fixed 1200 ms timer this
+lineage started with was blunt and it froze mid-equip when an animation outran
+it - but it was in WALL-CLOCK, and wall-clock is immune to the evaluation rate.
+Replacing it with an evaluation count fixed the bluntness and imported a race.
+The settle now gates on time (stillness must persist 350 ms, and never capture
+within 200 ms of the switch) with the evaluation count kept only as a floor, so
+"still" is always a comparison and never a single reading.
+
+**The diagnostic lesson, which cost four rounds.** A symptom that is bit-identical
+across changes to four different subsystems is evidence that NONE of them is
+involved. That should have redirected the search after the second attempt; instead
+each round produced a new plausible mechanism, and plausibility kept winning over
+the fact that the evidence had not moved. **When a fix changes nothing at all,
+the next step is to instrument, not to theorise again** - and the instrument that
+finally answered it, `engineEval` on the ROLLCHECK line, had been printing in
+every log the whole time.
+
+### 2026-08-27 (session 68e) - the settle test was a no-op, and its log was lying
+
+Two defects in the settle detector, both mine, both introduced while fixing the
+thing they then hid.
+
+**The threshold answered a different question.** s68d's stillness test reused
+`g_swayAngThreshDeg` - the ANIMATION ADOPTION threshold, 25 deg, raised in s67
+because BRVR measures real animations at 130-170 deg at the wrist. "Is this
+movement big enough to be a real animation?" and "has the pose stopped moving?"
+are not the same question and do not share an answer. With a 25 deg tolerance,
+any two consecutive evaluations of a smooth ease read as "still", so the test
+fired on the second evaluation whenever that landed - the race it was written to
+close was never gated at all. Measured: a capture fired at **2.34 deg of drift**,
+against a measured idle envelope of +-1.2 deg. The pose was still visibly moving.
+
+Stillness now has its own absolute constants, set just above that idle envelope:
+the pose is still when the only thing left in it is breathing.
+
+**And the instrument was lying.** The log line read `g_capStillSinceMs` and
+`g_capStillFrames` AFTER zeroing them, so every capture printed `held still
+19246078 ms across 0 evaluations` - the tick count and a zero. That number was
+sitting in the log through two rounds of diagnosis being read as evidence.
+
+**An instrument that lies is worse than no instrument**, because it is trusted.
+The tell was available and obvious - 19,246,078 ms is 5.3 hours and "0
+evaluations" cannot coexist with a rule requiring at least two - and it was read
+past because the line was mine and assumed correct. Read the numbers an
+instrument prints for PLAUSIBILITY before reading them for meaning.
+
+**On the hypothesis this round started with.** The measurement said `bones::drive()`
+runs for one hand and `active_hand()` is trigger-inferred, so a plasmid switched
+to but not fired could be undriven. The census refuted it: 29 samples of
+`hand=0 abil=1` against 8 of `hand=1 abil=1`, with the second plasmid driven
+continuously across its own switch. The hypothesis was wrong and the measurement
+cost one integer on a line that was already printing - which is the correct ratio,
+and the opposite of the four speculative fixes that preceded it.
+
+### 2026-08-27 (session 68f) - why "reverting it" did not restore it
+
+The tester asked the question that broke the deadlock: *why didn't reverting the
+commit put it back?* Because the revert (5ecbd49) undid the HAND changes only.
+The CAPTURE path had been rewritten four times underneath and none of it was
+reverted, so "back to the good build" was never true.
+
+**The good build was e8d938d, and its capture identity was `CurrentHoldable`
+alone.** `CurrentHoldable` is NULL for every plasmid, so that identity had a
+property nobody designed and nobody noticed:
+
+| transition | holdable | capture? |
+|---|---|---|
+| weapon -> plasmid | actor -> null | YES |
+| **plasmid A -> plasmid B** | **null -> null** | **NO** |
+| plasmid -> weapon | null -> actor | YES |
+
+Plasmid-to-plasmid never recaptured, so every plasmid shared ONE reference pose
+and they all sat in the same place. That is exactly the report: *"it was almost
+perfect earlier position wise switching between the two, but it was just breaking
+when switching to weapons."* Both halves of that sentence are this table.
+Switching between plasmids was clean BECAUSE nothing recaptured; the weapon
+transition broke because it is the only edge where a capture fires, and therefore
+the only place the capture's own quality can hurt.
+
+422f735 then added `CurrentAbility` to the identity so one plasmid replacing
+another would force a fresh capture. The reasoning was sound in isolation and it
+destroyed the working half - it converted a shared pose into a per-plasmid pose,
+which is a per-plasmid POSITION by construction, and the opposite of the "global,
+not per plasmid" the tester had asked for two rounds earlier.
+
+**Two rules out of this.**
+
+**A revert must be defined against a BUILD, not a commit.** "Revert the hand
+stuff" undid one axis while three others stayed rewritten, and the result was
+then read as evidence about the hand. Before reverting to restore a known-good
+behaviour, diff every axis that build differed on and say which ones are staying
+changed and why.
+
+**An accidental property can be the load-bearing one.** Nothing intended plasmids
+to share a reference pose; it fell out of watching a field that happens to be
+null for all of them. It was still the behaviour that worked, and "fixing" the
+accident regressed the feature. When a change makes a previously-good behaviour
+worse, suspect that the change removed an accident the behaviour depended on.
+
+### 2026-08-27 (session 68g) - adopting past Idling IS the equip idle cycle
+
+With the plasmid position fixed by the capture identity (68f), the weapons came
+back with "the 1 cycle idle animation on equip" - a defect 9c3fe50 had already
+killed, and which the tester had explicitly called out as fixed.
+
+The two are the same knob. 9c3fe50 captured on the FIRST `Idling` frame and
+stopped adopting there. s68c-e kept adopting PAST that edge while waiting for the
+pose to settle - and adopting during `Idling` is, definitionally, following the
+idle animation. One cycle of it, played into the rig, on every equip.
+
+**The settle machinery was built to fix the plasmid, and the plasmid was never a
+settle problem.** It was identity: `CurrentHoldable` is null for every plasmid, so
+all plasmids must SHARE one reference and must not recapture between themselves.
+Once that was right, the settle wait bought nothing and cost a regression, so it
+is deleted rather than tuned - 116 lines out of `bones.cpp`, and the three
+constants and two counters that went with it.
+
+**The rule: when a fix's premise is disproved, delete the fix.** Three commits of
+settle machinery survived the disproof of their own premise because each round
+they were merely *refined* - edge to count, count to wall-clock, threshold
+corrected - rather than re-examined. Every refinement made them more defensible in
+isolation and none of them re-asked whether the thing should exist. A fix whose
+reason has been withdrawn is not neutral: it is unexplained code that will be
+maintained, and here it was actively causing the next bug.
+
+**The tester's instrument was the branch history.** "I specifically called out
+which one fixed that" is a bisect, and it was faster than every measurement taken
+this session. Behaviour a tester has explicitly attributed to a commit should be
+treated as a REGRESSION TEST for every later commit, not re-derived from symptoms.
+
+### 2026-08-27 (session 68h) - waiting was never the mistake; ADOPTING while waiting was
+
+The tester's clue separated two things this session had treated as one knob:
+
+> Last run when the 1 cycle animation was happening, when the 2nd plasmid reached
+> its broken state after a weapon switch, switching to the other plasmid fixed the
+> position of both. This run had the 1 cycle animation fixed, but when the plasmid
+> broke by switching to weapons, switching between plasmids didn't fix either.
+
+Both halves are the same mechanism seen from opposite sides. Plasmid-to-plasmid
+DOES recapture - not through the holdable (null for all plasmids) but through the
+**Equipping edge**, which the arm also watches. So on the waiting build a plasmid
+switch ran a settle-quality capture, landed a good pose, and - because all
+plasmids share one reference - fixed both at once. On the edge-capture build the
+same switch takes a mid-blend pose, so it fixes nothing.
+
+**That makes the settled capture the correct pose, and waiting is not the defect.**
+The defect was ADOPTING while waiting: `adopt = true` makes `g_ref` track the
+engine every evaluation, and tracking during `Idling` is following the idle
+fidget - which is the "1 cycle animation on equip" exactly.
+
+They separate cleanly:
+
+- **Stop adopting at the `Idling` edge.** The rig freezes at the equip pose, so no
+  idle animation ever reaches it.
+- **Stay armed, and take ONE snapshot** once the engine's own pose has stopped
+  moving. Settle is measured between consecutive ENGINE evaluations, not against
+  `g_ref` - `g_ref` is frozen now, so comparing to it would never converge. That
+  comparison is also why the earlier version needed adoption at all.
+- **Ease onto the snapshot** with the rest-restore blend that already exists, so a
+  one-step correction arrives as a short settle rather than a pop.
+
+**The rule: when one change fixes A and breaks B, look for the two mechanisms
+before trading them off.** Four rounds treated "capture early" and "capture late"
+as a single dial with A at one end and B at the other, and spent themselves
+choosing a point on it. There was no dial - there were two independent decisions
+(when to stop following, and when to sample) that one flag happened to control.
+A tester's A/B across two builds is what exposed it, because it reported both
+symptoms and their signs, which no single-build measurement here could.
+
+### 2026-08-27 (session 68i) - the settle probe watched a bone that does not move
+
+The tester's report was precise enough to be a bisect on its own:
+
+> Any weapon switching to electrobolt works just fine and switching to the other
+> plasmid is fine, then any weapon switching to telekinesis sets its position
+> incorrectly and sets electrobolt to the same position
+
+The same plasmid being fine down one path and broken down another rules out its
+pose being inherently different. And the log gave the mechanism outright: **every
+capture in the run fired at 250-266 ms**, nine of them, regardless of what was
+being equipped. That is not a settle detector, it is the SECOND ENGINE EVALUATION
+- the engine evaluates the bone array about six times a second, so #2 always lands
+there.
+
+The settle test probed `kBoneWeaponAttach`. **A plasmid has no weapon attached**,
+so that bone barely moves during a plasmid's equip: the test asked "has the pose
+stopped moving?" of a bone that never started, answered yes on its first
+comparison, and snapshotted mid-blend.
+
+It survived on weapons because bone 43 genuinely moves with a gun on it, and on
+Electrobolt because its ease finishes inside 250 ms. Telekinesis eases for longer,
+so 250 ms is still mid-blend for it - and since every plasmid shares one reference,
+its bad capture set Electrobolt's position too. Every clause of the report is that
+one line of code.
+
+The probe is now the whole DRIVEN CLUSTER, which is the thing actually being
+captured: if any of it is still moving the capture is early, whatever is or is not
+in the hand.
+
+**The rule: a probe must be chosen for the thing being measured, not inherited
+from the code it was copied out of.** `kBoneWeaponAttach` came from the sway-kill
+threshold, where the question was "is a WEAPON animating" and the bone was right.
+Reused to ask "has THIS RIG settled", it was a constant. A measurement taken on
+the wrong instrument does not read as an error - it reads as a clean result, which
+is what made nine identical timings look like data instead of a flat line.
+
+**And the flat line was the tell.** Nine captures at 250-266 ms is not a
+distribution, and the spread of real equip animations is not 16 ms. Check whether
+a measurement VARIES before believing what it says.
+
+### 2026-08-27 (session 68j) - a plasmid rig never goes still, so stop asking
+
+Fixing the settle probe (68i) made things worse, not better, and the measurement
+it enabled is why:
+
+| driven cluster | time to "settle" | delta at capture |
+|---|---|---|
+| 27-44 (weapon) | 157 ms, 265 ms | 0.31-0.96 deg |
+| **6-21 (plasmid)** | **2156 ms** | **1.24 deg** |
+
+The plasmid cluster takes 2.2 s and lands at 1.24 deg against a 1.5 deg
+threshold - where the measured idle envelope is +-1.2 deg. **A plasmid rig never
+actually goes still**: the idle fidget keeps it moving, so the test crosses its
+threshold essentially at random. Probing CORRECTLY turned "sometimes early" into
+"any time at all", which is exactly the regression reported.
+
+So the answer is not a better threshold, it is a different question. The build the
+tester called almost perfect used a fixed 1200 ms timer whose only failure was
+firing before the equip had finished. Anchoring the same idea to the **Idling
+edge** removes that failure - the equip is over by definition once the engine says
+Idling - and leaves a deterministic instant identical for every holdable.
+
+Freeze at the edge (so no idle animation is followed into the rig), wait a fixed
+delay, take one snapshot, ease onto it. Default 700 ms, exposed on F10 and
+`vrbones equipdelay` because the right value is perceptual and the tester is the
+only one who can see it.
+
+**The rule: not every quantity a system exposes is measurable in it.** Four rounds
+were spent building a detector for "the pose has settled" in a rig that is
+animated continuously by design. The detector was refined three times and finally
+made correct - and correctness revealed there was nothing to detect. **Before
+building a measurement, check that the thing being measured actually occurs.**
+
+**And a regression is information.** Making the probe right made the symptom worse,
+which is only possible if the probe had been suppressing the real variance. That
+inversion located the answer faster than any of the fixes that preceded it.

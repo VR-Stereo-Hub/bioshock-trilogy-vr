@@ -78,7 +78,17 @@ std::atomic<bool> g_offsetRoll{true};
 // left exactly where the grip offset put it.
 //
 // Two knobs, two jobs: gripOffset = where it pivots, viewOffset = where it sits.
-std::atomic<float> g_viewFwdCm{0.0f}, g_viewRightCm{0.0f}, g_viewUpCm{0.0f};
+//
+// s68: PER HAND, and that was a bug fix, not a tidy-up. This was one global
+// triple applied to BOTH hands while apply_weapon_key() rewrote it from the
+// RIGHT hand's weapon profile on every weapon change. Plasmids are the left
+// hand and have no weapon profile, so nothing ever put it back: switching to a
+// gun and back left both plasmids sitting at the gun's placement. The tester's
+// report names the shape exactly - "correct as I switch back and forth between
+// the plasmids, but then they BOTH get locked to another position when I switch
+// to a weapon and switch back". Both, because one global served both hands.
+std::atomic<float> g_viewFwdCm[2]{0.0f, 0.0f}, g_viewRightCm[2]{0.0f, 0.0f},
+    g_viewUpCm[2]{0.0f, 0.0f};
 
 // ---- s67 LATE ROTATION WRITE (BRVR S60, ported) --------------------------
 // BRVR's S59 readback measured the game tick running AFTER its CalcView write
@@ -98,7 +108,17 @@ std::atomic<float> g_viewFwdCm{0.0f}, g_viewRightCm{0.0f}, g_viewUpCm{0.0f};
 // where camera.cpp already does its stale-FOV restore, for the same reason.
 void* g_lwObj = nullptr;
 int32_t g_lwRot[3] = {0, 0, 0};
+// s70q: AND THE LOCATION. late_write() replayed only the rotator, so the engine's
+// UpdateLocation - which puts the Hands actor on the CAMERA every frame - won
+// the position every frame. The camera includes the head offset, so the rendered
+// hand followed the headset off the controller. See late_write().
+float g_lwLoc[3] = {0.0f, 0.0f, 0.0f};
+std::atomic<bool> g_lateWriteLoc{true}; // A/B without a rebuild
 std::atomic<bool> g_lwValid{false};
+// s70e ACTORWATCH: the rotation we last asked the actor to hold, so the next
+// frame can see whether anything changed it. See the probe in the write path.
+int32_t g_awWrote[3] = {0, 0, 0};
+bool g_awWroteValid = false;
 std::atomic<bool> g_lateWrite{true}; // the fix; toggleable so it stays bisectable
 std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
                                       // retired), 2 = bones (M7-v2, default)
@@ -112,16 +132,24 @@ std::atomic<int> g_autoHand{1};       // the latched auto choice
 // degrees, applied in the CONTROLLER'S LOCAL frame as a quaternion compose -
 // euler adds after conversion only behave at one controller orientation (the
 // first headset test's "pivot" bug).
-// Defaults are ZERO on purpose. The ideal pivot correction (pull the mesh's gun
-// to the controller, ~-100 cm forward) is CULLED: the engine drops the whole
-// rig the moment the actor origin goes behind the camera (live-proven - the
-// rig vanished with the origin 32 UU back). Forward pull is therefore limited
+// The RIGHT hand defaults are ZERO on purpose. The ideal pivot correction (pull
+// the mesh's gun to the controller, ~-100 cm forward) is CULLED: the engine drops
+// the whole rig the moment the actor origin goes behind the camera (live-proven -
+// the rig vanished with the origin 32 UU back). Forward pull is therefore limited
 // to roughly the controller's own distance from the face, and where that line
-// sits is the user's in-headset call, not a default.
-std::atomic<float> g_posFwdCm[2]{0.0f, 0.0f}, g_posRightCm[2]{0.0f, 0.0f},
-    g_posUpCm[2]{0.0f, 0.0f};
-std::atomic<float> g_rotPitchDeg[2]{0.0f, 0.0f}, g_rotYawDeg[2]{0.0f, 0.0f},
-    g_rotRollDeg[2]{0.0f, 0.0f};
+// sits is the user's in-headset call, not a default. The right hand is also the
+// one the per-weapon profiles drive, so a default here would only ever be the
+// value held for the half-second before the first weapon resolves.
+//
+// The LEFT hand is different on both counts, so s68 ships the tester's calibrated
+// PLASMID pose as the default: nothing per-weapon drives the left hand (there are
+// no per-plasmid profiles), so without a default it sits at zero until someone
+// tunes it by hand. These are the values from the tester's own hands.ini, taken
+// 2026-08-27 after the s68 headset run.
+std::atomic<float> g_posFwdCm[2]{45.50f, 0.0f}, g_posRightCm[2]{-14.90f, 0.0f},
+    g_posUpCm[2]{-12.30f, 0.0f};
+std::atomic<float> g_rotPitchDeg[2]{-111.00f, 0.0f}, g_rotYawDeg[2]{-16.00f, 0.0f},
+    g_rotRollDeg[2]{22.00f, 0.0f};
 
 std::atomic<bool> g_writeRot{true}; // rotation write can be disabled on its own
 int32_t g_probeLeft = 0;
@@ -474,19 +502,32 @@ void save_config() {
     fprintf(f, "# suffix-less key (posFwdCm=...) still loads and applies to BOTH hands.\n");
     fprintf(f, "mode=%d\n", g_mode.load(std::memory_order_relaxed));
     fprintf(f, "aimPose=%d\n", g_useAimPose.load(std::memory_order_relaxed) ? 1 : 0);
-    // View-frame placement: moves the rig without moving the pivot (see banner).
-    fprintf(f, "viewFwdCm=%.2f\n", g_viewFwdCm.load(std::memory_order_relaxed));
-    fprintf(f, "viewRightCm=%.2f\n", g_viewRightCm.load(std::memory_order_relaxed));
-    fprintf(f, "viewUpCm=%.2f\n", g_viewUpCm.load(std::memory_order_relaxed));
     for (int h = 0; h < 2; ++h) {
         const char* s = h == 0 ? "L" : "R";
+        // View-frame placement: moves the rig without moving the pivot (see the
+        // banner). Per hand since s68 - a suffix-less key from an older file
+        // still loads into BOTH, which is the right migration: it is exactly
+        // what the shared global used to mean.
+        fprintf(f, "viewFwdCm%s=%.2f\n", s, g_viewFwdCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "viewRightCm%s=%.2f\n", s,
+                g_viewRightCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "viewUpCm%s=%.2f\n", s, g_viewUpCm[h].load(std::memory_order_relaxed));
         fprintf(f, "posFwdCm%s=%.2f\n", s, g_posFwdCm[h].load(std::memory_order_relaxed));
         fprintf(f, "posRightCm%s=%.2f\n", s, g_posRightCm[h].load(std::memory_order_relaxed));
         fprintf(f, "posUpCm%s=%.2f\n", s, g_posUpCm[h].load(std::memory_order_relaxed));
         fprintf(f, "rotPitchDeg%s=%.2f\n", s, g_rotPitchDeg[h].load(std::memory_order_relaxed));
         fprintf(f, "rotYawDeg%s=%.2f\n", s, g_rotYawDeg[h].load(std::memory_order_relaxed));
         fprintf(f, "rotRollDeg%s=%.2f\n", s, g_rotRollDeg[h].load(std::memory_order_relaxed));
+        // s70k: the arm solve's shoulder joint, head-relative cm.
+        float sf = 0.0f, sr = 0.0f, su = 0.0f;
+        bones::shoulder_cm(h, &sf, &sr, &su);
+        fprintf(f, "shoulderFwdCm%s=%.2f\n", s, sf);
+        fprintf(f, "shoulderRightCm%s=%.2f\n", s, sr);
+        fprintf(f, "shoulderUpCm%s=%.2f\n", s, su);
     }
+    fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
+    fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
+    fprintf(f, "elbowFollowWrist=%.3f\n", bones::elbow_follow_wrist());
     fclose(f);
     BVR_LOG("[hands] offsets saved to hands.ini");
 }
@@ -526,9 +567,25 @@ void load_config() {
             g_mode.store(m < 0 ? 0 : m > 3 ? 3 : m, std::memory_order_relaxed);
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
-        else if (strcmp(key, "viewFwdCm") == 0) g_viewFwdCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "viewRightCm") == 0) g_viewRightCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "viewUpCm") == 0) g_viewUpCm.store(v, std::memory_order_relaxed);
+        else if (store_hand_key(key, "viewFwdCm", g_viewFwdCm, v)) {}
+        else if (store_hand_key(key, "viewRightCm", g_viewRightCm, v)) {}
+        else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
+        else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
+        else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
+        else if (strcmp(key, "elbowSmoothMs") == 0)
+            bones::set_elbow_smooth_ms(static_cast<unsigned>(v < 0.0f ? 0.0f : v));
+        else if (strncmp(key, "shoulder", 8) == 0) {
+            // shoulder<Axis>Cm<L|R> - read the axis and the hand out of the key
+            // rather than adding three more store_hand_key lanes for one feature.
+            const size_t n = strlen(key);
+            const int h = (n && key[n - 1] == 'R') ? 1 : 0;
+            float f2 = 0.0f, r2 = 0.0f, u2 = 0.0f;
+            bones::shoulder_cm(h, &f2, &r2, &u2);
+            if (strncmp(key + 8, "Fwd", 3) == 0) f2 = v;
+            else if (strncmp(key + 8, "Right", 5) == 0) r2 = v;
+            else if (strncmp(key + 8, "Up", 2) == 0) u2 = v;
+            bones::set_shoulder_cm(h, f2, r2, u2);
+        }
         else if (store_hand_key(key, "posFwdCm", g_posFwdCm, v)) {}
         else if (store_hand_key(key, "posRightCm", g_posRightCm, v)) {}
         else if (store_hand_key(key, "posUpCm", g_posUpCm, v)) {}
@@ -554,19 +611,48 @@ void load_config() {
 // Bumpers are checked first so a same-frame trigger wins (firing is the
 // stronger evidence of which hand the player means). Shared with the aim
 // laser so the beam leaves the hand that is actually holding the weapon.
+// s70b: WHICH HAND IS DRIVEN IS DECIDED BY WHAT YOU ARE HOLDING, which is
+// BRVR's rule, and the input-based guess it replaces is a strong candidate for
+// "the electrobolt animates the complete wrong direction".
+//
+// This used to latch the hand off the last bumper or trigger you squeezed. So
+// with a plasmid equipped - which renders from the LEFT hand - pressing the
+// RIGHT trigger latched hand 1, and the drive then posed the wrong cluster from
+// the wrong controller's pose. Nothing about the plasmid changed; which hand the
+// mod thought it was moving did.
+//
+// BRVR (HandsProbe.cpp, the HANDMODE block):
+//     const bool ability = (abil != nullptr) && (hold == nullptr);
+//     poseHand = ability ? HAND_LEFT : HAND_RIGHT;
+//
+// BOTH POINTERS MUST AGREE, and that is deliberate in BRVR: mid-equip one of
+// them is briefly null, so requiring `ability && !holdable` refuses to flip the
+// hand during the switch. The verdict is LATCHED - it holds its previous value
+// until both pointers agree on a new one - so a one-frame null cannot move the
+// drive to the other arm.
+//
+// Modes 0 and 1 stay as manual overrides (left-handed play, and the control
+// condition for any test that needs a fixed hand).
 int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
 
-    bool lb = false, rb = false;
-    bvr::input::last_composed_bumpers(&lb, &rb);
-    if (rb && !lb) g_autoHand.store(1, std::memory_order_relaxed);
-    else if (lb && !rb) g_autoHand.store(0, std::memory_order_relaxed);
+    void* hold = nullptr;
+    if (!current_holdable(&hold)) hold = nullptr;
+    void* abil = nullptr;
+    if (!current_ability(&abil)) abil = nullptr;
 
-    uint8_t lt = 0, rt = 0;
-    bvr::input::last_composed_triggers(&lt, &rt);
-    if (rt >= 64 && lt < 64) g_autoHand.store(1, std::memory_order_relaxed);
-    else if (lt >= 64 && rt < 64) g_autoHand.store(0, std::memory_order_relaxed);
+    // Only move the latch when the two pointers agree on a verdict. Anything
+    // else - mid-equip, an unreadable rig - leaves it where it was.
+    if (abil != nullptr && hold == nullptr) {
+        if (g_autoHand.exchange(0, std::memory_order_relaxed) != 0)
+            BVR_LOG("[hands] HANDMODE: PLASMID - the LEFT hand drives "
+                    "(ability %p, holdable null)",
+                    abil);
+    } else if (hold != nullptr) {
+        if (g_autoHand.exchange(1, std::memory_order_relaxed) != 1)
+            BVR_LOG("[hands] HANDMODE: WEAPON - the RIGHT hand drives (holdable %p)", hold);
+    }
     return g_autoHand.load(std::memory_order_relaxed);
 }
 
@@ -629,6 +715,44 @@ bool armed() {
     const bool okA = read_ptr(h + patterns::kHandsCurrentAbilityOffset, &abil);
     if (!okH && !okA) return true; // neither slot readable - say nothing
     return (okH && hold != nullptr) || (okA && abil != nullptr);
+}
+
+bool last_actor_write(float loc[3], int32_t rot[3]) {
+    if (g_writes.load(std::memory_order_relaxed) == 0) return false;
+    if (loc) {
+        loc[0] = g_lastX.load(std::memory_order_relaxed);
+        loc[1] = g_lastY.load(std::memory_order_relaxed);
+        loc[2] = g_lastZ.load(std::memory_order_relaxed);
+    }
+    if (rot) {
+        rot[0] = g_lastPitch.load(std::memory_order_relaxed);
+        rot[1] = g_lastYaw.load(std::memory_order_relaxed);
+        rot[2] = g_lastRoll.load(std::memory_order_relaxed);
+    }
+    return true;
+}
+
+bool current_ability(void** out) {
+    // The equipped PLASMID. Hands.uc keeps abilities in their OWN slot
+    // (`var private transient Ability CurrentAbility`, two fields above
+    // CurrentHoldable), which is why current_holdable() reads NULL with a plasmid
+    // up - the thing IS equipped, just not in the field the weapon path watches.
+    //
+    // The offset is already derived and documented in patterns.h, bracketed by
+    // kHandsBaseOffset and kHandsCurrentHoldableOffset, and already used by
+    // armed(). This is the same read, exposed so the profile layer can name WHICH
+    // plasmid is in hand rather than only whether one is.
+    //
+    // Same contract as current_holdable(): false when the rig itself is
+    // unreadable; *out may be null, which means no plasmid equipped.
+    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return false;
+    void* abil = nullptr;
+    if (!read_ptr(static_cast<const uint8_t*>(g_handsActor) +
+                      patterns::kHandsCurrentAbilityOffset,
+                  &abil))
+        return false;
+    *out = abil;
+    return true;
 }
 
 bool current_holdable(void** out) {
@@ -744,12 +868,13 @@ bool game_has_focus() {
 void tuner_log(const char* what) {
     char wk[48] = "-";
     aim::weapon_key_name(wk, sizeof wk);
+    const int th = active_hand(); // the hand the numpad just moved
     if (g_tuneMode == kTuneModePos)
-        BVR_LOG("[hands] numpad: %s %s PLACEMENT fwd %+.1f right %+.1f up %+.1f cm "
-                "(step %.1f) - where the gun SITS; per weapon; cannot cause an orbit",
-                wk, what, g_viewFwdCm.load(std::memory_order_relaxed),
-                g_viewRightCm.load(std::memory_order_relaxed),
-                g_viewUpCm.load(std::memory_order_relaxed), g_tuneStep);
+        BVR_LOG("[hands] numpad: %s [hand %s] %s PLACEMENT fwd %+.1f right %+.1f up %+.1f "
+                "cm (step %.1f) - where it SITS; cannot cause an orbit",
+                wk, th == 0 ? "L/plasmid" : "R/weapon", what, g_viewFwdCm[th].load(std::memory_order_relaxed),
+                g_viewRightCm[th].load(std::memory_order_relaxed),
+                g_viewUpCm[th].load(std::memory_order_relaxed), g_tuneStep);
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -848,10 +973,14 @@ void poll_numpad_tuner() {
                     prev[i] = down;
                     continue;
                 }
+                // s70n: THE ACTIVE HAND, not a hardcoded 1. Reading and writing
+                // hand 1 meant that with a plasmid up these keys moved the
+                // WEAPON's crosshair and the plasmid's never budged.
+                const int ch = active_hand();
                 float cp = 0.0f, cy = 0.0f;
-                aim::aim_trim_deg(1, &cp, &cy);
+                aim::aim_trim_deg(ch, &cp, &cy);
                 if (kBinds[i].axis == 0) cp += d; else cy += d;
-                aim::set_aim_trim_all(cp, cy);
+                aim::set_aim_trim(ch, cp, cy);
                 moved = true;
                 prev[i] = down;
                 continue;
@@ -871,15 +1000,21 @@ void poll_numpad_tuner() {
             // BRVR values and be left alone.
             std::atomic<float>* dst =
                 (g_tuneMode == kTuneModePos)
-                    ? (kBinds[i].axis == 0 ? &g_viewFwdCm : kBinds[i].axis == 1 ? &g_viewRightCm
-                                                                               : &g_viewUpCm)
+                    ? (kBinds[i].axis == 0 ? g_viewFwdCm : kBinds[i].axis == 1 ? g_viewRightCm
+                                                                              : g_viewUpCm)
                     : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
                                                                                  : g_rotRollDeg);
-            // The rotation arrays are per-hand (index 1 = right); the view
-            // placement is a single triple, so it is always index 0.
-            // The view placement is a single triple (index 0); the grip and
-            // rotation arrays are per-hand, index 1 = right.
-            const int di = (g_tuneMode == kTuneModePos) ? 0 : 1;
+            // TUNE THE HAND THAT IS ACTUALLY DRIVING, not a hardcoded right.
+            //
+            // These were a single global before the view offset went per-hand, so
+            // a fixed index used to be right. It is not now: the numpad wrote
+            // hand 1 while a plasmid is drawn by whichever hand active_hand()
+            // reports, so tuning a plasmid moved a set of values nothing was
+            // rendering - "the numpad wasn't moving them at all", exactly.
+            //
+            // active_hand() is the same function the drive itself uses to pick a
+            // cluster, so by construction this tunes what you are looking at.
+            const int di = active_hand();
             dst[di].store(dst[di].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
             moved = true;
         }
@@ -1228,9 +1363,10 @@ void on_calcview(const FrameContext& ctx) {
     // however the wrist is turned. Roll is dropped - the camera's own roll must
     // not tip the viewmodel's placement.
     {
-        const float vf = g_viewFwdCm.load(std::memory_order_relaxed);
-        const float vr = g_viewRightCm.load(std::memory_order_relaxed);
-        const float vu = g_viewUpCm.load(std::memory_order_relaxed);
+        const int vh = hand & 1; // s68: per hand - the plasmid sits differently
+        const float vf = g_viewFwdCm[vh].load(std::memory_order_relaxed);
+        const float vr = g_viewRightCm[vh].load(std::memory_order_relaxed);
+        const float vu = g_viewUpCm[vh].load(std::memory_order_relaxed);
         if (vf != 0.0f || vr != 0.0f || vu != 0.0f) {
             FRotator camRot{ctx.camPitch, ctx.camYaw, 0};
             float cf[3], cr[3], cu[3];
@@ -1271,7 +1407,51 @@ void on_calcview(const FrameContext& ctx) {
         if (!bones::drive(ctx, target, gp, hand)) return;
     } else {
         uint8_t* p = static_cast<uint8_t*>(target);
+        // ---- s70e ACTORWATCH: does the ACTOR keep the rotation we gave it? ---
+        //
+        // ROLLCHECK covers our BONE writes and says they hold (62 held / 3
+        // changed). Nothing has ever covered the ACTOR, and the actor is what
+        // carries the whole rig - so if the engine re-points it during a cast,
+        // every bone can be perfectly pinned and the hand still swings. That is
+        // the one remaining way to get "the animation is correct but it points
+        // 90 degrees left" out of a cluster we have proven is held.
+        //
+        // Read BEFORE this frame's write: whatever is there now is the result of
+        // last frame's write plus anything the engine did since. Always on,
+        // throttled, and it names the hand.
+        {
+            static uint64_t s_awLog = 0;
+            int32_t live[3] = {0, 0, 0};
+            if (g_awWroteValid && read12(p + patterns::kActorViewDirOffset, live)) {
+                {
+                    auto dg = [](int32_t a, int32_t b) {
+                        int32_t d = static_cast<int32_t>(
+                            static_cast<int16_t>((a - b) & 0xFFFF));
+                        return static_cast<float>(d) / kRotUnitsPerDegree;
+                    };
+                    const float dp = dg(live[0], g_awWrote[0]);
+                    const float dy = dg(live[1], g_awWrote[1]);
+                    const float dr = dg(live[2], g_awWrote[2]);
+                    const float worst = fmaxf(fabsf(dp), fmaxf(fabsf(dy), fabsf(dr)));
+                    const uint64_t nowAw = GetTickCount64();
+                    if (worst > 2.0f && nowAw - s_awLog >= 1000) {
+                        s_awLog = nowAw;
+                        BVR_LOG("[hands] ACTORWATCH: %s hand - the actor rotation we wrote "
+                                "was CHANGED before this frame by pitch %+.1f yaw %+.1f "
+                                "roll %+.1f deg. The rig is carried by this, so the hand "
+                                "swings with it however well the bones are pinned.",
+                                hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", dp, dy, dr);
+                    }
+                }
+            }
+        }
         bool wrote = write12(p + patterns::kActorLocOffset, loc);
+        // Publish the LOCATION for the late re-apply too, and outside the
+        // writeRot branch - the position is written unconditionally, so it must
+        // be replayable unconditionally.
+        g_lwObj = target;
+        memcpy(g_lwLoc, loc, sizeof g_lwLoc);
+        g_lwValid.store(true, std::memory_order_relaxed);
         if (g_writeRot.load(std::memory_order_relaxed)) {
             int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
             wrote = write12(p + patterns::kActorViewDirOffset, rot) || wrote;
@@ -1280,6 +1460,10 @@ void on_calcview(const FrameContext& ctx) {
             g_lwObj = target;
             memcpy(g_lwRot, rot, sizeof rot);
             g_lwValid.store(true, std::memory_order_relaxed);
+            // s70e: remember what we asked for, so ACTORWATCH above can compare
+            // next frame's live value against it.
+            memcpy(g_awWrote, rot, sizeof rot);
+            g_awWroteValid = true;
         }
         if (!wrote) {
             g_handsActor = nullptr; // the write faulted - stop trusting this pointer
@@ -1334,18 +1518,28 @@ void handle_command(const char* args) {
                               "NOT the small mode-2 numbers - see the sign note in on_calcview)"
                             : "BONES (M7-v2: hand cluster follows the controller)");
     } else if (strcmp(verb, "viewpos") == 0) {
+        // s68: "viewpos [l|r] <fwd> <right> <up>". The hand is optional and
+        // defaults to RIGHT, which is what the command has always meant - the
+        // triple only became per-hand when the plasmids turned out to be sharing
+        // the weapon's copy of it.
+        const char* p2 = rest;
+        int vh = 1;
+        if (*p2 == 'l' || *p2 == 'L') { vh = 0; ++p2; }
+        else if (*p2 == 'r' || *p2 == 'R') { vh = 1; ++p2; }
+        while (*p2 == ' ' || *p2 == '	') ++p2;
         float vf = 0.0f, vr = 0.0f, vu = 0.0f;
-        if (sscanf_s(rest, "%f %f %f", &vf, &vr, &vu) == 3) {
-            g_viewFwdCm.store(vf, std::memory_order_relaxed);
-            g_viewRightCm.store(vr, std::memory_order_relaxed);
-            g_viewUpCm.store(vu, std::memory_order_relaxed);
+        if (sscanf_s(p2, "%f %f %f", &vf, &vr, &vu) == 3) {
+            g_viewFwdCm[vh].store(vf, std::memory_order_relaxed);
+            g_viewRightCm[vh].store(vr, std::memory_order_relaxed);
+            g_viewUpCm[vh].store(vu, std::memory_order_relaxed);
             save_offsets();
         }
-        BVR_LOG("[hands] view placement fwd%+.1f right%+.1f up%+.1f cm - changes where "
+        BVR_LOG("[hands] view placement %s fwd%+.1f right%+.1f up%+.1f cm - changes where "
                 "the gun SITS without touching where it PIVOTS",
-                g_viewFwdCm.load(std::memory_order_relaxed),
-                g_viewRightCm.load(std::memory_order_relaxed),
-                g_viewUpCm.load(std::memory_order_relaxed));
+                vh == 0 ? "L (plasmid)" : "R (weapon)",
+                g_viewFwdCm[vh].load(std::memory_order_relaxed),
+                g_viewRightCm[vh].load(std::memory_order_relaxed),
+                g_viewUpCm[vh].load(std::memory_order_relaxed));
     } else if (strcmp(verb, "offsetroll") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_offsetRoll.store(on, std::memory_order_relaxed);
@@ -1548,12 +1742,29 @@ void late_write() {
     if (!g_enabled.load(std::memory_order_relaxed)) return;
 
     const int mode = g_mode.load(std::memory_order_relaxed);
-    if (mode == 2) {
+    if (mode == 2 || mode == 3) {
         // Bone drive: the cached cluster write is the thing that has to survive
         // the tick, and reapply() already replays exactly it (with its own
         // 100 ms freshness guard, so a stale cache cannot keep painting).
+        //
+        // s69d: MODE 3 NEEDS THIS TOO, and not having it is a defect that hid
+        // for two sessions. Mode 3 is "BRVR shape, both halves" - it writes the
+        // ACTOR to carry the rig AND writes the cluster to keep the rig rigid
+        // underneath it - but this function replayed only the actor rotator for
+        // it and returned. The cluster write was never replayed past the tick.
+        //
+        // Invisible at idle, because the engine barely re-evaluates the bone
+        // array there and our write simply stands: ROLLCHECK reads 0.27 deg of
+        // drift. The moment an animation is ADOPTED the engine evaluates every
+        // frame, its tick lands after ours, and it wins - measured 15.73 deg on
+        // the same probe during an Electro Bolt. The rendered hand then follows
+        // the animation instead of staying pinned to the controller, which is
+        // the plasmid "moving away from my hand position" in the screenshots.
+        //
+        // Weapons hid it because their anchor is the weapon-attach bone, which
+        // the attachment path re-derives anyway.
         bones::reapply();
-        return;
+        if (mode == 2) return;
     }
 
     // Actor drive (modes 1 and 3) - the direct BRVR S60 port.
@@ -1565,8 +1776,59 @@ void late_write() {
         g_lwValid.store(false, std::memory_order_relaxed);
         return;
     }
-    if (!write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot))
-        g_lwValid.store(false, std::memory_order_relaxed);
+    // ---- s70q: REPLAY THE LOCATION, NOT ONLY THE ROTATOR -------------------
+    //
+    // "moving the view in the headset causes the hand to desync from the
+    // position its supposed to. I dont know how far back this bug goes." It goes
+    // back to this function's original BRVR S60 port, which replayed the rotator
+    // and nothing else.
+    //
+    // Every frame runs: we write the actor's location and rotation -> the engine
+    // ticks and Hands.UpdateLocation puts the actor back ON THE CAMERA -> this
+    // function restores the ROTATION -> the frame renders. So the position that
+    // reached the renderer was always the engine's, and the engine's is the
+    // camera, and the camera carries the head offset. Move your head and the
+    // hand goes with it.
+    //
+    // It hid for so long because the rotation WAS replayed, so the hand kept
+    // pointing correctly and only its position drifted - and it drifts with the
+    // head, which is the one motion a player makes constantly and rarely holds
+    // still enough to blame. Every fix this session that reasoned about where
+    // the actor is (the shoulder anchor twice, the pole, the IK) was reading a
+    // transform the renderer never used.
+    //
+    // Separately toggleable so the before/after is one checkbox rather than a
+    // rebuild, because a claim this size should be falsifiable in the headset.
+    // s70r LATEWRITE probe: how far had the engine moved the actor before this
+    // ran, and did our write stick? "its still happening" after the location
+    // replay landed means one of three things and this tells them apart:
+    //   delta ~0        - the engine is NOT moving the actor, and the desync is
+    //                     somewhere else entirely
+    //   delta large     - it is, and this replay is the right idea
+    //   delta large AND the same next frame - something writes it AFTER us, so
+    //                     late_write is not late enough
+    {
+        static uint64_t s_lwLog = 0;
+        float pre[3] = {0.0f, 0.0f, 0.0f};
+        const uint64_t nowLw = GetTickCount64();
+        if (nowLw - s_lwLog >= 500 &&
+            read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, pre)) {
+            const float d[3] = {pre[0] - g_lwLoc[0], pre[1] - g_lwLoc[1], pre[2] - g_lwLoc[2]};
+            const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (m > 0.5f) {
+                s_lwLog = nowLw;
+                char wk[48] = "?";
+                aim::weapon_key_name(wk, sizeof wk);
+                BVR_LOG("[hands] LATEWRITE: the engine had moved the actor %.1f UU off our "
+                        "write before the replay (%+.1f %+.1f %+.1f) | holding '%s'",
+                        m, d[0], d[1], d[2], wk);
+            }
+        }
+    }
+    bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
+    if (g_lateWriteLoc.load(std::memory_order_relaxed))
+        ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;
+    if (!ok) g_lwValid.store(false, std::memory_order_relaxed);
 }
 
 void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg) {
@@ -1583,16 +1845,18 @@ void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
     if (upCm) *upCm = g_posUpCm[hand].load(std::memory_order_relaxed);
 }
 
-void view_offset_cm(float* fwdCm, float* rightCm, float* upCm) {
-    if (fwdCm) *fwdCm = g_viewFwdCm.load(std::memory_order_relaxed);
-    if (rightCm) *rightCm = g_viewRightCm.load(std::memory_order_relaxed);
-    if (upCm) *upCm = g_viewUpCm.load(std::memory_order_relaxed);
+void view_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
+    if (hand < 0 || hand > 1) return;
+    if (fwdCm) *fwdCm = g_viewFwdCm[hand].load(std::memory_order_relaxed);
+    if (rightCm) *rightCm = g_viewRightCm[hand].load(std::memory_order_relaxed);
+    if (upCm) *upCm = g_viewUpCm[hand].load(std::memory_order_relaxed);
 }
 
-void set_view_offset_cm(float fwdCm, float rightCm, float upCm) {
-    g_viewFwdCm.store(fwdCm, std::memory_order_relaxed);
-    g_viewRightCm.store(rightCm, std::memory_order_relaxed);
-    g_viewUpCm.store(upCm, std::memory_order_relaxed);
+void set_view_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
+    if (hand < 0 || hand > 1) return;
+    g_viewFwdCm[hand].store(fwdCm, std::memory_order_relaxed);
+    g_viewRightCm[hand].store(rightCm, std::memory_order_relaxed);
+    g_viewUpCm[hand].store(upCm, std::memory_order_relaxed);
 }
 
 void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
@@ -1612,6 +1876,20 @@ void draw_debug_ui() {
     bool on = g_enabled.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Viewmodel follows the controller", &on))
         g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
+
+    bool lwl = g_lateWriteLoc.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Keep the hand's POSITION past the engine tick", &lwl))
+        g_lateWriteLoc.store(lwl, std::memory_order_relaxed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "The engine's UpdateLocation puts the hands actor back ON THE CAMERA\n"
+            "every frame, after we have placed it on your controller. The late\n"
+            "write has always restored the ROTATION and never the POSITION, so\n"
+            "what reached the renderer was the camera's position - and the camera\n"
+            "moves with your head.\n\n"
+            "ON  : the hand stays where your controller is.\n"
+            "off : the pre-s70q behaviour - the hand drifts with your headset.\n\n"
+            "Untick and move your head: if the hand follows it, that was the bug.");
 
     {
         // s67 drive-mode selector. It exists because the BRVR-vs-BONES question
@@ -1695,15 +1973,21 @@ void draw_debug_ui() {
             "gun PIVOTS about. Using it to fix height moves the pivot by the same\n"
             "amount - measured s67, a 15 cm height fix bought an 8 inch orbit.");
     {
-        float vf = g_viewFwdCm.load(std::memory_order_relaxed);
+        // s68: per hand, following the L/R radio above. These used to drive ONE
+        // triple shared by both hands, which is how the plasmids ended up parked
+        // at the weapon's placement - see the banner on g_viewFwdCm. The R values
+        // belong to the equipped weapon's profile and are stashed back into it on
+        // the next weapon change; the L values are the plasmids' own and persist
+        // in hands.ini.
+        float vf = g_viewFwdCm[tuneHand].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("place forward (cm)", &vf, -60.0f, 60.0f))
-            g_viewFwdCm.store(vf, std::memory_order_relaxed);
-        float vr = g_viewRightCm.load(std::memory_order_relaxed);
+            g_viewFwdCm[tuneHand].store(vf, std::memory_order_relaxed);
+        float vr = g_viewRightCm[tuneHand].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("place right (cm)", &vr, -60.0f, 60.0f))
-            g_viewRightCm.store(vr, std::memory_order_relaxed);
-        float vu = g_viewUpCm.load(std::memory_order_relaxed);
+            g_viewRightCm[tuneHand].store(vr, std::memory_order_relaxed);
+        float vu = g_viewUpCm[tuneHand].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("place up (cm)", &vu, -60.0f, 60.0f))
-            g_viewUpCm.store(vu, std::memory_order_relaxed);
+            g_viewUpCm[tuneHand].store(vu, std::memory_order_relaxed);
     }
     ImGui::TextDisabled("GRIP OFFSET - where the model PIVOTS (not where it sits)");
     if (ImGui::IsItemHovered())

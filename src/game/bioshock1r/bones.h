@@ -152,13 +152,25 @@ void wskel_release(const char* why);
 // s67 per-weapon animation gate (BRVR's HandAnimSlot). When off, the reference
 // pose never adopts the engine's - used for the WRENCH, whose swing animation
 // fights manual melee. hands.cpp publishes this on every weapon switch.
-// s67 per-STATE animation policy: a bitmask over hands_state::State saying
-// which engine animations may reach the rig. Default FIRING|POSTFIRING - recoil
-// in, idle and reload out. Idle is refused because GetIdlingHandsAnim() draws a
-// weighted-random entry, so adopting it settles the gun somewhere different
-// every time (the "crosshair moves randomly between shots" report).
-void set_anim_state_mask(uint32_t mask);
-uint32_t anim_state_mask();
+// s70: the per-STATE animation mask and the s68 canonical rest pose (with its
+// eased restore) are both GONE, along with the s69 anchor pin. They were one
+// chain of compensation: the mask cut adoption at `WeaponFiring`, which Hands.uc
+// leaves at the TOP of the recoil, so the reference stuck at the apex; the rest
+// pose put it back; the pin stopped the restored pose dragging the hand off the
+// controller. BRVR has none of them - it separates idle from real animation by
+// SIZE and lets a hold window carry adoption to the animation's settled end.
+// See ENGINE_NOTES "Session 70".
+
+// s70k arm solve: the shoulder joint (head-relative cm, per hand) and the
+// elbow's bend/smoothing. Persisted via hands.ini so headset tuning survives.
+void shoulder_cm(int hand, float* fwd, float* right, float* up);
+void set_shoulder_cm(int hand, float fwd, float right, float up);
+float elbow_out();
+void set_elbow_out(float v);
+unsigned elbow_smooth_ms();
+void set_elbow_smooth_ms(unsigned v);
+float elbow_follow_wrist();
+void set_elbow_follow_wrist(float v);
 
 void set_anim_allowed(bool on);
 bool anim_allowed();

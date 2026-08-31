@@ -1974,6 +1974,36 @@ through the engine SET seam (no offsets needed, so they survive Epic and GOG):
 `EquippingHandsAnim` (the cycle on equip), `AdditiveHandBobAnim`,
 `UnEquippingHandsAnim`, `IdlingAnim`, `AttachBone`.
 
+### Every plasmid has its own idle FIDGET, and that is what a late capture samples
+
+`Hands.uc`'s `AbilityIdling` (:1556) starts the idle animation through
+`PlayAnimationOnChannelInstantEaseIn(0, CurrentAbility.GetIdlingAnim(), 4)`, and
+`Ability::GetIdlingAnim()` draws a WEIGHTED RANDOM entry from
+`IdlingAnimationName[]` - the same shape as `Holdable::GetIdlingHandsAnim()` for
+weapons. What each ability declares differs:
+
+| ability | `IdlingAnimationName` | source |
+|---|---|---|
+| `ElectricBoltAbility` | `ElectrokineticBolt_Fidget` (100), `..._Accent_A` (10) | its own defaults |
+| **`TelekinesisAbility`** | **none - inherits `Generic_Fidget`** | `Ability.uc:165` |
+| (no EVE) | `NoEve_Fidget` via `AbilityGenericIdling` (:1606, ease rate 8) | `Hands.uc:1834` |
+
+**Consequence for the viewmodel drive.** Any reference capture that samples the
+rig AFTER `Idling` begins is sampling a frame of that fidget, and each plasmid's
+fidget puts the hand somewhere different. A fixed post-equip window therefore
+lands correctly for one plasmid and wrongly for another with nothing configurable
+between them - measured 2026-08-27 as `Tele -> Weapon -> Tele` reliably wrong while
+`Electro -> Weapon -> Electro` was reliably fine.
+
+**The equip-END pose is the `Idling` EDGE**, the last frame before any fidget.
+Capture there and stop adopting; sampling later samples deeper into the fidget.
+Continuing to adopt through that window is also, exactly, what plays "one cycle of
+the idle animation" into the rig on every equip - one mechanism, both defects.
+
+A plasmid rig also never goes STILL: the fidget animates it continuously. Measured
+2156 ms to reach 1.24 deg against a +-1.2 deg idle envelope, so any "wait for the
+pose to settle" test crosses its threshold at random. Do not build one.
+
 ### Hands state machine - DERIVED, not hardcoded
 
 `ShockGame.Hands` is a UnrealScript state machine; gameplay code keys off
@@ -1992,11 +2022,338 @@ The states, from `Hands.uc`: `HandsOffscreen` (auto), `WeaponEquipping`,
 equivalents, `InjectingEve`, `UsingGathererTool`, `ExorcisingGatherer`,
 `PlayingScriptedHandAnimation`.
 
-**Known defect in the policy built on it (not in the read):** ceasing to adopt
-at a state boundary leaves the reference wherever it was, so the pistol freezes
-at the apex of its recoil until a weapon switch. The fix shape is to capture a
-canonical REST reference during `Idling` and restore it on leaving an adopted
-state.
+**Session 68 - where the states EXIT, which is the part the policy got wrong.**
+`WeaponFiring` (Hands.uc:1184) runs `PlayWeaponFiringAnimations()` and then
+`TransitionToNextStateInSequence()`; `PostWeaponFiring` (:1210) is a single
+`PostFired()` call and another transition. Neither waits for the gun to come back
+down, so **the state leaves the adopt mask at the TOP of the recoil, not at its
+end.** s67's policy merely ceased adopting there, which left the reference at the
+apex and froze the pistol until a weapon switch - and `Firing -> Reloading` is the
+same exit, which is why the ammo-out freeze and the shotgun's first reload had the
+same shape.
+
+`WeaponIdling` (:1147) is the counterpart and the only state that means "the
+animation is over": it re-reads the active holdable, plays the idling anim and
+LOOPS (`goto J0xBE`), redrawing `GetIdlingHandsAnim()` each time round - which is
+the weighted-random draw recorded above, and why the loop's pose cannot be trusted
+as a reference more than once.
+
+s68 uses both facts: capture ONE canonical rest during `WeaponIdling` per holdable
+and ease back to it when an adopted state exits. Design rationale in
+`ARCHITECTURE.md`, decision log 2026-08-27.
+
+**Session 68c - `Idling` is where the idle animation STARTS.** Both `WeaponIdling`
+(:1147) and `AbilityIdling` (:1556) begin the idle through an EASE-IN
+(`PlayAnimationOnChannelFlatEaseIn` / `...InstantEaseIn`), so on the first `Idling`
+frame the rig is still blending out of the equip pose. Anything captured there is
+a partial blend. The ease RATE differs per path - `AbilityIdling` at 4,
+`AbilityGenericIdling` at 8 - so a fixed capture instant lands correctly for one
+plasmid and wrong for another with nothing configurable between them. Capture when
+the pose STOPS MOVING, not on the state edge.
+
+### ROLLCHECK's "drift" is not an angle while an animation is blending
+
+`ROLLCHECK` reports `2*acos(|w|)` of the delta between our write and what is
+there now, plus the delta's imaginary parts. During a plasmid animation it reads:
+
+```
+drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)
+```
+
+**Those cannot both be true of a unit quaternion.** With x=y=z=0 a unit quat has
+w=+-1 and the angle is zero. w = cos(8.32 deg) = 0.9895 with zero imaginary parts
+means the delta is not unit - the rotation is UNCHANGED and only the MAGNITUDE
+differs, by about 1%.
+
+That is `PlayAnimationOnChannelInstantEaseIn` leaving a non-normalised blend
+quaternion in the bank while it eases, which is ordinary for an nlerp. **The
+engine is not overwriting our bone write during an animation.** Read the
+imaginary parts before believing the angle; a large `drifted` with a zero
+component split is a denormalisation, not a fight.
+
+Recorded because it was read as a fight twice and produced a fix for a
+non-problem - and then, worse, because the same fact was known and NOT applied
+one commit later.
+
+**Anything that consumes a bone quat must normalise it.** `conj()` is only the
+inverse of a UNIT quaternion; for a non-unit one the inverse is `conj(q)/|q|^2`.
+Build a correction out of `conj()` on a mid-blend quat and it comes out non-unit,
+after which `qts_rotate()` scales every offset it touches by `|q|^2` and
+`quat_mul()` compounds the error into every bone downstream. The rig is skinned
+on the assumption these are rotations, so the visible result is stretched
+geometry - spikes shooting out of the hand - rather than anything that reads as a
+wrong angle. Normalise the correction, and normalise the per-bone product.
+
+**And that rule binds the INSTRUMENTS, not just the drive path.** The drive path
+was normalised in `825ced6`; the two always-on probes that read the same bank
+were not, and were still lying afterwards:
+
+- `quat_angle_deg()` took a raw dot product of two bank quats. That dot is
+  `|a||b|cos(theta/2)`, so it errs in both directions: magnitudes above 1 inflate
+  it, the `dot > 1` clamp fires, and it reports **0 deg while the bones genuinely
+  differ**; magnitudes below 1 deflate it and it **invents an angle** out of a
+  pure magnitude difference. The second case is the `ROLLCHECK` lie in another
+  form.
+- `ROLLCHECK` itself built `d = conj(qLastWritten) * cur` and read `d[3]` as
+  `cos(theta/2)` without normalising `d` - which is precisely how it produced
+  `drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)`. Both readings cannot be
+  true of a rotation, and the rotation was in fact unchanged.
+
+The `quat_angle_deg()` case is the sharper one, because the `ANIMPIN` telemetry
+**gates** on its result (`angOff > 2.0`): a lying angle decides whether the line
+prints at all, and an instrument that chooses its own visibility cannot be
+checked against its own silence. A test whose only readout is a gated log line is
+worth nothing until the gate is trustworthy.
+
+**The general lesson: when a fix establishes an invariant, grep for every
+consumer of the thing the invariant is about - the diagnostics included.** The
+probes are what the next session reasons from, so a lying probe outlives the bug
+it was pointed at.
+
+## Session 70: BRVR's viewmodel chain, traced end to end
+
+Source: the BRVR mirror - `Hands/HandsProbe.cpp`, `Hands/ArmHide.cpp`,
+`Camera/CameraHook.cpp`, `Core/Config.{h,cpp}`. Every number below is BRVR's own.
+
+### The chain
+
+**Offsets are ONE LIVE SET, swapped on switch.** `handsGrip[3]`, `handsRot[3]`
+and `cursorRot[3]` are the live values and the drive path reads nothing else.
+`UpdateWeaponGrip` saves the live set back to whichever table the outgoing item
+came from and loads the incoming one - `gripBySlot[9]` for weapons (slot 8 = any
+ability), `plasmidGrip[12]` for plasmids, indexed by `ResolvePlasmidId`. There is
+no per-hand split; which controller drives is a separate decision,
+`AbilityMode() ? HAND_LEFT : HAND_RIGHT`.
+
+**The ACTOR carries everything.** `handsRot` composes onto the controller's aim
+quat for the actor rotation; `handsGrip` is subtracted along the actor's own
+forward/right/up basis for its location. The skeleton is never posed by offsets.
+`WriteCluster` is fed the reference's OWN wrist, so the delta collapses to
+identity and the cluster replays verbatim.
+
+**Animation is a size threshold plus a hold window, and nothing else.**
+`CaptureClusterRef`, when already driving: exact `memcmp` of the live cluster
+against what we last wrote (bit-identical = our own pose, nothing happened);
+otherwise measure the wrist's rotation delta; `deg >= HandAnimMinDeg (5)` stamps
+`lastBig`; `playing = (now - lastBig) < HandAnimHoldMs (1200)`; while playing,
+adopt the whole live cluster as the new reference.
+
+**The hold window IS the settle mechanism.** Adoption keeps tracking for 1.2 s
+past the animation's last big frame, so the reference lands on the SETTLED pose
+by construction. Idle breathing (1-5 deg) never clears 5 deg, so idle is rejected
+BY SIZE - no state machine is involved anywhere.
+
+**Equip: release, wait for stillness, re-capture.** On a pose-key change BRVR
+releases the cluster, lets the equip play, and captures once the rig settles:
+
+| Guard | BRVR value | What it answers |
+|---|---|---|
+| `WeaponKeyDebounceMs` | 150 ms | The engine parks `CurrentHoldable` at NULL for a frame during fire/pump. MEASURED: the raw key fired **11 times in a 3-minute session with 2 real switches** |
+| `kSettleStillUnits` | 0.05 UU/frame | Stillness is measured on the wrist's POSITION, not any angle |
+| `kSettleStillMs` | 150 ms | How long that stillness must hold |
+| `kSettleMinMs` | 350 ms | A FLOOR - many draw animations pause part-way, and quiet inside a pause is not the end |
+| `WeaponSwitchSettleMs` | 600 ms | A CEILING, not a duration |
+
+### A LOOPING IDLE NEVER GOES STILL - and the mean is the answer
+
+BRVR: *"there is no single authored pose to latch and 'the last frame before we
+take the cluster' is an arbitrary phase of the loop... accumulate while settling
+and, if the rig never stills, latch the MEAN - the centre of the loop rather than
+a point on its circumference."*
+
+**s68 measured the identical fact** on a plasmid rig - 2156 ms to reach 1.24 deg
+against a +-1.2 deg idle envelope - and concluded *"a stillness test cannot work
+here"*, then abandoned the approach after nine builds. BRVR reached the same
+observation and answered it with the mean instead of abandoning it. That fallback
+is the piece all nine attempts were missing.
+
+### Where this tree had diverged
+
+1. **The per-state animation mask was the root of s67-s69.** It adopted only
+   `Firing`/`PostFiring`; `Hands.uc` leaves `WeaponFiring` at the TOP of the
+   recoil, so adoption was cut at the apex and the reference stuck there. The
+   canonical rest, its eased restore, the anchor pin and the quaternion
+   normalisation for that pin were all built to undo that one substitution. The
+   threshold+hold mechanism it overrode was already present in this file.
+
+2. **The freeze was anchored on bone 43, the WEAPON ATTACH.** BRVR's cluster spec
+   is `{27, 44, wrist 27}` and it anchors on the wrist; 43 is precisely the one
+   bone it leaves the engine still animating (*"cluster frozen; this bone is
+   still the engine's"*, 1-5 deg idle drift, peaks of 41-135). Anchoring a frozen
+   cluster on a moving bone writes every other bone relative to a moving point.
+   The left cluster here already anchored on its wrist (6); s68 recorded the
+   asymmetry as "not a defect".
+
+   **The anchor is also the point the cluster is SCALED about** (`g_scale` =
+   0.80), so moving it from 43 to 27 shifts the whole hand by `0.2 x (p43 -
+   p27)`. The per-weapon placement offsets were tuned against the old anchor
+   and will need a re-tune. Judge the anchor A/B on whether the hand STAYS
+   PUT through an animation, not on where it sits.
+
+3. **The adoption probe sampled bone 43 too**, so "has the pose changed?" was
+   asked of a bone that moves on its own. This is what made s67 raise the adopt
+   threshold from BRVR's 5 deg to 25 - the shotgun's idle "crossing 5" was bone
+   43's own drift, not the hand. 25 deg is above some weapons' entire per-shot
+   wrist movement, which is BRVR's recorded Tommy-gun failure and was reported
+   here as well.
+
+4. **No key debounce at all** - the `(holdable, ability)` pair was compared raw
+   every frame.
+
+### One deliberate deviation from BRVR
+
+The crosshair is GLOBAL here, by the tester's direction. BRVR keys `cursorRot`
+per slot AND per plasmid; s67 tried global in this tree and recorded that it does
+not serve every gun. It is global **per hand**, because the seeded table puts the
+weapons at 0.83/-9.20 and the plasmid at -11.00/37.00 - 46 deg of yaw apart,
+which is two model frames rather than two opinions about one number.
+
+### Open question the first headset run must answer
+
+The settle block runs only when the engine RE-EVALUATED the bone array, and s68
+measured that at roughly 1 frame in 19. A 600 ms ceiling may therefore hold only
+a handful of samples, and BRVR's millisecond constants may not transfer. The
+settle log prints the sample count for exactly this reason; if it reads 2 or 3,
+the ceiling wants raising (F10, no rebuild).
+
+### An adopted animation moves the anchor, and in FREEZE-ONLY that moves the hand
+
+Mode 3 (BRVR's shape) sets `freeze_only`, which writes the cluster AS the
+reference pose - `p[i] = pa + (g_ref[i].p - pa) * s`, with `pa = g_ref[anchor].p` -
+and lets the ACTOR carry it to the controller.
+
+That holds while the reference is frozen. Once an animation is ADOPTED, `g_ref`
+tracks it, so `pa` moves and the entire cluster moves with it - while the actor
+placement, computed from the target, knows nothing about it. **The hand walks off
+the controller for the length of the animation**, which is what the plasmid firing
+screenshots show, and why `animOn=0` made Telekinesis sit still: no adoption, no
+drift.
+
+The fix is a rigid transform of the cluster back onto the captured rest anchor -
+**both position AND rotation**. `qFix = q_rest[anchor] * conj(q_ref[anchor])`
+applied to every bone's quat, and to every bone's offset from the anchor, with the
+anchor translated onto `g_rest[anchor].p`.
+
+Position alone is only half of it, and the half it leaves out is the one that
+shows. The actor's ROTATION is set from the controller on the assumption that the
+anchor still carries its captured orientation; when the animation turns the
+anchor, the whole hand turns with it and points somewhere else - reported as "the
+position stays put now but the direction of it is still incorrect even though it
+hits the same spot". The aim ray is computed separately, which is exactly why the
+shot still lands correctly while the model points wrong: **a hand that aims wrong
+while the bullet goes right is a viewmodel-frame problem, never an aim one.**
+
+What survives the pin is everything INSIDE the cluster - finger curl, splay, the
+shape of the animation. What is removed is the anchor's own motion, which is the
+only part the actor cannot absorb.
+
+This is a consequence of BRVR's architecture rather than a porting error - "the
+actor carries the assembly" only holds if the assembly's anchor stays put.
+
+### The engine's tick overwrites a bone write, but only while it is ANIMATING
+
+`ROLLCHECK` measures whether our bone write survives to the next frame. The two
+regimes are far apart, measured 2026-08-27 on an Electro Bolt:
+
+```
+idle    our bone write drifted  0.27 deg   engineEval=0   (write held)
+firing  our bone write drifted 15.73 deg   engineEval=0   <-- OUR WRITE IS BEING CHANGED
+firing  our bone write drifted 15.16 deg   engineEval=1   (local x -5.36 y -2.40 z +10.17)
+```
+
+At idle the engine barely re-evaluates the hands bone array (see the ~5%-of-frames
+note above) so our write simply stands. **The moment an animation is adopted the
+engine evaluates every frame, its tick lands AFTER ours, and it wins.** The
+rendered pose is then the animation's, so a rig pinned to the controller walks off
+it for the length of the animation - visible as the plasmid hand translating away
+from the controller while firing.
+
+This is BRVR's S59/S60 finding in a second place: BRVR measured the tick resetting
+the hands ROTATOR and fixed it by writing again later in the frame, past the tick.
+The same is required of the BONE cluster.
+
+`hands::late_write()` (called from scenedraw's build detour, game thread, after
+CalcView) is where that second write lives. **It must replay the cluster in mode 3
+as well as mode 2.** Mode 3 is "BRVR shape, both halves" - it writes the ACTOR to
+carry the rig and the CLUSTER to keep the rig rigid beneath it - so it needs the
+bone replay exactly as mode 2 does. It only replayed the actor rotator until s69d,
+which is why any adopted animation on the left hand walked off the controller.
+
+Weapons hid it because their anchor is the weapon-attach bone (43), which the
+engine's attachment path re-derives anyway.
+
+### The left cluster's anchor is already correct
+
+Bone names, dumped live: `6 = Bip01_L_Hand`, then `7-21` are nothing but finger
+joints (`kBone_L_Thumb/Index/Middle/Ring/Pinky`, three each). Bone 6 IS the palm,
+so `kBoneLWrist` is the right anchor and there is no better bone to move it to.
+The right cluster's anchor at 43 is a different kind of thing - the point a WEAPON
+hangs from - and the asymmetry between the two is not a defect. Ruled out
+2026-08-27 as a cause of the plasmid animation walk; the cause was the late write
+above.
+
+### Plasmids need their OWN numbers - one shared set cannot work
+
+Upgrade tiers are separate engine classes, so the ability class name has to be
+folded before it can key anything: `ElectricBoltAbility`, `ElectricBoltTwoAbility`,
+`ElectricBoltThreeAbility`, `ElectricBoltZeroAbility` are one plasmid, as are
+`TelekinesisAbility` / `TelekinesisTwoAbility`. Strip the trailing `Ability` and
+then a trailing `Zero`/`Two`/`Three` and eleven plasmids remain, which is what the
+game ships.
+
+**They are not interchangeable.** BRVR's shipped config, with `PerPlasmidTuning=1`,
+carries rotations that differ by tens of degrees between them:
+
+```
+PlasmidGrip0=45.50,-14.90,-12.30   PlasmidRot0=-111.00,-64.00,22.00
+PlasmidGrip1=49.50,-12.90,-12.30   PlasmidRot1=-35.00,-20.00,22.00
+PlasmidGrip2=45.50,-10.90,-6.30    PlasmidRot2=-111.00,-16.00,22.00
+```
+
+The authored poses genuinely differ, so **no single grip/rotation serves two
+plasmids** and no reference-capture instant can be found that makes one set work
+for both. Nine attempts in session 68 searched for that instant; the search was
+unsound, not merely unlucky. Per-plasmid values absorb the difference, which is
+why BRVR never had the defect.
+
+Per-plasmid values also require a **per-plasmid reference capture**: the identity
+must be the pair `(CurrentHoldable, CurrentAbility)`, or the offsets sit on
+whichever pose was captured last.
+
+Identity resolves through the ordinary UObject path - `object_class_name()` on the
+`CurrentAbility` INSTANCE - so no pawn scan and no new offsets are needed. (BRVR
+does scan the pawn for `AvailableAbilities` and match `ActiveAbility` into it for
+an index; that is its route, not a requirement.)
+
+### Hands.CurrentAbility is where plasmids live - `+0x454`
+
+`Hands.uc` declares them in separate slots:
+
+```
+var private travel ShockPawn PawnOwner;       // +0x450  kHandsBaseOffset
+var private transient Ability CurrentAbility; // +0x454  kHandsCurrentAbilityOffset
+var private transient Ability OldAbility;     // +0x458
+var private Holdable CurrentHoldable;         // +0x45C  kHandsCurrentHoldableOffset
+```
+
+**`CurrentHoldable` is NULL while a plasmid is equipped** - the plasmid is in
+`CurrentAbility`. Confirmed in the log: every plasmid switch prints bones'
+`wscale rigid: released (holdable gone)`, whose test is literally `!hold`.
+
+Consequences for anything keying off "what is in your hands":
+
+- A plasmid looks like EMPTY HANDS to `CurrentHoldable` alone. That is what left
+  the last weapon's whole profile applied - trims, placement, and the animation
+  gate - while a plasmid was up.
+- Every plasmid looks like EVERY OTHER plasmid, because they are all null there.
+  Switching plasmid A for plasmid B is invisible, so B inherits A's captured
+  reference pose and renders at A's position with no setting able to touch it.
+- **Identity is the PAIR** `(CurrentHoldable, CurrentAbility)`. Watch both.
+
+The offset was already derived and documented here (bracketed by `kHandsBaseOffset`
+and `kHandsCurrentHoldableOffset`, four consecutive pointer fields with ours at
+each end) and used only by `hands::armed()` for a cosmetic crosshair gate. The
+viewmodel drive had never read it.
 
 ### Falsified this session, with the measurement that killed each
 

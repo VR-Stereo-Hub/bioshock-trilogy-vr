@@ -62,6 +62,24 @@ bool g_refValid = false;
 Qts g_lastWrittenAnchor[2]; // per hand
 bool g_hasWritten[2] = {false, false};
 
+// s70: THE CANONICAL REST POSE IS GONE, and so is the machinery around it.
+//
+// s68 captured one snapshot per holdable at the WeaponIdling edge and eased the
+// rig back to it whenever an adopted animation ended. It existed because s67's
+// per-state animation mask cut adoption at `WeaponFiring`, which Hands.uc leaves
+// at the TOP of the recoil - so the reference stuck at the apex and something
+// had to put it back.
+//
+// BRVR has no rest pose, no restore and no blend, because it never acquires the
+// defect: its adoption is a size threshold plus a HOLD WINDOW
+// (`playing = (now - lastBig) < HandAnimHoldMs`), so it keeps tracking for 1.2 s
+// past the animation's last big frame and the reference lands on the SETTLED
+// pose by construction. Delete the mask and the reason for all of this goes with
+// it. See ENGINE_NOTES "Session 70".
+//
+// g_lastKnownState survives only as telemetry - nothing gates on it now.
+hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the log line
+
 // Everything the last drive() wrote, for reapply() (the stereo second pass).
 struct CachedBone {
     int idx;
@@ -122,15 +140,389 @@ std::atomic<bool> g_swayKill{true};
 // It is kept because it can only ADD adoption, which is the direction of this
 // change, and dropping it outright is a second variable in one test.
 std::atomic<float> g_swayPosThreshUu{6.0f};
-std::atomic<float> g_swayAngThreshDeg{25.0f};   // s67: see below
-// 25, not BRVR's 5. BRVR's own HANDANIM log measures REAL animations at
-// 130-170 deg at the wrist and idle at 1.8-4.6, so the gap is enormous and 5
-// sits right at the top of the idle band. On this rig the shotgun's idle
-// crosses 5 and re-triggers adoption forever - reported s67 as "does an
-// animation cycle, stops, then does another and repeats". 25 is clear of
-// idle by 5x and clear of real animation by 5x.
-std::atomic<unsigned> g_swaySettleMs{1200};     // BRVR HandAnimHoldMs
+std::atomic<float> g_swayAngThreshDeg{5.0f};    // s70: BRVR's HandAnimMinDeg
+// s70: 5.0, WHICH IS BRVR'S, AND THE 25 IT REPLACES WAS AN ARTEFACT OF A BAD
+// PROBE.
+//
+// s67 set this to 25 with a specific justification: "on this rig the shotgun's
+// idle crosses 5 and re-triggers adoption forever - reported as 'does an
+// animation cycle, stops, then does another and repeats'." That observation was
+// real, but the cause was not the threshold. The probe was sampling bone 43, the
+// WEAPON ATTACH - the one bone the engine keeps animating under freeze, whose
+// idle drift BRVR measures at 1-5 deg with PEAKS OF 41-135. An idle that "crosses
+// 5" on that bone says nothing about whether the hand is animating.
+//
+// With the probe moved to the wrists (see kProbe below), the measurement this
+// number has to clear is the one both projects took independently and agreed on:
+// an idle envelope of 4.6 deg. BRVR sits at 5.0, just above it, and has done so
+// in a shipping build the tester calls "pretty much perfect".
+//
+// 25 was not merely cautious - it is above the per-shot wrist movement of some
+// weapons entirely, which is BRVR's own recorded failure ("the tester saw recoil
+// on every gun EXCEPT the Tommy gun") and was reported here too.
+//
+// STILL TUNABLE (`vrbones sway`, F10), and ANIMREJECT reports the largest thing
+// rejected in the last 3 s so the number can be set from data rather than
+// guessed a fourth time.
+// s70o: 350, down from BRVR's 1200. The hold restarts on every big frame, so
+// this only ever governs the TAIL after an animation's last large movement - and
+// 1200 ms of tail is 1200 ms of adopting whatever comes next, which after a shot
+// is the start of the idle fidget. That is "the 1 cycle animation ... after every
+// shot" exactly: recoil, then a second of fidget adopted behind it.
+//
+// 350 ms still covers a recoil settling. BRVR can afford 1200 because its
+// threshold sits above this rig's fidget; here the two overlap, so the tail has
+// to be short enough not to swallow one.
+std::atomic<unsigned> g_swaySettleMs{350};
 uint64_t g_lastBigDeltaMs = 0;
+uint64_t g_lastBigDeltaHandMs[2] = {0, 0}; // s70c: per hand, as BRVR's lastBig[hand]
+
+// ---- s70d: PIN THE ANCHOR'S ORIENTATION, AND ONLY ITS ORIENTATION ----------
+//
+// MEASURED, the tester, on the build that deleted the s69 pin: "the animation is
+// correct but it points like 90 degrees left when the animation is going", while
+// casting, with the idle pose correct.
+//
+// That is the s69 defect exactly, and s69's own note named the mechanism before
+// this session deleted it: the ACTOR's rotation is set from the controller on
+// the assumption that the anchor still carries the orientation it was CAPTURED
+// with. An adopted animation turns the anchor; the cluster is replayed at that
+// turned orientation; the actor knows nothing about it, so the whole hand points
+// somewhere else for the length of the animation.
+//
+// s70 removed the pin as compensation for the per-state mask. Half of that was
+// right - the POSITION pin was fighting an anchor on bone 43, which the engine
+// animates, and moving the anchor to the wrist fixed that at source. The
+// ROTATION pin was not compensation for anything; it answers a problem that
+// survives the anchor fix, and the tester had already confirmed it working
+// ("position and rotation are correct").
+//
+// ROTATION ONLY. Position deliberately still follows the animation, because the
+// tester's report is that the MOTION is correct - it is only the pointing that
+// is wrong. Pinning position too would flatten the cast animation this exists to
+// let through.
+//
+// BRVR has no equivalent, and that is not evidence against it: BRVR's threshold
+// is 5.0 against a plasmid animation of 2.6-5.0 deg, so its plasmid hand barely
+// adopts at all and never reaches this case. A rigid hand cannot be re-pointed.
+float g_pinAnchorQ[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
+float g_pinAnchorP[2][3] = {{0, 0, 0}, {0, 0, 0}};
+bool g_pinValid[2] = {false, false};
+// s70m: PER HAND, and defaulting OFF on the weapon side, because recoil IS the
+// animation moving the hand.
+//
+// The suppression was asked for about PLASMIDS - an authored cast that travels
+// through a heavily trimmed frame and ends up pointing somewhere wrong. Applying
+// it to both hands cancelled the one weapon animation that must move: "there is
+// no recoil on weapons". The log shows it plainly, ANIMPIN firing on the RIGHT
+// hand every second, pinning back the exact motion the tester was looking for.
+//
+// [0] left/plasmids: suppressed. [1] right/weapons: free.
+std::atomic<bool> g_animPinRot[2] = {true, true};
+// s70f: SUPPRESS THE ANIMATION'S ROOT MOTION, KEEP ITS ARTICULATION.
+//
+// The tester, with arms made visible and a screenshot to go with it: "the hand
+// placement that feels best rotates the entire hand model. The animation plays
+// correctly, but the direction of the hands can cause it to animate incorrectly.
+// Is there a way to entirely suppress just the movement and not the animation
+// itself?"
+//
+// That is the whole thing, and it is exactly separable. The plasmid's model trim
+// turns the entire hand model by tens of degrees so it sits right in VR
+// (rotPitchDegL -59, rotYawDegL -32). The authored animation then translates and
+// rotates the hand THROUGH that turned frame, so its root motion travels
+// somewhere the animator never intended - while the animation itself is playing
+// perfectly. Nothing about the pose is wrong; the frame its movement is
+// expressed in is.
+//
+// So split the animation in two, which the cluster's own shape lets us do for
+// free:
+//   ROOT   - the anchor bone (the palm, 6 on the left / the wrist, 27 on the
+//            right). Its motion is what carries the hand around. PINNED.
+//   SHAPE  - every other bone, taken RELATIVE to the anchor. Fingers, the grip,
+//            the whole cast pose. Left completely alone, so the animation still
+//            plays.
+//
+// Two toggles rather than one, because "movement" turned out to mean both halves
+// and the tester should be able to feel which is which: position and heading
+// suppress independently, live, no rebuild.
+std::atomic<bool> g_animPinPos[2] = {true, true};
+// s70n: [0] plasmids pin ALWAYS - the cast must not travel. [1] weapons pin only
+// when NOT adopting, so recoil plays and the hand then returns to its captured
+// pose instead of freezing wherever the idle fidget left it.
+std::atomic<bool> g_pinWhenIdle[2] = {false, true};
+float g_pinBlend[2] = {1.0f, 1.0f};   // eased 0..1, never snapped
+uint64_t g_pinBlendMs[2] = {0, 0};
+
+// ---- s70g: ARMS MODE, ported from BS2 -------------------------------------
+//
+// The tester: "BS2 uses arms visible and it seems to track correctly there. how
+// are the arm sleeves implemented? Maybe that is part of the fix." It is, and
+// BS2 had already written the diagnosis down.
+//
+// BS1 has only ever had TWO states for the arm bones: COLLAPSE them (zero scale,
+// hide the arm) or hand them back to the ENGINE. There is no third. So with arms
+// visible the forearm and upper arm stay engine-animated at their authored pose
+// while the hand is driven to the controller - and BS2's patterns.h names that
+// exact failure: "the engine's own animation leaves them at the idle pose, which
+// reads as FROZEN arms floating beside driven hands."
+//
+// That is the screenshot: a hand where we put it, on an arm going somewhere
+// else, hinged at an elbow nobody is driving.
+//
+// BS2 solved it by DRIVING THE ARM CHAIN THROUGH THE SAME TRANSFORM AS THE HAND
+// (bones.cpp: `if (armsMode == 1) for each arm bone compose_bone(hand, idx, 0)`
+// - mode 0, the identical composition the cluster gets). Its arm bones are a
+// declared set, deliberately kept out of the hand cluster: clavicle, upper arm,
+// lower arm and four twists.
+//
+// BS1's equivalent set already exists and is already excluded from the cluster
+// the same way - kBoneLSleeve {3,4,5,22,23} and kBoneRSleeve {24,25,26,45,46}.
+// They have only ever been hidden or abandoned, never driven.
+//
+// 0 = game   the engine owns them (what BS1 has always done with arms visible)
+// 1 = follow driven with the hand, BS2's shape
+// 2 = hide   the existing collapse
+//
+// Duplicated into this adapter rather than shared with BS2, per the repo's
+// decoupling rule: BS1 is the headset-accepted baseline and must not be put at
+// risk to serve BS2.
+std::atomic<int> g_armsMode{1};
+
+// ---- s70h: THE SHOULDER IS NOT PART OF THE HAND ---------------------------
+//
+// Reported the moment arms-follow landed: "rotating the controller still rotates
+// the whole arm model around it." Correct, and it is what the first cut did by
+// construction - it applied the SAME rigid transform to every arm bone, so the
+// limb became one rigid body pivoting about the hand. Roll your wrist and your
+// shoulder swings, which no arm does.
+//
+// The bone order says how to fix it. patterns.h, measured with Electro Bolt
+// raised: 3 clavicle, 4 upperarm, 5 elbow, 22/23 forearm twist - a chain running
+// from the BODY to the HAND. So weight the drive along it: the wrist end takes
+// the transform in full, the shoulder end takes none, and the joints between
+// take a share. The clavicle then stays where the body puts it while the forearm
+// still follows the controller.
+//
+// HONEST ABOUT WHAT THIS IS: a graded blend, not inverse kinematics. A real
+// two-bone IK solve would fix the shoulder, put the hand on the controller and
+// SOLVE the elbow, and it is the correct answer if this is not good enough. This
+// is the cheap approximation that costs no new machinery and is tunable in the
+// headset, which is worth trying before building a solver.
+//
+// Weights run body -> hand over kBone?Sleeve's own order.
+// ---- s70i: A REAL TWO-BONE IK SOLVE ---------------------------------------
+//
+// The graded blend that stood here "did nothing", and the reason is worth
+// keeping: it blended each arm bone from the DRIVEN pose back toward g_ref - and
+// adoption copies the whole live bone array into g_ref every time it fires,
+// including the arm bones this pass had just written. So g_ref became our own
+// output and blending toward it was a no-op. A feedback loop, and this file
+// warns about the same shape for the scale channel ("adopting would feed our own
+// write back as refS * ws^n").
+//
+// The solver needs an authored reference that our writes can never contaminate,
+// so it gets its own: captured once per equip at the settle, from the engine's
+// own pose, in the window where we deliberately write nothing.
+//
+// THE SOLVE. Shoulder fixed, hand on the controller, elbow solved:
+//   d = |W - S| clamped into (|L1-L2|, L1+L2) so the triangle always closes
+//   a = (L1^2 - L2^2 + d^2) / 2d      distance along S->W to the elbow's foot
+//   h = sqrt(L1^2 - a^2)              how far the elbow stands off that line
+//   E = S + dir*a + pole*h
+// The pole is the AUTHORED bend direction re-projected perpendicular to the
+// current S->W axis, so the elbow keeps bending the way the artist posed it
+// instead of needing a hand-tuned hint.
+Qts g_armRef[2][5];        // authored clavicle/upperarm/elbow/twist/twist
+float g_armW0[2][3];       // authored wrist position, the chain's far end
+bool g_armRefValid[2] = {false, false};
+// Per hand, and per the tester: "each shoulder will need anchoring and
+// positioning like the weapons". Component-space cm, applied to the anchored
+// shoulder joint.
+// Head-relative, in cm: [0] left hand, [1] right hand. Defaults are a rough
+// human shoulder - 18 cm out to the side, 15 cm below the eyes, slightly back -
+// because 0,0,0 puts the shoulder joint inside your eyeball, which is not a
+// neutral starting point, it is just a wrong one.
+// s70n: THE TESTER'S OWN TUNED VALUES, read out of their hands.ini rather than
+// asked for a fourth time. Note the two shoulders are NOT mirror images
+// (-35.6 left against +26.0 right, -28.6 up against -19.8) - a real tuning
+// never is, and guessing a symmetric default would have been wrong in both.
+std::atomic<float> g_shoulderFwdCm[2] = {-6.60f, 3.80f};
+std::atomic<float> g_shoulderRightCm[2] = {-35.60f, 26.00f};
+std::atomic<float> g_shoulderUpCm[2] = {-28.60f, -19.80f};
+// s70k: how far the elbow sits OUT from straight-down, 0 = hanging, 1 = level
+// with the shoulder. Human elbows rest down and a little outward.
+std::atomic<float> g_elbowOut{0.35f};
+// s70k: exponential smoothing on the solved elbow, ms. The hand is NEVER
+// smoothed - that would put latency on your own tracking, which is the one thing
+// a VR viewmodel must not do. Only the derived joint is eased.
+std::atomic<unsigned> g_elbowSmoothMs{70};
+// s70m: 0 = the elbow ignores wrist roll entirely (v2), 1 = it follows it fully
+// (v1). The tester wants "somewhere in between".
+// 0.60, up from 0.40: "Elbow still needs a little more swivel". Raised rather
+// than taken to 1.0, because 1.0 is v1 - the version where the elbow swung much
+// further than a real arm does.
+std::atomic<float> g_elbowFollowWrist{0.60f};
+float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
+bool g_elbowHavePrev[2] = {false, false};
+uint64_t g_elbowLastMs[2] = {0, 0};
+
+// Shortest-arc rotation taking unit vector a onto unit vector b.
+void quat_from_to(const float a[3], const float b[3], float out[4]) {
+    const float d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    if (d > 0.999999f) {
+        out[0] = out[1] = out[2] = 0.0f;
+        out[3] = 1.0f;
+        return;
+    }
+    if (d < -0.999999f) {
+        // Opposed: any perpendicular axis is a valid 180 deg turn. Take the
+        // cross with whichever cardinal axis a is least aligned to, so the
+        // result is never degenerate.
+        float t[3] = {1.0f, 0.0f, 0.0f};
+        if (fabsf(a[0]) > 0.9f) {
+            t[0] = 0.0f;
+            t[1] = 1.0f;
+        }
+        float ax[3] = {a[1] * t[2] - a[2] * t[1], a[2] * t[0] - a[0] * t[2],
+                       a[0] * t[1] - a[1] * t[0]};
+        const float n = sqrtf(ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]);
+        out[0] = ax[0] / n;
+        out[1] = ax[1] / n;
+        out[2] = ax[2] / n;
+        out[3] = 0.0f;
+        return;
+    }
+    const float c[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0]};
+    float q[4] = {c[0], c[1], c[2], 1.0f + d};
+    const float n = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    for (int k = 0; k < 4; ++k) out[k] = q[k] / n;
+}
+// s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
+// Electrobolt behaved differently from every weapon.
+//
+// MEASURED, the tester's 2026-08-28 23:48 run: with a plasmid equipped
+// ANIMREJECT reported 2.6, 3.2, 3.3, 3.4, 4.5, 4.9 and 5.0 deg. That is a whole
+// animation living inside the band BRVR calls idle breathing - so a 5.0
+// threshold rejects it outright (Telekinesis: no animation at all) or admits it
+// erratically as it flickers across the line (Electrobolt: motion that starts
+// and stops).
+//
+// It is not a tuning accident, it is the rig: the left cluster is bones 6-21 and
+// s68 dumped the names - 6 is the palm and 7-21 are NOTHING but finger joints.
+// There is no wrist or forearm in it, so a plasmid animation that is mostly
+// fingers barely rotates the one bone the threshold measures. BRVR's 41-135 deg
+// figures are the RIGHT cluster's wrist during a reload; they do not describe
+// this hand and were never meant to.
+//
+// 2.0 sits under every rejected plasmid reading above and clear of the sub-1 deg
+// noise. A FIRST ESTIMATE from one run, not a measurement of the idle floor -
+// ANIMREJECT now reports per hand, so the next run can set it properly.
+std::atomic<float> g_swayAngThreshLeftDeg{2.0f};
+
+// ---- s70: BRVR's EQUIP SETTLE, ported with its own numbers -----------------
+//
+// All four are BRVR's, and three of them are answers to defects this tree has
+// re-derived the hard way (see ENGINE_NOTES "Session 70").
+//
+// g_keyDebounceMs   BRVR WeaponKeyDebounceMs 150. The engine parks
+//                   CurrentHoldable at NULL for a frame during fire/pump, so an
+//                   undebounced key change fires on animation frames. MEASURED
+//                   in BRVR: 11 changes in 3 minutes against 2 real switches.
+// g_settleStillUu   BRVR kSettleStillUnits 0.05. How still the WRIST POSITION
+//                   has to be, per frame, to count as settled. POSITION, not
+//                   angle - s68 probed angles against a 25 deg animation
+//                   threshold and the test never gated at all.
+// g_settleStillMs   BRVR kSettleStillMs 150. How long that stillness must hold.
+// g_settleMinMs     BRVR kSettleMinMs 350. A FLOOR before stillness may count,
+//                   because many draw animations pause part-way through and 150
+//                   ms of quiet inside a pause is not the end of the animation.
+// g_settleCeilMs    BRVR WeaponSwitchSettleMs 600. A CEILING, not a duration -
+//                   a rig that settles fast is picked up fast, and one that
+//                   never settles cannot wedge the window open.
+std::atomic<unsigned> g_keyDebounceMs{150};
+std::atomic<float> g_settleStillUu{0.05f};
+// s70d: the rotational half of the stillness test. 0.25 deg per engine
+// evaluation - the rig evaluates ~30 times per 359 ms window, so a genuine
+// settle sits far below this while the 15-100 deg turns ANIMPIN measured are
+// orders of magnitude above it. A first estimate; the settle log prints which
+// axis was still moving so it can be set from data.
+std::atomic<float> g_settleStillDeg{0.25f};
+std::atomic<unsigned> g_settleStillMs{150};
+std::atomic<unsigned> g_settleMinMs{350};
+// s70d: 1500, not BRVR's 600 default - it is what the TESTER's own BRVR ini
+// sets (WeaponSwitchSettleMs=1500), and the plasmid captures here were landing
+// at 359 ms mid-rotation. A ceiling only bites when the rig never stills, so
+// raising it costs nothing when the settle works and saves the capture when it
+// does not.
+std::atomic<unsigned> g_settleCeilMs{1500};
+
+// The settle window's own state. g_settleN > 0 means a window is open.
+uint64_t g_settleStartMs = 0;   // when the switch was seen
+uint64_t g_settleLastMoved = 0; // last frame the wrist moved more than the threshold
+float g_settlePrevWrist[3] = {0.0f, 0.0f, 0.0f};
+float g_settlePrevQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // s70d: rotation too
+float g_settleFirstQ[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // s70d: window start, for the log
+bool g_settleHaveFirst = false;
+// s70e: TRUE while a settle window is open. BRVR does not merely wait during
+// this window - it RELEASES the cluster and writes nothing, so the engine plays
+// the equip natively. See the release block in drive().
+bool g_settleOpen = false;
+// s70o: OFF - the rig holds its pose through the equip instead of playing it.
+// On restores BRVR's behaviour, where the engine's draw animation is visible.
+std::atomic<bool> g_showEquipAnim{false};
+
+// ---- s70e CLUSTERTEST: is the rig we drive the rig you SEE? ----------------
+//
+// The control condition that should have been run before any of the last two
+// sessions' work. Zeroes the driven cluster's SCALE, which is how this file
+// already hides the inactive hand, so the geometry collapses to nothing.
+//
+//   the hand VANISHES -> we are driving the mesh you are looking at, and the
+//                        fault is somewhere downstream of the bone writes.
+//   the hand STAYS    -> the first-person plasmid hand is a DIFFERENT MESH and
+//                        every change made across two sessions was applied to a
+//                        skeleton that is not on screen. That would explain, in
+//                        one stroke, why the symptom never moved for the freeze
+//                        anchor, the adoption policy, the drive hand, a 48 deg
+//                        trim swing, the pin, or the settle.
+//
+// A BUTTON, not a console verb: the tester cannot type with both hands on the
+// controllers. Momentary - it collapses only while held on, and restore_hidden()
+// puts the cluster back the moment it is switched off.
+std::atomic<bool> g_clusterTest{false};
+bool g_settleHavePrev = false;
+// s70b: THERE IS NO POSE AVERAGING HERE, AND THE ATTEMPT AT IT WAS A BUG.
+//
+// BRVR accumulates ONE POINT over the settle window - the wrist position - and
+// uses the mean for its two-hand GRAB POINT (`g_anchorPos[oh]`), a feature this
+// tree does not have. Its POSE capture is `CaptureClusterRef`, which takes the
+// LIVE FRAME, still or not.
+//
+// s70 generalised the mean from that one point to the whole cluster. That is
+// not a pose: averaging bone positions component-wise does not preserve BONE
+// LENGTHS, so the result is a skeleton that never existed. Measured immediately,
+// 2026-08-28 23:36:31 - the wrench captured "the MEAN of the window" over 48
+// engine evaluations spanning its entire equip animation, and the tester
+// reported the hand "super far away and super duper streched like a slenderman
+// hand". That is what an averaged skeleton looks like.
+//
+// The lesson generalises: a mean is only meaningful over a space where the
+// average of two valid values is itself valid. Positions of ONE point qualify.
+// A skeleton's bone array does not.
+int g_settleN = 0;
+
+// Drop every scrap of settle state. Called wherever the reference dies - a new
+// bone array, a new world, an explicit release - because a settle window that
+// outlives the skeleton it was measuring is a window onto a dead rig.
+void settle_reset() {
+    g_settleStartMs = 0;
+    g_settleLastMoved = 0;
+    g_settleHavePrev = false;
+    g_settleHaveFirst = false;
+    g_settleN = 0;
+}
 // Telemetry (1 Hz while frozen): the probe deltas the threshold judges, so
 // the thresholds are set from measured idle amplitude, not guesses.
 uint64_t g_lastSwayTlmMs = 0;
@@ -333,7 +725,10 @@ void* g_dsHoldable = nullptr; // the actor the lane is bound to
 float g_dsRaw = 1.0f;         // the authored field value, restored on release
 float g_dsWrote = 0.0f;       // what we last wrote (0 = nothing written yet)
 
-std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
+// s70j: ARMS VISIBLE BY DEFAULT while the arm solve is being tuned - the
+// tester cannot judge a shoulder anchor on an arm that is not drawn. The
+// F10 checkbox and the ARMS radio's 'hide' both still collapse it.
+std::atomic<bool> g_collapse{false}; // hide the driven arm's sleeve
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -519,8 +914,34 @@ bool locate(void* handsActor) {
         BVR_LOG("[bones] skeleton: inst=%p bones=%p count=%d%s", sk.inst,
                 static_cast<void*>(sk.bones), sk.count,
                 sk.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
+        // s69c: NAME THE LEFT CLUSTER, once per skeleton, always on.
+        //
+        // The two clusters anchor asymmetrically and nobody chose it: the RIGHT
+        // pins bone 43 (kBoneWeaponAttach), which sits at the gun's grip deep in
+        // the hand, so a recoil animation rotates about the thing you are looking
+        // at and the gun stays put. The LEFT pins bone 6 (kBoneLWrist), the FIRST
+        // bone of its range, with the palm and fingers hanging off it - so any
+        // animation that moves the palm relative to the wrist translates the
+        // visible hand away from the controller. That is the plasmid firing
+        // animation "moving away from my hand position" (screenshots, 2026-08-27:
+        // the fist sits centred at idle and the open hand is well left and low
+        // during the bolt).
+        //
+        // Picking a better left anchor needs the NAMES, and this is how they get
+        // into a log without the tester typing a command in the headset. Try one
+        // live with `vrbones lcluster 6 21 <anchor>`.
+        {
+            const wchar_t* nm[kMaxBones];
+            const int named = resolve_bone_names(sk, nm, sk.count);
+            const int lo = patterns::kBoneLClusterFirst, hi = patterns::kBoneLClusterLast;
+            for (int i = lo; i <= hi && i < sk.count; ++i)
+                BVR_LOG("[bones] LEFTBONE %2d = '%ls'%s", i,
+                        (named && nm[i]) ? nm[i] : L"?",
+                        i == patterns::kBoneLWrist ? "   <-- anchor today" : "");
+        }
         g_refValid = false; // new array = new reference
         g_hasWritten[0] = g_hasWritten[1] = false;
+        settle_reset(); // s70: and a new array is a new settle window
     }
     g_skelInst = sk.inst;
     g_bones = sk.bones;
@@ -878,7 +1299,12 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
 // replaced by a verbatim replay and bone 43 is skipped. hands.cpp mode 3 drives
 // the actor, exactly as BRVR does.
 std::atomic<bool> g_freezeOnly{false};
-
+// s70: the s69 anchor pin is GONE. It held the cluster's anchor on the captured
+// rest while an adopted animation played, so the animation changed the pose
+// without dragging the hand off the controller. It was a correction for two
+// things that are both fixed at their source now: the freeze was anchored on
+// bone 43, which the engine animates (see cluster_of), and the state mask left
+// the reference stuck at the recoil apex. BRVR pins nothing.
 // ---- s67: CAPTURE ONCE PER HOLDABLE ----------------------------------------
 //
 // The reference pose must be a property of WHAT YOU ARE HOLDING, captured once
@@ -907,29 +1333,85 @@ std::atomic<bool> g_freezeOnly{false};
 // only the WRENCH is gated off, because a swing animation fights manual melee.
 std::atomic<bool> g_animAllowed{true};
 
-// s67 PER-STATE ANIMATION POLICY. A bitmask over hands_state::State, so every
-// animation the rig can play is individually allowed or refused.
+// s70: THE PER-STATE ANIMATION MASK IS GONE, and it was the root of s67-s69.
 //
-// This is what the movement threshold could never do. A reload and a recoil are
-// the same signal at different sizes, so a threshold either takes both or
-// neither - and taking the reload is what left the crosshair pointing somewhere
-// else until the next shot pulled it back. The engine knows which is which and
-// says so in Hands.uc's own state machine; we just ask.
+// It adopted only Firing/PostFiring and refused everything else. Two costs, both
+// paid in full:
 //
-// Default: FIRING and POSTFIRING adopt (recoil), everything else is refused.
-// Idling is refused on purpose and is the important one - GetIdlingHandsAnim()
-// picks a WEIGHTED RANDOM entry out of Holdable::IdlingHandsAnim[], so every
-// return to idle can settle somewhere different. Adopting that is the whole
-// "crosshair moves randomly between shots" report.
-constexpr uint32_t state_bit(hands_state::State st) {
-    return 1u << static_cast<int>(st);
-}
-std::atomic<uint32_t> g_animStateMask{state_bit(hands_state::State::Firing) |
-                                      state_bit(hands_state::State::PostFiring)};
+//   - Hands.uc leaves `WeaponFiring` at the TOP of the recoil, so adoption was
+//     cut at the apex and the reference stuck there. Everything s68 and s69 then
+//     built - the canonical rest, the eased restore, the anchor pin, the
+//     quaternion normalisation for that pin - exists to undo this one line.
+//   - It refused reload, equip and melee outright, so the rig went rigid through
+//     every animation that is not a shot.
+//
+// BRVR separates idle from real animation BY SIZE, not by state: idle breathing
+// measures 1-5 deg at the wrist and a reload or a switch peaks at 41-135, so a
+// threshold in that gap rejects breathing and admits everything else, and the
+// hold window carries adoption to the animation's settled end. That mechanism is
+// already in this file (g_swayAngThreshDeg / g_swaySettleMs) - the mask was
+// layered on top of it and overrode it.
+
+// ---- s68 REST REFERENCE: what happens when an adopted animation ENDS -------
+//
+// THE DEFECT s67 SHIPPED. The state mask above says which animations reach the
+// rig, and when the state leaves the mask the drive simply stops adopting. But
+// "stop adopting" is not "go back" - it leaves g_ref holding the last frame it
+// took, and the state machine leaves WeaponFiring at the TOP of the recoil, not
+// after the gun has come back down. So the pistol froze at its recoil apex and
+// stayed there until a weapon switch. The same shape, reported the same run:
+// the pistol freezing when it runs out of ammo (Firing -> Reloading) and the
+// shotgun sticking on its first reload.
+//
+// WHY BRVR NEVER HAD IT, and why we cannot just copy the answer. BRVR gates on
+// a movement threshold plus a HOLD window - `adopt = (now - lastBigDelta) <
+// holdMs` - so it keeps tracking for ~1.2 s past the animation's last big frame
+// and its reference re-freezes on the SETTLED pose. That property is still in
+// the threshold fallback below, and the state branch is exactly what threw it
+// away. Reinstating a settle window on the state branch would work, but it
+// would re-freeze onto whatever the idle animation had drifted to - and
+// GetIdlingHandsAnim() is weighted-random per loop (Holdable.uc:32), which is
+// the "crosshair moves randomly between shots" report we just fixed.
+//
+// SO: a CANONICAL rest, captured ONCE per holdable during WeaponIdling and
+// restored verbatim. Deterministic, per weapon, and it cannot drift - which is
+// what the per-weapon crosshair tuning needs to stay true between shots.
+//
+// The restore is BLENDED rather than snapped, because the pose we are leaving
+// is the apex of a recoil: cutting straight to rest reads as a jerk, whereas
+// easing over ~120 ms is the recovery the recoil animation would have played.
+// 0 ms = snap, and the F10 slider makes that an A/B in the headset.
+// s70: the Idling-edge capture (g_capAtIdling), the canonical-rest restore and
+// its blend are all gone with the mask that needed them. What replaces the
+// capture is BRVR's settle - see the settle block in drive().
 
 std::atomic<int> g_rFirst{-1}; // -1 = the authored kBoneRClusterFirst
 std::atomic<int> g_rLast{-1};
 
+// s70: THE RIGHT CLUSTER'S ANCHOR DEPENDS ON WHICH SHAPE IS DRIVING IT, and
+// getting that wrong is why a "frozen" cluster still moved.
+//
+// FREEZE (mode 3, BRVR's shape) ANCHORS ON THE WRIST, 27. BRVR's ClusterSpec is
+// {first, last, wrist} = {27, 44, 27} and every replay is anchored on that wrist
+// (ArmHide.cpp SpecFor/WriteCluster). Bone 43 is the WEAPON ATTACH, and it is
+// precisely the one bone BRVR deliberately leaves the engine still animating -
+// its own log says so: "cluster frozen; this bone is still the engine's", with
+// 1-5 deg of measured idle drift and peaks of 41-135.
+//
+// So anchoring the freeze on 43 anchors it on a MOVING bone: every other bone is
+// written relative to a point the engine is animating, and the whole cluster is
+// dragged along by it. That is the hand walking off the controller during an
+// animation, and it is what the s69 anchor pin was built to cancel - a
+// correction for a reference point that should never have been moving.
+//
+// s68 dumped the bone names and recorded the left/right asymmetry (left anchors
+// on 6, the palm; right on 43) as "not a defect". Against BRVR it is one: BRVR
+// anchors BOTH clusters on their wrist, and the left cluster here already does.
+//
+// RETARGET (mode 2) KEEPS 43, and that is not an oversight. Retarget maps the
+// anchor onto the controller, so the point it maps must be where the weapon
+// hangs; that path is this tree's own and 43 is right for it. BRVR has no
+// retarget at all, so there is nothing to be faithful to there.
 void cluster_of(int hand, int* first, int* last, int* anchor) {
     if (hand == 1) {
         int rf = g_rFirst.load(std::memory_order_relaxed);
@@ -937,12 +1419,57 @@ void cluster_of(int hand, int* first, int* last, int* anchor) {
         *first = rf >= 0 ? rf : patterns::kBoneRClusterFirst;
         *last = rl >= 0 ? rl : patterns::kBoneRClusterLast;
         int ov = g_rAnchorOverride.load(std::memory_order_relaxed);
-        *anchor = ov >= 0 ? ov : patterns::kBoneWeaponAttach;
+        const int dflt = g_freezeOnly.load(std::memory_order_relaxed)
+                             ? patterns::kBoneRWrist
+                             : patterns::kBoneWeaponAttach;
+        *anchor = ov >= 0 ? ov : dflt;
     } else {
         *first = g_lFirst.load(std::memory_order_relaxed);
         *last = g_lLast.load(std::memory_order_relaxed);
         *anchor = g_lAnchor.load(std::memory_order_relaxed);
     }
+}
+
+// s68: normalised lerp with hemisphere correction. Good enough here by a wide
+// margin - the two poses either side of a recoil are tens of degrees apart, and
+// nlerp only parts company with slerp near 180.
+void quat_nlerp(const float a[4], const float b[4], float t, float out[4]) {
+    float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    const float sgn = dot < 0.0f ? -1.0f : 1.0f; // shortest arc
+    for (int k = 0; k < 4; ++k) out[k] = a[k] * (1.0f - t) + b[k] * sgn * t;
+    float len = sqrtf(out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]);
+    if (len < 1e-6f) { // degenerate: the two are opposite, take the target
+        out[0] = b[0]; out[1] = b[1]; out[2] = b[2]; out[3] = b[3];
+        return;
+    }
+    for (int k = 0; k < 4; ++k) out[k] /= len;
+}
+
+// Angle between two quats, degrees. Shared by the rest-restore telemetry.
+//
+// NORMALISE BOTH INPUTS, and it is the same rule 825ced6 applied to the drive
+// path: every caller passes g_ref/g_rest, and that bank does NOT hold unit quats
+// while an animation is blending. The dot of two non-unit quats is
+// |a||b|cos(theta/2), so an unnormalised readout is wrong in BOTH directions -
+// magnitudes above 1 inflate the dot, it clamps at 1, and the instrument reports
+// 0 deg while the bones genuinely differ; magnitudes below 1 deflate it and the
+// instrument INVENTS an angle out of a pure magnitude difference. That second
+// case is the ROLLCHECK lie ("drifted 16.64 deg" with a +0.00/+0.00/-0.00
+// component split) wearing a different hat, and it cost session 68 two rounds of
+// diagnosis and one commit fixing a non-problem.
+//
+// It matters more here than in an ordinary readout: the ANIMPIN telemetry GATES
+// on this value (angOff > 2.0), so a lying angle decides whether the line prints
+// at all. An instrument that chooses its own visibility cannot be checked
+// against its own silence.
+float quat_angle_deg(const float a[4], const float b[4]) {
+    const float na = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]);
+    const float nb = sqrtf(b[0] * b[0] + b[1] * b[1] + b[2] * b[2] + b[3] * b[3]);
+    if (na < 1e-4f || nb < 1e-4f) return 0.0f; // degenerate: no angle to report
+    float dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) / (na * nb);
+    if (dot < 0.0f) dot = -dot;
+    if (dot > 1.0f) dot = 1.0f;
+    return 2.0f * acosf(dot) * kRadToDeg;
 }
 
 // Restore a hidden hand's cluster + sleeve from the reference pose. g_ref is
@@ -1356,6 +1883,7 @@ void on_world_change() {
     g_boneCount = 0;
     g_refValid = false;
     g_hasWritten[0] = g_hasWritten[1] = false;
+    settle_reset(); // s70
     g_cacheSkelInst = nullptr;
     g_cacheMs = 0;
     g_hiddenHand = -1; // the collapsed bones died with the old world
@@ -1395,6 +1923,7 @@ void release(const char* why) {
         g_cacheCount = g_cacheSleeveCount = g_cacheHiddenCount = 0;
         g_refValid = false;
         g_hasWritten[0] = g_hasWritten[1] = false;
+        settle_reset(); // s70
         g_clWritten[0] = g_clWritten[1] = false;
         memset(g_scaleWrote, 0, sizeof g_scaleWrote); // the bank died with the world
         wskel_drop("rig released (no rig skeleton)"); // intact-gated, safe here
@@ -1461,6 +1990,7 @@ void release(const char* why) {
     if (g_skelInst) set_dirty(1);
     g_refValid = false;
     g_hasWritten[0] = g_hasWritten[1] = false;
+    settle_reset(); // s70: the next switch opens a fresh settle window
     g_lastBigDeltaMs = 0;
 
     BVR_LOG("[bones] released to the engine (%s): hidden hand %d restored, reapply cache "
@@ -1475,10 +2005,36 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
     if (refValid) *refValid = g_refValid;
 }
 
-void set_anim_state_mask(uint32_t mask) {
-    g_animStateMask.store(mask, std::memory_order_relaxed);
+// s70: set_anim_state_mask / anim_state_mask / set_rest_restore / rest_restore /
+// set_rest_blend_ms / rest_blend_ms / rest_status / drop_rest all removed with
+// the machinery they controlled. See the s70 banners above.
+
+// s70k: the arm-solve knobs, persisted through hands.ini like every other
+// per-hand tuning value. The tester tuned the shoulder in the headset and then
+// could not tell me the numbers, which is the correct outcome to design for -
+// nobody should be memorising slider positions. They now survive a restart.
+void shoulder_cm(int hand, float* fwd, float* right, float* up) {
+    const int h = hand == 1 ? 1 : 0;
+    if (fwd) *fwd = g_shoulderFwdCm[h].load(std::memory_order_relaxed);
+    if (right) *right = g_shoulderRightCm[h].load(std::memory_order_relaxed);
+    if (up) *up = g_shoulderUpCm[h].load(std::memory_order_relaxed);
 }
-uint32_t anim_state_mask() { return g_animStateMask.load(std::memory_order_relaxed); }
+void set_shoulder_cm(int hand, float fwd, float right, float up) {
+    const int h = hand == 1 ? 1 : 0;
+    g_shoulderFwdCm[h].store(fwd, std::memory_order_relaxed);
+    g_shoulderRightCm[h].store(right, std::memory_order_relaxed);
+    g_shoulderUpCm[h].store(up, std::memory_order_relaxed);
+}
+float elbow_out() { return g_elbowOut.load(std::memory_order_relaxed); }
+void set_elbow_out(float v) { g_elbowOut.store(v, std::memory_order_relaxed); }
+unsigned elbow_smooth_ms() { return g_elbowSmoothMs.load(std::memory_order_relaxed); }
+void set_elbow_smooth_ms(unsigned v) {
+    g_elbowSmoothMs.store(v, std::memory_order_relaxed);
+}
+float elbow_follow_wrist() { return g_elbowFollowWrist.load(std::memory_order_relaxed); }
+void set_elbow_follow_wrist(float v) {
+    g_elbowFollowWrist.store(v, std::memory_order_relaxed);
+}
 
 void set_anim_allowed(bool on) {
     const bool was = g_animAllowed.exchange(on, std::memory_order_relaxed);
@@ -1869,6 +2425,23 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             float qwInv[4], d[4];
             quat_conj(g_lastWrittenAnchor[hand].q, qwInv);
             quat_mul(qwInv, cur.q, d);
+            // NORMALISE THE DELTA before reading an angle out of it. Both
+            // operands come from the bone bank, which does not guarantee unit
+            // quats mid-blend, and conj() is not the inverse of a non-unit quat
+            // (825ced6). Un-normalised, d[3] is |qw||cur|cos(theta/2) and the
+            // components carry the same factor - which is EXACTLY how this probe
+            // came to report "drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)"
+            // in session 68. Those two readings cannot both be true of a
+            // rotation; the rotation was unchanged and only the magnitude
+            // differed. It was believed twice and produced 137a44b, a fix for a
+            // problem that did not exist.
+            const float dn = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] + d[3] * d[3]);
+            if (dn > 1e-4f) {
+                d[0] /= dn;
+                d[1] /= dn;
+                d[2] /= dn;
+                d[3] /= dn;
+            }
             float w = d[3] < 0.0f ? -d[3] : d[3];
             if (w > 1.0f) w = 1.0f;
             const float driftDeg = 2.0f * acosf(w) * kRadToDeg;
@@ -1890,6 +2463,12 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     driftDeg > 3.0f ? "<-- OUR WRITE IS BEING CHANGED" : "(write held)");
         }
     }
+    // s70: READ AND LOGGED, NEVER GATED ON. The state machine is still the best
+    // description of what the rig is doing and it stays in the telemetry, but it
+    // no longer decides what reaches the rig - the size threshold and hold window
+    // do, exactly as BRVR does it. See the s70 banner on the deleted mask.
+    g_lastKnownState = hands_state::current(handsActor);
+
     if (engineEvaluated || !g_refValid) {
         // Session 20 sway kill: the idle breathing is the authored idle
         // ANIMATION (channel 0/1 - no script parameter to zero, measured),
@@ -1908,40 +2487,248 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // pivot". The gate is about whether to follow animation, not about
         // whether this weapon gets its own pose at all.
         static void* s_lastHoldable = nullptr;
+        static void* s_lastAbility = nullptr;
         static bool s_forceCapture = false;
         {
+            // s69: IDENTITY IS THE PAIR. CurrentHoldable is NULL for every
+            // plasmid, so watching it alone makes every plasmid look like every
+            // other one - plasmid-to-plasmid is null != null == false and no
+            // recapture happens. The reference then belongs to whichever plasmid
+            // was equipped last, and the per-plasmid offsets it is tuned against
+            // sit on the wrong pose.
+            //
+            // The tester's BRVR config is why this matters: with PerPlasmidTuning
+            // its rotations differ by tens of degrees between plasmids
+            // (PlasmidRot0 -111,-64,22 vs PlasmidRot1 -35,-20,22), because the
+            // authored poses genuinely differ. Per-plasmid offsets only hold still
+            // if each plasmid also keeps its own captured reference.
             void* liveHold = nullptr;
             if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
-            if (liveHold != s_lastHoldable) {
+            void* liveAbil = nullptr;
+            if (!hands::current_ability(&liveAbil)) liveAbil = nullptr;
+
+            // s70: THE PAIR HAS TO HOLD STILL BEFORE IT COUNTS AS A SWITCH.
+            //
+            // Ported from BRVR (ArmHide.cpp, ArmHide_FreezeWeaponHand), where it
+            // is backed by a measurement this tree never took: "what you are
+            // holding changed" fired ELEVEN times in a three-minute session in
+            // which the player switched weapon TWICE. The engine does not hold
+            // CurrentHoldable steady - a shotgun's fire and pump animations park
+            // it at NULL for a frame - so every blip is TWO changes,
+            // hold -> null -> hold, and each one throws away the reference and
+            // recaptures from whatever the rig looked like mid-animation.
+            //
+            // Watching the (holdable, ability) PAIR does not help here: a NULL
+            // blip on the holdable while the ability is also NULL is still a
+            // change of the pair. Debouncing is what makes it one.
+            //
+            // A real switch still lands - the incoming item is a stable non-null
+            // key, so it simply commits one debounce later, which is nothing
+            // beside the settle window that follows it.
+            static void* s_pendHold = nullptr;
+            static void* s_pendAbil = nullptr;
+            static uint64_t s_pendSince = 0;
+            static bool s_pendInit = false;
+            const uint64_t nowKey = GetTickCount64();
+            if (!s_pendInit) {
+                s_pendInit = true;
+                s_pendHold = liveHold;
+                s_pendAbil = liveAbil;
+                s_pendSince = nowKey;
+            }
+            if (liveHold != s_pendHold || liveAbil != s_pendAbil) {
+                s_pendHold = liveHold;
+                s_pendAbil = liveAbil;
+                s_pendSince = nowKey;
+            }
+            const bool keyHeld =
+                (nowKey - s_pendSince) >= g_keyDebounceMs.load(std::memory_order_relaxed);
+
+            if (keyHeld && (liveHold != s_lastHoldable || liveAbil != s_lastAbility)) {
                 s_lastHoldable = liveHold;
+                s_lastAbility = liveAbil;
                 s_forceCapture = true;
-                g_lastBigDeltaMs = GetTickCount64(); // let the equip settle first
-                BVR_LOG("[bones] holdable changed - forcing a fresh reference capture");
+                // s70: OPEN A FRESH SETTLE WINDOW. BRVR releases the cluster
+                // here so the equip can play, and stamps the window at the same
+                // moment; the settle block above then decides when it is over.
+                settle_reset();
+                g_settleStartMs = GetTickCount64();
+                g_lastBigDeltaMs = g_settleStartMs;
+                BVR_LOG("[bones] holding changed (holdable %p, ability %p%s) - forcing a "
+                        "fresh reference capture",
+                        liveHold, liveAbil, liveAbil ? ", PLASMID" : "");
             }
         }
 
-        // The state machine decides, when it can be read. The movement
-        // threshold below stays as the fallback for the window before the
-        // StateFrame offset is derived, and for anything the table cannot name.
-        const hands_state::State hs = hands_state::current(handsActor);
-        const bool stateKnown = hands_state::located() && hs != hands_state::State::Unknown;
-        const bool stateAllows =
-            (g_animStateMask.load(std::memory_order_relaxed) & state_bit(hs)) != 0;
-
+        // s70: BRVR'S POLICY, AND ONLY BRVR'S. Two branches, not five:
+        //   - a switch just happened -> settle, then capture once;
+        //   - otherwise -> size threshold + hold window.
+        // The per-state mask that used to sit between them is gone; see the s70
+        // banner where it was declared.
         bool adopt = true;
         if (s_forceCapture) {
-            // Track until the rig settles, then this weapon's own pose is in.
-            adopt = (GetTickCount64() - g_lastBigDeltaMs) <
-                    g_swaySettleMs.load(std::memory_order_relaxed);
-            if (!adopt) s_forceCapture = false;
-        } else if (g_refValid && stateKnown) {
-            // Named state: obey the mask, and skip the threshold entirely.
-            adopt = g_animAllowed.load(std::memory_order_relaxed) && stateAllows;
-            static hands_state::State s_lastLogged = hands_state::State::Unknown;
-            if (hs != s_lastLogged) {
-                s_lastLogged = hs;
-                BVR_LOG("[bones] hands state -> %s : engine animation %s",
-                        hands_state::to_string(hs), adopt ? "ADOPTED" : "refused");
+            // ---- BRVR's EQUIP SETTLE (ArmHide.cpp, the g_wpSettling block) ---
+            //
+            // Release, let the equip animation play, and capture once the rig
+            // has STOPPED MOVING - not after a fixed number of milliseconds.
+            //
+            // The probe is the ANCHOR'S POSITION, frame to frame. s68 spent nine
+            // builds probing ANGLES against g_swayAngThreshDeg - the 25 deg
+            // animation-adoption threshold - so any two evaluations of a smooth
+            // ease read as "still" and the test never gated at all. BRVR probes
+            // position against a threshold of its own, and 0.05 model units is
+            // three orders of magnitude below the adoption threshold's scale.
+            //
+            // Three guards, each answering a defect BRVR measured:
+            //   FLOOR   (g_settleMinMs) - many draw animations PAUSE part-way
+            //           through, and 150 ms of quiet inside a pause is not the
+            //           end of the animation.
+            //   CEILING (g_settleCeilMs) - a rig that never stills cannot wedge
+            //           the window open forever.
+            // The capture is the LIVE FRAME either way, exactly as BRVR's
+            // CaptureClusterRef takes it. BRVR's mean-of-the-window applies only
+            // to its two-hand GRAB POINT - one point, where an average is
+            // meaningful - and never to a pose. See the s70b note on the settle
+            // state for what happened when that was generalised.
+            // ---- STILLNESS IS POSITION *AND* ROTATION -----------------------
+            //
+            // BRVR tests POSITION only, and for a WEAPON that is enough: an
+            // equip swings the wrist bodily through space, so when the position
+            // stops the animation is over.
+            //
+            // A PLASMID EQUIP BARELY MOVES THE PALM - IT TURNS IT. Measured, the
+            // tester's 2026-08-29 00:18 run: every plasmid capture reported
+            // "rig went still" at 359-375 ms against a 350 ms floor, i.e. at the
+            // earliest instant the floor allowed, while ANIMPIN went on to
+            // report the anchor 15, 28, 51, 52 and 100.5 deg off that captured
+            // heading. Both cannot be true of a settled rig. The position test
+            // was blind to the only axis that was still moving, so the capture
+            // latched a mid-rotation heading - and everything downstream then
+            // did correct work against a corrupt reference, which is why the
+            // anchor, the adoption policy, the model trim and the pin all
+            // changed nothing.
+            //
+            // The tester's own BRVR ini corroborates the shape of this:
+            // WeaponSwitchSettleMs=1500, raised from BRVR's 600 default, which
+            // is what you do when captures keep landing too early.
+            const uint64_t nowS = GetTickCount64();
+            if (anchor < g_boneCount) {
+                if (g_settleHavePrev) {
+                    const float dx = fresh[anchor].p[0] - g_settlePrevWrist[0];
+                    const float dy = fresh[anchor].p[1] - g_settlePrevWrist[1];
+                    const float dz = fresh[anchor].p[2] - g_settlePrevWrist[2];
+                    const bool movedPos = sqrtf(dx * dx + dy * dy + dz * dz) >
+                                          g_settleStillUu.load(std::memory_order_relaxed);
+                    // quat_angle_deg normalises both sides (s70), which matters
+                    // here - the bank does not hold unit quats mid-blend and an
+                    // un-normalised angle is exactly how a rotating rig reads
+                    // as still.
+                    const bool movedRot =
+                        quat_angle_deg(fresh[anchor].q, g_settlePrevQuat) >
+                        g_settleStillDeg.load(std::memory_order_relaxed);
+                    if (movedPos || movedRot) g_settleLastMoved = nowS;
+                }
+                if (!g_settleHaveFirst) {
+                    memcpy(g_settleFirstQ, fresh[anchor].q, sizeof g_settleFirstQ);
+                    g_settleHaveFirst = true;
+                }
+                memcpy(g_settlePrevWrist, fresh[anchor].p, sizeof g_settlePrevWrist);
+                memcpy(g_settlePrevQuat, fresh[anchor].q, sizeof g_settlePrevQuat);
+                g_settleHavePrev = true;
+            }
+            ++g_settleN; // sample count, for the log only
+
+
+            const bool longEnough =
+                (nowS - g_settleStartMs) >= g_settleMinMs.load(std::memory_order_relaxed);
+            const bool still =
+                longEnough && g_settleLastMoved &&
+                (nowS - g_settleLastMoved) >= g_settleStillMs.load(std::memory_order_relaxed);
+            const bool timedOut =
+                (nowS - g_settleStartMs) >= g_settleCeilMs.load(std::memory_order_relaxed);
+
+            if (!still && !timedOut) {
+                // ---- s70o: DO NOT SHOW THE EQUIP ANIMATION ------------------
+                //
+                // "the 1 cycle animation issue is happening on weapon equip",
+                // reported across four sessions and still true, because every
+                // version of this has let the engine's draw reach the rig one
+                // way or another: s68 FOLLOWED it and froze at the end, s70e
+                // RELEASED the cluster so the engine played it natively. Both
+                // put an animation cycle on screen at every equip. That is
+                // BRVR's behaviour and it is deliberate there; it is not what
+                // this tester wants and never has been.
+                //
+                // So hold the pose we already have. adopt = false leaves g_ref
+                // alone and the write below keeps painting the previous frozen
+                // pose, so the equip plays out underneath a hand that does not
+                // move. When the settle lands, one adopt swaps in the new pose.
+                //
+                // The cost is honest and small: for the length of the window the
+                // hand holds the OUTGOING item's shape. Toggleable, because
+                // "brief wrong shape" versus "animation cycle" is a taste call
+                // and the headset is what settles it.
+                adopt = false;
+                g_settleOpen = g_showEquipAnim.load(std::memory_order_relaxed);
+            } else {
+                adopt = true;         // this frame writes g_ref, then we are done
+                s_forceCapture = false;
+                // The sample count is the measurement that says whether these
+                // constants transfer: this block runs only when the engine
+                // RE-EVALUATED the bone array. The first run answered it - 24 to
+                // 48 evaluations per window, not the 2 or 3 that s68's "1 frame
+                // in 19" implied - so the window has plenty of data.
+                // HOW FAR THE ANCHOR TURNED ACROSS THE WHOLE WINDOW. If a
+                // capture reports "still" while this reads tens of degrees, the
+                // stillness test is lying again and this line is the proof -
+                // that is precisely how the 359 ms plasmid captures were caught.
+                const float turned =
+                    g_settleHaveFirst ? quat_angle_deg(fresh[anchor].q, g_settleFirstQ) : 0.0f;
+                BVR_LOG("[bones] equip settled after %llu ms over %d engine evaluation(s) "
+                        "(%s) - anchor bone %d turned %.1f deg across the window. "
+                        "Capturing this holdable's live pose as its reference.",
+                        static_cast<unsigned long long>(nowS - g_settleStartMs), g_settleN,
+                        still ? "rig went still"
+                              : "ceiling reached - the rig never stopped moving",
+                        anchor, turned);
+                g_settleHaveFirst = false;
+                // LATCH THE ORIENTATION THE ACTOR IS ABOUT TO BE ALIGNED TO.
+                // Everything after this frame is measured against it, so it has
+                // to be taken from the pose we are capturing, not from g_ref -
+                // adoption overwrites g_ref, which is the whole point.
+                if (anchor < g_boneCount) {
+                    const float* aq = fresh[anchor].q;
+                    const float n = sqrtf(aq[0] * aq[0] + aq[1] * aq[1] + aq[2] * aq[2] +
+                                          aq[3] * aq[3]);
+                    if (n > 1e-4f) {
+                        for (int k = 0; k < 4; ++k) g_pinAnchorQ[hand][k] = aq[k] / n;
+                        memcpy(g_pinAnchorP[hand], fresh[anchor].p, sizeof g_pinAnchorP[hand]);
+                        g_pinValid[hand] = true;
+                        // s70i: and the AUTHORED ARM, for the IK solver. Taken
+                        // here because the settle window is the one place we
+                        // deliberately write nothing, so `fresh` is purely the
+                        // engine's pose and cannot be our own output fed back.
+                        {
+                            const int* aidx = hand == 1 ? patterns::kBoneRSleeve
+                                                        : patterns::kBoneLSleeve;
+                            bool ok = true;
+                            for (int k = 0; k < 5; ++k) {
+                                if (aidx[k] < 0 || aidx[k] >= g_boneCount) {
+                                    ok = false;
+                                    break;
+                                }
+                                g_armRef[hand][k] = fresh[aidx[k]];
+                            }
+                            memcpy(g_armW0[hand], fresh[anchor].p, sizeof g_armW0[hand]);
+                            g_armRefValid[hand] = ok;
+                        }
+                    } else {
+                        g_pinValid[hand] = false;
+                    }
+                }
+                g_settleN = 0;
+                g_settleHavePrev = false;
+                g_settleOpen = false;
             }
         } else if (g_refValid && !g_animAllowed.load(std::memory_order_relaxed)) {
             // This weapon does not take engine animation at all (the wrench).
@@ -1951,8 +2738,22 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             adopt = false;
             uint64_t nowMs = GetTickCount64();
             float maxPos = 0.0f, maxAng = 0.0f;
-            static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneWeaponAttach};
-            for (int k = 0; k < 2; ++k) {
+            float dAnchor[3] = {0.0f, 0.0f, 0.0f}; // s70d: signed, for ANIMDIR
+            // s70c: PROBE THE DRIVEN HAND'S ANCHOR, AND ONLY IT.
+            //
+            // This took the MAX over both wrists, so one number stood for two
+            // hands: the right hand's movement could trigger adoption for a
+            // plasmid on the left, and ANIMREJECT reported a figure that named
+            // neither. A plasmid's whole animation measures 2.6-5.0 deg at the
+            // palm - inside the weapon hand's idle band - so mixing the two
+            // makes the one measurement that matters unreadable.
+            //
+            // BRVR is per hand throughout: CaptureClusterRef(c, hand) measures
+            // `c.wrist` of the cluster it is capturing, with lastBig[hand] and
+            // rejPeak[hand] kept separately. drive() already knows its hand, so
+            // this is just using it.
+            const int kProbe[1] = {anchor};
+            for (int k = 0; k < 1; ++k) {
                 int b = kProbe[k];
                 if (b >= g_boneCount) continue;
                 float dp[3] = {fresh[b].p[0] - g_ref[b].p[0], fresh[b].p[1] - g_ref[b].p[1],
@@ -1965,13 +2766,50 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 float posUu = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
                 if (posUu > maxPos) maxPos = posUu;
                 if (angDeg > maxAng) maxAng = angDeg;
+                memcpy(dAnchor, dp, sizeof dAnchor);
             }
-            if (maxPos > g_swayPosThreshUu.load(std::memory_order_relaxed) ||
-                maxAng > g_swayAngThreshDeg.load(std::memory_order_relaxed))
-                g_lastBigDeltaMs = nowMs;
-            // Track through the animation AND a settle window past its last
-            // big frame, so the eventual freeze holds the SETTLED pose.
-            adopt = (nowMs - g_lastBigDeltaMs) < g_swaySettleMs.load(std::memory_order_relaxed);
+            // Per-hand threshold. The left hand carries the PLASMIDS, and a
+            // plasmid's animation is 2.6-5.0 deg at the palm where a weapon
+            // reload is 41-135 at the wrist - BRVR's "separate them by size"
+            // premise holds within a hand, not across them. One number cannot
+            // serve both, and the left cluster is palm + fingers only (6-21,
+            // measured s68), so there is no wrist chain to amplify anything.
+            const float thresh = (hand == 0)
+                                     ? g_swayAngThreshLeftDeg.load(std::memory_order_relaxed)
+                                     : g_swayAngThreshDeg.load(std::memory_order_relaxed);
+            if (maxPos > g_swayPosThreshUu.load(std::memory_order_relaxed) || maxAng > thresh)
+                g_lastBigDeltaHandMs[hand] = nowMs;
+            adopt = (nowMs - g_lastBigDeltaHandMs[hand]) <
+                    g_swaySettleMs.load(std::memory_order_relaxed);
+
+            // ---- s70d ANIMDIR: WHAT DIRECTION IS THE ANIMATION ACTUALLY GOING?
+            //
+            // "The electrobolt animates the completely wrong direction" has now
+            // survived a change to the freeze anchor, the adoption policy, the
+            // drive hand and a 48 deg swing of the model trim yaw. A symptom
+            // that does not move when four subsystems do is not in any of them,
+            // and this is the measurement that was never taken: the SIGNED
+            // model-space displacement of the anchor while the animation plays.
+            //
+            // Read it as UE component axes - x forward, y right, z up - against
+            // the hand the log names. If the reported motion matches what the
+            // animation looks like in the headset, the rig is being replayed
+            // correctly and the fault is in the frame it is CARRIED by. If it
+            // does not match, the fault is in this file.
+            //
+            // ALWAYS ON and throttled to 1 s, because the tester cannot type
+            // with both hands on the controllers.
+            if (adopt) {
+                static uint64_t s_dirLog[2] = {0, 0};
+                if (nowMs - s_dirLog[hand] >= 1000) {
+                    s_dirLog[hand] = nowMs;
+                    BVR_LOG("[bones] ANIMDIR: %s hand adopting - anchor bone %d moved "
+                            "fwd %+.2f right %+.2f up %+.2f UU (|d|=%.2f, %.1f deg) in "
+                            "MODEL space this step.",
+                            hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", anchor, dAnchor[0],
+                            dAnchor[1], dAnchor[2], maxPos, maxAng);
+                }
+            }
 
             // BRVR's rejection-peak report, ported and ALWAYS ON. Its note:
             // "the tester saw recoil on every gun EXCEPT the Tommy gun -- whose
@@ -1982,16 +2820,17 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // others don't"), so this is how the threshold gets chosen from data
             // instead of guessed a third time.
             if (!adopt) {
-                static float s_rejPeak = 0.0f;
-                static uint64_t s_rejLog = 0;
-                if (maxAng > s_rejPeak) s_rejPeak = maxAng;
-                if (nowMs - s_rejLog >= 3000) {
-                    s_rejLog = nowMs;
-                    BVR_LOG("[bones] ANIMREJECT: largest movement REJECTED in the last 3 s "
-                            "was %.1f deg (threshold %.1f). If an animation is missing, set "
-                            "the threshold just under this.",
-                            s_rejPeak, g_swayAngThreshDeg.load(std::memory_order_relaxed));
-                    s_rejPeak = 0.0f;
+                static float s_rejPeak[2] = {0.0f, 0.0f};
+                static uint64_t s_rejLog[2] = {0, 0};
+                if (maxAng > s_rejPeak[hand]) s_rejPeak[hand] = maxAng;
+                if (nowMs - s_rejLog[hand] >= 3000) {
+                    s_rejLog[hand] = nowMs;
+                    BVR_LOG("[bones] ANIMREJECT: %s hand, largest movement REJECTED in the "
+                            "last 3 s was %.1f deg at bone %d (threshold %.1f). If an "
+                            "animation is missing, set that hand's threshold under this.",
+                            hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", s_rejPeak[hand],
+                            anchor, thresh);
+                    s_rejPeak[hand] = 0.0f;
                 }
             }
             if (g_telemetry.load(std::memory_order_relaxed) &&
@@ -2025,7 +2864,65 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             }
             memcpy(g_ref, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
             g_refValid = true;
+
         }
+    }
+
+    // s70: the s68 rest-restore block stood here - the adopted-state edge, the
+    // canonical-rest snapshot and the smoothstep blend back to it. All of it was
+    // downstream of the per-state mask cutting adoption at the recoil apex. With
+    // the mask gone the hold window carries adoption to the animation's settled
+    // end, so there is nothing to restore FROM and nothing to restore TO.
+
+    // ---- s70e: RELEASE THE CLUSTER WHILE THE SETTLE WINDOW IS OPEN ---------
+    //
+    // BRVR does not just WAIT through the settle - it hands the skeleton back
+    // (ArmHide_ReleaseWeaponHand) and then returns without writing anything
+    // until the rig stops moving:
+    //
+    //     if (!still && !timedOut) return false;
+    //
+    // so the engine plays the equip animation natively and the player sees the
+    // authored draw. The s70 port kept waiting but carried on WRITING the
+    // cluster every frame of the window, which is a different thing entirely:
+    // the rig is dragged along a half-finished pose until the capture lands.
+    //
+    // MEASURED, the tester, when the ceiling went 600 -> 1500: "weapons are at
+    // the wrong position after equip and take a second to align to the right
+    // position". One second is the ceiling. That is this defect, and it is what
+    // made a longer window unaffordable - which matters, because a rotating
+    // plasmid needs a longer window than a weapon does.
+    //
+    // Releasing makes the window free. Clear the reapply cache too, or the
+    // stereo second pass keeps repainting the last pose for up to 100 ms and
+    // keeps clearing the dirty flag while it does - so the engine would never
+    // get the cluster back (see release()'s own note).
+    if (g_settleOpen) {
+        g_cacheCount = 0;
+        g_cacheSleeveCount = 0;
+        g_clWritten[hand] = false;
+        set_dirty(1); // let the engine own and evaluate it this frame
+        return false;
+    }
+
+    // s70e CLUSTERTEST: collapse the DRIVEN cluster on demand. Placed before the
+    // write so the zeroed scale is what reaches the engine this frame.
+    if (g_clusterTest.load(std::memory_order_relaxed)) {
+        static const float kZeroS[3] = {0.0f, 0.0f, 0.0f};
+        for (int i = first; i <= last && i < g_boneCount; ++i)
+            if (i >= 0) write_n(g_bones[i].s, kZeroS, 12);
+        static bool s_saidIt = false;
+        if (!s_saidIt) {
+            s_saidIt = true;
+            BVR_LOG("[bones] CLUSTERTEST: collapsing the %s cluster (bones %d-%d). If the "
+                    "hand you are looking at is STILL THERE, it is not this skeleton - "
+                    "which would mean every viewmodel change made in s69/s70 was applied "
+                    "to a mesh that is not on screen.",
+                    hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", first, last);
+        }
+        g_clWritten[hand] = true;
+        set_dirty(0);
+        return true;
     }
 
     // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to
@@ -2132,6 +3029,111 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     g_cacheCount = 0;
     g_cacheSleeveCount = 0;
     const float* pa = g_ref[anchor].p;
+    // s70: THE s69 ANCHOR PIN STOOD HERE, and it is gone.
+    //
+    // It translated and rotated the whole cluster back onto a captured rest
+    // anchor whenever an adopted animation moved it, so the hand could not walk
+    // off the controller. Three commits of it (e337532, ac33342, 825ced6, the
+    // last one normalising quaternions the pin itself had denormalised).
+    //
+    // It was compensation for two separate faults, both fixed at source now:
+    //
+    //   1. The freeze was anchored on bone 43, the WEAPON ATTACH - the one bone
+    //      the engine keeps animating even under freeze. Every other bone was
+    //      written relative to a moving point, so the cluster was dragged by it
+    //      whether or not anything was adopted. cluster_of now anchors the
+    //      freeze on the WRIST, as BRVR does.
+    //   2. The per-state mask cut adoption at the recoil apex and left the
+    //      reference stuck there, so the "animation" the pin was fighting was
+    //      often a pose that should have finished. The hold window ends that.
+    //
+    // BRVR pins nothing. Its WriteCluster is fed the reference's OWN wrist, so
+    // the delta is identity and the cluster replays verbatim; when it adopts, it
+    // adopts the whole live pose and replays THAT verbatim. An animation moving
+    // the hand is the animation doing its job - recoil is supposed to be visible.
+    //
+    // s70d: EXCEPT FOR ITS HEADING. See the pin banner up top - an adopted
+    // animation that turns the anchor re-points the whole hand, because the
+    // actor was aligned to the orientation captured at settle. qFix undoes only
+    // that turn.
+    float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    bool pinRot = false;
+    // ---- s70n: THE WEAPON HAND PINS WHEN IDLE, NOT WHILE ANIMATING ---------
+    //
+    // "the 1 cycle animation issue is happening on weapon equip and after every
+    // shot." Both are the HOLD WINDOW. Adoption is triggered by a big frame and
+    // then keeps adopting for g_swaySettleMs afterwards, so a shot adopts the
+    // recoil and then carries on adopting whatever follows it - which is the
+    // start of the idle fidget. One cycle of it, after every shot, exactly as
+    // reported. Equip is the same shape: the capture lands, then the tail of the
+    // window plays the fidget into the rig.
+    //
+    // Two changes, and the pin is the second. Pinning the weapon hand outright
+    // removed recoil (last commit); never pinning it lets the fidget wander.
+    // So pin it WHEN IT IS NOT ADOPTING: recoil moves the hand freely, and the
+    // moment the animation's window closes the hand eases back to the pose
+    // captured at equip instead of freezing wherever the fidget left it.
+    //
+    // Eased, not snapped - the return is the same shape the s68 canonical rest
+    // used, without the canonical rest: the pose we ease to is the settle
+    // capture, which already exists and is already per holdable.
+    const bool adoptingNow =
+        (GetTickCount64() - g_lastBigDeltaHandMs[hand]) <
+        g_swaySettleMs.load(std::memory_order_relaxed);
+    const bool pinIdleOnly = g_pinWhenIdle[hand].load(std::memory_order_relaxed);
+    {
+        // Ease the pin in and out so neither the shot nor the return snaps.
+        const uint64_t nowPb = GetTickCount64();
+        const float want = (pinIdleOnly && adoptingNow) ? 0.0f : 1.0f;
+        float dtMs = g_pinBlendMs[hand] ? static_cast<float>(nowPb - g_pinBlendMs[hand]) : 0.0f;
+        if (dtMs < 0.0f) dtMs = 0.0f;
+        if (dtMs > 250.0f) dtMs = 250.0f;
+        g_pinBlendMs[hand] = nowPb;
+        const float tau = 120.0f;
+        const float alpha = 1.0f - expf(-dtMs / tau);
+        g_pinBlend[hand] += (want - g_pinBlend[hand]) * alpha;
+        if (g_pinBlend[hand] < 0.0f) g_pinBlend[hand] = 0.0f;
+        if (g_pinBlend[hand] > 1.0f) g_pinBlend[hand] = 1.0f;
+    }
+    const float pinAmt = g_pinBlend[hand];
+    const bool pinPos = g_freezeOnly.load(std::memory_order_relaxed) &&
+                        g_animPinPos[hand].load(std::memory_order_relaxed) &&
+                        g_pinValid[hand] && anchor < g_boneCount && pinAmt > 0.001f;
+    if (g_freezeOnly.load(std::memory_order_relaxed) &&
+        (g_animPinRot[hand].load(std::memory_order_relaxed) ||
+         g_animPinPos[hand].load(std::memory_order_relaxed)) &&
+        g_pinValid[hand] && anchor < g_boneCount && pinAmt > 0.001f) {
+        float qInv[4];
+        quat_conj(g_ref[anchor].q, qInv);
+        quat_mul(g_pinAnchorQ[hand], qInv, qFix);
+        const float fn = sqrtf(qFix[0] * qFix[0] + qFix[1] * qFix[1] + qFix[2] * qFix[2] +
+                               qFix[3] * qFix[3]);
+        if (fn > 1e-4f) {
+            for (int k = 0; k < 4; ++k) qFix[k] /= fn;
+            // Scale the correction by how far the pin is eased in. At pinAmt 0
+            // this is identity and the animation moves the hand exactly as
+            // authored - which is what recoil needs.
+            if (pinAmt < 0.999f) {
+                static const float kIdent[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                float qb[4];
+                quat_nlerp(kIdent, qFix, pinAmt, qb);
+                memcpy(qFix, qb, 16);
+            }
+            pinRot = g_animPinRot[hand].load(std::memory_order_relaxed);
+            // ALWAYS ON, throttled: how far the animation had turned the anchor
+            // IS the size of the defect this cancels, so it gets measured.
+            static uint64_t s_pinLog[2] = {0, 0};
+            const uint64_t nowPin = GetTickCount64();
+            const float turn = quat_angle_deg(g_ref[anchor].q, g_pinAnchorQ[hand]);
+            if (turn > 3.0f && nowPin - s_pinLog[hand] >= 1000) {
+                s_pinLog[hand] = nowPin;
+                BVR_LOG("[bones] ANIMPIN: %s hand - the animation had turned anchor bone "
+                        "%d by %.1f deg off the captured heading; pinned back. The "
+                        "animation keeps its motion, the hand keeps its heading.",
+                        hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", anchor, turn);
+            }
+        }
+    }
     // Viewmodel scale (session 61, see the g_scale block comment): the
     // anchor-relative translations shrink by s for every cluster bone - the
     // cluster scales ABOUT THE ANCHOR, so the anchor write-loc is unchanged
@@ -2163,10 +3165,53 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // too big"). The cluster scales about the anchor exactly as the
             // retarget path does, so the authored pose is preserved in shape
             // and only its size changes.
-            p[0] = pa[0] + (g_ref[i].p[0] - pa[0]) * s;
-            p[1] = pa[1] + (g_ref[i].p[1] - pa[1]) * s;
-            p[2] = pa[2] + (g_ref[i].p[2] - pa[2]) * s;
-            memcpy(q, g_ref[i].q, 16);
+            float off[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
+                            (g_ref[i].p[2] - pa[2]) * s};
+            // VERBATIM, unless the anchor has been turned by an adopted
+            // animation - see the s70d pin banner. qFix maps the animated anchor
+            // back onto the orientation the actor was aligned to, and is applied
+            // to the whole cluster so the hand keeps its heading while the
+            // animation plays inside it. Position is NOT pinned: the motion is
+            // correct and only the pointing was wrong.
+            //
+            // NORMALISED, both qFix and the per-bone product. The bone bank does
+            // not hold unit quats while an animation blends, conj() is not the
+            // inverse of a non-unit quat, and qts_rotate() would then scale every
+            // offset by |q|^2 - which is a vertex explosion, not a rotation
+            // (825ced6, and ENGINE_NOTES).
+            if (pinRot) {
+                float rot[3];
+                qts_rotate(qFix, off, rot);
+                off[0] = rot[0];
+                off[1] = rot[1];
+                off[2] = rot[2];
+                quat_mul(qFix, g_ref[i].q, q);
+                const float bn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+                if (bn > 1e-4f) {
+                    q[0] /= bn;
+                    q[1] /= bn;
+                    q[2] /= bn;
+                    q[3] /= bn;
+                } else {
+                    memcpy(q, g_ref[i].q, 16);
+                }
+            } else {
+                memcpy(q, g_ref[i].q, 16);
+            }
+            // ROOT SUPPRESSED, SHAPE KEPT. `off` is measured against the
+            // ANIMATED anchor just above, so it still carries every bit of the
+            // animation's internal articulation; placing it at the CAPTURED
+            // anchor is what drops the root motion that was carrying the hand
+            // off through the trimmed frame.
+            // Eased between the animated anchor and the captured one, so the
+            // weapon hand can travel with its recoil and then come back.
+            float paOut[3] = {pa[0], pa[1], pa[2]};
+            if (pinPos)
+                for (int c = 0; c < 3; ++c)
+                    paOut[c] = pa[c] + (g_pinAnchorP[hand][c] - pa[c]) * pinAmt;
+            p[0] = paOut[0] + off[0];
+            p[1] = paOut[1] + off[1];
+            p[2] = paOut[2] + off[2];
             if (attachBone) {
                 // Position always; rotation only if the attach-rotation toggle
                 // is on. BRVR ships position-only here and its own log shows
@@ -2239,6 +3284,337 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         cb.writeScale = wantS;
         cb.writeRot = wantRot;
         if (wantS) memcpy(cb.s, sv, 12);
+    }
+
+    // ---- s70i: SOLVE THE ARM, DO NOT CARRY IT -----------------------------
+    //
+    // Shoulder anchored, hand on the controller, elbow solved between them. The
+    // rigid limb this replaces pivoted the whole arm about the hand, so a wrist
+    // roll swung the shoulder - reported, and true by construction.
+    //
+    // Everything geometric comes from g_armRef, captured at the settle from the
+    // engine's own pose. NOT from g_ref: adoption copies the live array into
+    // g_ref including the bones this pass writes, so g_ref is our own output one
+    // frame later and anything measured against it is measuring itself. That is
+    // exactly why the graded blend that stood here "did nothing".
+    if (freezeOnly && g_armsMode.load(std::memory_order_relaxed) == 1 &&
+        !g_collapse.load(std::memory_order_relaxed) && g_armRefValid[hand]) {
+        const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const Qts* ar = g_armRef[hand];
+        auto sub3 = [](const float a[3], const float b[3], float o[3]) {
+            o[0] = a[0] - b[0];
+            o[1] = a[1] - b[1];
+            o[2] = a[2] - b[2];
+        };
+        auto len3 = [](const float v[3]) {
+            return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        };
+        auto norm3 = [&](float v[3]) {
+            const float n = len3(v);
+            if (n > 1e-6f) {
+                v[0] /= n;
+                v[1] /= n;
+                v[2] /= n;
+            }
+            return n;
+        };
+
+        // Authored geometry: shoulder -> elbow -> wrist, scaled the same way the
+        // cluster is so the arm cannot end up a different size from the hand.
+        float aSE[3], aEW[3];
+        sub3(ar[2].p, ar[1].p, aSE);
+        sub3(g_armW0[hand], ar[2].p, aEW);
+        float aSEn[3] = {aSE[0], aSE[1], aSE[2]};
+        float aEWn[3] = {aEW[0], aEW[1], aEW[2]};
+        const float L1 = norm3(aSEn) * s;
+        const float L2 = norm3(aEWn) * s;
+
+        // ---- THE SHOULDER IS ANCHORED TO YOUR BODY, NOT TO THE RIG ---------
+        //
+        // THIS is why the shoulder pin, the graded blend and the first IK cut
+        // all "did nothing" to the rotation. Bone positions are COMPONENT SPACE
+        // - relative to the actor - and the actor's rotation is set from your
+        // controller every frame. So the entire space the arm lives in spins
+        // with your wrist, and a constant component-space shoulder is anchored
+        // TO THE SPINNING FRAME. There is no bone write that can fix that,
+        // which is exactly what three attempts at bone writes demonstrated.
+        //
+        // So place the shoulder in a HEAD-RELATIVE frame, where it actually
+        // lives, and convert into component space through the inverse actor
+        // rotation each frame. Now the actor can spin as much as it likes: the
+        // shoulder stays where your body is and the elbow solves against it.
+        //
+        // Yaw only, deliberately. Pitching your head must not swing your
+        // shoulder up and down - the body does not do that, and head-pitch
+        // coupling is what makes a VR arm feel like it is on a stick.
+        // ---- CONVERT THROUGH THE TRANSFORM WE INTEND, NOT THE LIVE ONE ----
+        //
+        // drive() runs BEFORE the actor write, so `qaInv` and `actorLoc` above
+        // hold whatever the ENGINE last left in the actor - and it rewrites that
+        // rotator every frame. MEASURED, ACTORWATCH over one session: 118 hits,
+        // pitch 27-60 deg, yaw up to 80, roll 40-60, continuously.
+        //
+        // So the world -> component conversion for the shoulder was going
+        // through a rotation up to 60 deg wrong, intermittently, depending on
+        // where the engine's tick fell relative to ours. That is both of the
+        // reported defects in one: "the shoulder isn't in a hard locked
+        // position" and "the whole arm juts forward a bit every few seconds".
+        // The pole made it worse because it goes through the same conversion on
+        // every single frame.
+        //
+        // hands.cpp publishes what it last wrote. Use that: it is the transform
+        // the rig is actually carried by once the write lands, it is not
+        // contested by the engine, and being one frame old costs far less than
+        // being 60 degrees wrong.
+        float aLoc[3] = {actorLoc[0], actorLoc[1], actorLoc[2]};
+        float qaUse[4] = {qaInv[0], qaInv[1], qaInv[2], qaInv[3]};
+        {
+            float wl[3];
+            int32_t wr[3];
+            if (hands::last_actor_write(wl, wr)) {
+                memcpy(aLoc, wl, sizeof aLoc);
+                FRotator wrot{wr[0], wr[1], wr[2]};
+                float qw[4];
+                ue_rot_to_quat(wrot, qw);
+                quat_conj(qw, qaUse);
+            }
+        }
+        // ---- THE SHOULDER HANGS OFF THE BODY, NOT THE HEAD -----------------
+        //
+        // "If I keep my right arm in place and turn my head right and back to
+        // center it extends and contracts the arm." Of course it does: the
+        // shoulder was built from ctx.camYaw and ctx.cam[XYZ], which are the
+        // FINAL camera - body yaw PLUS the head's own rotation, and the camera
+        // position INCLUDING the head offset. So turning or leaning your head
+        // swung the shoulder around, and the arm stretched to keep reaching a
+        // hand that had not moved.
+        //
+        // Your shoulder does not rotate when you turn your head. FrameContext
+        // already separates the two and this simply had not used it:
+        //   driveYawOffsetRad - the yaw the HEAD drive added on top of the game
+        //   base[XYZ]         - the camera position BEFORE the head offset
+        // Subtract the one and use the other, and the shoulder is anchored to
+        // the body. Turning under a stick turn still carries it, because that
+        // rotates the body and it should.
+        const float uuPerCm = ctx.worldScale / 100.0f;
+        const float yawRad =
+            (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f) -
+            ctx.driveYawOffsetRad;
+        const float cy = cosf(yawRad), sy = sinf(yawRad);
+        const float fCm = g_shoulderFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        const float rCm = g_shoulderRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        const float uCm = g_shoulderUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        // UE yaw-only basis: forward (cy, sy, 0), right (-sy, cy, 0), up (0,0,1).
+        // base[XYZ], not cam[XYZ]: leaning your head must not drag the shoulder
+        // with it either. Same defect as the yaw, on the translation channel.
+        const float sWorld[3] = {ctx.baseX + cy * fCm - sy * rCm,
+                                 ctx.baseY + sy * fCm + cy * rCm, ctx.baseZ + uCm};
+        float sRel[3] = {sWorld[0] - aLoc[0], sWorld[1] - aLoc[1], sWorld[2] - aLoc[2]};
+        float S[3];
+        qts_rotate(qaUse, sRel, S);
+
+        // The hand is wherever the cluster write just put the anchor.
+        // The same eased anchor the cluster was written at, or the arm would
+        // solve to a wrist the hand is no longer at during a recoil.
+        float Wbuf[3] = {pa[0], pa[1], pa[2]};
+        if (pinPos)
+            for (int c = 0; c < 3; ++c)
+                Wbuf[c] = pa[c] + (g_pinAnchorP[hand][c] - pa[c]) * pinAmt;
+        const float* W = Wbuf;
+
+        float dir[3];
+        sub3(W, S, dir);
+        const float dRaw = norm3(dir);
+        float d = dRaw;
+        if (L1 > 1e-4f && L2 > 1e-4f && d > 1e-4f) {
+            // Keep the triangle closable: never fully straight, never folded
+            // through itself - both make the solve degenerate and the elbow snap.
+            const float dMin = fabsf(L1 - L2) + 1e-3f;
+            const float dMax = L1 + L2 - 1e-3f;
+            if (d < dMin) d = dMin;
+            if (d > dMax) d = dMax;
+
+            const float aLen = (L1 * L1 - L2 * L2 + d * d) / (2.0f * d);
+            float hSq = L1 * L1 - aLen * aLen;
+            const float hLen = hSq > 0.0f ? sqrtf(hSq) : 0.0f;
+
+            // ---- THE POLE LIVES IN THE HEAD FRAME TOO -------------------
+            //
+            // It used to be the authored bend, which is a COMPONENT-SPACE
+            // direction - so it span with the actor exactly as the shoulder did
+            // before it was moved out. A wrist roll rotated the pole, and the
+            // elbow orbited the shoulder->hand axis: "a tiny turn of the wrist
+            // causes the elbow to swing out way more than it should". The same
+            // frame bug as the shoulder, one level down.
+            //
+            // So the bend hint is body-relative and constant: mostly DOWN, a
+            // little outward, which is where a resting human elbow sits. Built
+            // in world space from the head's yaw basis, then rotated into
+            // component space - after which a wrist roll cannot move it.
+            // HOW MUCH THE ELBOW FOLLOWS THE WRIST. v1 took the pole from the
+            // authored bend, a component-space direction, so the elbow swivelled
+            // with every wrist roll - too much. v2 put it in the body frame, so
+            // it stopped swivelling entirely - too little. "It should be
+            // somewhere in between the first version and this version", so it is
+            // a blend of exactly those two poles, on a slider.
+            const float wristK = g_elbowFollowWrist.load(std::memory_order_relaxed);
+            const float outSign = (hand == 1) ? 1.0f : -1.0f;
+            const float eo = g_elbowOut.load(std::memory_order_relaxed);
+            float poleWorld[3] = {(-sy) * outSign * eo, (cy)*outSign * eo,
+                                  -(1.0f - eo * 0.5f)};
+            float pole[3];
+            qts_rotate(qaUse, poleWorld, pole);
+            norm3(pole);
+            if (wristK > 0.001f) {
+                // The v1 pole: the authored bend, which lives in the rig's own
+                // frame and therefore turns with the wrist.
+                float poleRig[3] = {aSEn[0], aSEn[1], aSEn[2]};
+                norm3(poleRig);
+                for (int c = 0; c < 3; ++c)
+                    pole[c] = pole[c] * (1.0f - wristK) + poleRig[c] * wristK;
+                if (norm3(pole) < 1e-4f) {
+                    qts_rotate(qaUse, poleWorld, pole);
+                    norm3(pole);
+                }
+            }
+            // Project perpendicular to the current arm axis so it is a pure
+            // bend direction and cannot push the elbow along the arm.
+            const float dp = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2];
+            pole[0] -= dir[0] * dp;
+            pole[1] -= dir[1] * dp;
+            pole[2] -= dir[2] * dp;
+            if (norm3(pole) < 1e-4f) {
+                // Authored arm dead straight along the new axis: any
+                // perpendicular is as good as another.
+                float t[3] = {0.0f, 0.0f, 1.0f};
+                if (fabsf(dir[2]) > 0.9f) {
+                    t[1] = 1.0f;
+                    t[2] = 0.0f;
+                }
+                pole[0] = dir[1] * t[2] - dir[2] * t[1];
+                pole[1] = dir[2] * t[0] - dir[0] * t[2];
+                pole[2] = dir[0] * t[1] - dir[1] * t[0];
+                norm3(pole);
+            }
+
+            float E[3] = {S[0] + dir[0] * aLen + pole[0] * hLen,
+                          S[1] + dir[1] * aLen + pole[1] * hLen,
+                          S[2] + dir[2] * aLen + pole[2] * hLen};
+
+            // A LITTLE SMOOTHING ON THE ELBOW ONLY. Reported as reacting "almost
+            // too fast that it feels jarring" - which it is: the solve is exact
+            // and instantaneous, so every jitter in the hand pose lands on the
+            // elbow at full amplitude. Ease the derived joint and that settles,
+            // while the hand itself stays perfectly live.
+            //
+            // Frame-rate independent: alpha = 1 - exp(-dt/tau), so the feel does
+            // not change between 72 and 120 Hz.
+            const unsigned tau = g_elbowSmoothMs.load(std::memory_order_relaxed);
+            const uint64_t nowE = GetTickCount64();
+            if (tau > 0 && g_elbowHavePrev[hand]) {
+                float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
+                if (dtMs < 0.0f) dtMs = 0.0f;
+                if (dtMs > 250.0f) dtMs = 250.0f; // a hitch must not snap the arm
+                const float alpha = 1.0f - expf(-dtMs / static_cast<float>(tau));
+                for (int c = 0; c < 3; ++c)
+                    E[c] = g_elbowPrev[hand][c] + (E[c] - g_elbowPrev[hand][c]) * alpha;
+            }
+            memcpy(g_elbowPrev[hand], E, sizeof g_elbowPrev[hand]);
+            g_elbowHavePrev[hand] = true;
+            g_elbowLastMs[hand] = nowE;
+
+            // Upper arm: authored shoulder->elbow swung onto the solved one.
+            float nSE[3];
+            sub3(E, S, nSE);
+            norm3(nSE);
+            float qUp[4], qUpF[4];
+            quat_from_to(aSEn, nSE, qUp);
+            quat_mul(qUp, ar[1].q, qUpF);
+
+            // Forearm: authored elbow->wrist swung onto the solved one.
+            float nEW[3];
+            sub3(W, E, nEW);
+            norm3(nEW);
+            float qFo[4], qFoF[4];
+            quat_from_to(aEWn, nEW, qFo);
+            quat_mul(qFo, ar[2].q, qFoF);
+
+            auto put = [&](int idx, const float pw[3], const float qw[4]) {
+                if (idx < 0 || idx >= g_boneCount) return;
+                if (!write_n(g_bones[idx].p, pw, 12)) return;
+                write_n(g_bones[idx].q, qw, 16);
+                if (g_scaleWrote[idx]) {
+                    write_n(g_bones[idx].s, g_ref[idx].s, 12);
+                    g_scaleWrote[idx] = false;
+                }
+                if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+                    CachedBone& ca = g_cache[g_cacheCount++];
+                    ca.idx = idx;
+                    memcpy(ca.p, pw, 12);
+                    memcpy(ca.q, qw, 16);
+                    ca.writeScale = false;
+                    ca.writeRot = true;
+                }
+            };
+
+            // ---- THE CLAVICLE RIDES THE SHOULDER, IT DOES NOT ORBIT IT ----
+            //
+            // It used to be written at ar[0].p - its AUTHORED position, which is
+            // a COMPONENT-SPACE point and therefore sweeps through the world as
+            // the actor turns. The upper arm was anchored in the head frame and
+            // the clavicle was not, so the two disagreed and the base of the arm
+            // circled the joint it hangs from: "extending my arm to a straight
+            // line and rotating my arm causes the base shoulder to spin on a
+            // swivel around where it should".
+            //
+            // Same frame bug as the shoulder and the pole before it, third and
+            // last place it was hiding. Hang the clavicle off the solved
+            // shoulder by its authored offset instead, carried by the same swing
+            // as the upper arm, so nothing about it is expressed in the rotating
+            // frame any more.
+            float clavOff[3] = {(ar[0].p[0] - ar[1].p[0]) * s,
+                                (ar[0].p[1] - ar[1].p[1]) * s,
+                                (ar[0].p[2] - ar[1].p[2]) * s};
+            float clavRot[3];
+            qts_rotate(qUp, clavOff, clavRot);
+            const float clavPos[3] = {S[0] + clavRot[0], S[1] + clavRot[1],
+                                      S[2] + clavRot[2]};
+            float qClav[4];
+            quat_mul(qUp, ar[0].q, qClav);
+            put(armIdx[0], clavPos, qClav);
+            put(armIdx[1], S, qUpF);
+            put(armIdx[2], E, qFoF);
+
+            // Twists ride the forearm at the fraction along it they were
+            // authored at, so they stay evenly spaced however the elbow moves.
+            for (int k = 3; k < 5; ++k) {
+                float off0[3];
+                sub3(ar[k].p, ar[2].p, off0);
+                float t = off0[0] * aEWn[0] + off0[1] * aEWn[1] + off0[2] * aEWn[2];
+                t = (L2 > 1e-4f) ? (t * s) / L2 : 0.0f;
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                const float tp[3] = {E[0] + (W[0] - E[0]) * t, E[1] + (W[1] - E[1]) * t,
+                                     E[2] + (W[2] - E[2]) * t};
+                float qk[4];
+                quat_mul(qFo, ar[k].q, qk);
+                put(armIdx[k], tp, qk);
+            }
+
+            static uint64_t s_ikLog[2] = {0, 0};
+            const uint64_t nowIk = GetTickCount64();
+            if (nowIk - s_ikLog[hand] >= 5000) {
+                s_ikLog[hand] = nowIk;
+                BVR_LOG("[bones] ARMIK: %s arm solved - upper %.1f UU, fore %.1f UU, "
+                        "shoulder-to-hand %.1f UU%s. The shoulder is anchored at its "
+                        "authored joint; only the elbow and wrist move.",
+                        hand == 1 ? "RIGHT" : "LEFT", L1, L2, dRaw,
+                        (dRaw > L1 + L2 - 1e-3f)
+                            ? " (REACHED - the hand is further than the arm is long, so "
+                              "the elbow is locked straight)"
+                            : "");
+            }
+        }
     }
 
 
@@ -2355,6 +3731,71 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         wl[0], wl[1], wl[2], anchor, bw[0], bw[1], bw[2], d[0], d[1], d[2],
                         mag);
             }
+
+            // ---- s70e: THE SAME QUESTION, ASKED OF THE PLASMID --------------
+            //
+            // The probe above is gated on current_holdable(), which is NULL for
+            // EVERY plasmid - so in three sessions it has never once run for
+            // one. That is the measurement gap this whole session was missing.
+            //
+            // The tester's words are "IT points like 90 degrees left", not "the
+            // hand points", and ROLLCHECK now proves the hand's bones hold
+            // exactly where we write them (62 held / 3 changed). A pinned hand
+            // carrying a separately-attached ability actor that rotates with the
+            // engine produces precisely that, and is invisible to every change
+            // made across s69 and s70 - which is what the symptom has been
+            // doing.
+            //
+            // Reports POSITION and ROTATION. The rotation is the one that
+            // matters: if the ability's own rotation swings tens of degrees
+            // against the bone we have pinned, the answer is the attachment.
+            void* abil = nullptr;
+            if (hands::current_ability(&abil) && abil) {
+                float al[3];
+                int32_t ar[3];
+                Qts ab2{};
+                const bool okLoc = read_n(
+                    static_cast<uint8_t*>(abil) + patterns::kActorLocOffset, al, 12);
+                const bool okRot = read_n(
+                    static_cast<uint8_t*>(abil) + patterns::kActorViewDirOffset, ar, 12);
+                if (!okLoc || !okRot) {
+                    // SAY SO rather than printing zeros. An Ability may not be
+                    // an Actor on this build, in which case these offsets are
+                    // meaningless and the plasmid is drawn some other way -
+                    // which is itself the answer.
+                    static bool s_warned = false;
+                    if (!s_warned) {
+                        s_warned = true;
+                        BVR_LOG("[bones] ability attach: %p is NOT readable at the actor "
+                                "loc/rot offsets (loc=%d rot=%d). It is not an Actor with "
+                                "the layout weapons have, so it is not attached the way a "
+                                "weapon is - look at how the plasmid is DRAWN instead.",
+                                abil, okLoc ? 1 : 0, okRot ? 1 : 0);
+                    }
+                } else if (read_n(&g_bones[anchor], &ab2, sizeof ab2)) {
+                    float bw2[3];
+                    qts_rotate(qa, ab2.p, bw2);
+                    bw2[0] += actorLoc[0];
+                    bw2[1] += actorLoc[1];
+                    bw2[2] += actorLoc[2];
+                    const float d2[3] = {al[0] - bw2[0], al[1] - bw2[1], al[2] - bw2[2]};
+                    const float mag2 =
+                        sqrtf(d2[0] * d2[0] + d2[1] * d2[1] + d2[2] * d2[2]);
+                    // The ability's rotation against the heading we pinned the
+                    // anchor to. If this moves during a cast, the plasmid is
+                    // turning independently of the hand.
+                    FRotator arot{ar[0], ar[1], ar[2]};
+                    float aq[4];
+                    ue_rot_to_quat(arot, aq);
+                    const float vsPin =
+                        g_pinValid[hand] ? quat_angle_deg(aq, g_pinAnchorQ[hand]) : -1.0f;
+                    BVR_LOG("[bones] ability attach: plasmid loc=(%.1f %.1f %.1f) bone%d "
+                            "world=(%.1f %.1f %.1f) delta=(%.2f %.2f %.2f) |d|=%.2f UU | "
+                            "its rotation is %.1f deg off the pinned anchor heading",
+                            al[0], al[1], al[2], anchor, bw2[0], bw2[1], bw2[2], d2[0],
+                            d2[1], d2[2], mag2, vsPin);
+                }
+            }
         }
     }
 
@@ -2363,7 +3804,10 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // toward the shoulder. On the off-transition the reference values are
     // written back explicitly - the engine cannot be relied on to re-evaluate
     // while the drive keeps clearing the dirty flag.
-    bool collapse = g_collapse.load(std::memory_order_relaxed);
+    // s70g: the arms radio and the old collapse checkbox mean the same thing at
+    // mode 2, so either one hides the arm and neither contradicts the other.
+    bool collapse = g_collapse.load(std::memory_order_relaxed) ||
+                    g_armsMode.load(std::memory_order_relaxed) == 2;
     const int* sleeve = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
     const size_t sleeveCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
                                          : _countof(patterns::kBoneLSleeve);
@@ -2517,6 +3961,7 @@ void handle_command(const char* args) {
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
         BVR_LOG("[bones] usage: vrbones status|list [n]|poke <idx> <dUU>|freeze on|off|"
                 "collapse on|off|attachrot on|off|ref|anchor <idx>|"
+                "rest on|off|rest ms <n>|rest drop|"
                 "lcluster <lo> <hi> <anchor>");
         return;
     }
@@ -2531,6 +3976,17 @@ void handle_command(const char* args) {
                 g_lastHand.load(std::memory_order_relaxed), g_refValid ? 1 : 0,
                 g_collapse.load(std::memory_order_relaxed) ? 1 : 0,
                 g_hideInactive.load(std::memory_order_relaxed) ? 1 : 0, g_hiddenHand);
+        BVR_LOG("[bones] s70 settle: window=%s floor=%ums still=%ums/%.3fUU ceiling=%ums "
+                "debounce=%ums | adopt above %.1f deg, hold %ums | hands state %s",
+                g_settleN > 0 ? "OPEN" : "closed",
+                g_settleMinMs.load(std::memory_order_relaxed),
+                g_settleStillMs.load(std::memory_order_relaxed),
+                g_settleStillUu.load(std::memory_order_relaxed),
+                g_settleCeilMs.load(std::memory_order_relaxed),
+                g_keyDebounceMs.load(std::memory_order_relaxed),
+                g_swayAngThreshDeg.load(std::memory_order_relaxed),
+                g_swaySettleMs.load(std::memory_order_relaxed),
+                hands_state::to_string(g_lastKnownState));
         // Session 30: the drive-residue state, on demand. Until now cacheAge
         // existed only on the `[b1r] cine edge` line and the sleeve latch was
         // printed nowhere at all, so a hands regression check had to provoke a
@@ -2674,6 +4130,27 @@ void handle_command(const char* args) {
                 g_swayAngThreshDeg.load(std::memory_order_relaxed),
                 g_swayPosThreshUu.load(std::memory_order_relaxed),
                 g_swaySettleMs.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "settle") == 0) {
+        // s70: replaces `rest`, `capidle` and `animpin`, which controlled the
+        // three pieces of machinery this session deleted.
+        // "settle [minMs stillMs ceilMs stillUu debounceMs]"
+        unsigned mn = 0, st = 0, ce = 0, db = 0;
+        float uu = 0.0f;
+        const int n = sscanf_s(rest, "%u %u %u %f %u", &mn, &st, &ce, &uu, &db);
+        if (n >= 1 && mn > 0) g_settleMinMs.store(mn, std::memory_order_relaxed);
+        if (n >= 2 && st > 0) g_settleStillMs.store(st, std::memory_order_relaxed);
+        if (n >= 3 && ce > 0) g_settleCeilMs.store(ce, std::memory_order_relaxed);
+        if (n >= 4 && uu > 0.0f) g_settleStillUu.store(uu, std::memory_order_relaxed);
+        if (n >= 5) g_keyDebounceMs.store(db, std::memory_order_relaxed);
+        BVR_LOG("[bones] settle: floor %u ms, still for %u ms under %.3f UU/frame, "
+                "ceiling %u ms, key debounce %u ms (BRVR ships 350 / 150 / 0.05 / 600 "
+                "/ 150). Window %s.",
+                g_settleMinMs.load(std::memory_order_relaxed),
+                g_settleStillMs.load(std::memory_order_relaxed),
+                g_settleStillUu.load(std::memory_order_relaxed),
+                g_settleCeilMs.load(std::memory_order_relaxed),
+                g_keyDebounceMs.load(std::memory_order_relaxed),
+                g_settleN > 0 ? "OPEN" : "closed");
     } else if (strcmp(verb, "attachrot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_attachRot.store(on, std::memory_order_relaxed);
@@ -2694,8 +4171,10 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "ref") == 0) {
         g_refValid = false;
         g_hasWritten[0] = g_hasWritten[1] = false;
+        settle_reset();
         set_dirty(1);
-        BVR_LOG("[bones] reference pose recapture queued (next engine evaluation)");
+        BVR_LOG("[bones] reference pose recapture queued (next engine evaluation), "
+                "settle window dropped");
     } else if (strcmp(verb, "anchor") == 0) {
         int idx = -1;
         sscanf_s(rest, "%d", &idx);
@@ -2891,6 +4370,50 @@ void draw_debug_ui() {
     }
 
     {
+        // s70: WHICH BONE THE FROZEN CLUSTER IS ANCHORED ON. The one control
+        // that needs no rebuild to answer the biggest open question, and it is a
+        // RADIO rather than a console verb on purpose - the tester cannot type
+        // with both hands on the controllers.
+        ImGui::TextDisabled("FREEZE ANCHOR - the bone everything else hangs off");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Wrist 27 is BRVR's. Its cluster spec is {27, 44, wrist 27} and\n"
+                "every replay is anchored on that wrist.\n\n"
+                "Attach 43 is what this tree shipped, and it is the WEAPON ATTACH\n"
+                "bone - the one bone BRVR deliberately leaves the engine still\n"
+                "animating. Its own log: cluster frozen, this bone is still the\n"
+                "engine's, with 1-5 deg of idle drift and peaks of 41-135.\n\n"
+                "Anchoring the freeze on a bone the engine animates writes every\n"
+                "other bone relative to a MOVING point, so the whole cluster is\n"
+                "dragged along by it. If the hand walks off the controller during\n"
+                "recoil or a reload, this is the first thing to try.\n\n"
+                "EXPECT THE GUN TO SIT SLIGHTLY DIFFERENTLY. The cluster is scaled\n"
+                "to 0.80 ABOUT THIS ANCHOR, so moving it shifts the whole hand by\n"
+                "0.2 x the distance between the two bones. That is a placement\n"
+                "re-tune, not a fault - judge this switch on whether the hand\n"
+                "STAYS PUT during animation, not on where it sits.");
+        const int curAnchor = g_rAnchorOverride.load(std::memory_order_relaxed);
+        int asel = (curAnchor == patterns::kBoneWeaponAttach) ? 1
+                   : (curAnchor == patterns::kBoneRWrist)     ? 0
+                                                              : 0; // -1 = wrist in freeze
+        if (ImGui::RadioButton("wrist 27 (BRVR)", &asel, 0)) {
+            g_rAnchorOverride.store(-1, std::memory_order_relaxed);
+            set_dirty(1);
+            BVR_LOG("[bones] freeze anchor = WRIST %d (F10, BRVR's own) - the cluster "
+                    "now hangs off a bone we write, not one the engine animates",
+                    patterns::kBoneRWrist);
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("attach 43 (old)", &asel, 1)) {
+            g_rAnchorOverride.store(patterns::kBoneWeaponAttach, std::memory_order_relaxed);
+            set_dirty(1);
+            BVR_LOG("[bones] freeze anchor = WEAPON ATTACH %d (F10) - the pre-s70 "
+                    "behaviour; this bone is still engine-animated",
+                    patterns::kBoneWeaponAttach);
+        }
+    }
+
+    {
         // s67: the animation-adoption threshold, live. See the g_swayAngThreshDeg
         // banner - these are BRVR's HandAnimMinDeg / HandAnimHoldMs, and the old
         // hardcoded 12 deg / 600 ms is what froze real animation out.
@@ -2916,6 +4439,187 @@ void draw_debug_ui() {
         bool sk = g_swayKill.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Freeze idle sway (untick = adopt everything)", &sk))
             g_swayKill.store(sk, std::memory_order_relaxed);
+
+        // s70: BRVR's settle window, live. Replaces the animpin / capidle /
+        // rest-restore controls that stood here - all three drove machinery this
+        // session deleted. These are the numbers BRVR ships and the ones the
+        // headset run needs to be able to move.
+        // s70e: THE CONTROL CONDITION. First thing to press in the headset.
+        bool ct = g_clusterTest.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("TEST: collapse the driven hand (is this the mesh you see?)",
+                            &ct))
+            g_clusterTest.store(ct, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Zeroes the scale of the cluster this mod drives, so that skeleton\n"
+                "renders as nothing.\n\n"
+                "Hand VANISHES : we drive the mesh you are looking at. The fault is\n"
+                "                downstream of the bone writes.\n"
+                "Hand STAYS    : the hand on screen is a DIFFERENT MESH, and every\n"
+                "                viewmodel change made in the last two sessions went\n"
+                "                to a skeleton you cannot see.\n\n"
+                "Untick to restore. Equip a PLASMID before pressing this - that is\n"
+                "the case in question.");
+        ImGui::Separator();
+
+        // s70f: the two halves of "suppress the movement, keep the animation".
+        // s70g: BS2's arms mode, which is the thing BS1 never had.
+        ImGui::TextDisabled("ARMS - who drives the elbow and shoulder");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "BS1 has only ever hidden the arm or handed it back to the engine.\n"
+                "With arms visible and the engine owning them, the forearm stays at\n"
+                "its authored idle pose while the hand is driven to your controller\n"
+                "- an arm bent at an elbow nobody is driving.\n\n"
+                "BS2 drives the arm chain through the SAME transform as the hand,\n"
+                "and tracks correctly with arms visible. This is that.\n\n"
+                "game   : the engine owns the arm (BS1's old behaviour)\n"
+                "follow : the arm travels with the hand (BS2's shape)\n"
+                "hide   : collapse it, the existing behaviour");
+        int am = g_armsMode.load(std::memory_order_relaxed);
+        if (ImGui::RadioButton("game", &am, 0)) g_armsMode.store(0, std::memory_order_relaxed);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("follow", &am, 1))
+            g_armsMode.store(1, std::memory_order_relaxed);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("hide", &am, 2)) g_armsMode.store(2, std::memory_order_relaxed);
+        // s70i: the shoulder JOINT itself, per hand - "each shoulder will need
+        // anchoring and positioning like the weapons". The solver anchors the arm
+        // here and the elbow follows from it, so this is the one number that
+        // decides whether the arm reads as attached to you.
+        const int uh = g_lastHand.load(std::memory_order_relaxed) == 1 ? 1 : 0;
+        float sf = g_shoulderFwdCm[uh].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder fwd (cm)", &sf, -40.0f, 40.0f, "%.1f"))
+            g_shoulderFwdCm[uh].store(sf, std::memory_order_relaxed);
+        float sr = g_shoulderRightCm[uh].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder right (cm)", &sr, -40.0f, 40.0f, "%.1f"))
+            g_shoulderRightCm[uh].store(sr, std::memory_order_relaxed);
+        float su = g_shoulderUpCm[uh].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder up (cm)", &su, -40.0f, 40.0f, "%.1f"))
+            g_shoulderUpCm[uh].store(su, std::memory_order_relaxed);
+        ImGui::Text("editing the %s shoulder (follows the driven hand)",
+                    uh == 1 ? "RIGHT" : "LEFT");
+        float eo = g_elbowOut.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("elbow out", &eo, 0.0f, 1.0f, "%.2f"))
+            g_elbowOut.store(eo, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Which way the elbow bends. 0 hangs it straight down, 1 lifts it\n"
+                "level with the shoulder. A resting human elbow is about 0.35.\n\n"
+                "This is a BODY-relative direction, so rolling your wrist can no\n"
+                "longer swing the elbow - that was the same frame bug the shoulder\n"
+                "had, one level down.");
+        float ew = g_elbowFollowWrist.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("elbow follows wrist", &ew, 0.0f, 1.0f, "%.2f"))
+            g_elbowFollowWrist.store(ew, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "How much rolling your wrist swivels the elbow.\n\n"
+                "0.00 : none at all - the elbow ignores wrist roll entirely.\n"
+                "1.00 : the elbow follows the wrist fully, which swings it much\n"
+                "       further than a real arm does.\n\n"
+                "A real elbow does swivel a little when you roll your forearm,\n"
+                "which is why neither end of this slider looks right.");
+        int es = static_cast<int>(g_elbowSmoothMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("elbow smoothing (ms)", &es, 0, 300))
+            g_elbowSmoothMs.store(static_cast<unsigned>(es < 0 ? 0 : es),
+                                  std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Eases the SOLVED ELBOW only. The hand is never smoothed - that\n"
+                "would put latency on your own tracking, which is the one thing a\n"
+                "VR viewmodel must not do.\n\n"
+                "The solve is exact and instant, so every jitter in the hand lands\n"
+                "on the elbow at full size. 0 = raw, 70 is the default.");
+        // SAVE ON RELEASE. Persistence landed last commit but nothing CALLED the
+        // save, so hands.ini still held a file from two days earlier and the
+        // tester was asked a third time for numbers they had no reason to have
+        // memorised. A setting that only persists when something else happens to
+        // save is not persisted.
+        if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+        if (ImGui::Button("save arm settings now")) hands::save_offsets();
+        ImGui::SameLine();
+        ImGui::Text("(sliders also save when released)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Where the arm is anchored to your body. The solver fixes the\n"
+                "shoulder here, puts the hand on your controller, and solves the\n"
+                "elbow between them - so rotating the controller bends the arm\n"
+                "instead of swinging the whole limb around the hand.\n\n"
+                "Set it to where your real shoulder sits relative to your head.\n"
+                "If the arm looks over-extended, the shoulder is too far away.");
+        ImGui::Separator();
+
+        ImGui::TextDisabled("ANIMATION - what the engine may move");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "The hand model is TURNED by its placement trim so the plasmid sits\n"
+                "right in VR. The authored animation then moves the hand through\n"
+                "that turned frame, so its travel goes somewhere the animator never\n"
+                "intended - while the animation itself plays perfectly.\n\n"
+                "These split the animation in two:\n"
+                "  ROOT  - the anchor bone, whose motion carries the whole hand.\n"
+                "  SHAPE - every other bone relative to it: fingers, grip, the\n"
+                "          cast pose. Never suppressed, so the animation plays.\n\n"
+                "Untick both to see the raw engine behaviour.");
+        const int ph = g_lastHand.load(std::memory_order_relaxed) == 1 ? 1 : 0;
+        bool app = g_animPinPos[ph].load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Animation cannot MOVE the hand (keeps fingers)", &app))
+            g_animPinPos[ph].store(app, std::memory_order_relaxed);
+        bool apr = g_animPinRot[ph].load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Animation cannot TURN the hand (keeps fingers)", &apr))
+            g_animPinRot[ph].store(apr, std::memory_order_relaxed);
+        ImGui::Text("these are PER HAND - editing the %s (plasmids default ON, "
+                    "weapons OFF so recoil still plays)",
+                    ph == 1 ? "RIGHT/weapon" : "LEFT/plasmid");
+
+        bool sea = g_showEquipAnim.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Play the equip animation on screen", &sea))
+            g_showEquipAnim.store(sea, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "OFF: the hand holds its pose through the equip and swaps to the\n"
+                "     new one when the settle lands. No animation cycle on screen.\n"
+                "     For the length of the window the hand keeps the OUTGOING\n"
+                "     item's shape - brief, and the reason this is a toggle.\n\n"
+                "ON : the engine plays its draw animation, which is BRVR's\n"
+                "     behaviour and the source of the 'one cycle on every equip'\n"
+                "     report.");
+        ImGui::TextDisabled("EQUIP SETTLE - when the pose is captured after a switch");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "On a weapon or plasmid switch the rig follows the equip animation,\n"
+                "and the pose is captured once it stops moving.\n\n"
+                "floor    : ignore stillness before this - many draws PAUSE part-way\n"
+                "           through, and quiet inside a pause is not the end.\n"
+                "still    : how long the anchor must stay under the threshold.\n"
+                "ceiling  : give up waiting, and capture the live pose anyway. A\n"
+                "           looping idle never goes still, so a capture that hits the\n"
+                "           ceiling is one frame of that loop and may sit off.\n"
+                "debounce : the engine parks CurrentHoldable at NULL for a frame\n"
+                "           during fire and pump animations. Without this, those\n"
+                "           blips read as weapon switches.");
+        int smn = static_cast<int>(g_settleMinMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("floor (ms)", &smn, 0, 1500))
+            g_settleMinMs.store(static_cast<unsigned>(smn < 0 ? 0 : smn),
+                                std::memory_order_relaxed);
+        int sst = static_cast<int>(g_settleStillMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("still for (ms)", &sst, 0, 1000))
+            g_settleStillMs.store(static_cast<unsigned>(sst < 0 ? 0 : sst),
+                                  std::memory_order_relaxed);
+        int sce = static_cast<int>(g_settleCeilMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("ceiling (ms)", &sce, 100, 4000))
+            g_settleCeilMs.store(static_cast<unsigned>(sce < 1 ? 1 : sce),
+                                 std::memory_order_relaxed);
+        float suu = g_settleStillUu.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("still under (UU/frame)", &suu, 0.01f, 2.0f, "%.3f"))
+            g_settleStillUu.store(suu, std::memory_order_relaxed);
+        int sdb = static_cast<int>(g_keyDebounceMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("switch debounce (ms)", &sdb, 0, 1000))
+            g_keyDebounceMs.store(static_cast<unsigned>(sdb < 0 ? 0 : sdb),
+                                  std::memory_order_relaxed);
+        ImGui::Text("settle window: %s | state %s", g_settleN > 0 ? "OPEN" : "closed",
+                    hands_state::to_string(g_lastKnownState));
     }
 
     bool col = g_collapse.load(std::memory_order_relaxed);
