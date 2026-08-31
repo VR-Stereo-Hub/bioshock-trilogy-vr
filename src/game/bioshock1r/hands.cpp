@@ -635,6 +635,22 @@ void load_config() {
     // hand, and where it sits is a per-player preference rather than a default.
     bones::set_off_hand_cm(0, -6.0f, 6.0f, 0.0f);
     bones::set_off_hand_rot_deg(0, -30.0f, 31.0f, -206.0f);
+    bones::set_off_hand_view_cm(0, 4.0f, -2.0f, 4.0f);
+    // s74: and the RIGHT hand, which is the free one whenever a plasmid is up.
+    // These are the tester's own tuned values, not a mirror - an earlier commit
+    // seeded a mirror of the left and it was wrong. The measured numbers are
+    // small (-32, -4, -8) precisely because the s72z junction fix removed the
+    // constant the mirror had been compensating for. Grip stays at zero on this
+    // hand; only placement and a light rotation trim were wanted.
+    bones::set_off_hand_rot_deg(1, -32.0f, -4.0f, -8.0f);
+    bones::set_off_hand_view_cm(1, -6.0f, 4.0f, 8.0f);
+    // s72y: the right hand keeps ZERO. s72v seeded a mirror of the left on the
+    // theory that the plasmid off hand was missing the left's -206 roll - but
+    // the tester reports the off hand's rotation ALREADY matches their
+    // controller untuned, on both hands. So the mismatch is not in the hand and
+    // no trim belongs here; it is the ARM's wrist end that does not meet it.
+    // Reverted rather than left in as a "harmless" default, because a trim that
+    // compensates for a downstream fault is how the next person loses a session.
 
     wchar_t path[MAX_PATH];
     config_path(path, MAX_PATH);

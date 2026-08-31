@@ -159,6 +159,30 @@ std::atomic<float> g_offHandViewCm[2][3] = {};
 constexpr int kFreeClusterMax = 24;
 Qts g_freeRef[2][kFreeClusterMax];
 bool g_freeRefValid[2] = {false, false};
+// s72c: THE FREE HAND'S OWN ARM REFERENCE, and it must be its own for the same
+// reason g_freeRef is.
+//
+// g_armRef/g_armW0/g_armRefValid are captured in ONE place: drive()'s settle
+// window, indexed by the HELD hand. So the free hand only ever had an arm
+// reference if that hand had previously been the held one - which is why the
+// off-hand IK looked build-dependent and was not. It is EQUIP-HISTORY dependent:
+// take out a plasmid, and the left hand's arm ref is captured while it drives;
+// go back to a weapon and the left keeps a stale reference from the other role.
+//
+// Worse than absent, because when it did fire it solved the free arm against the
+// HELD arm's authored data - ar[1].q and ar[2].q are that role's quaternions -
+// which is the reported "the right hand was driving rotation on the left hand
+// arm, twisting both arms at the same time".
+Qts g_freeArmRef[2][5];
+float g_freeArmW0[2][3] = {};
+bool g_freeArmRefValid[2] = {false, false};
+// s72e: the ACTOR ROTATION the free arm was captured in. The arm's twist is
+// expressed against this rather than against whatever the held wrist has
+// produced since - see the qArmFix banner in solve_arm().
+float g_freeArmActorQ[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
+// s72x: and the BODY YAW at capture. The authored bend is a property of the rig
+// relative to the BODY, so it has to turn when the body turns - see the pole.
+float g_freeArmYaw0[2] = {0.0f, 0.0f};
 // s71q: the free hand's ADOPTION state, per hand, as BRVR keeps lastBig[hand]
 // and rejPeak[hand] separately. See the adoption block in drive_free_hand().
 uint64_t g_freeLastBigMs[2] = {0, 0};
@@ -180,6 +204,7 @@ void free_ref_drop(const char* why) {
                 "engine owns the cluster",
                 why);
     g_freeRefValid[0] = g_freeRefValid[1] = false;
+    g_freeArmRefValid[0] = g_freeArmRefValid[1] = false;
 }
 struct CachedSleeve {
     int idx;
@@ -459,7 +484,21 @@ std::atomic<unsigned> g_elbowSmoothMs{70};
 // than taken to 1.0, because 1.0 is v1 - the version where the elbow swung much
 // further than a real arm does.
 std::atomic<float> g_elbowFollowWrist{0.60f};
+// s72m ARMHOLD: what solve_arm last wrote to the FREE arm's five bones, so the
+// next frame can ask whether it survived. Every arm fix in s72 assumed our write
+// is what renders; this is the probe that checked it.
+// s73f: the last UNWRAPPED twist angle, per hand. Continuity only - not
+// smoothing, which s73c removed for good reason. See the unwrap in solve_arm().
+float g_twistPrev[2] = {0.0f, 0.0f};
+bool g_twistHavePrev[2] = {false, false};
+Qts g_freeArmWrote[2][5];
+bool g_freeArmWroteValid[2] = {false, false};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
+// s72u: the free arm smooths its elbow in WORLD, not component space - see the
+// banner at the smoothing. Separate storage so the two frames never mix when a
+// hand changes role.
+float g_elbowPrevW[2][3] = {{0, 0, 0}, {0, 0, 0}};
+bool g_elbowHavePrevW[2] = {false, false};
 bool g_elbowHavePrev[2] = {false, false};
 uint64_t g_elbowLastMs[2] = {0, 0};
 
@@ -825,7 +864,32 @@ float g_dsWrote = 0.0f;       // what we last wrote (0 = nothing written yet)
 // could be judged, which it has been; with the free hand now drawn as well, two
 // arms is two more things moving while the off hand itself is what needs
 // testing. The F10 checkbox and the ARMS radio still turn them back on.
-std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
+std::atomic<bool> g_collapse{false}; // s72s: both arms SHOWN by default now
+// that each solves independently - the driven arm was hidden because its IK was
+// not trustworthy, and the off arm could not be shown without it.
+// s72i: THE OFF HAND'S ARM HAS ITS OWN FLAG, and it needed one from the start.
+//
+// g_collapse was a single global doing two jobs for two hands: hiding the
+// DRIVEN arm's sleeve, and gating solve_arm() for BOTH. So the off hand's IK
+// could only run while the held arm was also shown - "hide the drive hand"
+// silently turned off the free arm's solve as well, which is why the tester had
+// to untick it to get any off-hand IK at all and why the two arms behaved as one
+// switch.
+//
+// Defaults to false - the off arm is DRAWN and SOLVED - because it is the hand
+// the player is meant to see; the driven arm is the one that gets in the way of
+// a weapon and keeps its own default.
+std::atomic<bool> g_collapseOff{false};
+// s73h: how much of the wrist twist the BICEP and FOREARM carry. The helpers
+// ramp from this to 1.0 at the hand. Shared across the elbow because an elbow is
+// a hinge and cannot hold a twist step; see the gradient in solve_arm().
+//
+// Ships at 1.0 - the whole arm follows the wrist - because that is what the HELD
+// arm does (the actor carries it bodily) and matching it is the standard the
+// tester has judged this against throughout. Anatomically a humerus rolls less
+// than a wrist, so lower it if the bicep reads as over-turning; `vrbones
+// armtwist 0.5` and look, rather than another rebuild each time.
+std::atomic<float> g_armTwistShare{1.0f};
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -2521,9 +2585,17 @@ bool barrel_ref_axis(float d0[3]) {
 // rotation we intend (never the live one - see s70q); aLoc is that actor's
 // location; s is the viewmodel scale for this hand.
 void solve_arm(const FrameContext& ctx, int hand, const float W[3],
-               const float qaUse[4], const float aLoc[3], float s) {
+               const float qaUse[4], const float aLoc[3], float s, bool freeBank,
+               const float handQ[4], float rigScale, const float handRefQ[4]) {
+    // s72c: which arm bank. The free hand has its own, captured in its own
+    // settle window - see g_freeArmRef. Solving it out of the held hand's bank
+    // is what twisted both arms together.
+    // s74: one bank for both roles - see the capture in drive().
+    const bool valid = g_freeArmRefValid[hand];
     if (!(g_armsMode.load(std::memory_order_relaxed) == 1) ||
-        g_collapse.load(std::memory_order_relaxed) || !g_armRefValid[hand])
+        (freeBank ? g_collapseOff.load(std::memory_order_relaxed)
+                  : g_collapse.load(std::memory_order_relaxed)) ||
+        !valid)
         return;
     // ---- s70i: SOLVE THE ARM, DO NOT CARRY IT -----------------------------
     //
@@ -2537,7 +2609,7 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
     // frame later and anything measured against it is measuring itself. That is
     // exactly why the graded blend that stood here "did nothing".
         const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
-        const Qts* ar = g_armRef[hand];
+        const Qts* ar = g_freeArmRef[hand];
         auto sub3 = [](const float a[3], const float b[3], float o[3]) {
             o[0] = a[0] - b[0];
             o[1] = a[1] - b[1];
@@ -2560,7 +2632,7 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         // cluster is so the arm cannot end up a different size from the hand.
         float aSE[3], aEW[3];
         sub3(ar[2].p, ar[1].p, aSE);
-        sub3(g_armW0[hand], ar[2].p, aEW);
+        sub3(g_freeArmW0[hand], ar[2].p, aEW);
         float aSEn[3] = {aSE[0], aSE[1], aSE[2]};
         float aEWn[3] = {aEW[0], aEW[1], aEW[2]};
         const float L1 = norm3(aSEn) * s;
@@ -2611,9 +2683,24 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f) -
             ctx.driveYawOffsetRad;
         const float cy = cosf(yawRad), sy = sinf(yawRad);
-        const float fCm = g_shoulderFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
-        const float rCm = g_shoulderRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
-        const float uCm = g_shoulderUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        // s72d: THE FREE HAND'S SHOULDER IS THE HELD HAND'S, MIRRORED.
+        //
+        // Your shoulders are symmetric about your spine; the two sets of numbers
+        // in the ini are not (measured -6.6/-35.6/-28.6 against 3.8/26.0/-19.8),
+        // because each was tuned in isolation while its hand happened to be the
+        // driven one. Tuning them independently means tuning the same body twice
+        // and getting two different bodies.
+        //
+        // So the free arm takes the DRIVEN hand's shoulder with the RIGHT axis
+        // negated - forward and up are on the mirror plane and carry over
+        // unchanged. One set of numbers to tune, and the two arms cannot drift
+        // apart by construction.
+        const int shHand = freeBank ? (1 - hand) : hand;
+        const float mirror = freeBank ? -1.0f : 1.0f;
+        const float fCm = g_shoulderFwdCm[shHand].load(std::memory_order_relaxed) * uuPerCm;
+        const float rCm =
+            g_shoulderRightCm[shHand].load(std::memory_order_relaxed) * uuPerCm * mirror;
+        const float uCm = g_shoulderUpCm[shHand].load(std::memory_order_relaxed) * uuPerCm;
         // UE yaw-only basis: forward (cy, sy, 0), right (-sy, cy, 0), up (0,0,1).
         // base[XYZ], not cam[XYZ]: leaning your head must not drag the shoulder
         // with it either. Same defect as the yaw, on the translation channel.
@@ -2622,6 +2709,30 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         float sRel[3] = {sWorld[0] - aLoc[0], sWorld[1] - aLoc[1], sWorld[2] - aLoc[2]};
         float S[3];
         qts_rotate(qaUse, sRel, S);
+        // ---- s72q: THE ARM LIVES IN THE SAME SCALED SPACE AS THE WRIST ------
+        //
+        // The rig actor's DrawScale (0.8) multiplies every bone translation we
+        // write - the finding that fixed the off hand's swivel. drive_free_hand
+        // divides its wrist target by it; the ARM never got the same treatment,
+        // so two things were wrong at once:
+        //
+        //   1. the shoulder rendered at actorLoc + 0.8*(sWorld - actorLoc), i.e.
+        //      0.8*sWorld + 0.2*actorLoc - 20% of the ACTOR's position leaking
+        //      into the shoulder. actorLoc is the held hand's position plus its
+        //      offsets rotated into the held hand's basis, and with posFwdCm=44
+        //      that is a 44 cm lever: PITCH the weapon and actorLoc swings
+        //      forward and back. "Pointing the gun up moves the offhand elbow or
+        //      shoulder forward, and the opposite pointing down" is that leak.
+        //   2. worse, W arrives ALREADY divided while S was not, so the triangle
+        //      was being solved between two different scales.
+        //
+        // Divide here and everything downstream - the elbow, the twist helpers,
+        // the clavicle - inherits it, because they are all derived from S and W.
+        if (rigScale > 0.01f && fabsf(rigScale - 1.0f) > 0.001f) {
+            S[0] /= rigScale;
+            S[1] /= rigScale;
+            S[2] /= rigScale;
+        }
 
         // The hand is wherever the cluster write just put the anchor.
         // W is the caller's wrist target: the held hand passes the eased anchor
@@ -2632,16 +2743,34 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         sub3(W, S, dir);
         const float dRaw = norm3(dir);
         float d = dRaw;
-        if (L1 > 1e-4f && L2 > 1e-4f && d > 1e-4f) {
+        // ---- s73: AND THE LENGTHS ARE ALREADY IN THAT SPACE -----------------
+        //
+        // s72r divided L1/L2 by the rig scale on the reasoning that S and W had
+        // been divided, so the sides had to follow. That was wrong, and the
+        // tester found it: "the hands are stretched to an unnatural degree to the
+        // wrists... like you have a super long wrist".
+        //
+        // Work it through. A component-space vector v renders at k*v in world.
+        // S and W are divided so they render at the right WORLD points, which
+        // means a distance measured between them in that space is
+        // (world distance)/k. An authored segment |aSE| is raw model units and
+        // renders at k*|aSE|; expressed as a distance in the divided space that
+        // is k*|aSE|/k = |aSE| - UNDIVIDED. Dividing again made every arm segment
+        // 1/0.8 = 1.25x too long, so the forearm overshot the hand and the skin
+        // between the last twist helper and the wrist stretched to cover it.
+        //
+        // The names stay so the triangle below reads unchanged.
+        const float L1s = L1, L2s = L2;
+        if (L1s > 1e-4f && L2s > 1e-4f && d > 1e-4f) {
             // Keep the triangle closable: never fully straight, never folded
             // through itself - both make the solve degenerate and the elbow snap.
-            const float dMin = fabsf(L1 - L2) + 1e-3f;
-            const float dMax = L1 + L2 - 1e-3f;
+            const float dMin = fabsf(L1s - L2s) + 1e-3f;
+            const float dMax = L1s + L2s - 1e-3f;
             if (d < dMin) d = dMin;
             if (d > dMax) d = dMax;
 
-            const float aLen = (L1 * L1 - L2 * L2 + d * d) / (2.0f * d);
-            float hSq = L1 * L1 - aLen * aLen;
+            const float aLen = (L1s * L1s - L2s * L2s + d * d) / (2.0f * d);
+            float hSq = L1s * L1s - aLen * aLen;
             const float hLen = hSq > 0.0f ? sqrtf(hSq) : 0.0f;
 
             // ---- THE POLE LIVES IN THE HEAD FRAME TOO -------------------
@@ -2671,10 +2800,79 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             float pole[3];
             qts_rotate(qaUse, poleWorld, pole);
             norm3(pole);
+            // ---- s73d: TWO USES OF THE POLE, AND THEY NEED DIFFERENT POLES ---
+            //
+            // The blended pole below decides where the elbow SITS, and s73b made
+            // its follow half track the free wrist so the elbow swings when you
+            // pronate. That part works - the tester confirms "the elbow pivots
+            // out correctly".
+            //
+            // But the same vector was also the reference the segments' ROLL is
+            // pinned to, and the twist angle is measured as the residual between
+            // that pinned forearm and the hand. Make the reference follow the
+            // hand and the residual collapses to nothing: the helpers get a
+            // near-constant twist and the forearm stops rolling. "The elbow
+            // pivots out, but it doesn't seem to rotate at all."
+            //
+            // So keep the BODY-relative pole for the roll pin. It does not move
+            // with the wrist, so the measured twist is the wrist's full rotation
+            // and the gradient along the forearm survives - elbow end barely
+            // rolls, wrist end matches the hand, which is what a forearm does.
+            float poleBody[3] = {pole[0], pole[1], pole[2]};
             if (wristK > 0.001f) {
                 // The v1 pole: the authored bend, which lives in the rig's own
                 // frame and therefore turns with the wrist.
+                //
+                // ---- s72k: AND THAT FRAME SPINS WITH THE ACTOR -------------
+                //
+                // aSEn is a COMPONENT-SPACE direction from the capture frame, so
+                // for the free hand it turns with the HELD wrist. At the shipped
+                // ElbowFollowWrist=0.4 that is 40% of the pole orbiting the
+                // shoulder->hand axis every time the other hand rotates - the
+                // elbow swings around the arm while the segments themselves stay
+                // straight, which the tester described as the arm wringing like a
+                // sweet wrapper without the forearm or bicep twisting.
+                //
+                // Same shape as the s72j twist: a free DOF (where the elbow sits
+                // AROUND the arm axis) taking the nearest frame. The poleWorld
+                // half above is already actor-independent - it is built in world
+                // and converted through qaUse - so only this half leaks.
+                //
+                // Carry it through its OWN actor first: capture-frame direction
+                // -> world by A_capture -> current component space by qaUse. The
+                // held hand keeps the raw authored bend, because it IS the actor
+                // it is solved in and has nothing to cancel.
                 float poleRig[3] = {aSEn[0], aSEn[1], aSEn[2]};
+                if (freeBank && handQ) {
+                    // ---- s73b: "ELBOW FOLLOWS WRIST" SHOULD FOLLOW THIS WRIST -
+                    //
+                    // The blend's name is ElbowFollowWrist and it never followed
+                    // one. Its rig half was the AUTHORED bend - a fixed direction
+                    // - so rotating the off hand turned the hand and left the
+                    // elbow where it was. The tester: "rotating the hand has the
+                    // wrist follow, but not the elbow, resulting in the model
+                    // doing an hourglass shape in between".
+                    //
+                    // A real forearm does carry the elbow a little when you
+                    // pronate, which is what this slider was always meant to buy.
+                    // So the follow half is the FREE HAND's own orientation,
+                    // which is qtc - actor-cancelled by construction, so it
+                    // cannot bring the held hand back in with it.
+                    static const float kUpL[3] = {0.0f, 0.0f, 1.0f};
+                    qts_rotate(handQ, kUpL, poleRig);
+                } else if (freeBank) {
+                    float poleW[3];
+                    qts_rotate(g_freeArmActorQ[hand], aSEn, poleW);
+                    const float yawNow =
+                        (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
+                            (3.14159265f / 180.0f) -
+                        ctx.driveYawOffsetRad;
+                    const float dYaw = yawNow - g_freeArmYaw0[hand];
+                    const float cd = cosf(dYaw), sd = sinf(dYaw);
+                    const float rw[3] = {poleW[0] * cd - poleW[1] * sd,
+                                         poleW[0] * sd + poleW[1] * cd, poleW[2]};
+                    qts_rotate(qaUse, rw, poleRig);
+                }
                 norm3(poleRig);
                 for (int c = 0; c < 3; ++c)
                     pole[c] = pole[c] * (1.0f - wristK) + poleRig[c] * wristK;
@@ -2717,25 +2915,157 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             // not change between 72 and 120 Hz.
             const unsigned tau = g_elbowSmoothMs.load(std::memory_order_relaxed);
             const uint64_t nowE = GetTickCount64();
-            if (tau > 0 && g_elbowHavePrev[hand]) {
-                float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
-                if (dtMs < 0.0f) dtMs = 0.0f;
-                if (dtMs > 250.0f) dtMs = 250.0f; // a hitch must not snap the arm
-                const float alpha = 1.0f - expf(-dtMs / static_cast<float>(tau));
-                for (int c = 0; c < 3; ++c)
-                    E[c] = g_elbowPrev[hand][c] + (E[c] - g_elbowPrev[hand][c]) * alpha;
+
+            // ---- s72u: SMOOTH THE ELBOW IN WORLD, NOT COMPONENT SPACE --------
+            //
+            // MEASURED, and it is the last coupling. With the off hand held
+            // perfectly still and the main hand moving, FOREARM logged the free
+            // WRIST steady to 0.4 UU while the free ELBOW swung 25 UU - and every
+            // geometric input to the elbow is fixed in world (shoulder,
+            // wrist, bone lengths, pole). The only term left is this one, and it
+            // is the only STATEFUL one.
+            //
+            // g_elbowPrev holds last frame's elbow in COMPONENT space, which
+            // moves and spins with the actor. Blending this frame's elbow against
+            // it while the actor has travelled in between drags the elbow after
+            // the actor - i.e. after the HELD hand. The wrist is not smoothed,
+            // which is exactly why it was immune, and why the forearm read as
+            // pivoting about a fixed wrist: "the forearms are perfectly synced".
+            //
+            // Smoothing is only meaningful between two poses in the SAME frame,
+            // so the free arm now carries its previous elbow in world and
+            // converts back afterwards. The held hand keeps the component-space
+            // lane: it is carried by the actor it is solved in, and it is the
+            // signed-off half of this subsystem. The same latent error exists
+            // there and is worth revisiting on its own.
+            // s74: ONE SMOOTHING FRAME. The body frame is correct for BOTH
+            // roles - it moves with the player and not with either wrist - so
+            // this no longer forks. The held arm had the same latent fault the
+            // free one was fixed for in s72u: eased in component space, its
+            // elbow dragged after its OWN actor, which reads as lag rather than
+            // coupling and is why nobody reported it.
+            if (tau > 0) {
+                float aQ[4];
+                quat_conj(qaUse, aQ);
+                float Ew[3];
+                {
+                    const float sp[3] = {E[0] * rigScale, E[1] * rigScale, E[2] * rigScale};
+                    qts_rotate(aQ, sp, Ew);
+                    for (int c = 0; c < 3; ++c) Ew[c] += aLoc[c];
+                }
+                // ---- s72w: SMOOTH IN THE BODY FRAME, NOT THE WORLD ----------
+                //
+                // s72u moved this out of component space because component space
+                // moves with the HELD HAND. World was the wrong destination: it
+                // does not move with the PLAYER either, so running forward left
+                // the elbow lagging in world while the shoulder and wrist
+                // travelled with the body - and the arm stretched between them.
+                // Reported with a screenshot of exactly that, moving forward.
+                //
+                // The right frame is the one the shoulder already uses (s70i):
+                // the body's. It moves with the player and does NOT rotate with
+                // either wrist, so an elbow eased in it lags only relative to
+                // your own arm - which is what the easing is for.
+                //
+                // base[XYZ] and the body yaw, matching the shoulder exactly, so
+                // the two cannot disagree about where the body is.
+                const float bx = Ew[0] - ctx.baseX, by = Ew[1] - ctx.baseY;
+                float Eb[3] = {bx * cy + by * sy, -bx * sy + by * cy, Ew[2] - ctx.baseZ};
+                if (g_elbowHavePrevW[hand]) {
+                    float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
+                    if (dtMs < 0.0f) dtMs = 0.0f;
+                    if (dtMs > 250.0f) dtMs = 250.0f;
+                    const float alpha = 1.0f - expf(-dtMs / static_cast<float>(tau));
+                    for (int c = 0; c < 3; ++c)
+                        Eb[c] = g_elbowPrevW[hand][c] + (Eb[c] - g_elbowPrevW[hand][c]) * alpha;
+                }
+                memcpy(g_elbowPrevW[hand], Eb, sizeof g_elbowPrevW[hand]);
+                // Body frame back out to world.
+                Ew[0] = ctx.baseX + Eb[0] * cy - Eb[1] * sy;
+                Ew[1] = ctx.baseY + Eb[0] * sy + Eb[1] * cy;
+                Ew[2] = ctx.baseZ + Eb[2];
+                g_elbowHavePrevW[hand] = true;
+                // Back into the divided component space the rest of the solve uses.
+                float rel[3] = {Ew[0] - aLoc[0], Ew[1] - aLoc[1], Ew[2] - aLoc[2]};
+                qts_rotate(qaUse, rel, E);
+                if (rigScale > 0.01f && fabsf(rigScale - 1.0f) > 0.001f) {
+                    E[0] /= rigScale;
+                    E[1] /= rigScale;
+                    E[2] /= rigScale;
+                }
             }
-            memcpy(g_elbowPrev[hand], E, sizeof g_elbowPrev[hand]);
-            g_elbowHavePrev[hand] = true;
             g_elbowLastMs[hand] = nowE;
 
             // Upper arm: authored shoulder->elbow swung onto the solved one.
             float nSE[3];
             sub3(E, S, nSE);
             norm3(nSE);
+            // ---- s72h: THE PLAIN COMPONENT-SPACE SWING, AND WHY IT STAYS ----
+            //
+            // Three attempts to take the actor out of the free arm's TWIST all
+            // made the held hand's coupling worse, not better:
+            //   s72e  qArmFix = inv(A_now) * A_capture      -> more extreme
+            //   s72f  the inverse of that                   -> more extreme
+            //   s72g  building the orientation in world      -> still coupled
+            //
+            // Three corrections of different shapes all failing the same way is
+            // not three wrong signs; it says the actor is not where the coupling
+            // enters, exactly as the free hand's own probes said of the cluster
+            // earlier this session. Reverted to the plain swing, which is the
+            // state the tester rates best.
+            //
+            // DO NOT try a fourth correction here without measuring first. What
+            // is missing is an instrument on the arm bones themselves: read them
+            // back after the write and see whether they still hold what we wrote
+            // once the frame is done. Every fix above assumed our write survives,
+            // and nothing has checked that.
             float qUp[4], qUpF[4];
             quat_from_to(aSEn, nSE, qUp);
             quat_mul(qUp, ar[1].q, qUpF);
+
+            // ---- s72n: PIN THE SEGMENTS' AXIAL DOF TOO ----------------------
+            //
+            // s72j pinned the twist HELPERS (22/23) from the hand and that half
+            // worked - the off hand twists its own forearm and the held hand no
+            // longer rolls it. But the UPPER ARM and ELBOW bones were left on the
+            // bare quat_from_to swing, whose axial component is zero, so their
+            // roll was still free and still took the actor. The tester saw
+            // exactly that: "it doesn't twist the forearm or biceps themselves,
+            // but they rotate because the elbow does."
+            //
+            // ARMHOLD settled that this is the solve and not a competing writer:
+            // all five bones held to 0.0 UU / 0.1 deg across 41 samples while the
+            // held hand was twisted every way. So the leak has to be an input,
+            // and every other input is already actor-independent - the shoulder
+            // is head-relative, W cancels the actor, the pole is built in world
+            // and converted through qaUse, and the lengths are scalars.
+            //
+            // The POLE is the natural reference for a segment's roll: it is the
+            // bend plane, it is actor-independent, and aligning each segment's up
+            // with it is what a human arm does - the elbow points along the bend.
+            auto pinRoll = [&](const float axis[3], const float ref[3], float q[4]) {
+                static const float kUpLocal[3] = {0.0f, 0.0f, 1.0f};
+                float cur[3];
+                qts_rotate(q, kUpLocal, cur);
+                const float cd = cur[0] * axis[0] + cur[1] * axis[1] + cur[2] * axis[2];
+                const float rd = ref[0] * axis[0] + ref[1] * axis[1] + ref[2] * axis[2];
+                float cp[3], rp[3];
+                for (int i = 0; i < 3; ++i) {
+                    cp[i] = cur[i] - axis[i] * cd;
+                    rp[i] = ref[i] - axis[i] * rd;
+                }
+                if (norm3(cp) < 1e-4f || norm3(rp) < 1e-4f) return;
+                const float cr[3] = {cp[1] * rp[2] - cp[2] * rp[1],
+                                     cp[2] * rp[0] - cp[0] * rp[2],
+                                     cp[0] * rp[1] - cp[1] * rp[0]};
+                const float sn = cr[0] * axis[0] + cr[1] * axis[1] + cr[2] * axis[2];
+                const float cs = cp[0] * rp[0] + cp[1] * rp[1] + cp[2] * rp[2];
+                float qr[4], out[4];
+                quat_axis_angle(axis[0], axis[1], axis[2], atan2f(sn, cs), qr);
+                quat_mul(qr, q, out);
+                memcpy(q, out, sizeof out);
+            };
+            if (freeBank) pinRoll(nSE, poleBody, qUpF);
 
             // Forearm: authored elbow->wrist swung onto the solved one.
             float nEW[3];
@@ -2744,13 +3074,216 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             float qFo[4], qFoF[4];
             quat_from_to(aEWn, nEW, qFo);
             quat_mul(qFo, ar[2].q, qFoF);
+            // The forearm takes the same reference at the elbow end; the hand
+            // supplies the rest of the twist through the helpers below, which
+            // is the elbow-to-wrist gradient a real forearm has.
+            if (freeBank) pinRoll(nEW, poleBody, qFoF);
+
+            // ---- s72j: PIN THE ARM'S AXIAL DOF FROM THE HAND -----------------
+            //
+            // quat_from_to returns the MINIMAL rotation between two directions,
+            // so it has ZERO component about the axis. Neither swing above ever
+            // sets the arm's roll: that degree of freedom is left free, and a
+            // free DOF takes the frame it is written into - the actor, which is
+            // the HELD hand. That is why the right wrist rolled the left arm
+            // while its direction and the hand itself stayed correct, and why
+            // three whole-arm corrections all made it worse. They perturbed the
+            // solved direction and still never pinned the axis.
+            //
+            // Fallout 4's FRIK does not leave it free either (Skeleton.cpp,
+            // setArms / solveArmToHandWorldTarget, algorithm credited to VRIK):
+            // it computes a twist angle from the HAND and drives dedicated twist
+            // bones with it - "forearm2 and forearm3 receive opposing rotations
+            // based on computed wrist twist". BS1 has the same pair: patterns.h
+            // documents the sleeve as "3 clavicle, 4 upperarm, 5 elbow, 22/23
+            // forearm twist helpers", and we were writing 22/23 with the
+            // forearm's own swing and no wrist twist at all.
+            //
+            // The angle is measured against handQ, which for the free hand is
+            // qtc - the hand's orientation in component space, actor-cancelled by
+            // construction. That is what makes the result independent of the held
+            // hand rather than a correction applied after the fact.
+            float twistDeg = 0.0f;
+            float qTwist[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            if (handQ) {
+                // A reference perpendicular from the solved forearm, and the same
+                // axis carried by the hand. UE's local +Z is up for both.
+                static const float kUpLocal[3] = {0.0f, 0.0f, 1.0f};
+                float fRef[3], hRef[3];
+                qts_rotate(qFoF, kUpLocal, fRef);
+                qts_rotate(handQ, kUpLocal, hRef);
+                // Project both perpendicular to the forearm axis - only the
+                // component around the bone is a twist.
+                const float fd = fRef[0] * nEW[0] + fRef[1] * nEW[1] + fRef[2] * nEW[2];
+                const float hd = hRef[0] * nEW[0] + hRef[1] * nEW[1] + hRef[2] * nEW[2];
+                float fp[3], hp[3];
+                for (int i = 0; i < 3; ++i) {
+                    fp[i] = fRef[i] - nEW[i] * fd;
+                    hp[i] = hRef[i] - nEW[i] * hd;
+                }
+                if (norm3(fp) > 1e-4f && norm3(hp) > 1e-4f) {
+                    const float cr[3] = {fp[1] * hp[2] - fp[2] * hp[1],
+                                         fp[2] * hp[0] - fp[0] * hp[2],
+                                         fp[0] * hp[1] - fp[1] * hp[0]};
+                    const float sn = cr[0] * nEW[0] + cr[1] * nEW[1] + cr[2] * nEW[2];
+                    const float cs = fp[0] * hp[0] + fp[1] * hp[1] + fp[2] * hp[2];
+                    float theta = atan2f(sn, cs);
+
+                    // ---- s72z: SUBTRACT THE AUTHORED TWIST ------------------
+                    //
+                    // theta above is the raw angle between the FOREARM's local up
+                    // and the HAND's, and those two bones do not share an axis
+                    // convention - a hand's local axes are not its forearm's.
+                    // Driving the helpers with the raw angle therefore bakes that
+                    // convention difference in as a constant error, which is the
+                    // wrist not meeting the hand: small, identical on both hands,
+                    // and present with no trim dialled at all.
+                    //
+                    // The tester is explicit that the HAND is right - it matches
+                    // their controller untuned - so nothing upstream should move.
+                    // What the helpers want is the CHANGE in twist since the
+                    // authored pose, not the absolute angle. Measure the same
+                    // quantity between the AUTHORED forearm and the AUTHORED
+                    // wrist about the authored forearm axis, and subtract it: at
+                    // the reference pose the helpers then sit exactly where the
+                    // rig author put them, and they depart from it only as far as
+                    // the real wrist has.
+                    if (handRefQ) {
+                        float fRef0[3], hRef0[3];
+                        qts_rotate(ar[2].q, kUpLocal, fRef0);
+                        qts_rotate(handRefQ, kUpLocal, hRef0);
+                        const float fd0 = fRef0[0] * aEWn[0] + fRef0[1] * aEWn[1] +
+                                          fRef0[2] * aEWn[2];
+                        const float hd0 = hRef0[0] * aEWn[0] + hRef0[1] * aEWn[1] +
+                                          hRef0[2] * aEWn[2];
+                        float fp0[3], hp0[3];
+                        for (int i = 0; i < 3; ++i) {
+                            fp0[i] = fRef0[i] - aEWn[i] * fd0;
+                            hp0[i] = hRef0[i] - aEWn[i] * hd0;
+                        }
+                        if (norm3(fp0) > 1e-4f && norm3(hp0) > 1e-4f) {
+                            const float cr0[3] = {fp0[1] * hp0[2] - fp0[2] * hp0[1],
+                                                  fp0[2] * hp0[0] - fp0[0] * hp0[2],
+                                                  fp0[0] * hp0[1] - fp0[1] * hp0[0]};
+                            const float sn0 = cr0[0] * aEWn[0] + cr0[1] * aEWn[1] +
+                                              cr0[2] * aEWn[2];
+                            const float cs0 = fp0[0] * hp0[0] + fp0[1] * hp0[1] +
+                                              fp0[2] * hp0[2];
+                            theta -= atan2f(sn0, cs0);
+                            while (theta > 3.14159265f) theta -= 6.2831853f;
+                            while (theta < -3.14159265f) theta += 6.2831853f;
+                        }
+                    }
+                    // ---- s73c: THE TWIST IS NOT SMOOTHED --------------------
+                    //
+                    // s72j eased this on the elbow's lane, copying FRIK, which
+                    // "smooths sudden changes across frames". That was wrong here
+                    // and the tester found it: the forearm "is not rotating fast
+                    // enough" while the elbow follows correctly.
+                    //
+                    // The reason is specific to what this angle is FOR. The twist
+                    // exists to make the forearm MEET THE HAND, and the hand is
+                    // not smoothed - it tracks the controller live. Easing one
+                    // side of a junction and not the other guarantees a visible
+                    // mismatch for the whole duration of every wrist movement,
+                    // which is precisely when a wrist is looked at.
+                    //
+                    // FRIK smooths because its twist comes from an asin of a
+                    // dot product, which is noisy near the poles. Ours is an
+                    // atan2 of two projected vectors taken from an orientation
+                    // that is already stable, so there is nothing to denoise.
+                    // The elbow keeps its easing: it is a DERIVED joint with no
+                    // counterpart to match, which is the case easing is for.
+                    // ---- s73f: UNWRAP IT ------------------------------------
+                    //
+                    // MEASURED: ARMIK logged the angle flipping +179.9 / -179.9
+                    // as the wrist passed one point, and the tester saw the arm
+                    // snap and flicker there.
+                    //
+                    // atan2 returns (-pi, pi], so the angle jumps by 2pi at the
+                    // seam. A full turn is invisible on a bone given the WHOLE
+                    // angle - which is why the wrist end never flickered - but
+                    // the gradient multiplies it by a FRACTION, and a fraction of
+                    // 2pi is not a full turn. The forearm's 0.50 becomes a 180
+                    // degree snap and the bicep's 0.25 a 90 degree one, which is
+                    // exactly what was reported.
+                    //
+                    // So carry the angle continuously across frames: take the
+                    // shortest step from last frame's value and accumulate. The
+                    // seam disappears because the angle no longer has one. This
+                    // is NOT the easing s73c removed - there is no lag here, the
+                    // value still lands exactly on the wrist every frame.
+                    if (g_twistHavePrev[hand]) {
+                        float d = theta - g_twistPrev[hand];
+                        while (d > 3.14159265f) d -= 6.2831853f;
+                        while (d < -3.14159265f) d += 6.2831853f;
+                        theta = g_twistPrev[hand] + d;
+                    }
+                    g_twistPrev[hand] = theta;
+                    g_twistHavePrev[hand] = true;
+
+                    twistDeg = theta * kRadToDeg;
+                    quat_axis_angle(nEW[0], nEW[1], nEW[2], theta, qTwist);
+                }
+            }
+
+            // ---- s73e: THE TWIST IS A GRADIENT ALONG THE WHOLE ARM ----------
+            //
+            // s72n pinned the upper arm's roll to the body pole and left it
+            // there, which rotation-LOCKS the bicep: it cannot turn at all, so
+            // the entire wrist rotation has to be absorbed between the elbow and
+            // the hand, and the mesh pinches. The tester found it by comparing
+            // against the main hand, whose arm is carried bodily by the actor and
+            // therefore rotates all the way up: "the bicep is rotation locked for
+            // the offhand arm which causes the forearm to do the hourglass".
+            //
+            // A real arm spreads pronation along its length - the humerus rolls
+            // some, the forearm more, the wrist fully. So every segment gets a
+            // share of the same measured twist, about its OWN axis, on a gradient
+            // from shoulder to hand. The pin stays underneath: it is what gives
+            // each segment a defined starting roll, and the gradient is what it
+            // departs from that by.
+            if (freeBank && twistDeg != 0.0f) {
+                const float th = twistDeg / kRadToDeg;
+                float qw[4], out[4];
+                // ---- s73g: THE ELBOW IS A HINGE, SO IT CANNOT TWIST ---------
+                //
+                // The first gradient was 0.25 bicep / 0.50 forearm, which leaves
+                // a 0.25 step ACROSS THE ELBOW - up to 45 degrees of twist
+                // discontinuity at a joint that has no twist axis. The skin
+                // spanning it has to absorb the whole step, which is the
+                // hourglass: "the bicep is not rotating at the rate it needs to
+                // for the forearm to not go hourglass".
+                //
+                // An elbow is a hinge. It bends; it does not roll. So the two
+                // segments either side of it must carry the SAME roll, and the
+                // gradient belongs entirely inside the forearm, where the twist
+                // helpers exist precisely because that is where a real forearm
+                // pronates - radius over ulna, between elbow and wrist.
+                //
+                // Bicep and forearm therefore share 0.45, and the helpers ramp
+                // from there to the hand. The bicep visibly rotates, nothing
+                // steps at the elbow, and the wrist end still lands exactly on
+                // the hand.
+                const float share = g_armTwistShare.load(std::memory_order_relaxed);
+                quat_axis_angle(nSE[0], nSE[1], nSE[2], share * th, qw);
+                quat_mul(qw, qUpF, out);
+                memcpy(qUpF, out, sizeof qUpF);
+                quat_axis_angle(nEW[0], nEW[1], nEW[2], share * th, qw);
+                quat_mul(qw, qFoF, out);
+                memcpy(qFoF, out, sizeof qFoF);
+            }
 
             auto put = [&](int idx, const float pw[3], const float qw[4]) {
                 if (idx < 0 || idx >= g_boneCount) return;
                 if (!write_n(g_bones[idx].p, pw, 12)) return;
                 write_n(g_bones[idx].q, qw, 16);
                 if (g_scaleWrote[idx]) {
-                    write_n(g_bones[idx].s, g_ref[idx].s, 12);
+                    // s72c: the free hand's sleeve is not in g_ref - that bank is
+                    // the HELD hand's, and reading it here wrote another role's
+                    // authored scale onto this arm. Skip rather than guess; the
+                    // sleeve restore path owns putting scale back.
+                    if (!freeBank) write_n(g_bones[idx].s, g_ref[idx].s, 12);
                     g_scaleWrote[idx] = false;
                 }
                 if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
@@ -2802,9 +3335,82 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                 if (t > 1.0f) t = 1.0f;
                 const float tp[3] = {E[0] + (W[0] - E[0]) * t, E[1] + (W[1] - E[1]) * t,
                                      E[2] + (W[2] - E[2]) * t};
-                float qk[4];
-                quat_mul(qFo, ar[k].q, qk);
+                // s72j: and the TWIST, distributed along the forearm so the
+                // skin does not candy-wrap at one joint. FRIK splits it across
+                // its two helpers; a progressive weight is the same idea and is
+                // easier to tune. k==3 is the inboard helper, k==4 the wrist end.
+                // Shared value across the elbow, then a ramp to 1.0 at the hand.
+                const float sh = g_armTwistShare.load(std::memory_order_relaxed);
+                const float tw = (k == 3) ? (sh + (1.0f - sh) * 0.5f) : 1.0f;
+                float qkBase[4], qkTw[4], qk[4];
+                quat_mul(qFo, ar[k].q, qkBase);
+                // s72p: PIN THE HELPERS' OWN ROLL FIRST, then add the hand's
+                // twist on top. s72n pinned qFoF - the forearm bone - but these
+                // two were still built from the bare qFo swing, so their axial
+                // DOF was free and the hand twist was riding on a base that
+                // still took the actor. The bicep stopped rotating and the
+                // forearm did not, which is that gap exactly: the segment was
+                // pinned, its twist helpers were not.
+                if (freeBank) pinRoll(nEW, poleBody, qkBase);
+                quat_axis_angle(nEW[0], nEW[1], nEW[2],
+                                tw * (twistDeg / kRadToDeg), qkTw);
+                quat_mul(qkTw, qkBase, qk);
                 put(armIdx[k], tp, qk);
+            }
+
+            // ---- s72t FOREARM: is the free forearm's WORLD pose actually moving?
+            //
+            // The tester reports the two FOREARMS synced - shoulder and elbow now
+            // clean. Every input to this solve reads as actor-independent, so
+            // rather than guess a ninth time this lifts the free forearm's two
+            // ends into WORLD and prints them beside the held actor's own pose.
+            //
+            // World, because that is where "synced" is judged: E and W are in
+            // DrawScale-divided component space, so the lift is
+            //     world = aLoc + A * (rigScale * p)
+            // with A recovered from qaUse. If these world numbers move while the
+            // held hand moves, the coupling is real and its size is right here;
+            // if they hold, the forearm is where we put it and what is synced is
+            // something downstream of the bone write.
+            if (freeBank) {
+                static uint64_t s_faLog[2] = {0, 0};
+                const uint64_t nowFa = GetTickCount64();
+                if (nowFa - s_faLog[hand] >= 500) {
+                    s_faLog[hand] = nowFa;
+                    float aQ[4];
+                    quat_conj(qaUse, aQ);
+                    auto lift = [&](const float p[3], float out[3]) {
+                        const float sp[3] = {p[0] * rigScale, p[1] * rigScale,
+                                             p[2] * rigScale};
+                        qts_rotate(aQ, sp, out);
+                        out[0] += aLoc[0];
+                        out[1] += aLoc[1];
+                        out[2] += aLoc[2];
+                    };
+                    float eW[3], wW[3];
+                    lift(E, eW);
+                    lift(W, wW);
+                    BVR_LOG("[bones] FOREARM: %s free elbow world (%.1f %.1f %.1f) wrist "
+                            "(%.1f %.1f %.1f) | HELD actor at (%.1f %.1f %.1f) pitch %+.1f "
+                            "yaw %+.1f. Hold the off hand STILL and move the main hand: "
+                            "these two world points must not move.",
+                            hand == 1 ? "RIGHT" : "LEFT", eW[0], eW[1], eW[2], wW[0], wW[1],
+                            wW[2], aLoc[0], aLoc[1], aLoc[2],
+                            static_cast<float>(static_cast<int16_t>(ctx.camPitch & 0xFFFF)) /
+                                kRotUnitsPerDegree,
+                            static_cast<float>(static_cast<int16_t>(ctx.camYaw & 0xFFFF)) /
+                                kRotUnitsPerDegree);
+                }
+            }
+
+            // s72m: stash what we just wrote, for next frame's read-back.
+            if (freeBank) {
+                bool okW = true;
+                for (int k = 0; k < 5 && okW; ++k)
+                    okW = armIdx[k] >= 0 && armIdx[k] < g_boneCount &&
+                          read_n(&g_bones[armIdx[k]], &g_freeArmWrote[hand][k],
+                                 sizeof(Qts));
+                g_freeArmWroteValid[hand] = okW;
             }
 
             static uint64_t s_ikLog[2] = {0, 0};
@@ -2812,13 +3418,17 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             if (nowIk - s_ikLog[hand] >= 5000) {
                 s_ikLog[hand] = nowIk;
                 BVR_LOG("[bones] ARMIK: %s arm solved - upper %.1f UU, fore %.1f UU, "
-                        "shoulder-to-hand %.1f UU%s. The shoulder is anchored at its "
-                        "authored joint; only the elbow and wrist move.",
+                        "shoulder-to-hand %.1f UU%s, forearm twist %+.1f deg. The "
+                        "shoulder is anchored at its authored joint; only the elbow "
+                        "and wrist move. The twist should follow THIS hand's wrist and "
+                        "stay put when the other one turns - if it tracks the other "
+                        "hand, the axial DOF is still taking the actor.",
                         hand == 1 ? "RIGHT" : "LEFT", L1, L2, dRaw,
-                        (dRaw > L1 + L2 - 1e-3f)
+                        (dRaw > L1s + L2s - 1e-3f)
                             ? " (REACHED - the hand is further than the arm is long, so "
                               "the elbow is locked straight)"
-                            : "");
+                            : "",
+                        twistDeg);
             }
         }
 }
@@ -3189,6 +3799,23 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                             }
                             memcpy(g_armW0[hand], fresh[anchor].p, sizeof g_armW0[hand]);
                             g_armRefValid[hand] = ok;
+                            // s74: ONE BANK. This capture and the free hand's are
+                            // the same event - five sleeve bones plus the wrist,
+                            // taken on a settle-gated frame the ENGINE owns - so
+                            // they fill one bank and solve_arm reads one bank.
+                            // Two banks selected by a role flag was three of the
+                            // six forks, and it is what let s72 solve the free arm
+                            // out of the held arm's authored pose.
+                            memcpy(g_freeArmRef[hand], g_armRef[hand],
+                                   sizeof g_freeArmRef[hand]);
+                            memcpy(g_freeArmW0[hand], g_armW0[hand],
+                                   sizeof g_freeArmW0[hand]);
+                            ue_rot_to_quat(gp.rot, g_freeArmActorQ[hand]);
+                            g_freeArmYaw0[hand] =
+                                (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
+                                    (3.14159265f / 180.0f) -
+                                ctx.driveYawOffsetRad;
+                            g_freeArmRefValid[hand] = ok;
                         }
                     } else {
                         g_pinValid[hand] = false;
@@ -3787,7 +4414,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             ue_rot_to_quat(wrot, qw);
             quat_conj(qw, qaUse);
         }
-        solve_arm(ctx, hand, Wbuf, qaUse, aLoc, s);
+        solve_arm(ctx, hand, Wbuf, qaUse, aLoc, s, /*freeBank=*/false,
+                  /*handQ=*/nullptr, /*rigScale=*/1.0f, /*handRefQ=*/nullptr);
     }
 
 
@@ -4253,9 +4881,92 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
         const float* sc = g_freeRef[hand][anchor - first].s;
         if (sc[0] < 0.01f || sc[1] < 0.01f || sc[2] < 0.01f) return false;
         g_freeRefValid[hand] = true;
+
+        // s72c: AND THIS HAND'S OWN ARM, in the same breath and from the same
+        // frame. Same reason drive() takes its arm reference inside the settle
+        // window: this is a frame the ENGINE owns the cluster, so what we read is
+        // the authored pose rather than our own output fed back.
+        //
+        // The sleeve set IS the arm - shoulder, upper, forearm and the two wrist
+        // helpers - and g_armW0 is the wrist the authored arm reaches to, which
+        // for this hand is its own anchor, not the held hand's.
+        {
+            const int* aidx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+            bool ok = true;
+            for (int k = 0; k < 5; ++k) {
+                if (aidx[k] < 0 || aidx[k] >= g_boneCount) { ok = false; break; }
+                if (!read_n(&g_bones[aidx[k]], &g_freeArmRef[hand][k], sizeof(Qts))) {
+                    ok = false;
+                    break;
+                }
+            }
+            memcpy(g_freeArmW0[hand], g_freeRef[hand][anchor - first].p,
+                   sizeof g_freeArmW0[hand]);
+            ue_rot_to_quat(actorRotNow, g_freeArmActorQ[hand]);
+            g_freeArmYaw0[hand] =
+                (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
+                    (3.14159265f / 180.0f) -
+                ctx.driveYawOffsetRad;
+            g_freeArmRefValid[hand] = ok;
+            BVR_LOG("[bones] FREEARM: %s free hand's authored arm %s - the IK now solves "
+                    "this arm against ITS OWN reference. It used to read the held hand's "
+                    "bank, which is why both arms twisted together, and it only fired at "
+                    "all if this hand had previously been the driven one.",
+                    hand == 1 ? "RIGHT" : "LEFT", ok ? "captured" : "NOT captured");
+        }
+
         BVR_LOG("[bones] FREEHAND: captured the %s hand's authored pose, bones %d-%d - "
                 "tracking it from here.",
                 hand == 1 ? "RIGHT" : "LEFT", first, last);
+    }
+
+    // ---- s72m ARMHOLD: DID THE ARM WRITE SURVIVE THE FRAME? -----------------
+    //
+    // The one measurement nobody has taken. Four arm fixes this session assumed
+    // the bones we write are the bones that render; if something re-evaluates
+    // part of the arm after us, every one of them was aimed at the wrong stage -
+    // which is exactly how the cluster's own defect hid behind clean probes
+    // earlier tonight.
+    //
+    // Per bone, because the tester's symptom is localised: "applying rotation to
+    // a random point on the offhand forearm" is what a PARTIALLY surviving write
+    // looks like - some bones ours, some the engine's, and the engine's are
+    // parented to the actor, which is the held hand.
+    if (g_freeArmWroteValid[hand]) {
+        const int* aidx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        static const char* kName[5] = {"clavicle", "upperarm", "elbow", "twist1", "twist2"};
+        char line[320];
+        int n = 0;
+        bool anyMoved = false;
+        for (int k = 0; k < 5; ++k) {
+            if (aidx[k] < 0 || aidx[k] >= g_boneCount) continue;
+            Qts live{};
+            if (!read_n(&g_bones[aidx[k]], &live, sizeof live)) continue;
+            const Qts& was = g_freeArmWrote[hand][k];
+            const float dp[3] = {live.p[0] - was.p[0], live.p[1] - was.p[1],
+                                 live.p[2] - was.p[2]};
+            const float pm = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+            float dot = live.q[0] * was.q[0] + live.q[1] * was.q[1] + live.q[2] * was.q[2] +
+                        live.q[3] * was.q[3];
+            if (dot < 0.0f) dot = -dot;
+            if (dot > 1.0f) dot = 1.0f;
+            const float ad = 2.0f * acosf(dot) * kRadToDeg;
+            if (pm > 0.05f || (ad == ad && ad > 0.1f)) anyMoved = true;
+            n += _snprintf_s(line + n, sizeof line - n, _TRUNCATE, "%s%s %.1fUU/%.1fdeg",
+                             k ? ", " : "", kName[k], pm, (ad == ad) ? ad : 0.0f);
+        }
+        static uint64_t s_ahLog[2] = {0, 0};
+        const uint64_t nowAh = GetTickCount64();
+        if (nowAh - s_ahLog[hand] >= 1000) {
+            s_ahLog[hand] = nowAh;
+            BVR_LOG("[bones] ARMHOLD: %s free arm since our write - %s. %s",
+                    hand == 1 ? "RIGHT" : "LEFT", line,
+                    anyMoved ? "SOMETHING RE-EVALUATED THIS ARM: the bones that moved are "
+                               "not ours, and being the engine's they follow the ACTOR - "
+                               "the held hand. Fix the writer, not the maths."
+                             : "All five held - our write is what renders, so the coupling "
+                               "is in the solve and not in a competing writer.");
+        }
     }
 
     // ---- s71q: ADOPTION. The free hand must play the engine's animations too --
@@ -4594,6 +5305,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // It also explains every clean probe: FREEPROBE, FREETARGET and FREEHOLD all
     // measure the input or component space. The multiply happens AFTER, in the
     // engine's bone->world step, which nothing has ever measured.
+    float rigScale = 1.0f;
     {
         float k = 1.0f;
         const bool haveK = ds_read(handsActor, &k) && k > 0.01f;
@@ -4608,6 +5320,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
                     haveK ? "" : "(unreadable) ", k);
         }
         if (haveK && fabsf(k - 1.0f) > 0.001f) {
+            rigScale = k; // s72q: the ARM must be divided by the same k
             ptc[0] /= k;
             ptc[1] /= k;
             ptc[2] /= k;
@@ -4708,7 +5421,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // it, since it runs first and has no idea where the free hand will land.
     // Pinned at ptc, which is what the retarget branch collapses to for exactly
     // the same reason.
-    const bool collapseFree = g_collapse.load(std::memory_order_relaxed) ||
+    const bool collapseFree = g_collapseOff.load(std::memory_order_relaxed) ||
                               g_armsMode.load(std::memory_order_relaxed) == 2;
     {
         const int* sl = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
@@ -4759,7 +5472,8 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     g_freeAnchorBone[hand] = anchor;
     g_freeWantValid[hand] = true;
 
-    solve_arm(ctx, hand, ptc, qaInv, actorLoc, sc);
+    solve_arm(ctx, hand, ptc, qaInv, actorLoc, sc, /*freeBank=*/true, /*handQ=*/qtc,
+              rigScale, /*handRefQ=*/g_freeRef[hand][anchor - first].q);
 
     g_clWritten[hand] = true;
     if (!read_n(&g_bones[anchor], &g_lastWrittenAnchor[hand], sizeof(Qts))) return false;
@@ -5084,6 +5798,22 @@ void handle_command(const char* args) {
                                                 : "OFF (position only, the BRVR shape)",
                 on ? "out-turn the wrist again if it was doing so"
                    : "still rotate, but stop out-turning the wrist");
+    } else if (strcmp(verb, "armtwist") == 0) {
+        const float v = static_cast<float>(atof(rest));
+        g_armTwistShare.store(v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v),
+                              std::memory_order_relaxed);
+        BVR_LOG("[bones] ARMTWIST: bicep and forearm now carry %.2f of the wrist "
+                "twist, helpers ramp to 1.00 at the hand. 1.00 matches the HELD arm, "
+                "which the actor rotates bodily; lower it if the bicep over-turns.",
+                g_armTwistShare.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "collapseoff") == 0) {
+        // s72i: the OFF hand's arm, independent of the driven one.
+        const bool on = strncmp(rest, "on", 2) == 0;
+        g_collapseOff.store(on, std::memory_order_relaxed);
+        if (!on) set_dirty(1);
+        BVR_LOG("[bones] off-hand arm %s - this no longer rides the driven arm's "
+                "flag, which used to gate BOTH arms' IK from one checkbox.",
+                on ? "HIDDEN" : "shown and solved");
     } else if (strcmp(verb, "collapse") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_collapse.store(on, std::memory_order_relaxed);
@@ -5546,6 +6276,16 @@ void draw_debug_ui() {
     bool col = g_collapse.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Hide the driven arm (collapse sleeve bones)", &col))
         g_collapse.store(col, std::memory_order_relaxed);
+    // s72i: SEPARATE, because one flag used to gate BOTH arms' IK. Hiding the
+    // driven arm silently stopped the off arm solving too.
+    bool colOff = g_collapseOff.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Hide the OFF hand's arm", &colOff))
+        g_collapseOff.store(colOff, std::memory_order_relaxed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "The off hand's arm, independent of the driven arm above.\n\n"
+            "These shared one flag until s72i, so hiding the driven arm"
+            " also turned off the off hand's IK.");
     bool hide = g_hideInactive.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Hide the inactive hand", &hide))
         set_hide_inactive(hide);

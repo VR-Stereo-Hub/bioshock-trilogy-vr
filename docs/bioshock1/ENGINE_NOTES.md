@@ -5450,3 +5450,281 @@ not tip placement.
 **The general rule, now paid for twice:** an offset applied inside a rotation is a
 pivot, not a placement. Any new knob that nudges a driven mesh has to say which of
 the two it is, or it will be tuned as one and behave as the other.
+
+## Session 72 (2026-08-30) - THE OFF HAND'S ARM: eight couplings, and the shape they share
+
+**SOLVED, headset-confirmed: the off-hand arm is fully decoupled from the held
+hand.** This is the long half of the off-hand work and it is worth reading before
+touching either arm, because the same mistake recurs in eight different places
+and one of them will be made again otherwise.
+
+### The shape every one of them shares
+
+> **A quantity that is not fully determined by the solve takes the frame it is
+> written into, and that frame is the ACTOR - which is the held hand.**
+
+The free hand's bones live in component space, which is relative to the `AHands`
+actor, and this mod writes that actor from the HELD controller every frame. So
+component space *spins and translates with the held hand*. Anything that is not
+pinned to a world-anchored reference is therefore pinned to the other hand.
+
+s70i had already written this down for the shoulder - *"the entire space the arm
+lives in spins with your wrist... there is no bone write that can fix that"* -
+and the lesson did not get carried to the other seven cases.
+
+### The eight, in the order they were found
+
+| # | symptom | cause |
+|---|---|---|
+| 1 | off-hand IK worked in some runs, not others | `g_armRefValid` was set ONLY in `drive()`'s settle window, indexed by the HELD hand. The free hand had an arm reference only if that hand had previously been the driven one - **equip-history dependent, not build dependent** |
+| 2 | "the right hand drives the left arm's rotation" | when it did fire, it solved the free arm from `g_armRef`/`g_armW0` captured in the HELD role, and read `g_ref` (the held bank) for scale |
+| 3 | hiding the driven arm silently killed the off arm's IK | `g_collapse` was one global doing two jobs for two hands: hiding the driven sleeve AND gating `solve_arm()` for both |
+| 4 | bicep and elbow roll with the held hand | `quat_from_to` returns the MINIMAL rotation - **zero component about the axis** - so the arm's roll was never set by the solve. A free DOF takes the actor |
+| 5 | forearm still rolls after 4 | the twist HELPERS (22/23) were built from the bare swing, so their axial DOF was free and the hand twist rode on top of it |
+| 6 | elbow orbits the arm axis | the pole is a blend, and its `poleRig` half is `aSEn` - a capture-frame COMPONENT-space direction. At the shipped `ElbowFollowWrist=0.4` that was 40% of the pole spinning with the actor |
+| 7 | shoulder shifts forward/back as the weapon pitches | the rig DrawScale (0.8) multiplies bone translations; the wrist target was divided by it and **the arm was not**, so the shoulder rendered at `0.8*sWorld + 0.2*actorLoc` - a fifth of the actor, on a 44 cm lever (`posFwdCmR`). Then, with S and W divided but the bone LENGTHS not, the triangle was closed with sides 1.25x short of its own hypotenuse and the elbow slid |
+| 8 | "the two forearms are perfectly synced" | **`g_elbowPrev` held last frame's elbow in COMPONENT space.** Smoothing this frame's elbow against it while the actor had travelled in between dragged the elbow after the actor. The wrist is not smoothed, which is why it was immune - and a fixed wrist with a dragging elbow pivots the forearm |
+
+### What each DOF is pinned to now (free arm)
+
+| bone | roll pinned to |
+|---|---|
+| clavicle | authored; shoulder is head-relative (s70i) |
+| upper arm | the pole |
+| elbow / forearm | the pole |
+| twist helper 22 | pole + 0.5 x hand twist |
+| twist helper 23 | pole + 1.0 x hand twist |
+
+The twist angle is measured about the forearm axis against the hand's
+**actor-cancelled** orientation (`qtc`), which is what makes it independent of the
+held hand rather than a correction applied afterwards.
+
+### Fallout 4's FRIK named the fix
+
+`rollingrock/Fallout-4-VR-Body`, `src/skeleton/Skeleton.cpp` (`setArms` /
+`solveArmToHandWorldTarget`, algorithm credited to SkyrimVR's VRIK):
+
+> *"For non-power armor, `forearm2` and `forearm3` receive opposing rotations
+> based on computed wrist twist."* - the arm's roll is driven EXPLICITLY from the
+> hand, never left free.
+>
+> *"Hand rotation is decoupled from arm solving."*
+>
+> *"Each arm solves independently via the `isLeft` parameter, with no cross-arm
+> coupling in the solver logic."*
+
+BS1 has the same bones: `patterns.h` records the sleeve as *"3 clavicle,
+4 upperarm, 5 elbow, **22/23 forearm twist helpers**"*. This tree was writing
+22/23 with the forearm's own swing and no wrist twist at all.
+
+**Not yet ported, and worth having:** FRIK's shoulder reach offset
+(`norm(shoulderToHand) * adjust * armLength * 0.08` - ours anchors the shoulder
+rigidly) and its elbow constraints (law of cosines with hand-behind-body,
+chest-crossing and arm-lift limits).
+
+### MEASURED NEGATIVE: there is no script-level IK surface
+
+`HavokSkeletalSystem.uc` is a **4-line stub** and the only IK class in the
+decompiled tree is `AnimNotify_FootIK`. There is no skeletal controller to hook
+from UnrealScript. **The bone array is the only lever** - do not go looking again.
+
+### The two probes that did the work, and what skipping them cost
+
+- **ARMHOLD** - reads the free arm's five bones back after the write. All five
+  held to **0.0 UU / 0.1 deg across 41 samples** while the held hand was twisted
+  every way, which killed the entire "something re-evaluates the arm" class in one
+  run and sent the search back into the solve's own inputs, where the faults were.
+- **FOREARM** - lifts the free elbow and wrist into WORLD. With the off hand held
+  still: **wrist steady to 0.4 UU, elbow swinging 25 UU.** Every geometric input
+  to the elbow was fixed, so the culprit had to be the only STATEFUL term - the
+  smoothing. Found #8 in one run.
+
+**Three whole-arm corrections were tried before the first probe was written and
+all three made the coupling worse:** `inv(A_now) * A_capture`, its inverse, and
+rebuilding the orientation in world. Three DIFFERENT shapes failing the same way
+is not three wrong signs - it means the correction is aimed at the wrong thing.
+Stop at the second and measure.
+
+### Standing rules for this subsystem
+
+1. **Anything derived per frame must be anchored in world or in the head frame,
+   never left in component space.** That includes smoothed and remembered values -
+   #8 was pure state, not geometry.
+2. **Every rotational DOF must be explicitly pinned.** `quat_from_to` leaves the
+   axial one free; a free DOF is a coupling waiting to be reported.
+3. **The DrawScale divide applies to EVERYTHING written as a bone translation**,
+   and to any length compared against one.
+4. **Per-hand state must be per hand, and per-role state must be per role.** #1
+   and #2 were one bank serving two roles.
+5. **Measure before the third attempt.** Both probes above answered in a single
+   run what several code changes could not.
+
+## Session 73 (2026-08-30) - MAKING THE FREE ARM ROTATE: frames, gradients, and the hinge
+
+Continues session 72, which decoupled the free arm's POSITION. This is the half
+that made it rotate correctly, and it is signed off in the headset: *"it looks and
+feels amazing"*.
+
+### THE ONE-LINE SUMMARY
+
+> **The held arm is CARRIED by the actor. The free arm is not, so everything the
+> actor was doing for it implicitly has to be reconstructed explicitly - and each
+> thing that was not reconstructed showed up as a coupling, a lock, or a pinch.**
+
+Every fault below is one more thing the actor had been doing for free.
+
+### THREE FRAMES, AND USING THE WRONG ONE COST THREE REGRESSIONS
+
+This is the single most expensive lesson of the two sessions. "Not the actor" was
+never the answer; there are THREE candidate frames and most of this subsystem
+wants the third.
+
+| frame | moves with the HELD hand | moves with the PLAYER | use it for |
+|---|---|---|---|
+| component (actor) | **yes** | yes | nothing that must stay put |
+| world | no | **no** | nothing that must follow the player |
+| **body** (`base[XYZ]` + body yaw) | no | yes | almost everything |
+
+Measured failures, one per wrong choice:
+
+- **elbow smoothing in COMPONENT space** -> the elbow dragged after the held hand;
+  the forearm pivoted about a fixed wrist and the two forearms read as "perfectly
+  synced" (s72u).
+- **elbow smoothing in WORLD** -> running forward left the elbow behind while the
+  shoulder and wrist travelled with the body, and the arm STRETCHED (s72w).
+- **rig pole fixed in WORLD while its blend partner was body-relative** -> the
+  elbow oscillated in lockstep with the right stick: *"it feels like right stick
+  controls the placement"* (s72x).
+
+s70i had already chosen the body frame for the shoulder and written down why. The
+rule generalises: **anything derived per frame, including remembered and smoothed
+values, belongs in the body frame unless there is a reason it does not.**
+
+### A QUANTITY CANNOT BE MEASURED AGAINST SOMETHING THAT MOVES WITH IT
+
+Two separate faults, same shape:
+
+- `ElbowFollowWrist`'s follow half was the AUTHORED bend - a fixed direction - so
+  it never followed a wrist at all. Rotating the off hand moved the hand and left
+  the elbow, pinching the mesh between them. It now takes the free hand's own
+  orientation (`qtc`), which is actor-cancelled (s73b).
+- ...but the SAME vector was also the reference the segments' roll is pinned to,
+  and the twist is the residual between that pinned forearm and the hand. Once
+  the pole followed the wrist the residual collapsed and the forearm stopped
+  rolling: *"the elbow pivots out, but it doesn't seem to rotate at all"*. The
+  roll pin keeps a body-relative pole; the elbow position keeps the blended one.
+  **Two jobs, two poles** (s73d).
+
+### THE ELBOW IS A HINGE, SO IT CANNOT HOLD A TWIST STEP
+
+The first twist gradient was 0.25 bicep / 0.50 forearm - a 0.25 STEP across the
+elbow, up to 45 degrees of twist discontinuity at a joint with no twist axis. The
+skin spanning it absorbs the whole step, which is the hourglass. Raising the
+bicep alone would only have moved the pinch.
+
+**Segments either side of a hinge must carry the same roll**, and the gradient
+belongs inside the forearm, where the twist helpers exist because that is where a
+real forearm pronates - radius over ulna, between elbow and wrist.
+
+### UNWRAP BEFORE YOU SCALE
+
+`atan2` returns `(-pi, pi]`, so the twist jumps 2pi at one point in the wrist's
+travel. A full turn is INVISIBLE on a bone given the whole angle - which is why
+the wrist end never flickered - but the gradient multiplies it by a FRACTION, and
+a fraction of 2pi is not a full turn: the forearm snapped 180 degrees and the
+bicep 90. ARMIK logged it flipping `+179.9 / -179.9`, which is how it was found.
+
+**Any angle that will be scaled, blended or interpolated must be made continuous
+first.** Carry it across frames by the shortest step and accumulate. That is
+continuity, NOT smoothing - there is no lag - and the comment says so, because
+the two look alike in a diff.
+
+### EASE DERIVED JOINTS. NEVER EASE A JOINT THAT MUST MEET SOMETHING UNSMOOTHED
+
+The twist was eased on the elbow's lane, copying FRIK. Wrong here: the twist
+exists to make the forearm MEET THE HAND, and the hand tracks the controller
+live. Easing one side of a junction guarantees a visible mismatch for the length
+of every wrist movement - exactly when a wrist is looked at.
+
+FRIK eases because its twist is an `asin` of a dot product, noisy near the poles.
+Ours is an `atan2` of an already-stable orientation, so there is nothing to
+denoise. The ELBOW keeps its easing: it is a derived joint with no counterpart to
+match, which is the case easing is for.
+
+### TWO BONES DO NOT SHARE AN AXIS CONVENTION
+
+The twist was the raw angle between the forearm's local up and the hand's, and a
+hand's local axes are not its forearm's. That difference baked in as a constant,
+so the wrist never quite met the hand - small, identical on both hands, present
+with NO trim dialled.
+
+The helpers want the CHANGE in twist since the authored pose, so the same angle
+is measured between the AUTHORED forearm and AUTHORED wrist and subtracted. It is
+derived from capture data, so it is automatically right per weapon and per
+plasmid with no constant to tune.
+
+**And a trim must never be used to hide it.** A mirrored right-hand rotation
+trim was seeded on the theory that the plasmid off hand needed the left's -206
+roll; the tester reported the rotation already matched their controller untuned,
+which meant the fault was downstream and the trim was masking it. Reverted. A
+trim that compensates for a real fault is how the next session is lost - the same
+way `ElbowFollowWrist` sat as a slider over a frame bug for three sessions.
+
+### THE SCALE ARITHMETIC, WRITTEN OUT ONCE
+
+A component-space vector `v` renders at `k*v`, where `k` is the rig actor's
+DrawScale (0.8 on the shipped rig).
+
+- A POINT that must land at a given world position is written `p/k`.
+- A LENGTH compared against a distance between two such points is written
+  **unchanged** - the authored segment renders at `k*|a|`, which in the divided
+  space is `k*|a|/k = |a|`.
+
+Dividing the lengths as well stretched every segment by 1/0.8, the forearm
+overshot the hand, and the skin between the last helper and the wrist stretched
+to cover it: *"like you have a super long wrist"*.
+
+### THE SHARE IS 1.0 BECAUSE THAT IS WHAT THE HELD ARM DOES
+
+The held arm gets no explicit twist at all - the twist block and `pinRoll` are
+both `freeBank`-gated, and the held call site passes `handQ = nullptr`. Its whole
+roll comes from the actor, which rotates fully with the held controller. So every
+held-arm segment rotates 1:1 with that wrist: share = 1.0, no gradient.
+
+`g_armTwistShare` therefore ships at 1.0 - a deliberate match, not a guess - with
+`vrbones armtwist <0..1>` live for anyone who wants the bicep to roll less than
+the wrist, which is what a real humerus does.
+
+### STANDING RULES (extending session 72's five)
+
+6. **Pick the frame deliberately: component, world, or body.** Body is usually
+   right. Three regressions came from moving something out of a wrong frame into
+   another wrong one.
+7. **Never measure a quantity against a reference that moves with it.** If a pole
+   both places a joint and defines the zero of an angle, it needs to be two poles.
+8. **Segments either side of a hinge carry the same roll.** Gradients belong
+   inside a segment, not across a joint that cannot twist.
+9. **Unwrap any angle before scaling, blending or interpolating it.** A 2pi jump
+   is invisible at weight 1.0 and a disaster at every other weight.
+10. **Ease derived joints only.** Anything that must meet an unsmoothed thing must
+    itself be unsmoothed.
+
+### STILL OPEN: the two arms should be ONE implementation
+
+`solve_arm()` is already shared - both hands call it - but its behaviour forks
+internally on `freeBank` in six places: the twist gradient, the roll pins, the
+smoothing frame, the reference bank, the shoulder mirror, and the DrawScale
+divide. So the arms are one function and two behaviours, and every fix this
+session had to be written for one of them.
+
+That fork exists for a reason - the held arm is carried by the actor and the free
+arm is not - but it is no longer a NECESSARY reason. Now that the free path
+solves an arm explicitly and correctly from nothing but that hand's own
+controller, it should reproduce the held arm too: the actor would still carry the
+rig, but the bones get overwritten either way, so the result should be identical
+while the code becomes one path.
+
+**Do it as its own change with its own headset pass.** The held arm is the
+signed-off, headset-accepted baseline, and unifying is exactly the kind of change
+that trades a known-good half for elegance. The gate is: with `freeBank` forced
+true for both hands, the held arm must be indistinguishable from today.
