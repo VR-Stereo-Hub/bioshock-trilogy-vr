@@ -659,6 +659,25 @@ inline constexpr uint32_t kFgSceneNodeBytes = 0x400;
 // first headset run.
 inline constexpr uint32_t kHandsCurrentHoldableOffset = 0x45C;
 
+// Hands.CurrentAbility - the equipped PLASMID, the ability half of "is anything
+// in your hands". BRACKETED BY TWO OFFSETS THIS REPO DERIVED INDEPENDENTLY,
+// which is why it is not a number copied across:
+//
+//     +0x450  PawnOwner / Hands.Base   kHandsBaseOffset, derived here
+//     +0x454  CurrentAbility           <-- this one
+//     +0x458  OldAbility
+//     +0x45C  CurrentHoldable          kHandsCurrentHoldableOffset, derived here
+//
+// Four consecutive pointer-sized fields with our own two at each end and one
+// slot spare between - the only layout that fits. BRVR's ENGINE-MAP.md records
+// the same table, and its HandsProbe derives the ability slot as
+// `CurrentHoldable - 8` so one ini key drives both and they cannot drift.
+//
+// A NULL HERE IS MEANINGFUL, not a failure: nothing equipped. Read it with
+// hands::armed(), which fails towards "armed" so a cosmetic gate can never
+// strand the crosshair off.
+inline constexpr uint32_t kHandsCurrentAbilityOffset = 0x454;
+
 // ---- UObject identity (session 21) ------------------------------------------
 // Derived live via the seam: the equipped weapon actor's +0x28 dword read
 // 18009 -> 'Shotgun' through fname_text (+0x2C = the instance number), and

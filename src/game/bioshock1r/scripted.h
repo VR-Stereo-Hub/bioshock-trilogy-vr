@@ -219,6 +219,21 @@ bool world_fov_guard();
 void set_world_fov_guard(bool on);
 void world_fov_readout(float* gameplay, unsigned* snaps);
 
+// Hide EVERY crosshair while a scene owns the view - the mod's aim dot, the aim
+// laser, and the game's own reticle. Three separate mechanisms with one switch:
+// the first two are core composition layers suppressed through
+// bvr::vr::publish_scene_active(), the third goes out through the engine's SET
+// handler in camera.cpp's assert_crosshair. Default ON.
+//
+// The scene predicate is `scripted_window() || bathysphere()` - wider than the
+// lens guard's, deliberately. You are not aiming on a ride either, and unlike
+// the lens there is nothing to get wrong by hiding a reticle for a few seconds
+// too long.
+bool hide_aim_in_scenes();
+void set_hide_aim_in_scenes(bool on);
+// The predicate the three suppressions share, so nothing can drift apart.
+bool scene_owns_aim();
+
 bool hide_rig_in_scenes();
 void set_hide_rig_in_scenes(bool on);
 

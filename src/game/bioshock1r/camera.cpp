@@ -170,7 +170,15 @@ std::atomic<uint64_t> g_resWritePending{0};
 // property offset or bitmask is ever needed, and SET also writes the class
 // default, so pawns spawned later (load crossings) inherit it. Re-asserted
 // on a slow cadence in case anything script-side calls EnableReticle.
-std::atomic<bool> g_crosshairVisible{false}; // `vrxhair on` re-shows it
+std::atomic<uint64_t> g_lastMenuPressMs{0};
+bool g_playerOpenedPanel = false;
+std::atomic<bool> g_crosshairVisible{false};
+// Hide every crosshair while nothing is equipped. Ported from BRVR, whose
+// XRSession crosshair gate reads HandsProbe_Armed(): "a dot floating in front
+// of you before the game has given you anything to aim - the whole opening of
+// the game - reads as a bug, and it follows you into every scene where the game
+// takes your weapon away." Default on.
+std::atomic<bool> g_hideAimUnarmed{true}; // `vrxhair on` re-shows it
 int g_crosshairApplied = -1;                 // last state pushed (-1 = never)
 uint64_t g_crosshairAssertMs = 0;            // game thread only
 // Session 22 round 5 (user ask, pre-release): the pad SOFT LOCK-ON (aim
@@ -1190,6 +1198,20 @@ void apply_vr_preset() {
 // a slow safety net for a script-side caller we have not identified.
 constexpr uint64_t kExecReassertMs = 300000; // 5 minutes
 
+// Should every crosshair be hidden this frame, and why? ONE predicate for all
+// three of them - the core aim dot and laser (published to core below) and the
+// game's own reticle (assert_crosshair) - so they can never disagree.
+//
+// Two reasons, and they are independent switches because they are independent
+// judgements: a scene owning the view is scripted.cpp's call, and empty hands is
+// hands.cpp's. BRVR keeps them separate too, and its comment says why - it first
+// expected empty hands to cover cutscenes, "a full playthrough of the opening
+// says it does not, so the sequence is named directly".
+bool aim_suppressed() {
+    if (scripted::scene_owns_aim()) return true;
+    return g_hideAimUnarmed.load(std::memory_order_relaxed) && !hands::armed();
+}
+
 // Crosshair upkeep (see the globals): push the wanted state through the
 // engine's SET handler on change, on a world event, and on the slow safety
 // net. Game thread.
@@ -1198,8 +1220,14 @@ void assert_crosshair(uint64_t now) {
     // right where the panel is, and reads as a smudge on the menu. This is a
     // suppression, not a setting change: the `due` test below is edge-driven,
     // so it hides on open and comes back on close.
+    // ...and hidden while a scripted scene owns the view, for the same reason
+    // the aim dot and laser are (bvr::vr::publish_scene_active): you are not
+    // aiming during a cutscene, and a reticle pinned to the middle of a camera
+    // you are not steering reads as a smudge on the scene. Suppression, not a
+    // setting change - the edge-driven `due` test below brings it back when the
+    // scene ends, exactly as it does when the panel closes.
     int want = (g_crosshairVisible.load(std::memory_order_relaxed) &&
-                !bvr::overlay::visible())
+                !bvr::overlay::visible() && !aim_suppressed())
                    ? 1
                    : 0;
     bool due = want != g_crosshairApplied ||
@@ -1997,7 +2025,45 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                     k = (4.0f / 3.0f) * (static_cast<float>(bbH) /
                                          static_cast<float>(bbW));
                 float fg = 2.0f * atanf(tanW * k) * kRadToDeg;
+                // s67 FOVPROBE, modelled on BRVR's line so the two logs can be
+                // read side by side. BRVR prints, every run:
+                //     >>> FOVPROBE: writing ForegroundFov at +0x460 = 117.5 (was 60.0)
+                // This tree has computed the same 117.5 all along and NEVER SAID
+                // SO, which is why nobody could tell the write from a no-op. It
+                // matters because `[hud] fov watch` reports "1 lens(es)" and
+                // "FG tanH=0.000000" on every run: if a 117.5 foreground pass
+                // really rendered beside the 100 deg world pass there would be
+                // TWO distinct lenses in the constant buffers, and there is one.
+                //
+                // Two lines: the first write (with the value we displaced, which
+                // should read 60.0 if this field is the one BRVR drives), then a
+                // 1 Hz readback of what the field holds NOW. If it reads back as
+                // something other than what we wrote, the engine is restamping
+                // it and the lens match has never actually been in effect.
+                const float wasFg = *fgFov;
                 *fgFov = fg;
+                {
+                    static bool s_toldFg = false;
+                    if (!s_toldFg) {
+                        s_toldFg = true;
+                        BVR_LOG("[b1r] FOVPROBE: writing ForegroundFov at +0x%X = %.1f "
+                                "(was %.1f) | world %d deg, k=%.6f, backbuffer %ux%u",
+                                patterns::kPcForegroundFovOffset, fg, wasFg, *opt, k, bbW,
+                                bbH);
+                    }
+                    static uint64_t s_lastFgMs = 0;
+                    const uint64_t nowFg = GetTickCount64();
+                    if (nowFg - s_lastFgMs >= 1000) {
+                        s_lastFgMs = nowFg;
+                        BVR_LOG("[b1r] FOVPROBE: field held %.2f before our write this "
+                                "frame (we write %.2f) %s",
+                                wasFg, fg,
+                                (wasFg > fg + 0.5f || wasFg < fg - 0.5f)
+                                    ? "<-- ENGINE IS RESTAMPING IT: our lens match is NOT "
+                                      "reaching the renderer"
+                                    : "(our value is holding)");
+                    }
+                }
                 g_fgFovWritten.store(fg, std::memory_order_relaxed);
                 g_fgFovK.store(k, std::memory_order_relaxed);
             }
@@ -2115,19 +2181,70 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     const bool panelUp = screens::panel_screen_up();
     const bool sceneOwnsPanel = scripted::scripted_window() || scripted::bathysphere();
     {
+        // ONE line, and it states the decision actually taken. The s64 version
+        // read `panelUp && sceneOwnsPanel` and so announced "NOT treating it as
+        // a UI pause" even on the frame we were treating it as exactly that,
+        // once the menu-press latch above started overriding it.
         static bool s_wasSuppressing = false;
-        const bool suppressing = panelUp && sceneOwnsPanel;
+        const bool suppressing = panelUp && sceneOwnsPanel && !g_playerOpenedPanel;
         if (suppressing != s_wasSuppressing) {
             s_wasSuppressing = suppressing;
-            BVR_LOG("[b1r] scripted: panel screen up during a %s - %s",
+            BVR_LOG("[b1r] scripted: panel during a %s - %s",
                     scripted::bathysphere() ? "bathysphere ride" : "scripted scene",
-                    suppressing ? "NOT treating it as a UI pause (the scene keeps its "
-                                  "stereo projection and your head keeps steering)"
-                                : "released; the panel is a real UI pause again");
+                    suppressing
+                        ? "the SCENE pushed it (no menu press) - not a UI pause, so the "
+                          "scene keeps its stereo projection and your head keeps steering"
+                        : "YOU pressed menu - a real pause, so it gets the anchored quad");
         }
+        if (!panelUp) g_playerOpenedPanel = false; // cleared only after logging
+    }
+    // ---- did the PLAYER open this panel, or did the scene? -----------------
+    //
+    // s64 stopped treating PausePC as a UI pause during a scene, correctly: the
+    // game pushes it for bathysphere rides and scripted scenes, and treating it
+    // as a pause flattened the whole ride to a quad and froze head steering.
+    // The cost was that a REAL pause taken during a scene also lost the quad,
+    // and the quad is the only thing that ever gets anchored - reported as "the
+    // pause menu is unanchored during scripted events".
+    //
+    // BRVR solves this with a true pause flag (Level.Pauser, its `paused` term
+    // in Hooks.cpp). THAT FIELD IS NOT ON LEVELINFO ON THIS BUILD, and this
+    // time that is a measured result rather than a copied offset: the hunt in
+    // screens.cpp swept Level+0x0..0x2000 across a real pause and every slot
+    // that moved was a TArray {Data,Num,Max} growing by one - menu allocation
+    // churn, not a flag. ENGINE_NOTES has the table.
+    //
+    // So use the one signal this mod owns outright: IT COMPOSES THE PAD. The
+    // game cannot open the pause menu without the player pressing menu, and the
+    // scene's own PausePC arrives with no press at all. Latch on the press,
+    // hold it until the panel closes.
+    //
+    // FAILS TOWARDS TODAY'S BEHAVIOUR. A pause opened some way the composed pad
+    // cannot see - a keyboard Escape - simply misses the window and behaves
+    // exactly as it does now, rather than flattening a ride.
+    {
+        constexpr uint16_t kPadStart = 0x0010; // XINPUT_GAMEPAD_START
+        constexpr uint64_t kPressWindowMs = 2000;
+        uint16_t btns = 0;
+        bvr::input::last_composed_buttons(&btns);
+        const uint64_t nowMs = GetTickCount64();
+        if (btns & kPadStart) g_lastMenuPressMs = nowMs;
+        static bool s_wasPanelUp = false;
+        if (panelUp && !s_wasPanelUp)
+            g_playerOpenedPanel = (nowMs - g_lastMenuPressMs) <= kPressWindowMs;
+        s_wasPanelUp = panelUp;
+        // NOT cleared here. The verdict has to survive until the block below
+        // has logged it, or the close edge reports the post-reset value and
+        // every close reads "no menu press" however it opened - which is
+        // exactly what the first cut did.
     }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
-    bvr::vr::publish_ui_pause(panelUp && !sceneOwnsPanel);
+    bvr::vr::publish_ui_pause(panelUp && (!sceneOwnsPanel || g_playerOpenedPanel));
+    // Suppress the aim laser and the aim dot while a scene owns the view. The
+    // game's own reticle is NOT this call - it goes out through the engine SET
+    // handler in assert_crosshair, which reads the same predicate so the three
+    // can never disagree.
+    bvr::vr::publish_aim_suppressed(aim_suppressed());
 
     {
         int32_t moved = body::on_calcview(self, viewActor ? *viewActor : nullptr,
@@ -2426,6 +2543,21 @@ void draw_debug_ui() {
         bool xhair = g_crosshairVisible.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Flat-screen crosshair (default off in VR)", &xhair))
             g_crosshairVisible.store(xhair, std::memory_order_relaxed);
+        bool hideUnarmed = g_hideAimUnarmed.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Hide every crosshair with empty hands", &hideUnarmed))
+            g_hideAimUnarmed.store(hideUnarmed, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Aim dot, aim laser and the game's own reticle, all three, whenever\n"
+                "NOTHING is equipped - no weapon and no plasmid. A plasmid counts as\n"
+                "armed; you aim those.\n\n"
+                "From the BRVR mod: a dot floating in front of you before the game has\n"
+                "given you anything to aim - the whole opening - reads as a bug, and it\n"
+                "follows you into every scene where the game takes your weapon away.\n\n"
+                "Separate from the scripted-scene switch under Scripted events: empty\n"
+                "hands does NOT cover cutscenes, which is why both exist.");
+        ImGui::TextDisabled("     crosshairs are %s RIGHT NOW",
+                            aim_suppressed() ? "SUPPRESSED" : "live");
         bool lockoff = g_lockOnDisabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Lock-on disabled (pad aim magnetism off)", &lockoff))
             g_lockOnDisabled.store(lockoff, std::memory_order_relaxed);

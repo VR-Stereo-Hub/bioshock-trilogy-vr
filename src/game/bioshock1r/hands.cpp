@@ -48,6 +48,58 @@ const uint8_t* g_imageBase = nullptr;
 
 std::atomic<bool> g_enabled{false};
 std::atomic<int> g_pendingEnable{-1}; // overlay -> game thread (see aim.cpp)
+// Same seam for the drive mode. It cannot be a bare store from the overlay:
+// leaving mode 2 has to call bones::release(), which writes the skeleton, and
+// the render thread must never touch engine state directly.
+std::atomic<int> g_pendingMode{-1};
+// s67: does the grip offset ride a basis that includes ROLL? See the long note
+// at the use site - BRVR found that rotating the offset by a roll the mesh
+// never rendered with "swung the hand through an arc that grew with the twist".
+// True = today's behaviour.
+std::atomic<bool> g_offsetRoll{true};
+
+// ---- s67: PLACEMENT, SEPARATED FROM THE PIVOT ------------------------------
+//
+// The grip offset cannot do both jobs, and trying to make it costs a headset
+// run every time. The algebra is short enough to keep in view:
+//
+//     gun renders at   gp.loc + R(theta) * (G - gripOffset)
+//
+// so gripOffset decides WHICH mesh point is stationary - it IS the pivot. Move
+// it to correct the gun's height and you displace the pivot by the same amount,
+// which turns into an orbit of that size the moment the wrist rotates. Measured
+// s67: BRVR's values gave a correct pivot ("rotating in place correctly") with
+// the gun 6 in low; shifting them 15 cm to fix the height bought the height and
+// produced an 8 in orbit. Both observations are the same equation.
+//
+// THIS offset is applied in the VIEW frame instead, after the model transform,
+// so it does not rotate with the wrist and cannot create a lever. It translates
+// the whole rig rigidly: height, reach and lateral placement, with the pivot
+// left exactly where the grip offset put it.
+//
+// Two knobs, two jobs: gripOffset = where it pivots, viewOffset = where it sits.
+std::atomic<float> g_viewFwdCm{0.0f}, g_viewRightCm{0.0f}, g_viewUpCm{0.0f};
+
+// ---- s67 LATE ROTATION WRITE (BRVR S60, ported) --------------------------
+// BRVR's S59 readback measured the game tick running AFTER its CalcView write
+// and resetting the hands rotator: pitch and yaw held to a fraction of a
+// degree, but ROLL was erased by 5 to 102 degrees, scaling with wrist twist.
+// Its S60 fix is to write the rotator AGAIN later in the frame, past the tick.
+//
+// Confirmed on THIS machine, 2026-08-25: with BRVR installed for the A/B, its
+// own readback logged `r=0.0 deg since our write` on every line for the whole
+// run. Roll survives there, and the viewmodel is flawless. This tree had no
+// equivalent, so its roll is the channel being eaten.
+//
+// BRVR calls this from Present (render thread) and pays for it with a cached
+// pointer and a re-validation. We do NOT have to: scenedraw's build detour is
+// the GAME thread, fires after CalcView, and runs before the frame is built -
+// the same position in the frame without the cross-thread hazard. That is also
+// where camera.cpp already does its stale-FOV restore, for the same reason.
+void* g_lwObj = nullptr;
+int32_t g_lwRot[3] = {0, 0, 0};
+std::atomic<bool> g_lwValid{false};
+std::atomic<bool> g_lateWrite{true}; // the fix; toggleable so it stays bisectable
 std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
                                       // retired), 2 = bones (M7-v2, default)
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
@@ -363,7 +415,7 @@ void log_status() {
     int mode = g_mode.load(std::memory_order_relaxed);
     BVR_LOG("[hands] status: %s | mode=%s pose=%s | hand=%s | writes=%u",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
-            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : "BONES",
+            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : "BONES",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
             g_handMode.load(std::memory_order_relaxed) == 0 ? "LEFT"
             : g_handMode.load(std::memory_order_relaxed) == 1
@@ -422,6 +474,10 @@ void save_config() {
     fprintf(f, "# suffix-less key (posFwdCm=...) still loads and applies to BOTH hands.\n");
     fprintf(f, "mode=%d\n", g_mode.load(std::memory_order_relaxed));
     fprintf(f, "aimPose=%d\n", g_useAimPose.load(std::memory_order_relaxed) ? 1 : 0);
+    // View-frame placement: moves the rig without moving the pivot (see banner).
+    fprintf(f, "viewFwdCm=%.2f\n", g_viewFwdCm.load(std::memory_order_relaxed));
+    fprintf(f, "viewRightCm=%.2f\n", g_viewRightCm.load(std::memory_order_relaxed));
+    fprintf(f, "viewUpCm=%.2f\n", g_viewUpCm.load(std::memory_order_relaxed));
     for (int h = 0; h < 2; ++h) {
         const char* s = h == 0 ? "L" : "R";
         fprintf(f, "posFwdCm%s=%.2f\n", s, g_posFwdCm[h].load(std::memory_order_relaxed));
@@ -467,9 +523,12 @@ void load_config() {
         ++n;
         if (strcmp(key, "mode") == 0) {
             int m = static_cast<int>(v);
-            g_mode.store(m < 0 ? 0 : m > 2 ? 2 : m, std::memory_order_relaxed);
+            g_mode.store(m < 0 ? 0 : m > 3 ? 3 : m, std::memory_order_relaxed);
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "viewFwdCm") == 0) g_viewFwdCm.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "viewRightCm") == 0) g_viewRightCm.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "viewUpCm") == 0) g_viewUpCm.store(v, std::memory_order_relaxed);
         else if (store_hand_key(key, "posFwdCm", g_posFwdCm, v)) {}
         else if (store_hand_key(key, "posRightCm", g_posRightCm, v)) {}
         else if (store_hand_key(key, "posUpCm", g_posUpCm, v)) {}
@@ -543,6 +602,35 @@ void* resolve_weapon_actor(const FrameContext& ctx) {
 
 bool weapon_scan_in_progress() { return g_weaponScan.sweeping; }
 
+
+// Is ANYTHING in your hands - a weapon or a plasmid? Ported from the BRVR mod
+// (Hands/HandsProbe.cpp `g_handsArmed`, read by Render/XRSession.cpp's crosshair
+// gate), including both of its non-obvious rules.
+//
+// OR, NOT AND. Mid-equip one pointer is briefly null while the other has already
+// been written, so requiring both would blink "unarmed" on every weapon switch.
+// BRVR's ability-MODE test is the strict one - `ability && !holdable` - and that
+// is a different question from this one. A plasmid counts as armed: you aim
+// those.
+//
+// FAILS TOWARDS ARMED, deliberately, and this is the rule worth keeping. Every
+// failure path returns true: an unknown rig, an unreadable pointer, a build
+// whose offsets did not resolve. The only consumer is a cosmetic suppression,
+// so a probe that never locks must leave the crosshair exactly as it has always
+// been rather than strand it off with no way to notice why. BRVR: "A cosmetic
+// gate should fail towards the old behaviour, never towards a permanently
+// missing reticle."
+bool armed() {
+    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return true;
+    const uint8_t* h = static_cast<const uint8_t*>(g_handsActor);
+    void* hold = nullptr;
+    void* abil = nullptr;
+    const bool okH = read_ptr(h + patterns::kHandsCurrentHoldableOffset, &hold);
+    const bool okA = read_ptr(h + patterns::kHandsCurrentAbilityOffset, &abil);
+    if (!okH && !okA) return true; // neither slot readable - say nothing
+    return (okH && hold != nullptr) || (okA && abil != nullptr);
+}
+
 bool current_holdable(void** out) {
     // Raw rig read, CLASS-AGNOSTIC: the MachineGun and GrenadeLauncher carry
     // a different native vtable than kPlayerWeaponVtableRva, so the
@@ -580,7 +668,7 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     load_config();
     int mode = g_mode.load(std::memory_order_relaxed);
     BVR_LOG("[hands] init: mode=%s (AHands vtable 0x%X, APlayerWeapon vtable 0x%X)",
-            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : "BONES", patterns::kHandsVtableRva,
+            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : "BONES", patterns::kHandsVtableRva,
             patterns::kPlayerWeaponVtableRva);
 }
 
@@ -589,9 +677,237 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
 // because the collapse is write-only and needs an explicit edge on the way out.
 bool g_rigWasCollapsed = false;
 
+
+// ---- NUMPAD TUNER (s65, ported from the BRVR mod) --------------------------
+//
+// BRVR's HandsProbe.cpp PollGripKeys, cut down to the two modes William asked
+// for. Its reason for existing transfers exactly: the grip offset and the model
+// trim are "three numbers whose only test is 'does the gun pivot about the grip
+// when I twist my wrist' - a visual judgement that cannot be made from a log and
+// takes one rebuild per guess". The F10 sliders can do it, but not while both
+// hands are on the controllers and the gun is held at the angle being judged.
+//
+//   Numpad 8 / 2   forward / back   (POSITION)   pitch   (ROTATION)
+//   Numpad 6 / 4   right / left                  yaw
+//   Numpad 0 / 5   up / down                     roll
+//   Numpad 7       cycle step   0.5 -> 2 -> 5
+//   Numpad 9       cycle mode   POSITION <-> ROTATION
+//
+// EDITS THE RIGHT (WEAPON) HAND, matching the F10 tuning-hand default.
+//
+// PER WEAPON. Every edit is stashed into the ACTIVE weapon's profile and the log
+// line names it, so a pistol session cannot silently land on the wrench - which
+// is the failure the per-weapon split exists to prevent. Persisting on every
+// change is BRVR's behaviour too, and it is what makes a tuning session survive
+// a crash; these numbers cost headset time and nothing else re-derives them.
+//
+// FOCUS-GATED. Without this the keys fire while alt-tabbed, which turns a stray
+// numpad press in another window into a silent retune.
+// s67: THREE modes, and the order matters - the safe one is first because it
+// is the one that gets nudged most.
+//   kTuneModePos  PLACEMENT  where the gun SITS. View frame, cannot orbit.
+//   kTuneModeRot  ROTATION   the model trim.
+//   kTuneModeCur  CROSSHAIR  the AIM ray - laser, dot and bullet together.
+//
+// PIVOT (the grip offset) is deliberately NOT on the numpad. It sits at BRVR's
+// values, it is the one knob that can put the orbit back, and every session
+// that nudged it in the headset lost time to exactly that. It stays reachable
+// from the F10 sliders and `vrhands pos` for anyone re-deriving it.
+constexpr int kTuneModePos = 0;
+constexpr int kTuneModeRot = 1;
+constexpr int kTuneModeCur = 2;
+int g_tuneMode = kTuneModePos;
+float g_tuneStep = 2.0f;
+
+// NUMLOCK IS THE TRAP, and it is why the first cut did nothing. GetAsyncKeyState
+// only reports VK_NUMPAD0..9 while NumLock is ON; with it OFF the very same keys
+// send VK_UP/DOWN/LEFT/RIGHT, VK_INSERT, VK_CLEAR, VK_HOME and VK_PRIOR instead,
+// so every bind silently reads "not pressed". BRVR carried VK_PRIOR as a second
+// binding for the mode key, which is the same wound treated in one place.
+//
+// Both spellings are accepted. The alternates cost nothing when NumLock is on
+// (the numpad sends the NUMPAD codes then, and the arrows are a different
+// physical key), and they are what make the feature work at all when it is off.
+bool key_down(int vkPrimary, int vkAlt) {
+    return ((GetAsyncKeyState(vkPrimary) & 0x8000) != 0) ||
+           (vkAlt && (GetAsyncKeyState(vkAlt) & 0x8000) != 0);
+}
+
+bool game_has_focus() {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+void tuner_log(const char* what) {
+    char wk[48] = "-";
+    aim::weapon_key_name(wk, sizeof wk);
+    if (g_tuneMode == kTuneModePos)
+        BVR_LOG("[hands] numpad: %s %s PLACEMENT fwd %+.1f right %+.1f up %+.1f cm "
+                "(step %.1f) - where the gun SITS; per weapon; cannot cause an orbit",
+                wk, what, g_viewFwdCm.load(std::memory_order_relaxed),
+                g_viewRightCm.load(std::memory_order_relaxed),
+                g_viewUpCm.load(std::memory_order_relaxed), g_tuneStep);
+    else if (g_tuneMode == kTuneModeCur) {
+        float cp = 0.0f, cy = 0.0f;
+        aim::aim_trim_deg(1, &cp, &cy);
+        BVR_LOG("[hands] numpad: %s CROSSHAIR pitch %+.1f yaw %+.1f deg (step %.1f) - "
+                "the AIM ray: laser, dot and bullet move together. PER WEAPON. %s",
+                what, cp, cy, g_tuneStep, wk);
+    }
+    else
+        BVR_LOG("[hands] numpad: %s %s ROTATION pitch %+.1f yaw %+.1f roll %+.1f deg "
+                "(step %.1f)",
+                wk, what, g_rotPitchDeg[1].load(std::memory_order_relaxed),
+                g_rotYawDeg[1].load(std::memory_order_relaxed),
+                g_rotRollDeg[1].load(std::memory_order_relaxed), g_tuneStep);
+}
+
+void poll_numpad_tuner() {
+    struct Bind { int vk; int alt; int axis; float sign; };
+    // alt = what the same physical key sends with NumLock OFF.
+    static const Bind kBinds[6] = {
+        {VK_NUMPAD8, VK_UP, 0, +1.0f},    {VK_NUMPAD2, VK_DOWN, 0, -1.0f},
+        {VK_NUMPAD6, VK_RIGHT, 1, +1.0f}, {VK_NUMPAD4, VK_LEFT, 1, -1.0f},
+        {VK_NUMPAD0, VK_INSERT, 2, +1.0f}, {VK_NUMPAD5, VK_CLEAR, 2, -1.0f},
+    };
+    static bool prev[6] = {};
+    static bool prevStep = false;
+    static bool prevMode = false;
+
+    // Say it once, with the NumLock state, so a dead tuner explains itself in
+    // the log instead of looking like the feature was never built.
+    static bool s_told = false;
+    if (!s_told) {
+        s_told = true;
+        BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
+                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR. Both NumLock states work.",
+                (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
+    }
+
+    // Keys BEFORE focus, so "pressed but the window was not foreground" is a
+    // thing the log can say rather than a silent nothing.
+    bool anyDown = key_down(VK_NUMPAD7, VK_HOME) || key_down(VK_NUMPAD9, VK_PRIOR);
+    for (int i = 0; i < 6 && !anyDown; ++i)
+        anyDown = key_down(kBinds[i].vk, kBinds[i].alt);
+    if (!game_has_focus()) {
+        static uint64_t s_lastBlockedMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (anyDown && nowMs - s_lastBlockedMs >= 2000) {
+            s_lastBlockedMs = nowMs;
+            BVR_LOG("[hands] numpad: key held, but the game window is not foreground - "
+                    "ignoring (click the game window first)");
+        }
+        return;
+    }
+
+    // Mode, then step - both edge-detected so a held key moves one notch.
+    const bool modeDown = key_down(VK_NUMPAD9, VK_PRIOR);
+    if (modeDown && !prevMode) {
+        g_tuneMode = (g_tuneMode == kTuneModePos)   ? kTuneModeRot
+                     : (g_tuneMode == kTuneModeRot) ? kTuneModeCur
+                                                    : kTuneModePos;
+        tuner_log("now editing");
+    }
+    prevMode = modeDown;
+
+    const bool stepDown = key_down(VK_NUMPAD7, VK_HOME);
+    if (stepDown && !prevStep) {
+        g_tuneStep = (g_tuneStep < 1.0f) ? 2.0f : (g_tuneStep < 3.0f ? 5.0f : 0.5f);
+        tuner_log("step now");
+    }
+    prevStep = stepDown;
+
+    bool moved = false;
+    for (int i = 0; i < 6; ++i) {
+        const bool down = key_down(kBinds[i].vk, kBinds[i].alt);
+        if (down && !prev[i]) {
+            // s67 SIGN TRAP, and it cost a headset run. BRVR mode SUBTRACTS the
+            // grip offset (actorLoc = target - R*offset), so a raw "+up" on the
+            // stored value moves the gun DOWN on screen - and lengthens the
+            // lever while it does, which reads as the desync suddenly exploding.
+            // The keys are labelled for what the tester SEES, so invert the
+            // delta in the mode where the value is negated at the use site.
+            // No sign flip any more: the view placement is ADDED in every mode,
+            // so up is up. (The old inversion existed because mode 3 subtracts
+            // the grip offset, which these keys no longer touch.)
+            // BRVR mode subtracts the GRIP offset (actorLoc = target - R*grip),
+            // so raw "+up" there moves the gun down. Invert for that one case so
+            // the keys always mean what the tester sees. Placement is added in
+            // every mode and needs no flip.
+            const float d = kBinds[i].sign * g_tuneStep;
+            if (g_tuneMode == kTuneModeCur) {
+                // CROSSHAIR: the aim ray's pitch/yaw. 8/2 pitch, 6/4 yaw. The
+                // ray carries no roll in this tree (the camera owns roll), so
+                // 0/5 has nothing to move - say so rather than silently ignore.
+                if (kBinds[i].axis == 2) {
+                    BVR_LOG("[hands] numpad: CROSSHAIR has no roll axis here - the aim ray "
+                            "carries no roll (the camera owns it). Use 8/2 pitch, 6/4 yaw.");
+                    prev[i] = down;
+                    continue;
+                }
+                float cp = 0.0f, cy = 0.0f;
+                aim::aim_trim_deg(1, &cp, &cy);
+                if (kBinds[i].axis == 0) cp += d; else cy += d;
+                aim::set_aim_trim_all(cp, cy);
+                moved = true;
+                prev[i] = down;
+                continue;
+            }
+            // s67: POSITION MODE NOW EDITS THE PLACEMENT, NOT THE PIVOT.
+            //
+            // g_posFwdCm/RightCm/UpCm is the grip offset, and the grip offset IS
+            // the pivot - gun renders at gp.loc + R*(G - gripOffset). Nudging it
+            // in the headset to move the gun displaces the pivot by the same
+            // amount and the gun starts orbiting, which is what "the offset
+            // buttons seem to make it desync more" is. The view-frame placement
+            // does the job the tester actually wants and cannot create a lever,
+            // so that is what the keys drive.
+            //
+            // The pivot stays reachable from the F10 sliders and `vrhands pos`
+            // for whoever genuinely needs to re-derive it. It should sit at the
+            // BRVR values and be left alone.
+            std::atomic<float>* dst =
+                (g_tuneMode == kTuneModePos)
+                    ? (kBinds[i].axis == 0 ? &g_viewFwdCm : kBinds[i].axis == 1 ? &g_viewRightCm
+                                                                               : &g_viewUpCm)
+                    : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
+                                                                                 : g_rotRollDeg);
+            // The rotation arrays are per-hand (index 1 = right); the view
+            // placement is a single triple, so it is always index 0.
+            // The view placement is a single triple (index 0); the grip and
+            // rotation arrays are per-hand, index 1 = right.
+            const int di = (g_tuneMode == kTuneModePos) ? 0 : 1;
+            dst[di].store(dst[di].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
+            moved = true;
+        }
+        prev[i] = down;
+    }
+    if (!moved) return;
+    tuner_log("set");
+    // Persist immediately, both files: save_weapon_profiles() stashes the live
+    // values into the active profile first, so weapons.ini picks up the edit.
+    save_offsets();
+    aim::save_weapon_profiles();
+}
+
 void on_calcview(const FrameContext& ctx) {
+    poll_numpad_tuner(); // in-headset grip/trim tuning - see its banner
     // Overlay request, applied from THIS thread (same rule as aim.cpp: the
     // render thread must never touch engine state directly).
+    int pendMode = g_pendingMode.exchange(-1, std::memory_order_relaxed);
+    if (pendMode >= 0) {
+        g_mode.store(pendMode, std::memory_order_relaxed);
+        if (pendMode != 2) bones::release("hands mode change (overlay)");
+        BVR_LOG("[hands] mode = %s (overlay)",
+                pendMode == 0   ? "GUN"
+                : pendMode == 1 ? "HANDS"
+                : pendMode == 3 ? "BRVR (grip pose for position, aim for rotation, "
+                                  "offset SUBTRACTED - BRVR's own values)"
+                                : "BONES");
+    }
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
     if (pending == 1) {
         g_enabled.store(true, std::memory_order_relaxed);
@@ -792,6 +1108,35 @@ void on_calcview(const FrameContext& ctx) {
             quat[1] = hp.qy;
             quat[2] = hp.qz;
             quat[3] = hp.qw;
+
+            // BRVR MODE SPLITS THE TWO POSES, and this is not a detail - it is
+            // the shape of the thing being ported. BRVR's DriveHands takes the
+            // ORIENTATION from the aim pose (so barrel, laser and bullet stay
+            // one ray) and the POSITION from the grip pose (which is the
+            // controller handle, i.e. where the hand physically is):
+            //     QuatMul(hp.aimQuat, qOff, qFinal);                 // aim
+            //     const float* P = hp.gripValid ? hp.gripPos : hp.aimPos;  // grip
+            // This tree's own ENGINE_NOTES reached the same conclusion in M6
+            // and the code never took it: "grip stays the right choice for
+            // placing a hand/weapon MODEL (M7)".
+            //
+            // Falls back to whatever the single-pose read already gave us if
+            // the grip pose is not being tracked, which is BRVR's own gripValid
+            // ternary - never refuse to draw a hand over this.
+            if (g_mode.load(std::memory_order_relaxed) == 3) {
+                bvr::vr::HeadPose hAim{}, hGrip{};
+                if (bvr::vr::get_hand_pose(hand, true, hAim)) {
+                    quat[0] = hAim.qx;
+                    quat[1] = hAim.qy;
+                    quat[2] = hAim.qz;
+                    quat[3] = hAim.qw;
+                }
+                if (bvr::vr::get_hand_pose(hand, false, hGrip)) {
+                    pos[0] = hGrip.px;
+                    pos[1] = hGrip.py;
+                    pos[2] = hGrip.pz;
+                }
+            }
             if (bvr::b1r::bones::telemetry_on()) {
                 static uint64_t lastTlm = 0;
                 if (now - lastTlm >= 200) {
@@ -820,17 +1165,102 @@ void on_calcview(const FrameContext& ctx) {
 
     // Position offset rides the final (trimmed) frame: "2 cm forward" means
     // along the barrel as finally oriented.
+    //
+    // SIGN IS MODE-DEPENDENT, and that is not a wart - it is the whole
+    // difference between the two systems (s67):
+    //
+    //   BONES (mode 2): the anchor bone IS the hand, so the offset ADDS - it
+    //     nudges the pinned bone away from the controller.
+    //   BRVR  (mode 3): the actor origin sits at the EYE with the hand authored
+    //     ~44 UU out in mesh space, so the offset SUBTRACTS - it pulls the
+    //     actor BACK along its own axes until the mesh's hand lands on the
+    //     controller. BRVR's CameraHook.cpp does exactly this:
+    //         wx -= (Fx*gX + Rx*gY + Ux*gZ);
+    //     and its tuned values are ~44-58 forward for that reason. They are the
+    //     actor-origin-to-hand vector, NOT a small trim.
+    //
+    // The two conventions therefore need DIFFERENT NUMBERS in the same
+    // weapons.ini fields. Loading BRVR's values in mode 2 (or the reverse) puts
+    // the gun half a metre from where it belongs. See the mode command's log
+    // line, which says which convention is live.
+    const bool brvrMode = g_mode.load(std::memory_order_relaxed) == 3;
     float fwd[3], right[3], up[3];
-    ue_rot_basis(gp.rot, fwd, right, up);
+    // ---- s67: THE BASIS THE OFFSET RIDES, AND WHETHER IT CARRIES ROLL -------
+    // BRVR, CameraHook.cpp, after the S59 readback measured the game erasing
+    // roll by 5-102 deg while pitch and yaw held:
+    //
+    //   "So roll was never landing. Writing it anyway was ACTIVELY HARMFUL: the
+    //    grip correction rotated the offset by a roll the mesh never rendered
+    //    with, which swung the hand through an arc that grew with the twist.
+    //    That was the residual drift. We now write only what survives, and
+    //    correct with the same values."
+    //
+    // "An arc that grew with the twist" is the s67 symptom verbatim: a pure
+    // roll sweep traces an oval, zero at 0 deg, peak at 180, closed at 360.
+    //
+    // So the offset basis can be built WITHOUT roll. If the rendered mesh does
+    // not carry our roll, an offset rotated by that roll swings on exactly such
+    // an arc, and no value of the offset can cancel it - which is what two
+    // tuning sessions found the hard way.
+    //
+    // Default ON = today's behaviour (roll included), so this changes nothing
+    // until it is switched. `vrhands offsetroll off` / the F10 checkbox is the
+    // A/B, and `[tlm] rollcheck` in bones.cpp is the measurement that says
+    // which way it should go.
+    if (g_offsetRoll.load(std::memory_order_relaxed)) {
+        ue_rot_basis(gp.rot, fwd, right, up);
+    } else {
+        FRotator noRoll = gp.rot;
+        noRoll.roll = 0;
+        ue_rot_basis(noRoll, fwd, right, up);
+    }
     float uuPerCm = ctx.worldScale / 100.0f;
-    float of = g_posFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
-    float orr = g_posRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
-    float ou = g_posUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+    const float sgn = brvrMode ? -1.0f : 1.0f;
+    float of = g_posFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm * sgn;
+    float orr = g_posRightCm[hand].load(std::memory_order_relaxed) * uuPerCm * sgn;
+    float ou = g_posUpCm[hand].load(std::memory_order_relaxed) * uuPerCm * sgn;
     float loc[3] = {gp.loc.x + fwd[0] * of + right[0] * orr + up[0] * ou,
                     gp.loc.y + fwd[1] * of + right[1] * orr + up[1] * ou,
                     gp.loc.z + fwd[2] * of + right[2] * orr + up[2] * ou};
 
-    if (g_mode.load(std::memory_order_relaxed) == 2) {
+    // View-frame placement (see the banner): rigid translation of the whole rig
+    // in the CAMERA's basis, so "up" means up in the headset and stays that way
+    // however the wrist is turned. Roll is dropped - the camera's own roll must
+    // not tip the viewmodel's placement.
+    {
+        const float vf = g_viewFwdCm.load(std::memory_order_relaxed);
+        const float vr = g_viewRightCm.load(std::memory_order_relaxed);
+        const float vu = g_viewUpCm.load(std::memory_order_relaxed);
+        if (vf != 0.0f || vr != 0.0f || vu != 0.0f) {
+            FRotator camRot{ctx.camPitch, ctx.camYaw, 0};
+            float cf[3], cr[3], cu[3];
+            ue_rot_basis(camRot, cf, cr, cu);
+            const float f2 = vf * uuPerCm, r2 = vr * uuPerCm, u2 = vu * uuPerCm;
+            for (int i = 0; i < 3; ++i)
+                loc[i] += cf[i] * f2 + cr[i] * r2 + cu[i] * u2;
+        }
+    }
+
+    const int driveMode = g_mode.load(std::memory_order_relaxed);
+    if (driveMode == 3) {
+        // BRVR shape, both halves. The actor write below carries the rig to the
+        // controller; this keeps the cluster RIGID at its authored pose so the
+        // actor has something coherent to carry. Releasing it to the engine
+        // instead - which is what the first port of this mode did - leaves the
+        // rig animating underneath a moving actor, which is not BRVR and is not
+        // a test of BRVR.
+        bones::set_freeze_only(true);
+        // The weapon's OWN skeleton is the only lever that sizes the gun - the
+        // rig actor's DrawScale does not size geometry (bones.cpp, session 61).
+        // Mode 2 has always called this; mode 3 did not, which is why the gun
+        // came back full size when the freeze landed.
+        bones::wskel_drive();
+        bones::drive(ctx, target, gp, hand);
+    } else if (bones::freeze_only()) {
+        bones::set_freeze_only(false);
+    }
+
+    if (driveMode == 2) {
         // BONES (M7-v2): the actor stays engine-placed (eye anchor, correct
         // culling, correct engine-side FX anchoring) and the hand CLUSTER
         // moves to the controller instead.
@@ -845,6 +1275,11 @@ void on_calcview(const FrameContext& ctx) {
         if (g_writeRot.load(std::memory_order_relaxed)) {
             int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
             wrote = write12(p + patterns::kActorViewDirOffset, rot) || wrote;
+            // Publish for the late re-apply. The game tick is about to reset
+            // this rotator; late_write() puts it back after that happens.
+            g_lwObj = target;
+            memcpy(g_lwRot, rot, sizeof rot);
+            g_lwValid.store(true, std::memory_order_relaxed);
         }
         if (!wrote) {
             g_handsActor = nullptr; // the write faulted - stop trusting this pointer
@@ -879,14 +1314,46 @@ void handle_command(const char* args) {
         g_enabled.store(false, std::memory_order_relaxed);
         BVR_LOG("[hands] OFF - engine placement restored");
     } else if (strcmp(verb, "mode") == 0) {
-        int mode = strncmp(rest, "gun", 3) == 0     ? 0
-                   : strncmp(rest, "hands", 5) == 0 ? 1
-                                                    : 2;
+        int mode = strncmp(rest, "gun", 3) == 0      ? 0
+                   : strncmp(rest, "brvr", 4) == 0   ? 3
+                   : strncmp(rest, "hands", 5) == 0  ? 1
+                                                     : 2;
         g_mode.store(mode, std::memory_order_relaxed);
+        // Leaving the bone drive: hand the skeleton back EXPLICITLY. Simply not
+        // calling drive() is not enough (see bones.h release()): reapply() keeps
+        // repainting the cached pose for up to 100 ms AND keeps clearing the
+        // dirty flag while it does, so the engine never takes the cluster back
+        // and the actor would carry a rig frozen in our last pose.
+        if (mode != 2) bones::release("hands mode change");
         BVR_LOG("[hands] mode = %s",
                 mode == 0   ? "GUN (inert - renderer ignores an attached weapon's actor fields)"
                 : mode == 1 ? "HANDS (actor pinning - retired, kept for A/B)"
+                : mode == 3 ? "BRVR (actor pinning, BRVR's exact chain: GRIP pose for "
+                              "position, AIM pose for rotation, grip offset SUBTRACTED along "
+                              "the model axes. Offsets in this mode are BRVR's ~44-58 fwd, "
+                              "NOT the small mode-2 numbers - see the sign note in on_calcview)"
                             : "BONES (M7-v2: hand cluster follows the controller)");
+    } else if (strcmp(verb, "viewpos") == 0) {
+        float vf = 0.0f, vr = 0.0f, vu = 0.0f;
+        if (sscanf_s(rest, "%f %f %f", &vf, &vr, &vu) == 3) {
+            g_viewFwdCm.store(vf, std::memory_order_relaxed);
+            g_viewRightCm.store(vr, std::memory_order_relaxed);
+            g_viewUpCm.store(vu, std::memory_order_relaxed);
+            save_offsets();
+        }
+        BVR_LOG("[hands] view placement fwd%+.1f right%+.1f up%+.1f cm - changes where "
+                "the gun SITS without touching where it PIVOTS",
+                g_viewFwdCm.load(std::memory_order_relaxed),
+                g_viewRightCm.load(std::memory_order_relaxed),
+                g_viewUpCm.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "offsetroll") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_offsetRoll.store(on, std::memory_order_relaxed);
+        BVR_LOG("[hands] grip offset basis %s - BRVR builds it WITHOUT roll, because "
+                "the game erases the roll we write and an offset rotated by a roll the "
+                "mesh never rendered with 'swung the hand through an arc that grew with "
+                "the twist'",
+                on ? "INCLUDES roll (today)" : "drops roll (the BRVR shape)");
     } else if (strcmp(verb, "pose") == 0) {
         bool aim = strncmp(rest, "aim", 3) == 0;
         g_useAimPose.store(aim, std::memory_order_relaxed);
@@ -1076,6 +1543,65 @@ bool active() {
            (g_weaponActor != nullptr || g_handsActor != nullptr);
 }
 
+void late_write() {
+    if (!g_lateWrite.load(std::memory_order_relaxed)) return;
+    if (!g_enabled.load(std::memory_order_relaxed)) return;
+
+    const int mode = g_mode.load(std::memory_order_relaxed);
+    if (mode == 2) {
+        // Bone drive: the cached cluster write is the thing that has to survive
+        // the tick, and reapply() already replays exactly it (with its own
+        // 100 ms freshness guard, so a stale cache cannot keep painting).
+        bones::reapply();
+        return;
+    }
+
+    // Actor drive (modes 1 and 3) - the direct BRVR S60 port.
+    if (!g_lwValid.load(std::memory_order_relaxed) || !g_lwObj) return;
+    // The hands actor dies with the level. Re-validate against the probe's
+    // current target and drop the cache the moment it moves, or a load writes
+    // through freed memory. BRVR learned this one as a crash.
+    if (g_lwObj != g_handsActor || !has_vtable(g_lwObj, patterns::kHandsVtableRva)) {
+        g_lwValid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    if (!write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot))
+        g_lwValid.store(false, std::memory_order_relaxed);
+}
+
+void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg) {
+    if (hand < 0 || hand > 1) return;
+    g_rotPitchDeg[hand].store(pitchDeg, std::memory_order_relaxed);
+    g_rotYawDeg[hand].store(yawDeg, std::memory_order_relaxed);
+    g_rotRollDeg[hand].store(rollDeg, std::memory_order_relaxed);
+}
+
+void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
+    if (hand < 0 || hand > 1) return;
+    if (fwdCm) *fwdCm = g_posFwdCm[hand].load(std::memory_order_relaxed);
+    if (rightCm) *rightCm = g_posRightCm[hand].load(std::memory_order_relaxed);
+    if (upCm) *upCm = g_posUpCm[hand].load(std::memory_order_relaxed);
+}
+
+void view_offset_cm(float* fwdCm, float* rightCm, float* upCm) {
+    if (fwdCm) *fwdCm = g_viewFwdCm.load(std::memory_order_relaxed);
+    if (rightCm) *rightCm = g_viewRightCm.load(std::memory_order_relaxed);
+    if (upCm) *upCm = g_viewUpCm.load(std::memory_order_relaxed);
+}
+
+void set_view_offset_cm(float fwdCm, float rightCm, float upCm) {
+    g_viewFwdCm.store(fwdCm, std::memory_order_relaxed);
+    g_viewRightCm.store(rightCm, std::memory_order_relaxed);
+    g_viewUpCm.store(upCm, std::memory_order_relaxed);
+}
+
+void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
+    if (hand < 0 || hand > 1) return;
+    g_posFwdCm[hand].store(fwdCm, std::memory_order_relaxed);
+    g_posRightCm[hand].store(rightCm, std::memory_order_relaxed);
+    g_posUpCm[hand].store(upCm, std::memory_order_relaxed);
+}
+
 void save_offsets() {
     save_config();
 }
@@ -1087,9 +1613,59 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("Viewmodel follows the controller", &on))
         g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
 
+    {
+        // s67 drive-mode selector. It exists because the BRVR-vs-BONES question
+        // can only be answered by eye, and the tester cannot type with both
+        // hands on the controllers.
+        int m = g_mode.load(std::memory_order_relaxed);
+        ImGui::Text("Drive:");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("BONES", &m, 2)) g_pendingMode.store(2, std::memory_order_relaxed);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("BRVR", &m, 3)) g_pendingMode.store(3, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "BONES  - this tree's own drive: the hand CLUSTER is retargeted\n"
+                "         inside an actor the engine leaves at the eye.\n"
+                "BRVR   - the other mod's drive, ported whole: the ACTOR carries\n"
+                "         both position and rotation, position comes from the GRIP\n"
+                "         pose, rotation from the AIM pose, and the grip offset is\n"
+                "         SUBTRACTED along the model's own axes.\n\n"
+                "THE TWO MODES NEED DIFFERENT NUMBERS IN THE SAME FIELDS. BRVR's\n"
+                "offsets are the actor-origin-to-hand vector (~44-58 forward);\n"
+                "mode 2's are a small trim. weapons.ini currently holds BRVR's\n"
+                "values, so BONES will look wrong until they are put back\n"
+                "(weapons.ini.bak-pre-brvr).");
+    }
+
+    {
+        // s67. The A/B for "an arc that grew with the twist" - see the basis
+        // note in on_calcview and BRVR's S59/S60 readback.
+        bool orl = g_offsetRoll.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Grip offset follows wrist ROLL (untick = BRVR)", &orl))
+            g_offsetRoll.store(orl, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "BRVR measured the game ERASING the roll it wrote - 5 to 102 deg,\n"
+                "scaling with wrist twist - while pitch and yaw held fine. Its\n"
+                "conclusion: rotating the grip offset by a roll the mesh never\n"
+                "rendered with 'swung the hand through an arc that grew with the\n"
+                "twist'.\n\n"
+                "That is this bug's exact shape: roll the controller like a pole\n"
+                "and the gun traces an oval - nothing at 0 deg, worst at 180,\n"
+                "closed again at 360.\n\n"
+                "UNTICK to build the offset in a roll-free frame. Turn on\n"
+                "'vrbones telemetry' first and read [tlm] rollcheck: if drift\n"
+                "grows with target roll, the engine is eating our roll and this\n"
+                "is the fix.");
+    }
+
     bool aimPose = g_useAimPose.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Align to the AIM ray (matches laser; off = grip pose)", &aimPose))
         g_useAimPose.store(aimPose, std::memory_order_relaxed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ignored in BRVR mode, which always splits the two poses:\n"
+                          "grip for position, aim for rotation.");
 
     int hand = g_handMode.load(std::memory_order_relaxed);
     if (ImGui::RadioButton("left", &hand, 0)) g_handMode.store(0, std::memory_order_relaxed);
@@ -1109,6 +1685,39 @@ void draw_debug_ui() {
     ImGui::SameLine();
     ImGui::RadioButton("R (weapon)", &tuneHand, 1);
 
+    ImGui::TextDisabled("PLACEMENT (view frame) - moves it WITHOUT moving the pivot");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "USE THESE for a gun that sits too low, too high or too far out. They"
+            " translate the rig in your VIEW frame, after the model transform, so\n"
+            "they do not rotate with your wrist and CANNOT create an orbit.\n\n"
+            "The GRIP OFFSET below is a different job: it decides which point the\n"
+            "gun PIVOTS about. Using it to fix height moves the pivot by the same\n"
+            "amount - measured s67, a 15 cm height fix bought an 8 inch orbit.");
+    {
+        float vf = g_viewFwdCm.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("place forward (cm)", &vf, -60.0f, 60.0f))
+            g_viewFwdCm.store(vf, std::memory_order_relaxed);
+        float vr = g_viewRightCm.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("place right (cm)", &vr, -60.0f, 60.0f))
+            g_viewRightCm.store(vr, std::memory_order_relaxed);
+        float vu = g_viewUpCm.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("place up (cm)", &vu, -60.0f, 60.0f))
+            g_viewUpCm.store(vu, std::memory_order_relaxed);
+    }
+    ImGui::TextDisabled("GRIP OFFSET - where the model PIVOTS (not where it sits)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "These three ARE the fix for \"the weapon swings on a circle around the\n"
+            "controller\". At 0/0/0 the model's own ORIGIN is pinned to your hand,\n"
+            "so its grip - which is somewhere else in the model - orbits that point\n"
+            "as you rotate. Dial them until the weapon pivots about the GRIP when\n"
+            "you twist your wrist. That is a visual judgement and cannot be read\n"
+            "off a log, which is why it is a slider and not a constant.\n\n"
+            "SAVED PER WEAPON since s65: the number is the model's own\n"
+            "origin-to-grip vector, so every weapon needs its own. Tune with that\n"
+            "weapon in hand, then press Save preset values - it writes weapons.ini\n"
+            "as well, and switching weapons restores each one's numbers.");
     float f = g_posFwdCm[tuneHand].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("offset forward (cm)", &f, -120.0f, 120.0f))
         g_posFwdCm[tuneHand].store(f, std::memory_order_relaxed);

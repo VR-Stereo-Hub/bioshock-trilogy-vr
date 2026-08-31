@@ -36,6 +36,11 @@ gh pr create --base staging --draft
 
 Then: review, address comments, merge, delete the branch.
 
+**Every PR targets `staging`.** Never open one from a feature branch into another
+feature branch: stacked PRs get dirty fast, and the second one's diff is unreadable
+until the first lands. If your work sits on top of a branch that has not merged yet,
+wait for it to reach `staging` and rebase onto it.
+
 Open the PR **at every good stopping point** - a feature that works and has been tested -
 rather than saving it all for the end. Small and frequent is what lets the other person
 join a subject while it is still in flight, and it is how conflicts stay small. A large

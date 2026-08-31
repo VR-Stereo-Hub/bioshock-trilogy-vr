@@ -235,6 +235,109 @@ bool is_panel_movie(const char* name) {
 
 } // namespace
 
+
+// ---- the Pauser hunt (BS1 diagnostic, always on, costs one sweep at 5 Hz) ---
+//
+// WHY THIS EXISTS. ENGINE_NOTES falsified `LevelInfo::Pauser` on this build -
+// "read null through three real pauses". That test used `Level+0x668`, BRVR's
+// number, which is exactly what the repo's own hard rule forbids: same engine
+// tree, different link, derive fresh. The falsification is sound about THAT
+// OFFSET and says nothing about whether the field exists.
+//
+// BRVR did not guess 0x668 either. It hunted it (GameState.cpp HuntPauser):
+// snapshot a block of LevelInfo, then watch for the slot that goes
+// null -> object -> null across one open/close of a full menu. 0x668 is what
+// that hunt returned on ITS build. This is the same hunt, re-run here.
+//
+// WHY IT MATTERS. The Flash movie stack is exact about WHICH screen is up and
+// cannot tell WHY: PausePC.swf is pushed by bathysphere rides and scripted
+// scenes as well as by the player, so s64 had to stop treating it as a UI
+// pause during a scene - and a real pause taken during a scene then loses the
+// anchored quad and renders into the world projection. A true pause flag is
+// the missing term. BRVR anchors through exactly that term (`paused` in
+// Hooks.cpp's ordinaryMenu), which is why its pause menu anchors during scenes
+// and this one does not.
+//
+// NO COMMAND, NO TOGGLE, NOTHING TO ARM. The baseline refreshes while no panel
+// is up and the diff runs on the RISING EDGE of one, so simply pausing the game
+// during ordinary play produces the answer. Nobody has to type anything mid-run,
+// which is the only way this gets measured in a headset.
+constexpr size_t kPauserScanBytes = 0x2000; // BRVR swept 4 KB; widened after a miss
+constexpr int kPauserSlots = static_cast<int>(kPauserScanBytes / 4);
+constexpr int kPauserMaxReport = 24;        // a wall of hits is noise, not data
+void* g_pauserSnap[kPauserSlots] = {};
+bool g_pauserBaseline = false;
+uint64_t g_pauserNextMs = 0;
+int g_pauserCandidates[kPauserMaxReport] = {};
+int g_pauserCandidateN = 0;
+
+// Refresh the baseline. Only ever called while NO panel is up, so every slot
+// recorded here is a not-paused value.
+void pauser_baseline(uint64_t now) {
+    if (now < g_pauserNextMs) return;
+    g_pauserNextMs = now + 200; // 5 Hz; the sweep is 1024 guarded reads
+    const uint8_t* L = static_cast<const uint8_t*>(g_level);
+    for (int i = 0; i < kPauserSlots; ++i) {
+        void* v = nullptr;
+        g_pauserSnap[i] = read_ptr_at(L, static_cast<size_t>(i) * 4, &v) ? v : nullptr;
+    }
+    g_pauserBaseline = true;
+}
+
+// A panel just came up. Report every slot that went null -> object, which is
+// the Pauser shape. Anything that was already non-null is not it.
+void pauser_on_panel_up() {
+    if (!g_pauserBaseline) return;
+    const uint8_t* L = static_cast<const uint8_t*>(g_level);
+    // ANY change, classified - not just null -> object. The first cut only
+    // reported null -> object, which is the Pauser SHAPE, and a real pause on
+    // this build changed no such slot at all. Reporting every change says
+    // whether the field is a differently-shaped one (a bool, a count, a
+    // non-null handle) or whether LevelInfo is simply the wrong object.
+    int found = 0;
+    g_pauserCandidateN = 0;
+    for (int i = 0; i < kPauserSlots; ++i) {
+        void* v = nullptr;
+        if (!read_ptr_at(L, static_cast<size_t>(i) * 4, &v)) continue;
+        void* was = g_pauserSnap[i];
+        if (v == was) continue;
+        ++found;
+        if (found > kPauserMaxReport) continue;
+        const char* kind = (!was && v)   ? (looks_like_object(v) ? "null -> OBJECT" : "null -> value")
+                           : (was && !v) ? "value -> null"
+                                         : "changed";
+        g_pauserCandidates[g_pauserCandidateN++] = i;
+        BVR_LOG("[b1r] PAUSER HUNT: Level+0x%X %s (%p -> %p) - candidate %d",
+                static_cast<unsigned>(i) * 4, kind, was, v, found);
+    }
+    if (found == 0)
+        BVR_LOG("[b1r] PAUSER HUNT: NOTHING changed in Level+0x0..0x%X across this "
+                "panel. LevelInfo is the wrong object on this build - the pause flag "
+                "is not on it at all, at any shape.",
+                static_cast<unsigned>(kPauserScanBytes));
+    else if (found > kPauserMaxReport)
+        BVR_LOG("[b1r] PAUSER HUNT: %d slots changed - too many to be meaningful. The "
+                "one that also goes BACK to null on close is the answer.",
+                found);
+}
+
+// The panel closed. A real Pauser goes back to null; a candidate that does not
+// was something else that happened to be allocated at the same moment. This is
+// the half that turns a list into an answer.
+void pauser_on_panel_down() {
+    if (g_pauserCandidateN == 0) return;
+    const uint8_t* L = static_cast<const uint8_t*>(g_level);
+    for (int n = 0; n < g_pauserCandidateN; ++n) {
+        const int i = g_pauserCandidates[n];
+        void* v = nullptr;
+        const bool ok = read_ptr_at(L, static_cast<size_t>(i) * 4, &v);
+        BVR_LOG("[b1r] PAUSER HUNT: Level+0x%X is %s on close - %s",
+                static_cast<unsigned>(i) * 4, ok ? (v ? "still an object" : "back to null") : "unreadable",
+                (ok && !v) ? "*** THIS IS THE PAUSER OFFSET ***" : "not it");
+    }
+    g_pauserCandidateN = 0;
+}
+
 void on_calcview(void* pc, void* viewActor) {
     if (!pc || !viewActor) return;
 
@@ -309,6 +412,13 @@ void on_calcview(void* pc, void* viewActor) {
     strncpy_s(g_top, name, _TRUNCATE);
     const bool panel = is_panel_movie(name);
     const bool was = g_panelUp.exchange(panel, std::memory_order_relaxed);
+    // The Pauser hunt rides the panel edges - see its banner. Baseline while
+    // nothing is up, diff on the way in, confirm on the way out.
+    if (panel != was) {
+        if (panel) pauser_on_panel_up();
+        else pauser_on_panel_down();
+    }
+    if (!panel) pauser_baseline(GetTickCount64());
     BVR_LOG("[b1r] screens: top = \"%s\" (%d playing) -> %s%s", name, count,
             panel ? "PANEL" : "gameplay", panel != was ? "  [changed]" : "");
 }

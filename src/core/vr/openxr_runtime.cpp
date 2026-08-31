@@ -170,6 +170,12 @@ constexpr int kScreenPlaceLegacy = 2;
 // to the cinematic verdict, and the only one that is not render-side - see
 // publish_ui_pause() in the header for why the render side cannot see it.
 std::atomic<bool> g_uiPaused{false};
+// Aiming furniture should be hidden. Published by the adapter for the same
+// reason g_uiPaused is - every reason is a game-side fact the render side
+// cannot see - and consumed only to SUPPRESS. Core does not know why; the
+// adapter owns that. Defaults false, so a game that never publishes it behaves
+// exactly as before.
+std::atomic<bool> g_aimSuppressed{false};
 std::atomic<int> g_screenPlaceMode{kScreenPlaceLegacy};
 std::atomic<float> g_screenHeightM{0.0f}; // vertical nudge applied to the anchor
 
@@ -3157,6 +3163,12 @@ uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads
     // panel and fights the cursor for the same pixels. Suppression only - the
     // user's `laserOn` setting is untouched and comes straight back.
     if (bvr::overlay::visible()) return 0;
+    // ...nor while a scripted scene owns the view. You are not aiming during a
+    // cutscene, and a beam tracking a hand you are not steering reads as the
+    // mod fighting the scene. Same suppression contract: the setting is
+    // untouched and returns with the scene. (Adapter-published; see
+    // publish_aim_suppressed.)
+    if (g_aimSuppressed.load(std::memory_order_relaxed)) return 0;
     if (!ls.on || budget < 1) return 0;
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
 
@@ -3333,6 +3345,7 @@ bool publish_laser_image() {
 // there is no second algebra that can drift from the first.
 uint32_t build_aim_dot_slot(XrCompositionLayerQuad* quad, int slot) {
     if (bvr::overlay::visible()) return 0; // see build_laser_from
+    if (g_aimSuppressed.load(std::memory_order_relaxed)) return 0; // and the adapter's reasons
     const bool two = (slot == 1);
     if (!(two ? g_dot2On : g_dotOn).load(std::memory_order_relaxed)) return 0;
     if (!(two ? g_dot2Valid : g_dotValid).load(std::memory_order_relaxed)) return 0;
@@ -4982,6 +4995,10 @@ void publish_ui_pause(bool paused) {
     g_uiPaused.store(paused, std::memory_order_relaxed);
 }
 
+void publish_aim_suppressed(bool active) {
+    g_aimSuppressed.store(active, std::memory_order_relaxed);
+}
+
 CineDrive cine_drive() {
     return static_cast<CineDrive>(g_cineDrive.load(std::memory_order_relaxed));
 }
@@ -5454,6 +5471,7 @@ void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* sw
 void set_pose_audit(bool) {}
 void publish_gameplay_view(bool) {}
 void publish_ui_pause(bool) {}
+void publish_aim_suppressed(bool) {}
 void handle_cine_command(const char*) {}
 void handle_screen_command(const char*) {}
 void release_screen_anchor() {}

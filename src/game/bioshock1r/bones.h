@@ -145,12 +145,36 @@ void wskel_release(const char* why);
 // breathing (default ON; `vrhands swaykill on|off`). Real animations pass an
 // anchor-delta threshold and re-freeze when they settle. Measured baseline:
 // +-1.2 deg of barrel-direction wobble at idle without it.
+// s67 BRVR parity: replay the captured cluster pose VERBATIM instead of
+// retargeting it, and leave bone 43 to the engine. The actor (hands.cpp mode 3)
+// carries the rig to the controller, so the rig's internal pose stays exactly
+// as authored - which is what BRVR does and what this tree never has.
+// s67 per-weapon animation gate (BRVR's HandAnimSlot). When off, the reference
+// pose never adopts the engine's - used for the WRENCH, whose swing animation
+// fights manual melee. hands.cpp publishes this on every weapon switch.
+// s67 per-STATE animation policy: a bitmask over hands_state::State saying
+// which engine animations may reach the rig. Default FIRING|POSTFIRING - recoil
+// in, idle and reload out. Idle is refused because GetIdlingHandsAnim() draws a
+// weighted-random entry, so adopting it settles the gun somewhere different
+// every time (the "crosshair moves randomly between shots" report).
+void set_anim_state_mask(uint32_t mask);
+uint32_t anim_state_mask();
+
+void set_anim_allowed(bool on);
+bool anim_allowed();
+
+void set_freeze_only(bool on);
+bool freeze_only();
+
 void set_sway_kill(bool on);
 bool sway_kill();
 
 // Seam commands (game thread): status | list [n] | skel [hands|weapon] |
 // poke <idx> <dUU> |
 // freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
+// attachrot on|off (s67: does the weapon-attach bone take our ROTATION, or only
+//   our position? On = today. Off = the BRVR shape, which writes position only
+//   to bone 43 because the attachment path re-derives the rest) |
 // log on|off (in-headset telemetry: head/controller/camera/actor/target/bone
 // samples at ~5 Hz so a headset session can be diagnosed from the log)
 void handle_command(const char* args);

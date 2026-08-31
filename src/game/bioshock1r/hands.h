@@ -86,6 +86,32 @@ int active_hand();
 
 // Live mesh-alignment trim (degrees, per hand) - read by `vraim synccheck` so
 // its model chain sweeps the REAL tuned values (session 20).
+// The MODEL GRIP OFFSET, in cm, in the controller's own final frame (fwd along
+// the barrel as oriented, then right, then up). This is what makes a weapon
+// pivot about its GRIP instead of about its actor origin: with all three at
+// zero the model's origin is pinned to the controller and everything else
+// swings on a radius as you rotate - reported as "the weapon is connected to a
+// circle and the axis is the controller".
+//
+// PER WEAPON, NOT PER HAND. BRVR tuned the same three numbers per slot and its
+// shipped values are nowhere near each other - forward 58 for the wrench, 44
+// for the pistol, 16 for the shotgun - because the number IS the model's
+// origin-to-grip vector and every model has its own. aim.cpp's weapon profiles
+// carry them and push them here on a weapon change; these accessors are that
+// seam. The F10 sliders still edit the live value, which is how a profile gets
+// its numbers in the first place (it is a visual judgement - BRVR's note is
+// blunt that it "cannot be made from a log").
+void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm);
+void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm);
+
+// Per weapon since s65, for the same reason the grip offset is: a residual
+// ROTATION error shows up as a POSITION error at the end of the grip lever
+// (err ~ r * delta), so it vanishes at whatever orientation the offset was
+// tuned in and returns everywhere else. Tuning position alone cannot fix it -
+// which is why BRVR's shipped table carries a rotation column per slot, and
+// why its pistol needs 8 degrees of yaw.
+void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg);
+
 float model_trim_pitch_deg(int hand);
 float model_trim_yaw_deg(int hand);
 float model_trim_roll_deg(int hand);
@@ -116,10 +142,32 @@ bool weapon_scan_in_progress();
 // layer's identity source - it validates by CLASS NAME, not vtable.
 bool current_holdable(void** out);
 
+// Is a weapon OR a plasmid equipped? Ported from BRVR, which gates its crosshair
+// on exactly this. Returns TRUE on every failure path - the consumer is a
+// cosmetic suppression and must fail towards the crosshair being shown.
+bool armed();
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.
 void save_offsets();
+
+// s67 view-frame placement (where the gun SITS; cannot create an orbit, unlike
+// the grip offset which is the pivot). Per weapon since s67 - the shotgun sits
+// differently in the hand from the pistol.
+void view_offset_cm(float* fwdCm, float* rightCm, float* upCm);
+void set_view_offset_cm(float fwdCm, float rightCm, float upCm);
+
+// s67: re-apply the viewmodel rotation AFTER the game tick has reset it.
+//
+// BRVR measured the tick erasing ROLL by 5-102 deg (pitch and yaw held), and
+// fixed it by writing the rotator a second time from Present. Verified on this
+// machine: BRVR's readback reports r=0.0 all run, and its viewmodel is clean.
+//
+// Called from scenedraw's build detour at depth 0 - game thread, after
+// CalcView, before the frame is built. Same place camera.cpp restores a stale
+// FOV from, and for the same reason. Cheap and safe when nothing was written.
+void late_write();
 
 // Overlay section (render thread).
 void draw_debug_ui();

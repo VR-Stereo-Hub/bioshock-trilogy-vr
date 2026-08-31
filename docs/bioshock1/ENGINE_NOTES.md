@@ -1910,6 +1910,108 @@ baked as CODE DEFAULTS (their explicit ask); their four live profiles
 rescued to weapons.ini via wsave before anything could drop them (the run
 had not pressed save).
 
+## Session 67 - the viewmodel drive ARCHITECTURE, and the Hands state machine
+
+### The desync was never an offset
+
+The BS1 viewmodel tracked the controller but swung on an oval as the wrist
+rolled: zero error at 0 deg, worst at 180, closed again at 360. Two sessions of
+offset, pose and trim tuning never touched it, and every stage measured clean -
+because the fault was structural.
+
+**The two mods drive the rig in opposite directions.** BRVR moves the ACTOR and
+leaves the skeleton alone: the hand cluster is replayed verbatim (frozen), bone
+43 takes position but not rotation, and the actor transform carries the whole
+assembly to the controller, so the rig's internal pose is always exactly as
+authored. Named by BRVR's own log rather than by reasoning:
+
+```
+>>> WEAPONHAND: freezing the RIGHT cluster, bones 27-44.
+>>> WEAPONHAND: pose settled after 359 ms (rig went still) -- freezing from here.
+>>> B43: attach rotation drift 1.29 deg (cluster frozen; this bone is still the engine's)
+```
+
+This tree did the inverse - actor left where `Hands.UpdateLocation` pins it (on
+the camera, every frame), cluster 27-44 retargeted inside it, bone 43 included,
+about a reference that is itself a snapshot of an animated pose. Source: BRVR
+`Camera/CameraHook.cpp` `DriveHands` and `Hands/ArmHide.cpp`.
+
+`vrhands mode brvr` (mode 3) is that architecture and is now the shipped
+default: position from the GRIP pose, rotation from the AIM pose, grip offset
+SUBTRACTED along the model axes, cluster frozen, bone 43 position-only.
+
+### The grip offset IS the pivot - and that is why tuning it could never work
+
+A body point renders at `gp.loc + R(theta) * (G - gripOffset)`, so the offset
+decides which mesh point stays still. Using it to correct the gun's HEIGHT
+displaces the pivot by the same amount, which becomes an orbit the moment the
+wrist rotates. Measured this session: a 15 cm height correction bought an 8 inch
+orbit (tester: +4 in at 0 deg, -12 in at 180 - midpoint -4, amplitude 8).
+
+So placement was split onto its own knob, applied in the VIEW frame after the
+model transform, where it cannot create a lever. **Two knobs, two jobs: grip =
+where it pivots, view = where it sits.** Anyone tempted to fix a height problem
+with the grip offset should read this paragraph first.
+
+### The idle animation is a WEIGHTED RANDOM draw
+
+`Holdable.uc`:
+
+```uc
+var config travel array<name>  IdlingHandsAnim;
+var config travel array<float> IdlingHandsAnimWeight;
+```
+
+`GetIdlingHandsAnim()` returns a weighted-random entry. `Hands.uc`'s
+`WeaponIdling` loops it, and skips the loop entirely when the name is `'None'`.
+Every return to idle can therefore settle the rig somewhere different - which is
+the "crosshair moves randomly between shots" report, and the randomness is the
+game's rather than the mod's. BRVR's `IdleAnimMode=1` exists for exactly this;
+its own config echo reads "(all entries -> entry[0], kills the wrench slap)".
+
+Neighbouring `config travel` properties on `Holdable`, all settable by name
+through the engine SET seam (no offsets needed, so they survive Epic and GOG):
+`EquippingHandsAnim` (the cycle on equip), `AdditiveHandBobAnim`,
+`UnEquippingHandsAnim`, `IdlingAnim`, `AttachBone`.
+
+### Hands state machine - DERIVED, not hardcoded
+
+`ShockGame.Hands` is a UnrealScript state machine; gameplay code keys off
+`GetHands().GetStateName()`. UE2 keeps the current state in the object's
+`FStateFrame`, and the offsets differ per build.
+
+`hands_state.cpp` derives both by sweeping candidate pointers off the Hands
+actor and accepting only the pair whose `UState` name resolves, through GNames,
+to a state `Hands.uc` actually declares. A wrong offset cannot pass that test,
+so no number is carried between builds or storefronts. Uses the UObject layout
+already recorded here: name index `+0x28`, class `+0x30`.
+
+The states, from `Hands.uc`: `HandsOffscreen` (auto), `WeaponEquipping`,
+`WeaponIdling`, `WeaponFiring`, `PostWeaponFiring`, `WeaponReloading`,
+`ProceduralWeaponReloading`, `WeaponUnEquipping`, the zoom quartet, the ability
+equivalents, `InjectingEve`, `UsingGathererTool`, `ExorcisingGatherer`,
+`PlayingScriptedHandAnimation`.
+
+**Known defect in the policy built on it (not in the read):** ceasing to adopt
+at a state boundary leaves the reference wherever it was, so the pistol freezes
+at the apex of its recoil until a weapon switch. The fix shape is to capture a
+canonical REST reference during `Idling` and restore it on leaving an adopted
+state.
+
+### Falsified this session, with the measurement that killed each
+
+| Theory | Killed by |
+|---|---|
+| Aim-vs-grip pose choice for the model | headset A/B: no change. The aim pose is also a deliberate s11 fix so barrel, laser and bullet are one ray |
+| Bone 43's rotation applied twice | writing position-only stops the gun rotating ENTIRELY. BRVR gets away with it only because its ACTOR carries the rotation |
+| A rigid lever arm | three-axis offset tuning across two sessions never nulled it, and the required value changed between sessions |
+| The game erasing our roll | BRVR measured 5-102 deg on its ACTOR rotator (its S59) and fixed it from Present (S60); this tree's BONE write holds to 0.13 deg drift, measured by `ROLLCHECK` |
+| The foreground lens match not reaching the renderer | `FOVPROBE`: field holds 117.46 and the engine does not restamp it. The first write is 83.6 only because the backbuffer dims are not known yet - a real, minor, self-correcting bug |
+
+`[hud] fov watch` reporting `1 lens(es)` / `FG tanH=0.000000` every run is a
+BLIND INSTRUMENT, not evidence that the foreground pass is missing. It cost a
+hypothesis; do not read it as a finding.
+
 ## Session 22 - scripted-camera scenes: the descent's real mechanism (measured flat)
 
 The session-22 plan carried two hypotheses for the bathysphere descent
@@ -3617,6 +3719,44 @@ dependency with two other features (`FindLevel`, which needs the pawn) and all
 three were silent for a whole 16-minute session with their switches on. The
 comment claiming reliability outlived the evidence for it.
 
+
+**RE-TESTED PROPERLY 2026-08-24, and now falsified on evidence rather than on a
+borrowed number.** The original test above used BRVR's `0x668` - a copied
+offset, which the hard rules forbid for exactly this reason - so it could only
+ever have shown that ONE slot was wrong. BRVR did not guess that number either;
+it hunted it (`GameState.cpp HuntPauser`), and `0x668` is what its hunt returned
+on its build.
+
+The same hunt now exists here (`screens.cpp`, always-on, rides the panel edges)
+and was run against a real pause in ordinary gameplay:
+
+| Sweep | Filter | Result |
+|---|---|---|
+| `Level+0x0..0x1000` | slots going `null -> object` (the Pauser shape) | **nothing** |
+| `Level+0x0..0x2000` | ANY slot that changes | 32 slots, **none of them a flag** |
+
+Every one of those 32 is a `TArray` growing by one element - they arrive in
+triples, `{Data, ArrayNum, ArrayMax}`, with the two counts stepping together:
+
+```
+Level+0x1560 changed (8ADC5F30 -> 8B34B0D0)
+Level+0x1564 changed (00000015 -> 00000016)     ArrayNum
+Level+0x1568 changed (00000015 -> 00000016)     ArrayMax
+```
+
+That is menu allocation churn, not a pause flag. **The pause state is not on
+LevelInfo on this build at any shape, within 8 KB.** Do not try `Pauser` again
+without first widening the sweep or pointing the hunt at a different object -
+the PlayerController is the obvious next candidate and has not been swept.
+
+**What is used instead: the composed pad.** The mod composes the gamepad, so it
+knows when the PLAYER pressed menu; the game's own `PausePC` during a ride or a
+scripted scene arrives with no press at all. `camera.cpp` latches on the press
+and holds it until the panel closes, and that is what lets a real pause taken
+mid-scene keep the anchored quad while the scene's own panel does not. It fails
+towards today's behaviour: a pause opened by keyboard Escape misses the window
+and behaves exactly as before rather than flattening a ride.
+
 **Also falsified in BRVR, as sway fixes:** `AdditiveHandBobAnim` and
 `WeaponBobDamping`, both observed inert. Do not revive either.
 
@@ -4251,6 +4391,179 @@ arms with `+0x2AC` before finding that out. Either one needs the dirty protocol
 inverse-decomposes chain scale (session 16), the same division that makes bone 43
 untouchable. That warning is about the write, not about the hide, and it survives
 the falsification above intact.
+
+
+### The viewmodel desync: it is the RENDER LOCK, and it was switched off
+
+**BRVR HANDOFF_11 section 4.2 settles this, and supersedes HANDOFF_9 6.4.**
+Chasing 6.4 - "write the weapon actor's own transform" - is a dead end that BRVR
+already walked. HANDOFF_11 4.3(c):
+
+> The rendered weapon follows a **skeletal attachment matrix**, not the weapon
+> actor's top-level transform. That is why per-weapon grip offsets drift and why
+> nine hand-tuned slots are needed at all. The prior-art notes state plainly that
+> direct actor positioning was insufficient for this exact reason.
+
+Measured here independently before reading it: the weapon actor's Location sits
+10-16 UU off the bone we pivot about, does not rotate with that bone, and does
+not track it under translation either. Same conclusion, arrived at the slow way.
+**This repo already implements 4.3(c)** - bones.cpp's rigid cluster write IS
+`newBonePos = targetAnchorPos + targetRot * (refBonePos - refAnchorPos)`.
+
+**What 4.2 says the answer actually is:**
+
+> Prior art does not use a formula. It computes a **render-lock correction** -
+> lateral and depth corrections for the hand anchor derived from *captured
+> renderer state*, failing soft to the uncorrected pose when that state isn't
+> fresh. That is the answer. The foreground projection's effect on a world-space
+> placement is a function of live renderer state, not of two FOV numbers. **You
+> have to read it, not derive it.**
+
+That is `render_lock_delta()` in bones.cpp, line for line: it reads the live
+world tanH from `hfov_option_ptr()`, projects the target through the live camera
+rotator to NDC, derives a lateral and a depth correction, and returns false -
+failing soft - when the capture is not fresh.
+
+**It defaults to OFF** (`g_renderLock{0}`), and a live run measured
+`render lock: off |delta|=0.00 UU gain=0.90 dgain=0.90 solves=0 skips=0`.
+
+**And its precondition only became true in session 28.** The function's own
+comment says the correction assumes the lens ratio `k` collapses to 1 - which
+was true only at 16:9. The shipped 0.75 match constant left the fg lens
+1.7778/aspect narrower than the world everywhere else, so at this square
+backbuffer `k` was really 1.78 while the code assumed 1, and the correction was
+mis-scaled by that factor. Session 28 fixed the constant to `(4/3)*(H/W)`;
+measured this session as `k=1.381818`, fg 117.5 deg, the two lenses agreeing on
+the vertical to 0.071%. So the render lock's assumption holds NOW and did not
+before - which is the likeliest reason it was left off.
+
+**The test is a config change, not a build** (BRVR rule 6, "config bisection
+beats commit bisection"): F10 -> bones -> `lock ABS (true position)`, or
+`vrbones lock 1`. `vrbones lock diff` is the head-split-cancel-only variant, and
+`vrbones lockgain <0..2>` / `lockdepthgain` tune it. Watch `solves` climb and
+`skips` stay near zero in `vrbones status`.
+
+**What this predicts.** If the render lock is the answer, the per-weapon grip
+offset and model trim added earlier this branch become unnecessary rather than
+merely untuned - which is the "weapons correct by default" outcome asked for,
+and matches HANDOFF_11's account of why nine hand-tuned slots were ever needed.
+
+
+#### TESTED 2026-08-25: all three lock modes desync identically - because the lock REFUSES ITS OWN ANSWER
+
+Headset test, ABS / DIFF / off, all three the same. That reads as "the render
+lock is not the fix" and it is not what happened. The log:
+
+```
+[bones] lock: refusing outsized delta (lat 30.0 depth -15.0)
+```
+
+`render_lock_delta` armed, projected, produced a correction, and then
+`bones.cpp`'s own sanity guard threw it away:
+
+```cpp
+if (latMag > 30.0f || dDepth < -120.0f || dDepth > 120.0f)   // refuse
+```
+
+The lateral term hit the 30 UU ceiling, so `ptc` was never nudged and all three
+modes collapsed to the uncorrected pose. **The A/B measured nothing.** (HANDOFF_7
+rule 11: check whether the test was valid before believing the result.)
+
+**The real question is now sharp: is a 30 cm lateral correction plausible?**
+
+- If **yes**, the guard is simply too tight for this configuration and the fix is
+  to widen it - but 30 cm is enormous for a viewmodel nudge, so this is the less
+  likely branch.
+- If **no**, the correction is mis-scaled and the guard is doing its job. That
+  points back at `render_lock_delta`'s inputs: it takes world `tanH` from
+  `hfov_option_ptr()` and projects through `ctx.cam*`. Session 28 fixed the
+  lens-ratio assumption (`k` really is ~1 now, measured `k=1.381818`, fg 117.5,
+  lenses agreeing to 0.071%), so the remaining suspects are the NDC projection in
+  `world_ndc` and the depth term, not the lens.
+
+**Next session starts here**, and it is a measurement, not a guess: log the raw
+`dLat` / `dDepth` alongside the NDC the correction was derived from, hold the
+controller still at a known pose, and see whether the 30 UU is a stable bias or
+noise. A stable bias of that size with the lenses matched means the projection
+model is wrong somewhere specific, and that is findable.
+
+Do NOT widen the guard first. It would apply a correction nobody has shown to be
+correct, on a path that already moves the whole cluster.
+
+#### CORRECTION 2026-08-25 (s66): "lat 30.0" was never a measurement of the correction
+
+Re-reading the s65 headset log rather than the one line quoted from it. The run
+left **three** refusals, not one:
+
+```
+[14:43:55.383] [bones] lock: refusing outsized delta (lat 64.8 depth -4.1)
+[14:44:10.335] [bones] lock: refusing outsized delta (lat 30.0 depth -16.6)
+[14:44:21.346] [bones] lock: refusing outsized delta (lat 30.0 depth -15.0)
+```
+
+**That line only prints when `latMag > 30.0f`, so the sample is censored from
+below at exactly the number we were treating as the finding.** "Is a 30 cm
+lateral correction plausible?" is the wrong question - 30.0 is the guard's own
+threshold showing through a filter that can never report anything smaller. The
+one uncensored number in the set is the **64.8**, more than twice it.
+
+The camera is stationary across all three (`loc=(-37382.0 518.1 7779.3)` in
+every one), so what separates them is orientation: `rot=(64064 65158 0)` at
+64.8 against `(1452 63974 0)` and `(1194 64160 0)` at the two 30.0 readings.
+The two near-identical poses give near-identical `lat`, so the term is
+deterministic and pose-stable - and roughly 10 deg of pitch more than doubles
+it. **Strong pose dependence under a stationary camera is the shape of the
+finding**, and neither the magnitude nor its cause can be read off a censored
+log line.
+
+Also true of that run, and worth knowing before repeating it: `[tlm] lock`
+never fired once (`vrbones telemetry on` was never issued), and no `render
+lock` command line appears at all - the lock was armed from the F10 radio,
+which does not log. There is no other lock data in the run.
+
+#### The s66 instrument: `vrbones lockprobe`, and the terms that decensor this
+
+`render_lock_delta` now computes four diagnostic terms beside the existing
+ones. All read-only; none of them feed the guard or the correction.
+
+| Term | What it is | Why |
+|---|---|---|
+| `nat=(x y)` | where the fg model says `ptc` renders TODAY, in NDC | the model's own answer, to set against the world's |
+| `dndc=(x y)` | `tgt - nat` | dimensionless, so it survives every depth and UU scale factor. Its two axes name the suspect: X -> `tanH` / the right basis, Y -> `live_inv_aspect` / `invTanVFg` |
+| `latP` | the lateral correction solved at CONSTANT depth (`wNat`, not `w*`) | `lat` is the component of the FULL delta perpendicular to the fg forward, so it also carries the sideways shadow any depth move casts on an off-axis anchor - a point at NDC n sits `n*tan(fov/2)*w` off axis, so changing w by `depth` moves it sideways for free (~9 UU at the observed depth -15 and a half-screen anchor). `latP` is the honest lateral term; `lat` is not. `-1` means unsolvable, which is not `0` |
+| `split` | camera yaw minus actor yaw, degrees | the head-split the lock exists to cancel. A correction that does not scale with this is not doing its job, whatever its magnitude |
+
+`vrbones lockprobe on|off` runs the solve **for its numbers with the lock still
+off** - the apply stays gated on the lock mode alone, so a probe can never move
+a bone. That is what makes the s65 A/B repeatable without arming a correction
+nobody has shown to be correct. It needs `vrbones telemetry on` for the lines
+(the probe command says so when telemetry is off), and `vrbones status` reads
+`+PROBE (measure only)` while it is armed.
+
+**Read `k` first.** Under the session-28 lens match `k` collapses to 1 by
+construction (`invTanHFg = 1/tanH`). If the log shows ~2.06 instead,
+`fg_fov_match_active()` was false, the legacy 60-deg constants were used, and
+every downstream number is mis-scaled for that reason alone - nothing else in
+the run means anything until that reads ~1.00.
+
+**Decision rule, written before the run:**
+
+| Observation | Verdict |
+|---|---|
+| `latP` small (<=3 UU) and `dndc` ~ 0 | model and world agree laterally; `lat` is the depth move's shadow, and the guard is gating the wrong quantity |
+| `latP` large and stable at a fixed pose | the model genuinely disagrees; mis-scaled, and `dndc`'s larger axis names the term |
+| `latP` swings frame to frame at a fixed pose | unstable input (hand sway, per-eye vs mono `ctx.cam*`), not a scale error |
+| `latP` does not scale with `split` | the lock is not cancelling what it exists to cancel - refuted regardless of magnitude |
+
+Baseline to compare against: the session-21 `simhead` sweep recorded above
+(`lat` 1.04-11.59 with the yaw transfer off, 4.50-4.96 with it on). The run
+must be at the headset's own viewport - the s65 log reads `backbuffer 2750x2850
+aspect 0.96491`, `WORLD tanH=1.191754 tanV=1.235090 (hfov 100.00 deg)` -
+because `live_inv_aspect()` feeds both `world_ndc`'s `tanV` and `invTanVFg`,
+and a 16:9 run would answer a different question.
+
+**NOT RUN YET.** The instrument is built and installed; the sweep is the next
+thing that happens.
 
 ### RETRACTION: the game's yaw DOES reach the camera during gameplay
 
