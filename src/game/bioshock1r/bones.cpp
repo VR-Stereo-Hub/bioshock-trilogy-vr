@@ -947,6 +947,33 @@ std::atomic<bool> g_telemetry{false};
 uint64_t g_lastTlmMs = 0;
 bool g_tlmWindowOpen = false;
 
+// ---- s74b: THE DIAGNOSTIC PROBES ARE NOT SHIPPING BEHAVIOUR ----------------
+//
+// Sessions 71-73 armed eight probe families to answer the off hand's fourteen
+// faults, and every one of them earned its runs - ARMHOLD killed a whole class
+// of hypothesis in a single run, FOREARM isolated the only stateful term in the
+// solve. They are read-only and throttled, so they were left in. That was fine
+// while the branch was being worked and is not fine in a release: they are
+// diagnostics, and at 500-1000 ms each across two hands they are the bulk of
+// what the log says during normal play, which buries anything a USER reports.
+//
+// So one flag, default OFF, gating the throttle of each. Off by default and not
+// persisted to vrpreset.ini, exactly like g_telemetry above - a diagnostic that
+// survives a restart is a diagnostic somebody forgot to turn off.
+//
+// NOT deleted, deliberately. Each of these encodes a question and its failing
+// signature, which is the expensive half; `vrbones probes on` costs one line to
+// get them all back and the comments stay findable in the file meanwhile.
+//
+// TWO THINGS ARE DELIBERATELY OUTSIDE THIS GATE:
+//   - SHOULDER (s74a), because it is the live question this branch is still
+//     answering. It joins the gate the moment it is answered.
+//   - FREEPROBE's "actor read FAILED" line in hands.cpp, because it fires only
+//     when a read actually fails, and hiding it behind a default-off flag would
+//     re-open exactly the "zero by an unchecked read" trap the s73 method note
+//     was written about.
+std::atomic<bool> g_probes{false};
+
 // ---- guarded memory (no C++ objects inside SEH frames) ----------------------
 
 bool read_n(const void* src, void* dst, size_t n) {
@@ -2548,6 +2575,10 @@ bool telemetry_on() {
     return g_telemetry.load(std::memory_order_relaxed);
 }
 
+bool probes_on() {
+    return g_probes.load(std::memory_order_relaxed);
+}
+
 float lock_delta_mag() {
     return g_lockDeltaMag.load(std::memory_order_relaxed);
 }
@@ -2784,6 +2815,10 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         // bodyYaw. That difference is constant under a head turn, so it cannot
         // be this defect - but it does mean a RECENTER rotates the shoulder out
         // from under the hands, and the number is free to print here.
+        //
+        // s74b: deliberately NOT behind probes_on(). This is the one question
+        // the branch is still open on, and the tester cannot reach a checkbox
+        // mid-turn; it joins the gate with the others the moment it is answered.
         {
             static uint64_t s_shLog[2][2] = {{0, 0}, {0, 0}};
             const uint64_t nowSh = GetTickCount64();
@@ -3441,7 +3476,7 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             if (freeBank) {
                 static uint64_t s_faLog[2] = {0, 0};
                 const uint64_t nowFa = GetTickCount64();
-                if (nowFa - s_faLog[hand] >= 500) {
+                if (probes_on() && nowFa - s_faLog[hand] >= 500) {
                     s_faLog[hand] = nowFa;
                     float aQ[4];
                     quat_conj(qaUse, aQ);
@@ -3481,7 +3516,7 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
 
             static uint64_t s_ikLog[2] = {0, 0};
             const uint64_t nowIk = GetTickCount64();
-            if (nowIk - s_ikLog[hand] >= 5000) {
+            if (probes_on() && nowIk - s_ikLog[hand] >= 5000) {
                 s_ikLog[hand] = nowIk;
                 BVR_LOG("[bones] ARMIK: %s arm solved - upper %.1f UU, fore %.1f UU, "
                         "shoulder-to-hand %.1f UU%s, forearm twist %+.1f deg. The "
@@ -4918,7 +4953,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
             const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             static uint64_t s_fhLog[2] = {0, 0};
             const uint64_t nowFh = GetTickCount64();
-            if (nowFh - s_fhLog[hand] >= 500) {
+            if (probes_on() && nowFh - s_fhLog[hand] >= 500) {
                 s_fhLog[hand] = nowFh;
                 BVR_LOG("[bones] FREEHOLD: %s free hand anchor moved %.2f model units "
                         "(%+.2f %+.2f %+.2f) between our write and this frame. NON-ZERO "
@@ -5023,7 +5058,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
         }
         static uint64_t s_ahLog[2] = {0, 0};
         const uint64_t nowAh = GetTickCount64();
-        if (nowAh - s_ahLog[hand] >= 1000) {
+        if (probes_on() && nowAh - s_ahLog[hand] >= 1000) {
             s_ahLog[hand] = nowAh;
             BVR_LOG("[bones] ARMHOLD: %s free arm since our write - %s. %s",
                     hand == 1 ? "RIGHT" : "LEFT", line,
@@ -5098,7 +5133,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
                 const float* fsc = ok ? fresh[anchor - first].s : nullptr;
                 if (ok && fsc && fsc[0] > 0.01f && fsc[1] > 0.01f && fsc[2] > 0.01f) {
                     memcpy(g_freeRef[hand], fresh, sizeof(Qts) * static_cast<size_t>(count));
-                    if (nowA - g_freeAdoptLogMs[hand] >= 2000) {
+                    if (probes_on() && nowA - g_freeAdoptLogMs[hand] >= 2000) {
                         g_freeAdoptLogMs[hand] = nowA;
                         BVR_LOG("[bones] FREEANIM: %s free hand is animating (%.1f deg, "
                                 "%.1f UU at the anchor; threshold %.1f) - adopting the "
@@ -5113,7 +5148,11 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
                 // animation turns out to produce.
                 if (angDeg == angDeg && angDeg > g_freeRejPeak[hand])
                     g_freeRejPeak[hand] = angDeg;
-                if (nowA - g_freeRejLogMs[hand] >= 3000) {
+                // s74b: the peak reset rides the log, so with the probes off it
+                // accumulates and the FIRST line after switching them on reports
+                // a window longer than the 3 s it claims. Every line after it is
+                // honest. Not worth its own state to fix.
+                if (probes_on() && nowA - g_freeRejLogMs[hand] >= 3000) {
                     g_freeRejLogMs[hand] = nowA;
                     BVR_LOG("[bones] FREEANIM: %s free hand rejected - largest movement "
                             "%.1f deg in the last 3 s, threshold %.1f. Lower it to catch "
@@ -5187,7 +5226,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     {
         static uint64_t s_ftLog[2] = {0, 0};
         const uint64_t nowFt = GetTickCount64();
-        if (nowFt - s_ftLog[hand] >= 500) {
+        if (probes_on() && nowFt - s_ftLog[hand] >= 500) {
             s_ftLog[hand] = nowFt;
             const float hy =
                 static_cast<float>(static_cast<int16_t>(actorRot.yaw & 0xFFFF)) /
@@ -5598,7 +5637,7 @@ void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
         };
         static uint64_t s_log[2] = {0, 0};
         const uint64_t now = GetTickCount64();
-        if (now - s_log[h] >= 500) {
+        if (probes_on() && now - s_log[h] >= 500) {
             s_log[h] = now;
             BVR_LOG("[bones] FREEPROBE: %s free hand - the actor the drive cancelled and "
                     "the actor in memory differ by pitch %+.1f yaw %+.1f roll %+.1f deg, "
@@ -5946,6 +5985,13 @@ void handle_command(const char* args) {
         g_telemetry.store(on, std::memory_order_relaxed);
         BVR_LOG("[bones] telemetry %s%s", on ? "ON" : "off",
                 on ? " - [tlm] lines at ~5 Hz (head/ctrl/cam/actor/target/bones)" : "");
+    } else if (strcmp(verb, "probes") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_probes.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] diagnostic probes %s%s", on ? "ON" : "off",
+                on ? " - FREEPROBE/FREETARGET/FREEHOLD/FREEANIM/ARMHOLD/FOREARM/ARMIK."
+                     " Read-only; they measure the off hand and its arm."
+                   : " - the log is back to events only");
     } else if (strcmp(verb, "scalemode") == 0) {
         int m = -1;
         if (sscanf_s(rest, "%d", &m) == 1 && m >= 0 && m <= 3) {
@@ -6355,6 +6401,19 @@ void draw_debug_ui() {
     bool hide = g_hideInactive.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Hide the inactive hand", &hide))
         set_hide_inactive(hide);
+    // s74b: here and not only on the console, because the tester cannot type
+    // mid-session with a headset on - a diagnostic reachable only by a command
+    // is a diagnostic that does not get turned on during the run that needs it.
+    bool prb = g_probes.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Diagnostic probes (off-hand + arm) in the log", &prb))
+        g_probes.store(prb, std::memory_order_relaxed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "The s71-s73 probe families: FREEPROBE, FREETARGET, FREEHOLD,\n"
+            "FREEANIM, ARMHOLD, FOREARM, ARMIK.\n\n"
+            "Read-only and throttled, but noisy enough to bury a real report,\n"
+            "so they ship OFF. Not saved to vrpreset.ini - a restart clears it.\n\n"
+            "Console equivalent: vrbones probes on");
     int lockMode = g_renderLock.load(std::memory_order_relaxed);
     if (ImGui::RadioButton("lock off", &lockMode, 0) ||
         ImGui::RadioButton("lock ABS (true position)", &lockMode, 1) ||

@@ -234,6 +234,11 @@ void handle_command(const char* args);
 // ~5 Hz; the log timestamps correlate the lines of one sample).
 bool telemetry_on();
 
+// True while `vrbones probes on` (F10: "Diagnostic probes"). Gates the s71-s73
+// off-hand/arm probe families, which ship OFF - see the g_probes banner in
+// bones.cpp for what is inside the gate and what is deliberately outside it.
+bool probes_on();
+
 // |render-lock position delta| applied last frame, UU. POSITION-only by
 // construction (the lock never touches rotation) - `vraim synccheck` quotes it
 // so the position story stays separate from the rotation-divergence gate.

@@ -57,6 +57,11 @@
 #   .\tools\xrsim-cmd.ps1 "hand r grip pose -0.60 1.30 -0.45 0 0 0"
 #   grep -a FREETARGET %LOCALAPPDATA%\BioshockVR\bioshockvr.log | tail -3
 #
+# An EMPTY grep here is not "the mod is not reading the pose" - since s74b it is
+# far more likely that the probes are simply off. The `@mod vrbones probes on`
+# below arms them; if the grep is still empty after that, the plumbing really is
+# the problem and the run is void.
+#
 # The `actorLoc=` field MUST move by roughly 100 UU per metre (coupling-hand.xrs
 # records 110 UU for 1.1 m). If it does not move, the mod is not seeing the
 # simulated controllers and every capture below is a picture of the scenery.
@@ -64,6 +69,11 @@
 reset
 @mod vrstereo on
 @mod vrhands on; vrhands mode brvr
+# s74b: FREETARGET - half of this file's oracle - now ships OFF with the rest of
+# the s71-s73 probe families, so it must be armed explicitly or oracle half 1
+# above reads an empty grep and the run silently degrades to "the captures
+# differ", which this file's own precondition block says is not a reproduction.
+@mod vrbones probes on
 @frames 60
 @assert projectionViews eq 2
 
