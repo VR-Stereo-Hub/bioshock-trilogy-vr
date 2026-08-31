@@ -487,6 +487,10 @@ std::atomic<float> g_elbowFollowWrist{0.60f};
 // s72m ARMHOLD: what solve_arm last wrote to the FREE arm's five bones, so the
 // next frame can ask whether it survived. Every arm fix in s72 assumed our write
 // is what renders; this is the probe that checked it.
+// s73f: the last UNWRAPPED twist angle, per hand. Continuity only - not
+// smoothing, which s73c removed for good reason. See the unwrap in solve_arm().
+float g_twistPrev[2] = {0.0f, 0.0f};
+bool g_twistHavePrev[2] = {false, false};
 Qts g_freeArmWrote[2][5];
 bool g_freeArmWroteValid[2] = {false, false};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
@@ -876,6 +880,16 @@ std::atomic<bool> g_collapse{false}; // s72s: both arms SHOWN by default now
 // the player is meant to see; the driven arm is the one that gets in the way of
 // a weapon and keeps its own default.
 std::atomic<bool> g_collapseOff{false};
+// s73h: how much of the wrist twist the BICEP and FOREARM carry. The helpers
+// ramp from this to 1.0 at the hand. Shared across the elbow because an elbow is
+// a hinge and cannot hold a twist step; see the gradient in solve_arm().
+//
+// Ships at 1.0 - the whole arm follows the wrist - because that is what the HELD
+// arm does (the actor carries it bodily) and matching it is the standard the
+// tester has judged this against throughout. Anatomically a humerus rolls less
+// than a wrist, so lower it if the bicep reads as over-turning; `vrbones
+// armtwist 0.5` and look, rather than another rebuild each time.
+std::atomic<float> g_armTwistShare{1.0f};
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -3183,6 +3197,34 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                     // that is already stable, so there is nothing to denoise.
                     // The elbow keeps its easing: it is a DERIVED joint with no
                     // counterpart to match, which is the case easing is for.
+                    // ---- s73f: UNWRAP IT ------------------------------------
+                    //
+                    // MEASURED: ARMIK logged the angle flipping +179.9 / -179.9
+                    // as the wrist passed one point, and the tester saw the arm
+                    // snap and flicker there.
+                    //
+                    // atan2 returns (-pi, pi], so the angle jumps by 2pi at the
+                    // seam. A full turn is invisible on a bone given the WHOLE
+                    // angle - which is why the wrist end never flickered - but
+                    // the gradient multiplies it by a FRACTION, and a fraction of
+                    // 2pi is not a full turn. The forearm's 0.50 becomes a 180
+                    // degree snap and the bicep's 0.25 a 90 degree one, which is
+                    // exactly what was reported.
+                    //
+                    // So carry the angle continuously across frames: take the
+                    // shortest step from last frame's value and accumulate. The
+                    // seam disappears because the angle no longer has one. This
+                    // is NOT the easing s73c removed - there is no lag here, the
+                    // value still lands exactly on the wrist every frame.
+                    if (g_twistHavePrev[hand]) {
+                        float d = theta - g_twistPrev[hand];
+                        while (d > 3.14159265f) d -= 6.2831853f;
+                        while (d < -3.14159265f) d += 6.2831853f;
+                        theta = g_twistPrev[hand] + d;
+                    }
+                    g_twistPrev[hand] = theta;
+                    g_twistHavePrev[hand] = true;
+
                     twistDeg = theta * kRadToDeg;
                     quat_axis_angle(nEW[0], nEW[1], nEW[2], theta, qTwist);
                 }
@@ -3207,10 +3249,30 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             if (freeBank && twistDeg != 0.0f) {
                 const float th = twistDeg / kRadToDeg;
                 float qw[4], out[4];
-                quat_axis_angle(nSE[0], nSE[1], nSE[2], 0.25f * th, qw);
+                // ---- s73g: THE ELBOW IS A HINGE, SO IT CANNOT TWIST ---------
+                //
+                // The first gradient was 0.25 bicep / 0.50 forearm, which leaves
+                // a 0.25 step ACROSS THE ELBOW - up to 45 degrees of twist
+                // discontinuity at a joint that has no twist axis. The skin
+                // spanning it has to absorb the whole step, which is the
+                // hourglass: "the bicep is not rotating at the rate it needs to
+                // for the forearm to not go hourglass".
+                //
+                // An elbow is a hinge. It bends; it does not roll. So the two
+                // segments either side of it must carry the SAME roll, and the
+                // gradient belongs entirely inside the forearm, where the twist
+                // helpers exist precisely because that is where a real forearm
+                // pronates - radius over ulna, between elbow and wrist.
+                //
+                // Bicep and forearm therefore share 0.45, and the helpers ramp
+                // from there to the hand. The bicep visibly rotates, nothing
+                // steps at the elbow, and the wrist end still lands exactly on
+                // the hand.
+                const float share = g_armTwistShare.load(std::memory_order_relaxed);
+                quat_axis_angle(nSE[0], nSE[1], nSE[2], share * th, qw);
                 quat_mul(qw, qUpF, out);
                 memcpy(qUpF, out, sizeof qUpF);
-                quat_axis_angle(nEW[0], nEW[1], nEW[2], 0.50f * th, qw);
+                quat_axis_angle(nEW[0], nEW[1], nEW[2], share * th, qw);
                 quat_mul(qw, qFoF, out);
                 memcpy(qFoF, out, sizeof qFoF);
             }
@@ -3280,8 +3342,9 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                 // skin does not candy-wrap at one joint. FRIK splits it across
                 // its two helpers; a progressive weight is the same idea and is
                 // easier to tune. k==3 is the inboard helper, k==4 the wrist end.
-                // 0.25 bicep, 0.50 forearm, then these two - one gradient.
-                const float tw = (k == 3) ? 0.75f : 1.0f;
+                // Shared value across the elbow, then a ramp to 1.0 at the hand.
+                const float sh = g_armTwistShare.load(std::memory_order_relaxed);
+                const float tw = (k == 3) ? (sh + (1.0f - sh) * 0.5f) : 1.0f;
                 float qkBase[4], qkTw[4], qk[4];
                 quat_mul(qFo, ar[k].q, qkBase);
                 // s72p: PIN THE HELPERS' OWN ROLL FIRST, then add the hand's
@@ -5721,6 +5784,14 @@ void handle_command(const char* args) {
                                                 : "OFF (position only, the BRVR shape)",
                 on ? "out-turn the wrist again if it was doing so"
                    : "still rotate, but stop out-turning the wrist");
+    } else if (strcmp(verb, "armtwist") == 0) {
+        const float v = static_cast<float>(atof(rest));
+        g_armTwistShare.store(v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v),
+                              std::memory_order_relaxed);
+        BVR_LOG("[bones] ARMTWIST: bicep and forearm now carry %.2f of the wrist "
+                "twist, helpers ramp to 1.00 at the hand. 1.00 matches the HELD arm, "
+                "which the actor rotates bodily; lower it if the bicep over-turns.",
+                g_armTwistShare.load(std::memory_order_relaxed));
     } else if (strcmp(verb, "collapseoff") == 0) {
         // s72i: the OFF hand's arm, independent of the driven one.
         const bool on = strncmp(rest, "on", 2) == 0;
