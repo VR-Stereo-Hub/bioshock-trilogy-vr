@@ -2823,12 +2823,16 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             static uint64_t s_shLog[2][2] = {{0, 0}, {0, 0}};
             const uint64_t nowSh = GetTickCount64();
             const int role = freeBank ? 1 : 0;
-            if (nowSh - s_shLog[role][hand] >= 400) {
+            if (nowSh - s_shLog[role][hand] >= 1000) {
                 s_shLog[role][hand] = nowSh;
+                // fmodf, not a while loop: ctx.camYaw is an unbounded int32
+                // of rotator units, so a degree value of a few million is
+                // possible and the loop form would spin tens of thousands of
+                // times per frame to normalise it.
                 auto wrap180 = [](float dg) {
-                    while (dg > 180.0f) dg -= 360.0f;
-                    while (dg < -180.0f) dg += 360.0f;
-                    return dg;
+                    dg = fmodf(dg + 180.0f, 360.0f);
+                    if (dg < 0.0f) dg += 360.0f;
+                    return dg - 180.0f;
                 };
                 BVR_LOG("[bones] SHOULDER: %s %s world (%.1f %.1f %.1f) | base "
                         "(%.1f %.1f %.1f) | camYaw %+.1f bodyYaw %+.1f driveYaw %+.1f "
@@ -2838,10 +2842,134 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                         "if sh->hand also moves, the arm is stretching.",
                         hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
                         sWorld[0], sWorld[1], sWorld[2], ctx.baseX, ctx.baseY, ctx.baseZ,
-                        wrap180(static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree),
+                        static_cast<float>(static_cast<int16_t>(ctx.camYaw & 0xFFFF)) /
+                            kRotUnitsPerDegree,
                         wrap180(yawRad * kRadToDeg),
                         wrap180(ctx.driveYawOffsetRad * kRadToDeg),
                         wrap180(ctx.recenterYawRad * kRadToDeg), dRaw, L1 + L2);
+            }
+        }
+
+        // ---- s74c SHOULDER VERDICT: the mod runs the A/B, not the tester ----
+        //
+        // shoulder-anchor.xrs needs somebody to type `vrbody off` between its
+        // two sweeps, and the tester cannot type with a headset on - which is
+        // the standing reason every probe here is always-on or F10-gated. So do
+        // the attribution in the mod: watch for a clean head turn during
+        // ordinary play and print what moved and why, once per turn.
+        //
+        // THE DISCRIMINATOR IS ctx.headYawRad (s74c), the PHYSICAL head yaw off
+        // the HMD. Nothing already published can stand in for it: camYaw is the
+        // head PLUS the body, and driveYawOffsetRad is only the part the
+        // transfer has not swallowed, which is ~0 in the shipping config. With
+        // just those two, a stick turn and a head turn are identical numbers and
+        // every verdict below would be a coin flip.
+        //
+        // A CLEAN EVENT is: the head moved >= 25 deg from the reference while
+        // base[XYZ] moved < 8 UU - you turned your head and did not walk.
+        // Walking disarms it and it re-arms after 300 ms of stillness, so
+        // nothing needs doing deliberately; ordinary play throws these off
+        // constantly. One line per turn, so the log stays readable.
+        //
+        // The follow ratio is the whole answer. dBody/dHead near 1.0 means the
+        // body turned with your head and the shoulder was right to move with it;
+        // near 0 with the shoulder still moving means a real leak.
+        {
+            struct ShRef {
+                bool armed = false;
+                bool haveLast = false;
+                float head = 0.0f, body = 0.0f, cam = 0.0f, reach = 0.0f;
+                float sw[3] = {0.0f, 0.0f, 0.0f};
+                float bs[3] = {0.0f, 0.0f, 0.0f};
+                uint64_t quietSince = 0;
+                float lastHead = 0.0f;
+                float lastBase[3] = {0.0f, 0.0f, 0.0f};
+            };
+            static ShRef s_ref[2][2];
+            ShRef& R = s_ref[freeBank ? 1 : 0][hand];
+
+            auto wrapV = [](float dg) {
+                dg = fmodf(dg + 180.0f, 360.0f);
+                if (dg < 0.0f) dg += 360.0f;
+                return dg - 180.0f;
+            };
+            auto dist3 = [](const float a[3], const float b[3]) {
+                const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+                return sqrtf(dx * dx + dy * dy + dz * dz);
+            };
+
+            const float headNow = ctx.headYawRad * kRadToDeg;
+            const float bodyNow = yawRad * kRadToDeg;
+            const float camNow =
+                static_cast<float>(static_cast<int16_t>(ctx.camYaw & 0xFFFF)) /
+                kRotUnitsPerDegree;
+            const float baseNow[3] = {ctx.baseX, ctx.baseY, ctx.baseZ};
+            // World UU. dRaw is measured in the DrawScale-divided space that S
+            // and W both live in, and rotation preserves length, so the world
+            // distance is exactly that times the rig scale.
+            const float reachNow = dRaw * rigScale;
+            const uint64_t nowV = GetTickCount64();
+
+            if (!R.haveLast) {
+                R.haveLast = true;
+                R.lastHead = headNow;
+                R.lastBase[0] = baseNow[0];
+                R.lastBase[1] = baseNow[1];
+                R.lastBase[2] = baseNow[2];
+                R.quietSince = nowV;
+            }
+            const bool stillNow = fabsf(wrapV(headNow - R.lastHead)) < 1.0f &&
+                                  dist3(baseNow, R.lastBase) < 2.0f;
+            if (!stillNow) R.quietSince = nowV;
+            R.lastHead = headNow;
+            R.lastBase[0] = baseNow[0];
+            R.lastBase[1] = baseNow[1];
+            R.lastBase[2] = baseNow[2];
+
+            if (!R.armed) {
+                if (nowV - R.quietSince >= 300) {
+                    R.armed = true;
+                    R.head = headNow;
+                    R.body = bodyNow;
+                    R.cam = camNow;
+                    R.reach = reachNow;
+                    R.sw[0] = sWorld[0];
+                    R.sw[1] = sWorld[1];
+                    R.sw[2] = sWorld[2];
+                    R.bs[0] = baseNow[0];
+                    R.bs[1] = baseNow[1];
+                    R.bs[2] = baseNow[2];
+                }
+            } else {
+                const float dBase = dist3(baseNow, R.bs);
+                const float dHead = wrapV(headNow - R.head);
+                if (dBase >= 8.0f) {
+                    R.armed = false; // you walked - this turn is not attributable
+                } else if (fabsf(dHead) >= 25.0f) {
+                    const float dBody = wrapV(bodyNow - R.body);
+                    const float dCam = wrapV(camNow - R.cam);
+                    const float shMove = dist3(sWorld, R.sw);
+                    const float dReach = reachNow - R.reach;
+                    const float ratio = dBody / dHead;
+                    const bool followed = ratio > 0.75f;
+                    const bool moved = shMove > 3.0f;
+                    const char* verdict =
+                        !moved ? "SHOULDER HELD - nothing to fix on this turn"
+                        : followed
+                            ? "the shoulder moved because the BODY turned with your head "
+                              "(the 1:1 transfer). NOT an arm bug - do not touch solve_arm"
+                            : "the body did NOT follow, yet the shoulder moved - a REAL "
+                              "leak downstream of the yaw, and base moved too little to "
+                              "explain it";
+                    BVR_LOG("[bones] SHOULDER VERDICT: %s %s | head %+.1f deg -> body %+.1f "
+                            "(follow %.2f:1), cam %+.1f | shoulder moved %.1f UU, base moved "
+                            "%.1f UU | arm %s %.1f UU (%.1f -> %.1f). %s.",
+                            hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD", dHead,
+                            dBody, ratio, dCam, shMove, dBase,
+                            dReach >= 0.0f ? "STRETCHED" : "shortened", fabsf(dReach),
+                            R.reach, reachNow, verdict);
+                    R.armed = false;
+                }
             }
         }
         // ---- s73: AND THE LENGTHS ARE ALREADY IN THAT SPACE -----------------

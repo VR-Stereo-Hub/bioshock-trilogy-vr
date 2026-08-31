@@ -1422,6 +1422,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // the pre-head-offset camera loc and the yaw the drive added.
     FVector baseLoc = loc ? *loc : FVector{};
     float driveYawOffsetRad = 0.0f;
+    // s74c: the head's own yaw, recenter-relative, published untouched so the
+    // arm probes can tell a PHYSICAL head turn from a stick turn. Stays 0 on
+    // frames the head does not drive, which is exactly when there is no head
+    // turn to attribute anything to.
+    float headYawRelRad = 0.0f;
     // The same quantity in rotator units - what M7.5 transfers to the body.
     int32_t residualUnits = 0;
     int32_t gameYawUnitsRaw = rot ? rot->yaw : 0; // the engine's own body yaw
@@ -1515,6 +1520,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
     if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
+        // Before the recenter block below can move g_recenterYawUnits, so this
+        // is the head against the reference the REST of this frame used.
+        headYawRelRad = a.yawRad - recenter_yaw_rad();
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
             g_recenterYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
@@ -1803,6 +1811,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             fc.camRoll = rot->roll;
         }
         fc.driveYawOffsetRad = driveYawOffsetRad;
+        fc.headYawRad = headYawRelRad;
         fc.recenterYawRad = recenter_yaw_rad();
         fc.recenterPx = g_recenterPose.px;
         fc.recenterPy = g_recenterPose.py;

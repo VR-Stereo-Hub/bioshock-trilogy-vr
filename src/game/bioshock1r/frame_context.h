@@ -18,6 +18,12 @@ struct FrameContext {
     float baseX = 0.0f, baseY = 0.0f, baseZ = 0.0f; // camera loc BEFORE the head offset
     int32_t camPitch = 0, camYaw = 0, camRoll = 0;  // final camera rot, 65536 units/turn
     float driveYawOffsetRad = 0.0f; // yaw the head drive added on top of the game yaw
+    // s74c: the PHYSICAL head yaw, recenter-relative, straight off the HMD and
+    // before the body transfer sees it. Nothing else here can stand in for it:
+    // camYaw is the head PLUS the body, and driveYawOffsetRad is only the part
+    // the transfer has not swallowed yet - which is ~0 in the shipping config.
+    // Without this a stick turn and a real head turn are the same numbers.
+    float headYawRad = 0.0f;
     float recenterYawRad = 0.0f;    // XR yaw at recenter
     float recenterPx = 0.0f, recenterPy = 0.0f, recenterPz = 0.0f; // XR meters at recenter
     float worldScale = 100.0f;      // UU per meter (session-16 user calibration)
