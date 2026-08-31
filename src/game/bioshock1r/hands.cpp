@@ -35,11 +35,13 @@
 
 #include <windows.h>
 
+#include <MinHook.h>
 #include <imgui.h>
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 namespace bvr::b1r::hands {
 namespace {
@@ -120,6 +122,53 @@ std::atomic<bool> g_lwValid{false};
 int32_t g_awWrote[3] = {0, 0, 0};
 bool g_awWroteValid = false;
 std::atomic<bool> g_lateWrite{true}; // the fix; toggleable so it stays bisectable
+
+// ---- s71h: THE SCRIPT SEAM. STOP THE FIGHT AT ITS SOURCE -------------------
+//
+// Every actor fix this branch tried acted at the wrong seam, and the probes
+// finally said where the right one is. FREEPROBE: from CalcView to scenedraw
+// the actor is BIT-IDENTICAL to our write, location and rotation, across two
+// runs and 115 samples. ACTORWATCH, which spans a whole frame, sees the same
+// actor moved by up to 100 deg of yaw. Both are true, so the engine's write
+// lands in the ONLY window neither of them covers: after scenedraw, before the
+// next CalcView. late_write() is therefore too EARLY, not too late - it puts
+// the rotator back and the engine then moves it again afterwards.
+//
+// The decompiled script says exactly what does it. `Hands.UpdateLocation()`:
+//
+//     NewRotation = PawnOwner.GetViewRotation();
+//     NewLocation = PawnOwner.Location + (PlayerViewOffset >> NewRotation)
+//                                      + ShockPlayer.ViewLocationOffset(...);
+//     SetLocation(NewLocation); SetRotation(NewRotation);
+//
+// and its ONLY caller is `event UpdateHandValues(float DeltaTime)`, which runs
+// UpdateLocation plus the hand-bob parameters and nothing else (ENGINE_NOTES:
+// "nothing re-asserts attachment against a per-frame bone write").
+//
+// An `event` goes through the script VM, so it is reachable by name. We do not
+// suppress it - suppressing engine behaviour outside our drive would strand the
+// hands actor in menus and cutscenes. We let it run and write ours immediately
+// afterwards, which is BS2's discipline on its own ProcessEvent seam: call the
+// original, then mutate. This is the same position in the frame the engine uses
+// itself, so nothing can come after it.
+//
+// THE ACCEPTANCE TEST IS A PROBE WE ALREADY HAVE. If this seam is the one that
+// matters, ACTORWATCH's per-frame mismatch collapses toward zero. It has been
+// reading 60-100 deg of yaw all session; that number IS the verdict, and it
+// needs no new instrument.
+std::atomic<bool> g_peSeam{false}; // s71l: OFF BY DEFAULT, and that is a retraction.
+// This seam was built to drive ACTORWATCH to zero, and ACTORWATCH turned out to be
+// a CONSTANT (84 of 88 samples bit-identical with everything held still) - the
+// standing difference between the rotation we write and the one the engine writes,
+// not a race. So it was aimed at a non-bug. Worse, leaving it on re-asserts our
+// actor after UpdateHandValues, which makes the engine's actor read back as OURS
+// and collapses the s71j OURS-vs-VIEW experiment to a 3-7 degree no-op. It stays
+// in the tree because the ProcessEvent derivation is sound and re-usable, but it
+// must not be on while anything else is being measured.
+void* g_peTarget = nullptr;       // resolved UObject::ProcessEvent
+int32_t g_uhvNameIdx = -1;        // FName index of "UpdateHandValues"
+uint32_t g_peWrites = 0;          // how many times the seam re-asserted
+bool g_peInstalled = false;
 std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
                                       // retired), 2 = bones (M7-v2, default)
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
@@ -528,6 +577,24 @@ void save_config() {
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
     fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
     fprintf(f, "elbowFollowWrist=%.3f\n", bones::elbow_follow_wrist());
+    // s71: the free hand's own trim, per hand, beside every other per-hand value.
+    for (int h = 0; h < 2; ++h) {
+        const char* sh = h == 0 ? "L" : "R";
+        float a = 0.0f, b = 0.0f, c = 0.0f;
+        bones::off_hand_cm(h, &a, &b, &c);
+        fprintf(f, "offHandFwdCm%s=%.2f\n", sh, a);
+        fprintf(f, "offHandRightCm%s=%.2f\n", sh, b);
+        fprintf(f, "offHandUpCm%s=%.2f\n", sh, c);
+        bones::off_hand_view_cm(h, &a, &b, &c);
+        fprintf(f, "offHandViewFwdCm%s=%.2f\n", sh, a);
+        fprintf(f, "offHandViewRightCm%s=%.2f\n", sh, b);
+        fprintf(f, "offHandViewUpCm%s=%.2f\n", sh, c);
+        bones::off_hand_rot_deg(h, &a, &b, &c);
+        fprintf(f, "offHandPitchDeg%s=%.2f\n", sh, a);
+        fprintf(f, "offHandYawDeg%s=%.2f\n", sh, b);
+        fprintf(f, "offHandRollDeg%s=%.2f\n", sh, c);
+    }
+    fprintf(f, "offHandTracked=%d\n", bones::off_hand_tracked() ? 1 : 0);
     fclose(f);
     BVR_LOG("[hands] offsets saved to hands.ini");
 }
@@ -550,6 +617,25 @@ bool store_hand_key(const char* key, const char* base, std::atomic<float> (&dst)
 }
 
 void load_config() {
+    // ---- s72b: THE FREE HAND'S SHIPPED DEFAULTS ----------------------------
+    //
+    // Seeded BEFORE the ini is read, so a file that predates these keys still
+    // gets them and anything in the file still wins. These are the values the
+    // tester signed off after the s72 rotation port, and they are BRVR's own
+    // shipped numbers for the same rig (LeftHandOffset / LeftHandRot):
+    //
+    //   grip   -6, 6, 0 cm      where the WRIST BONE sits relative to your grip.
+    //                           A pivot by design - keep it small, and do not
+    //                           use it to move the hand.
+    //   rot    -30, 31, -206    the -206 roll is the authored left wrist's half
+    //                           turn plus fine tuning; the cluster is retargeted
+    //                           from that wrist, so the flip is expected here.
+    //
+    // Placement (offHandView*) stays at zero: it is the knob for MOVING the
+    // hand, and where it sits is a per-player preference rather than a default.
+    bones::set_off_hand_cm(0, -6.0f, 6.0f, 0.0f);
+    bones::set_off_hand_rot_deg(0, -30.0f, 31.0f, -206.0f);
+
     wchar_t path[MAX_PATH];
     config_path(path, MAX_PATH);
     FILE* f = nullptr;
@@ -572,6 +658,35 @@ void load_config() {
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
         else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
+        else if (strcmp(key, "offHandTracked") == 0) bones::set_off_hand_tracked(v != 0.0f);
+        else if (strncmp(key, "offHandView", 11) == 0) {
+            // BEFORE the generic offHand lane below, which indexes key+7 and
+            // would read "ViewFwdCm" as an unknown axis and silently store it
+            // as Up. s71n.
+            const size_t n = strlen(key);
+            const int h = (n && key[n - 1] == 'R') ? 1 : 0;
+            float a = 0.0f, b = 0.0f, c = 0.0f;
+            bones::off_hand_view_cm(h, &a, &b, &c);
+            if (strncmp(key + 11, "Fwd", 3) == 0) a = v;
+            else if (strncmp(key + 11, "Right", 5) == 0) b = v;
+            else c = v;
+            bones::set_off_hand_view_cm(h, a, b, c);
+        }
+        else if (strncmp(key, "offHand", 7) == 0) {
+            // offHand<Axis><Unit><L|R>, read out of the key like the shoulder
+            // lane above rather than adding six more store_hand_key lanes.
+            const size_t n = strlen(key);
+            const int h = (n && key[n - 1] == 'R') ? 1 : 0;
+            const bool isRot = strstr(key, "Deg") != nullptr;
+            float a = 0.0f, b = 0.0f, c = 0.0f;
+            if (isRot) bones::off_hand_rot_deg(h, &a, &b, &c);
+            else bones::off_hand_cm(h, &a, &b, &c);
+            if (strncmp(key + 7, "Fwd", 3) == 0 || strncmp(key + 7, "Pitch", 5) == 0) a = v;
+            else if (strncmp(key + 7, "Right", 5) == 0 || strncmp(key + 7, "Yaw", 3) == 0) b = v;
+            else c = v;
+            if (isRot) bones::set_off_hand_rot_deg(h, a, b, c);
+            else bones::set_off_hand_cm(h, a, b, c);
+        }
         else if (strcmp(key, "elbowSmoothMs") == 0)
             bones::set_elbow_smooth_ms(static_cast<unsigned>(v < 0.0f ? 0.0f : v));
         else if (strncmp(key, "shoulder", 8) == 0) {
@@ -787,6 +902,8 @@ float model_trim_roll_deg(int hand) {
     return g_rotRollDeg[hand & 1].load(std::memory_order_relaxed);
 }
 
+bool install_script_seam(const uint8_t* base); // s71h - defined beside late_write()
+
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     load_config();
@@ -794,6 +911,10 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     BVR_LOG("[hands] init: mode=%s (AHands vtable 0x%X, APlayerWeapon vtable 0x%X)",
             mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : "BONES", patterns::kHandsVtableRva,
             patterns::kPlayerWeaponVtableRva);
+    // s71h: the script seam. Installed here so a refusal is logged once, at
+    // startup, next to the rest of the identity gating - not silently at the
+    // first frame the hands appear.
+    install_script_seam(image.base);
 }
 
 // s64: the rig's geometry is collapsed by bone during an arm-hide re-check, so
@@ -837,9 +958,23 @@ bool g_rigWasCollapsed = false;
 // values, it is the one knob that can put the orbit back, and every session
 // that nudged it in the headset lost time to exactly that. It stays reachable
 // from the F10 sliders and `vrhands pos` for anyone re-deriving it.
+// s71: two more, numbered as BRVR numbers them (its g_editMode 3 and 4 are the
+// free-hand offset and the free-hand rotation), so a value read off one mod's
+// log means the same thing in the other.
+//   kTuneModeOffPos  the FREE hand's position
+//   kTuneModeOffRot  the FREE hand's rotation
+// Both act on whichever hand is actually free, which flips when a plasmid is
+// equipped - never on a hardcoded index. That distinction has now been the bug
+// twice (s70b for the drive, s70n for the crosshair lane).
 constexpr int kTuneModePos = 0;
 constexpr int kTuneModeRot = 1;
 constexpr int kTuneModeCur = 2;
+constexpr int kTuneModeOffPos = 3;
+constexpr int kTuneModeOffRot = 4;
+// s71x: TWO KNOBS, TWO JOBS - the free hand needs the same split the weapon
+// has. OffPos is the anatomical wrist-to-grip offset and IS a pivot by design;
+// OffPlace is rigid placement in the view frame and cannot become one.
+constexpr int kTuneModeOffPlace = 5;
 int g_tuneMode = kTuneModePos;
 float g_tuneStep = 2.0f;
 
@@ -875,6 +1010,21 @@ void tuner_log(const char* what) {
                 wk, th == 0 ? "L/plasmid" : "R/weapon", what, g_viewFwdCm[th].load(std::memory_order_relaxed),
                 g_viewRightCm[th].load(std::memory_order_relaxed),
                 g_viewUpCm[th].load(std::memory_order_relaxed), g_tuneStep);
+    else if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot) {
+        const int fh = 1 - (active_hand() == 1 ? 1 : 0);
+        float a = 0.0f, b = 0.0f, c = 0.0f;
+        if (g_tuneMode == kTuneModeOffPos) bones::off_hand_view_cm(fh, &a, &b, &c);
+        else if (g_tuneMode == kTuneModeOffPlace) bones::off_hand_cm(fh, &a, &b, &c);
+        else bones::off_hand_rot_deg(fh, &a, &b, &c);
+        BVR_LOG("[hands] numpad: %s FREE HAND %s - the %s hand, %+.1f %+.1f %+.1f %s "
+                "(step %.1f). Per HAND, not per weapon; swaps side when a plasmid is up.",
+                what,
+                g_tuneMode == kTuneModeOffPos     ? "POSITION (rigid - model and pivot move together)"
+                : g_tuneMode == kTuneModeOffPlace ? "GRIP (the wrist-to-grip pivot; keep it small)"
+                                                  : "ROTATION",
+                fh == 1 ? "RIGHT" : "LEFT", a, b, c,
+                g_tuneMode == kTuneModeOffRot ? "deg" : "cm", g_tuneStep);
+    }
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -908,7 +1058,8 @@ void poll_numpad_tuner() {
     if (!s_told) {
         s_told = true;
         BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
-                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR. Both NumLock states work.",
+                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND POS/"
+                "FREE-HAND ROT/FREE-HAND GRIP. Both NumLock states work.",
                 (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
     }
 
@@ -931,9 +1082,12 @@ void poll_numpad_tuner() {
     // Mode, then step - both edge-detected so a held key moves one notch.
     const bool modeDown = key_down(VK_NUMPAD9, VK_PRIOR);
     if (modeDown && !prevMode) {
-        g_tuneMode = (g_tuneMode == kTuneModePos)   ? kTuneModeRot
-                     : (g_tuneMode == kTuneModeRot) ? kTuneModeCur
-                                                    : kTuneModePos;
+        g_tuneMode = (g_tuneMode == kTuneModePos)      ? kTuneModeRot
+                     : (g_tuneMode == kTuneModeRot)    ? kTuneModeCur
+                     : (g_tuneMode == kTuneModeCur)    ? kTuneModeOffPos
+                     : (g_tuneMode == kTuneModeOffPos) ? kTuneModeOffRot
+                     : (g_tuneMode == kTuneModeOffRot) ? kTuneModeOffPlace
+                                                       : kTuneModePos;
         tuner_log("now editing");
     }
     prevMode = modeDown;
@@ -963,7 +1117,52 @@ void poll_numpad_tuner() {
             // the keys always mean what the tester sees. Placement is added in
             // every mode and needs no flip.
             const float d = kBinds[i].sign * g_tuneStep;
+            if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot ||
+                g_tuneMode == kTuneModeOffPlace) {
+                // THE FREE HAND - the one not holding anything, which flips when
+                // a plasmid is equipped. Same rule the drive uses.
+                const int fh = 1 - (active_hand() == 1 ? 1 : 0);
+                float a = 0.0f, b = 0.0f, c = 0.0f;
+                if (g_tuneMode == kTuneModeOffPos) {
+                    // s71t: BACK to the hand-frame knob, which is BRVR parity and
+                    // was my error to move. BRVR's numpad maps "LEFT HAND POS" to
+                    // LeftHandOffset, applied in the HAND's own frame - and it is
+                    // supposed to be a pivot, because the pivot belongs at your
+                    // GRIP and the anchor bone is the WRIST. Your palm holds the
+                    // controller; the wrist sits behind it. Without this offset the
+                    // model turns about the wrist while your hand turns about the
+                    // grip, so yawing overshoots further the further you turn.
+                    // The view-frame knob stays, ini-only, for placement that must
+                    // NOT move the pivot.
+                    bones::off_hand_view_cm(fh, &a, &b, &c);
+                    if (kBinds[i].axis == 0) a += d;
+                    else if (kBinds[i].axis == 1) b += d;
+                    else c += d;
+                    bones::set_off_hand_view_cm(fh, a, b, c);
+                } else if (g_tuneMode == kTuneModeOffPlace) {
+                    // Rigid placement. Applied in the CAMERA basis to the world
+                    // target, so however far it is pushed it can never grow the
+                    // radius the hand rolls about - which is what OffPos does by
+                    // design, and what the tester measured: "raising the model
+                    // increases the radius of the pivot roll".
+                    bones::off_hand_cm(fh, &a, &b, &c);
+                    if (kBinds[i].axis == 0) a += d;
+                    else if (kBinds[i].axis == 1) b += d;
+                    else c += d;
+                    bones::set_off_hand_cm(fh, a, b, c);
+                } else {
+                    bones::off_hand_rot_deg(fh, &a, &b, &c);
+                    if (kBinds[i].axis == 0) a += d;
+                    else if (kBinds[i].axis == 1) b += d;
+                    else c += d;
+                    bones::set_off_hand_rot_deg(fh, a, b, c);
+                }
+                moved = true;
+                prev[i] = down;
+                continue;
+            }
             if (g_tuneMode == kTuneModeCur) {
+
                 // CROSSHAIR: the aim ray's pitch/yaw. 8/2 pitch, 6/4 yaw. The
                 // ray carries no roll in this tree (the camera owns roll), so
                 // 0/5 has nothing to move - say so rather than silently ignore.
@@ -1028,8 +1227,63 @@ void poll_numpad_tuner() {
     aim::save_weapon_profiles();
 }
 
+// ---- s71: THE FREE HAND -----------------------------------------------------
+//
+// The hand that is NOT holding anything, driven to its own controller. BS1 has
+// only ever drawn one; the other was collapsed to zero scale and parked below
+// the actor. BRVR tracks both and the tester runs it that way
+// (OffHandTracked=2), so this is that half.
+//
+// GRIP POSE, NOT AIM, and BRVR says why in one line: "The aim pose is where a
+// weapon would shoot; on most controllers it is tilted tens of degrees off the
+// hand. A bare hand wants the pose that describes the hand." Passing the aim
+// pose here would tilt the empty hand as though it were holding a gun.
+//
+// WHICH hand is free follows what you are HOLDING, never input - `1 - hand`,
+// where `hand` is active_hand() and therefore already ability-mode-driven since
+// s70b. Deciding it any other way is the bug that had to be fixed twice: once
+// for the drive (s70b) and once for the numpad's crosshair lane (s70n).
+static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand,
+                           const float actorLoc[3], const FRotator& actorRot) {
+    if (!bones::off_hand_tracked()) return;
+    const int freeHand = 1 - (heldHand == 1 ? 1 : 0);
+
+    bvr::vr::HeadPose hp{};
+    if (!ctx.vrDriving || !bvr::vr::get_hand_pose(freeHand, /*aimPose=*/false, hp)) return;
+
+    const float pos[3] = {hp.px, hp.py, hp.pz};
+    const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+    // s71o: THE ROTATION TRIM COMPOSES IN THE CONTROLLER'S LOCAL FRAME, and this
+    // tree already learned that once. model_pose_from_xr() builds the trim as a
+    // quaternion and multiplies it onto the controller pose BEFORE the map, which
+    // is the only algebra that holds at every controller orientation; session 20
+    // measured the alternative - adding rotator angles in game space after the
+    // map - diverging by up to 28.21 deg at rolled poses, and unified the model
+    // and ray chains on this helper because of it.
+    //
+    // The free hand was written in s71 and did it the old way: Euler components
+    // added to the already-composed game rotator inside drive_free_hand(). Those
+    // add on the GAME's axes, not the hand's, and pitch/yaw/roll interact - so
+    // trimming yaw with any pitch dialled in tips the hand. Reported as "changing
+    // the offhand rotation causes it to rotate strangely", which is that exactly.
+    //
+    // BRVR does the same thing we now do: HandsOffsetQuat() builds the offset and
+    // QuatMul(gripQuat, qOff) applies it to the raw controller pose, before any
+    // conversion to a rotator.
+    float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
+    bones::off_hand_rot_deg(freeHand, &trimP, &trimY, &trimR);
+    const GamePose gp = model_pose_from_xr(ctx, pos, quat, trimP, trimY, trimR);
+    // s71y: the same controller pose WITHOUT the trim, for the grip offset's
+    // frame only. See the banner at its use in drive_free_hand().
+    const GamePose gpRaw = xr_pose_to_game(ctx, pos, quat);
+    bones::drive_free_hand(ctx, target, gp, freeHand, actorLoc, actorRot, gpRaw.rot);
+}
+
 void on_calcview(const FrameContext& ctx) {
     poll_numpad_tuner(); // in-headset grip/trim tuning - see its banner
+    // s71: the reapply cache is shared by both hands now, so exactly one caller
+    // may zero it and it has to happen before either drive.
+    bones::begin_write_frame();
     // Overlay request, applied from THIS thread (same rule as aim.cpp: the
     // render thread must never touch engine state directly).
     int pendMode = g_pendingMode.exchange(-1, std::memory_order_relaxed);
@@ -1392,6 +1646,10 @@ void on_calcview(const FrameContext& ctx) {
         // came back full size when the freeze landed.
         bones::wskel_drive();
         bones::drive(ctx, target, gp, hand);
+        // s71b: pass the actor transform we are ABOUT to write, never a read of
+        // the live one - see drive_free_hand(). This is also why it is called
+        // after the held hand: `loc` and `gp.rot` are settled by here.
+        drive_off_hand(ctx, target, hand, loc, gp.rot);
     } else if (bones::freeze_only()) {
         bones::set_freeze_only(false);
     }
@@ -1497,6 +1755,17 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "off") == 0) {
         g_enabled.store(false, std::memory_order_relaxed);
         BVR_LOG("[hands] OFF - engine placement restored");
+    } else if (strcmp(verb, "seam") == 0) {
+        // s71i: the script seam's A/B, reachable from the command seam so the
+        // simulator can flip it. It existed only as an F10 checkbox, which made
+        // the one test that matters depend on a human in a headset - and the
+        // last run came back with no TOGGLE line at all because of it.
+        const bool on = strncmp(rest, "on", 2) == 0;
+        g_peSeam.store(on, std::memory_order_relaxed);
+        BVR_LOG("[hands] SCRIPTSEAM TOGGLE: re-assert now %s (%u re-assert(s) so far, "
+                "hook %s). ACTORWATCH lines after this belong to the %s half.",
+                on ? "ON" : "OFF", g_peWrites,
+                g_peInstalled ? "installed" : "NOT INSTALLED", on ? "ON" : "OFF");
     } else if (strcmp(verb, "mode") == 0) {
         int mode = strncmp(rest, "gun", 3) == 0      ? 0
                    : strncmp(rest, "brvr", 4) == 0   ? 3
@@ -1737,6 +2006,169 @@ bool active() {
            (g_weaponActor != nullptr || g_handsActor != nullptr);
 }
 
+static void actor_write_now(); // defined just below; the detour calls it
+
+// ---- s71h THE SCRIPT SEAM: hook UObject::ProcessEvent, catch UpdateHandValues
+//
+// Derivation, and it is re-derived live rather than copied. ProcessEvent is a
+// UObject virtual in vtable SLOT 3 (byte +0xC), so any UObject vtable carries
+// it - we read it off AHands' own, which we already have an RVA for, and follow
+// a jmp stub if the slot points at one. It is then gated three ways before a
+// single byte is hooked:
+//
+//   * the documented prologue - BS1 gates the StateFrame at `this+0xF8`
+//     (`55 8B EC 8B 81 F8 00 00 00`), where BS2 uses +0x10C. Same engine,
+//     different link.
+//   * `ret 0xC` - three stack args plus thiscall ECX.
+//   * the cross-checked RVA 0x375140, recorded in the BS2 notes from BS1's own
+//     controller vtable. The host build is already pe-timestamp VERIFIED at
+//     startup, so a mismatch here means the derivation is wrong, not that the
+//     build moved - and we refuse rather than hook a guess.
+//
+// NEVER copy a number between the games: this is BS1's, derived against BS1.
+inline constexpr uint32_t kProcessEventRva = 0x375140;
+inline constexpr uint32_t kProcessEventStateFrameOffset = 0xF8;
+
+using ProcessEventFn = void(__fastcall*)(void*, void*, void*, void*, void*);
+ProcessEventFn g_peOriginal = nullptr;
+
+// EVERY script event in the game passes through this, so the ORDER of the
+// pre-filter is the whole cost of being here. BS2 measured total ProcessEvent
+// traffic at ~850/s in gameplay and ~4500/s during a level load.
+//
+// OBJECT IDENTITY FIRST, and that is not arbitrary. It is a bare pointer
+// compare that touches no memory and rejects every event in the game except
+// the handful on the one actor we drive. The name test has to read through
+// `fn`, and reading defensively means is_memory_valid() -> VirtualQuery, a
+// kernel transition; running that on 4500 events/s during a load would be a
+// hitch we put there ourselves. Behind the pointer compare it runs a few times
+// a frame instead.
+int32_t resolve_uhv_name_index(); // defined below
+
+void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms, void* result) {
+    g_peOriginal(self, edx, fn, parms, result);
+
+    if (!g_peSeam.load(std::memory_order_relaxed)) return;
+    if (!self || !g_handsActor || self != g_handsActor) return;
+    if (!fn) return;
+
+    // s71i: GNames IS BUILT AS PACKAGES LOAD, so resolving at init() could only
+    // ever fail - and did: the table held 1033 names there, Core and Engine
+    // only, while "UpdateHandValues" lives in ShockGame, not yet loaded.
+    //
+    // Resolve lazily instead, and note WHERE this sits: behind the object
+    // compare. A script event reaching our own hands actor is itself proof that
+    // ShockGame is loaded and the table is complete. Throttled, so a genuine
+    // absence degrades to one scan every 500 ms rather than one per event.
+    if (g_uhvNameIdx < 0) {
+        static uint64_t s_try = 0;
+        const uint64_t now = GetTickCount64();
+        if (now - s_try < 500) return;
+        s_try = now;
+        g_uhvNameIdx = resolve_uhv_name_index();
+        if (g_uhvNameIdx < 0) return;
+        BVR_LOG("[hands] SCRIPTSEAM LIVE: resolved \"UpdateHandValues\" = FName %d "
+                "(name table now %d, was 1033 at init). The actor is re-asserted "
+                "after the engine's own write from here. WATCH ACTORWATCH: it has "
+                "been reading 60-100 deg of yaw, and if this is the right seam that "
+                "number collapses toward zero.",
+                g_uhvNameIdx, patterns::fname_count());
+    }
+    const uint8_t* fp = static_cast<const uint8_t*>(fn) + patterns::kUObjectNameIndexOffset;
+    if (!bvr::pattern_scan::is_memory_valid(fp, 4)) return;
+    if (*reinterpret_cast<const int32_t*>(fp) != g_uhvNameIdx) return;
+
+    // The engine has just pinned the actor to the camera. Put ours back, HERE,
+    // where nothing else in the frame runs afterwards.
+    actor_write_now();
+    ++g_peWrites;
+}
+
+// Resolve "UpdateHandValues" to its FName index once. Scanning the table is
+// the honest way round: the alternative is hooking FindFunctionChecked as BS2
+// does, which buys nothing here because we match on the UFunction's own name
+// rather than on a cached pointer.
+int32_t resolve_uhv_name_index() {
+    const int32_t count = patterns::fname_count();
+    for (int32_t i = 0; i < count; ++i) {
+        const wchar_t* t = patterns::fname_text(i);
+        if (t && wcscmp(t, L"UpdateHandValues") == 0) return i;
+    }
+    return -1;
+}
+
+bool install_script_seam(const uint8_t* base) {
+    if (g_peInstalled || !base) return false;
+
+    const uint8_t* vtbl = base + patterns::kHandsVtableRva;
+    if (!bvr::pattern_scan::is_memory_valid(vtbl, 16)) {
+        BVR_LOG("[hands] SCRIPTSEAM: AHands vtable unreadable - not hooking.");
+        return false;
+    }
+    uint8_t* target = *reinterpret_cast<uint8_t* const*>(vtbl + 0xC); // slot 3
+    if (!target) return false;
+    // Follow one jmp rel32 stub if the slot points at a thunk.
+    if (bvr::pattern_scan::is_memory_valid(target, 5) && target[0] == 0xE9) {
+        target = target + 5 + *reinterpret_cast<const int32_t*>(target + 1);
+    }
+    if (!bvr::pattern_scan::is_memory_valid(target, 16)) return false;
+
+    const uint32_t rva = static_cast<uint32_t>(target - base);
+    static const uint8_t kPrologue[] = {0x55, 0x8B, 0xEC, 0x8B, 0x81,
+                                        kProcessEventStateFrameOffset, 0x00, 0x00, 0x00};
+    const bool shapeOk = memcmp(target, kPrologue, sizeof kPrologue) == 0;
+    if (!shapeOk || rva != kProcessEventRva) {
+        BVR_LOG("[hands] SCRIPTSEAM: REFUSING to hook - slot 3 resolved to RVA 0x%X "
+                "(expected 0x%X), prologue %s. The derivation is wrong; not guessing.",
+                rva, kProcessEventRva, shapeOk ? "OK" : "MISMATCH");
+        return false;
+    }
+
+    MH_STATUS st = MH_CreateHook(target, reinterpret_cast<void*>(&ProcessEventDetour),
+                                 reinterpret_cast<void**>(&g_peOriginal));
+    if (st != MH_OK) {
+        BVR_LOG("[hands] SCRIPTSEAM: MH_CreateHook(ProcessEvent) failed: %s",
+                MH_StatusToString(st));
+        return false;
+    }
+    st = MH_EnableHook(target);
+    if (st != MH_OK) {
+        BVR_LOG("[hands] SCRIPTSEAM: MH_EnableHook(ProcessEvent) failed: %s",
+                MH_StatusToString(st));
+        MH_RemoveHook(target);
+        return false;
+    }
+    g_peTarget = target;
+    g_peInstalled = true;
+    BVR_LOG("[hands] SCRIPTSEAM ARMED: ProcessEvent RVA 0x%X hooked. The name index "
+            "is resolved lazily on the first script event that reaches the hands "
+            "actor - GNames holds only %d names this early (Core and Engine), and "
+            "ShockGame is not loaded yet. Expect a SCRIPTSEAM LIVE line in play.",
+            rva, patterns::fname_count());
+    return true;
+}
+
+// The actor write itself, in one copy, because it now has TWO callers with
+// different reasons: late_write() at scenedraw (kept - it is the seam that
+// serves the bone reapply, and it is cheap) and the script seam below, which
+// runs at the only point after the engine's own UpdateLocation.
+//
+// Every guard is repeated here rather than assumed from the caller: the script
+// seam runs on the game thread from inside the VM, on any object, at any point
+// in a level's life, including while a load is tearing the actor down. BRVR
+// learned that one as a crash.
+static void actor_write_now() {
+    if (!g_lwValid.load(std::memory_order_relaxed) || !g_lwObj) return;
+    if (g_lwObj != g_handsActor || !has_vtable(g_lwObj, patterns::kHandsVtableRva)) {
+        g_lwValid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
+    if (g_lateWriteLoc.load(std::memory_order_relaxed))
+        ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;
+    if (!ok) g_lwValid.store(false, std::memory_order_relaxed);
+}
+
 void late_write() {
     if (!g_lateWrite.load(std::memory_order_relaxed)) return;
     if (!g_enabled.load(std::memory_order_relaxed)) return;
@@ -1825,10 +2257,38 @@ void late_write() {
             }
         }
     }
-    bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
-    if (g_lateWriteLoc.load(std::memory_order_relaxed))
-        ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;
-    if (!ok) g_lwValid.store(false, std::memory_order_relaxed);
+    // s71c: the actor is final from here, so this is the only honest place to ask
+    // where the free hand actually landed.
+    {
+        // Read the actor as it stands BEFORE the restore - that is the engine's
+        // value, and the one the renderer used if the restore is losing.
+        //
+        // s71e: CHECK THE READS. Seeding these from our own write and then not
+        // checking read12 makes a FAILED read indistinguishable from "nothing
+        // changed" - both print exactly zero. The first run printed 61 bit-exact
+        // zeros while ACTORWATCH, one seam later in the same frames, read yaw
+        // deltas near 100 deg. That pair is only interpretable once a failed
+        // read can announce itself.
+        float liveLoc[3] = {g_lwLoc[0], g_lwLoc[1], g_lwLoc[2]};
+        int32_t liveRot[3] = {g_lwRot[0], g_lwRot[1], g_lwRot[2]};
+        const bool okLoc =
+            read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, liveLoc);
+        const bool okRot =
+            read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, liveRot);
+        if (!okLoc || !okRot) {
+            static uint64_t s_rdLog = 0;
+            const uint64_t nowRd = GetTickCount64();
+            if (nowRd - s_rdLog >= 1000) {
+                s_rdLog = nowRd;
+                BVR_LOG("[hands] FREEPROBE: actor read FAILED (loc %s, rot %s) - every zero "
+                        "this probe printed is a seed value, not a measurement.",
+                        okLoc ? "ok" : "FAILED", okRot ? "ok" : "FAILED");
+            }
+        } else {
+            bones::free_hand_probe(g_lwLoc, g_lwRot, liveLoc, liveRot);
+        }
+    }
+    actor_write_now();
 }
 
 void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg) {
@@ -1876,6 +2336,36 @@ void draw_debug_ui() {
     bool on = g_enabled.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Viewmodel follows the controller", &on))
         g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
+
+    // s71h: the A/B for the script seam, and it is the ONLY control that changes
+    // WHERE in the frame our actor write happens rather than what it writes.
+    {
+        bool pe = g_peSeam.load(std::memory_order_relaxed);
+        ImGui::BeginDisabled(!g_peInstalled);
+        if (ImGui::Checkbox("Re-assert the actor after the engine's own UpdateLocation",
+                            &pe)) {
+            g_peSeam.store(pe, std::memory_order_relaxed);
+            // Stamp the flip into the log. Without this the A/B is unreadable:
+            // both halves are ACTORWATCH lines and nothing says where the
+            // variable changed, which is the whole point of the run.
+            BVR_LOG("[hands] SCRIPTSEAM TOGGLE: re-assert now %s (%u re-assert(s) so "
+                    "far). ACTORWATCH lines after this belong to the %s half.",
+                    pe ? "ON" : "OFF", g_peWrites, pe ? "ON" : "OFF");
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "The engine writes the hands actor from Hands.UpdateHandValues,\n"
+                "which runs AFTER the frame is built - so late_write at scenedraw\n"
+                "was always too early and the engine got the last word.\n\n"
+                "ON  : we write ours immediately after the engine's own write.\n"
+                "off : the pre-s71h behaviour - the engine wins every frame.\n\n"
+                "Watch ACTORWATCH in the log: it should collapse toward zero.");
+        if (!g_peInstalled)
+            ImGui::TextDisabled("  (script seam not armed - see SCRIPTSEAM in the log)");
+        else
+            ImGui::TextDisabled("  re-asserted %u time(s)", g_peWrites);
+    }
 
     bool lwl = g_lateWriteLoc.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Keep the hand's POSITION past the engine tick", &lwl))

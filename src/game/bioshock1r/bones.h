@@ -172,6 +172,44 @@ void set_elbow_smooth_ms(unsigned v);
 float elbow_follow_wrist();
 void set_elbow_follow_wrist(float v);
 
+// ---- s71: the free hand -----------------------------------------------------
+// begin_write_frame() must be called ONCE per frame before any drive: the
+// reapply cache is shared by both hands now, so exactly one caller may zero it.
+// drive_free_hand() then retargets the non-held hand's cluster onto its own
+// controller - BRVR's ArmHide_DriveFreeHand, whose difference from the held hand
+// is that it retargets where the held hand is replayed verbatim under the actor.
+// Offsets are per HAND, not per weapon, which is BRVR's shape.
+void begin_write_frame();
+// s71c: call after the actor write, when the transform the frame will render is
+// finally in memory. Reports how far the free hand's anchor ended up from the
+// point the drive asked for.
+// Pass BOTH: the transform the drive cancelled, and the one actually in the
+// actor right now. Their difference is what displaces the free hand.
+void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
+                     const float liveLoc[3], const int32_t liveRot[3]);
+// actorLocNow/actorRotNow are the transform hands.cpp is ABOUT TO WRITE this
+// frame, not a read of the live actor. BRVR passes the same pair for the same
+// reason: the free hand's target cancels the actor exactly, and only if it is
+// the same actor the renderer uses. A frame-old read leaks the held hand's
+// rotation into the free hand.
+// s71y: gripFrameRot is the free controller's rotation WITHOUT the rotation
+// trim. The grip offset is expressed in it, so trimming the model's orientation
+// no longer drags the hand across the world - see the banner at its use.
+bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+                     const float actorLocNow[3], const FRotator& actorRotNow,
+                     const FRotator& gripFrameRot);
+void set_off_hand_tracked(bool on);
+bool off_hand_tracked();
+void off_hand_cm(int hand, float* fwd, float* right, float* up);
+void set_off_hand_cm(int hand, float fwd, float right, float up);
+void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll);
+// s71n: the free hand has TWO position knobs, and they are not interchangeable.
+// off_hand_cm is applied along the hand's own axes and therefore moves the PIVOT;
+// off_hand_view_cm is applied in the view frame and only moves where it SITS.
+void off_hand_view_cm(int hand, float* fwd, float* right, float* up);
+void set_off_hand_view_cm(int hand, float fwd, float right, float up);
+void set_off_hand_rot_deg(int hand, float pitch, float yaw, float roll);
+
 void set_anim_allowed(bool on);
 bool anim_allowed();
 

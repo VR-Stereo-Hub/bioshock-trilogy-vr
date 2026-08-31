@@ -43,7 +43,16 @@ $scans = @{
     'tab'    = 0x0F; 'e'     = 0x12; 'f'      = 0x21; 'y'      = 0x15; 'n'   = 0x31
     'f9'     = 0x43; 'f10'   = 0x44; 'f11'    = 0x57; 'f12'    = 0x58
     '1'      = 0x02; '2'     = 0x03; '3'      = 0x04
+    # Arrow keys. These ARE extended (see $extended below) - menu navigation
+    # needs them, and without them every menu had to be driven by synthetic
+    # mouse clicks, which BS1's gameswf main menu ignores outright.
+    'up'     = 0x48; 'down'  = 0x50; 'left'   = 0x4B; 'right' = 0x4D
 }
+
+# Set-1 codes that require KEYEVENTF_EXTENDEDKEY. Injecting 0x50 WITHOUT this
+# flag is numpad-2, not Down Arrow, and a menu reading the extended bit ignores
+# it - which looks exactly like "the key did nothing".
+$extendedScans = @(0x48, 0x50, 0x4B, 0x4D)
 
 if ($Scan -eq 0) {
     if (-not $Key) { throw "give -Key <name> or -Scan <code>" }
@@ -93,12 +102,17 @@ if (-not $NoFocus -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
 
 $KEYEVENTF_SCANCODE = 0x0008
 $KEYEVENTF_KEYUP    = 0x0002
+$KEYEVENTF_EXTENDED = 0x0001
+
+$flags = $KEYEVENTF_SCANCODE
+if ($extendedScans -contains $Scan) { $flags = $flags -bor $KEYEVENTF_EXTENDED }
 
 for ($i = 0; $i -lt $Repeat; $i++) {
-    [BvrKey]::keybd_event(0, [byte]$Scan, $KEYEVENTF_SCANCODE, [UIntPtr]::Zero)
+    [BvrKey]::keybd_event(0, [byte]$Scan, $flags, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds $HoldMs
-    [BvrKey]::keybd_event(0, [byte]$Scan, $KEYEVENTF_SCANCODE -bor $KEYEVENTF_KEYUP, [UIntPtr]::Zero)
+    [BvrKey]::keybd_event(0, [byte]$Scan, $flags -bor $KEYEVENTF_KEYUP, [UIntPtr]::Zero)
     if ($i -lt $Repeat - 1) { Start-Sleep -Milliseconds $Delay }
 }
 
-Write-Output ("pressed scancode 0x{0:X2} x{1} in {2}" -f $Scan, $Repeat, $proc)
+Write-Output ("pressed scancode 0x{0:X2}{1} x{2} in {3}" -f $Scan,
+    $(if ($extendedScans -contains $Scan) { " (extended)" } else { "" }), $Repeat, $proc)

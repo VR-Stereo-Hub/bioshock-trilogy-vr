@@ -2,6 +2,343 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-29 - s71: the off hand exists, and it is a better instrument than the held one
+
+**Branch `feat/bs1-off-hand`, cut from `fix/bs1-bathysphere-cine-quad` (NOT from
+`staging` - it needs `solve_arm`, which is only on that line). 5 commits.**
+`git diff 282fa51..HEAD -- src/core/` is EMPTY: this feature cannot reach BS2 or
+Infinite. The three `src/core/` commits the branch carries are inherited from
+`2e210cf`/`d4ea519`/`7e0d743`, already covered by PRs #58 and #59.
+
+### Current state
+
+**Both hands are drawn, for weapons and plasmids.** Tester: *"two floating
+hands"*. BS1 had only ever drawn one - the other was collapsed to zero scale and
+parked 5000 units below the actor.
+
+| Landed | Evidence |
+|---|---|
+| The free hand tracks its own controller | headset: two hands on screen |
+| Its sleeve collapses with the arms | headset: the stretched off-hand arm is gone |
+| Arms hidden by default again | s70j had turned them on to tune the shoulder; that is done |
+| Frame-scoped write cache | required before a second hand could exist at all |
+| Numpad modes 3/4 for the free hand | BRVR's own numbering, acting on whichever hand is free |
+
+**The design, and it is the part worth keeping.** The held hand is replayed
+VERBATIM and carried by the ACTOR. The free hand cannot be - the actor is already
+carrying the other one - so it is RETARGETED: `inv(R_actor) * (worldTarget -
+actorLoc)`. BRVR draws the same line with one `WriteCluster` serving both.
+
+**THE FREE HAND IS A SENSITIVE DETECTOR FOR THE ACTOR DEFECT, and that is the
+most useful thing this session produced.** The held hand simply goes wherever the
+actor points and cannot reveal an actor error. The free hand is computed to
+CANCEL a specific actor, so any mismatch shows up in full - as an orbit.
+
+### OPEN: the free hand orbits with the held hand's rotation
+
+Tester: *"Rotating the right hand causes the left one to move as well... it
+doesnt apply rotation to the left hand, but it just moves it positionally in a
+swivel depending on right hand rotation horizontally."*
+
+Rotation decoupled, position orbiting. That shape is diagnostic: an orbit about
+the actor is the residue of a cancellation that did not cancel. Orientation is
+written per bone and lands; position is the thing being rotated by a transform
+that should have vanished.
+
+**Very likely the SAME defect as the head-turn desync below.** `ACTORWATCH`
+measures the engine changing the actor rotation we wrote by pitch -11.3, yaw
+-12.8, roll +6.3 in sampled frames (and 27-60 / up to 80 earlier). At arm's
+length (50-100 UU) even 10 deg of mismatch is 10-17 UU of swing. If that is it,
+fixing it fixes both.
+
+**Tried and RULED OUT:** passing this frame's intended actor transform instead of
+`last_actor_write()`'s frame-old one (`2cdab5e`). Correct on its own terms - it
+WAS cancelling the previous frame's actor - but the tester reported the symptom
+bit-identical afterwards, so it is not the cause. Do not re-try it.
+
+**The probe that measured nothing was BROKEN, not clean.** `FREEPROBE`'s first
+cut (`dc93cd1`) lifted the free anchor to world through the very transform
+`drive_free_hand` had just cancelled - zero by construction, and it duly printed
+nothing across a whole session of the tester turning the pistol. Corrected in
+`90485c0` to take BOTH transforms (ours and the one live in the actor) and report
+the angle between them plus the displacement it puts on the hand. **That reading
+has not been taken yet.** It is the next thing.
+
+### THE FREEPROBE READING IS IN: 61 bit-exact zeros, and ACTORWATCH disagrees
+
+Taken 2026-08-29 22:49 on `v0.8.2-127-g90485c0`. The tester held the off hand
+still and swept the held weapon through a wide yaw. Result: **61 FREEPROBE lines,
+every one `pitch +0.0 yaw +0.0 roll +0.0 deg, 0.0 UU`.** Not small - bit-exact,
+with no non-zero line anywhere in the run.
+
+**That reading cannot be taken at face value, because ACTORWATCH contradicts it
+in the same run over the same seconds.** Both probes claim to compare "the actor
+rotation we wrote" against "what is in memory". Over the identical window
+(22:49:13.47 -> 22:49:43.7) ACTORWATCH read yaw deltas of **-97.8 and -108.8 deg**
+while FREEPROBE read +0.0. They cannot both be right, and the difference is WHERE
+IN THE FRAME each one samples:
+
+| Probe | Reads at | Compares against | Window |
+|---|---|---|---|
+| ACTORWATCH | CalcView, before this frame's write (`hands.cpp:1539`) | `g_awWrote`, LAST frame's write | a FULL frame - spans the tick |
+| FREEPROBE | `late_write()` in scenedraw (`scenedraw.cpp:816`, depth 0) | `g_lwRot`, THIS frame's write | CalcView -> scenedraw only |
+
+So the honest reading is not "the actor is innocent". It is: **at the first
+scenedraw depth-0 after CalcView, the actor rotator is still bit-identical to
+what we wrote.** The engine's change lands in the part of the frame FREEPROBE
+never sees - after `late_write`, before the next CalcView.
+
+**Two consequences, both of which redirect the branch:**
+
+1. `late_write()`'s restore is a **no-op for the rotator** in this run - it
+   writes back a value already sitting there. That is why `c0983d1`, `4ff7bd7`,
+   `117f10c` and `2cdab5e` all changed nothing: every one of them operates at a
+   seam where the actor is *already correct*. This is direct evidence for
+   hypothesis 3 in the head-turn issue below - **`late_write` is not late
+   enough** - and it is the first measurement that discriminates it.
+2. The `s67` comment at `scenedraw.cpp:810` claims "the game tick runs between
+   CalcView and here and resets the hands rotator". For the ROTATOR, this run
+   says it does not. That comment is now suspect and should not be reasoned from.
+
+**BUT the reading is still ambiguous, and the probe could not tell the difference.**
+`liveLoc`/`liveRot` were seeded from our own write and then `read12`'s return was
+never checked, so a FAILED read produces exactly the same bit-exact zero as
+"nothing changed". Repaired in this commit: the reads are checked and a failure
+now announces itself. A failed read is judged unlikely - `late_write` reached its
+body 61 times, the vtable check passed, and the `write12` to those same offsets
+immediately afterwards succeeds - but "unlikely" is what the last two broken
+probes also looked like, and this branch has now shipped three instruments that
+read zero for three different reasons.
+
+**This is the THIRD tautology on this branch**, and the pattern is worth naming:
+the first was zero by algebra (measuring through the transform it had cancelled),
+this one is zero by timing (measuring a window in which nothing happens), and
+either could have been caught by asking the standing question before the run -
+*what would this print if the defect were present?*
+
+### THE ACTOR IS CLEARED, AND BRVR HAD THIS EXACT BUG
+
+**Second run, repaired probe (2026-08-30 00:05, `v0.8.2-128-g1a449e7`): 54
+FREEPROBE lines, all zero, and ZERO `actor read FAILED` lines.** ACTORWATCH read
+yaw +68.2 / +62.7 in the same run, so the sweep did happen. `LATEWRITE` is also
+silent, so the LOCATION is unchanged at that seam too.
+
+**The ambiguity is closed and the zeros are real.** At the first scenedraw
+depth-0 after CalcView the actor is bit-identical to what we wrote, location and
+rotation both. `A` therefore cancels exactly, and the retarget algebra is sound.
+**Stop trying to fix the actor.** Four attempts (`117f10c`, `4ff7bd7`, `c0983d1`,
+`2cdab5e`) all acted at a seam where the actor was already correct.
+
+**BRVR hit this identical symptom and its note is a verbatim match.** From
+`BioshockVR/Camera/CameraHook.cpp`, `FreeHandModelPos()`, banner *"THE OFFSET
+MUST NOT LIVE IN THE ACTOR'S FRAME"*:
+
+> *"with the right hand still the left hand tracked almost perfectly, but MOVING
+> the right hand dragged the left one about. This offset used to be added in
+> actor-local space, and the actor is rotated by the RIGHT controller, so a tuned
+> 8 cm correction swung through 16 cm as the right wrist turned. Everything else
+> here cancels the actor out algebraically -- world = actorLoc + A * A^T * (P -
+> actorLoc) = P -- so the offset was the only term that COULD couple the two
+> hands, and it did."*
+
+Same conclusion in `docs/brvr-reference/docs/modules/hands.md`: *"A placement
+offset must not live in the actor's frame... It belongs in the frame it
+describes: the hand's own."*
+
+**BUT OUR PORT ALREADY HAS BRVR'S FIX, so this is an exclusion, not a cure.**
+`drive_free_hand` rotates the trim by `qtc` = `inv(A) * T`, which is `T * o` in
+world - the hand's own frame, exactly where BRVR moved it. The cluster
+reconstruction is in the same frame (`rel` rotated by `qtc`, added to `ptc`).
+Checked term by term this session; do not re-derive it.
+
+So BRVR's audit - *the offset is the only term that could couple them* - now cuts
+the other way: our offset is correct, the actor is intact, and therefore **the
+coupling is not in `drive_free_hand`'s algebra at all.**
+
+### SOLVED: the off-hand swivel was the rig actor's DrawScale (2026-08-30)
+
+**Headset-confirmed.** `AHands` ships with **DrawScale = 0.8000**, and the
+foreground rig path multiplies every bone TRANSLATION we write by it. The free
+hand's target is built to cancel the actor exactly, so the scale breaks the
+cancellation and leaks a share of the ACTOR's own position into the off hand:
+
+```
+ptc   = inv(A) * (want - actorLoc)
+world = actorLoc + A * (k * ptc) = k*want + (1-k)*actorLoc      k = 0.8
+```
+
+`actorLoc` is the HELD hand's position plus its offsets rotated into the held
+hand's basis, so it swings through an arc when that wrist turns - and 20% of that
+arc landed on the off hand. The actor's location was measured swinging 103 UU in
+x across a 344 deg sweep, so the leak is ~20 UU. Position displaced, orientation
+untouched, proportional to held-hand rotation: the report exactly.
+
+**Why only the off hand:** the held hand's anchor sits essentially ON the actor,
+so `|want - actorLoc| ~ 0` and the leak lands on the same point. That asymmetry
+is the tell, and nothing else in the subsystem predicts it.
+
+**Fix:** `drive_free_hand()` divides its component-space target by the rig
+actor's DrawScale, read live (grep `FREESCALE` in `bones.cpp`). BRVR has always
+done this - `FreeHandModelPos()` divides by `handsScale`. The held hand is
+deliberately NOT changed: its anchor sits on the actor so the error is ~0 there,
+and every grip/placement offset shipped today was tuned against current
+behaviour. Revisiting it is a separate, opt-in job.
+
+Full derivation, the four probes that read clean and why, and the corrections
+below: `docs/bioshock1/ENGINE_NOTES.md`, session 71.
+
+### Corrections that outlive this session
+
+- **ACTORWATCH is not a defect meter.** Held still it reads a CONSTANT (84 of 88
+  samples bit-identical). It is the standing difference between the rotation we
+  write and the one the engine writes. Do not chase it to zero - a whole session
+  was spent doing exactly that.
+- **There is no actor race.** The actor holds our value at CalcView (0.1 deg) and
+  through scenedraw (115 samples). Cancelling the engine's actor is a no-op.
+- **The `SCRIPTSEAM` ProcessEvent hook is OFF by default** (`g_peSeam{false}`).
+  The derivation is sound and re-usable - `UObject::ProcessEvent` at RVA
+  0x375140, AHands vtable slot 3, `ret 0xC`, `UpdateHandValues` resolved lazily
+  because GNames holds ~1000 names at init and ~54000 in play - but it was built
+  to drive ACTORWATCH to zero, and it silently neuters any experiment that reads
+  the engine's actor. Do not switch it on while measuring.
+- **Session 16's DrawScale finding had two halves and the summary kept one.**
+  "Does not size geometry" was true; "consumes actor DrawScale for bone
+  translations" was the half that mattered and it was dropped. When a
+  measurement has two halves, the summary must carry both.
+
+---
+### FREETARGET IS IN: THE INPUT IS CLEAN, SO THE DEFECT IS DOWNSTREAM
+
+Taken 2026-08-30 00:20, 45 samples. Over a 32-sample window with the off hand
+held still:
+
+| Quantity | Movement |
+|---|---|
+| HELD hand yaw swept | **344.7 deg** (-176.8 .. +167.9) |
+| ACTOR location swung | **103.0 UU** in x, **95.9 UU** in y |
+| FREE hand's WANTED world point | **0.4 / 2.1 / 2.7 UU** |
+
+The wanted world point is **steady to within hand tremor** while the actor swings
+a hundred units. So:
+
+- the **input** is clean - `xr_pose_to_game`, the game yaw and the recenter base
+  are not carrying the held hand into the free hand's target;
+- the **actor** is intact (FREEPROBE, two runs, 115 lines, all zero, no failed
+  reads);
+- the **algebra** is BRVR's own and was verified term by term last session.
+
+**Every world-space term cancels, and the hand still moves. The defect is
+DOWNSTREAM of the bone write** - the engine evaluating the cluster after us. That
+is the only place left, and it was reached by elimination from measurements
+rather than by argument.
+
+**Why it presents as a swivel.** If the engine wins the cluster, the bones revert
+toward their authored pose, which is fixed in COMPONENT space - and a fixed
+component-space point orbits in WORLD as the actor turns. Position displaced,
+orientation from the authored pose. That is the report, and it explains why every
+world-space probe read clean: they were all measuring terms that cancel.
+
+**BRVR's second finding is the candidate mechanism.**
+`docs/brvr-reference/docs/modules/hands.md`, *"The dirty byte has one owner"*:
+`SkeletonInstance+0x88` is **one byte for all 47 bones**, six passes wrote it with
+no coordination, and **the last writer in the frame won**. Its rule is explicit:
+
+> *"Any new per-bone writer inherits this: ask `SuppressionLive()`, do not add a
+> seventh writer."*
+
+`drive_free_hand` is exactly a new per-bone writer, added in s71 **without that
+guard**, and this tree has **24 `set_dirty` call sites** with no coordination at
+all. Audited this session: within `on_calcview` the free hand's `set_dirty(0)` is
+genuinely last (`keep_evaluating` pushes `1` but runs at `hands.cpp:1261`, well
+before the drive at `:1508`), so if the byte is the mechanism the writer is the
+ENGINE's own tick, not one of ours.
+
+### Next steps
+
+**Take the FREEHOLD reading. It is built and installed** (`bones.cpp`, always-on,
+500 ms throttle). `drive()` has read the held hand's anchor back since s67 and
+calls the result `engineEvaluated`; the free hand has stored
+`g_lastWrittenAnchor[hand]` all along and **nothing has ever read it back**.
+FREEHOLD is that readback - last frame's write against a fresh read this frame.
+
+| Reading | Meaning |
+|---|---|
+| anchor moved **non-zero** model units | the **engine re-evaluated** the cluster after us - that is the orbit, and BRVR's dirty-byte finding is the place to fix it |
+| anchor moved **~0** | our write survives; the defect is in what RENDERS the cluster, not in the array |
+
+Same sweep, then
+`grep -a FREEHOLD "$LOCALAPPDATA/BioshockVR/bioshockvr.log"`.
+
+Checked before shipping, as is now mandatory here: it compares a value stored
+LAST frame against a fresh read THIS frame with only the engine's tick between
+them, and it is the same shape as `drive()`'s readback, which is known to report
+non-zero.
+
+**Superseded - the input question is closed:** Built and installed this session (`bones.cpp`, always-on, 500 ms throttle).
+It prints the free hand's intended WORLD point, `gp.loc`, beside the HELD hand's
+rotator, and it discriminates the only two remaining possibilities:
+
+| Reading | Meaning |
+|---|---|
+| the wanted world point **swings** as the held yaw sweeps | the defect is **upstream** of the actor and the bones - it is in pose construction (`xr_pose_to_game`, the game yaw, the recenter base) |
+| the wanted world point is **steady** while the hand still swings | the defect is **downstream** of our write - the bone array is re-evaluated after us |
+
+Sweep the held weapon through a wide yaw with the off hand held still, then
+`grep -a FREETARGET "$LOCALAPPDATA/BioshockVR/bioshockvr.log"`.
+
+It cannot be tautological, and that was checked rather than hoped: `gp.loc` comes
+from the free controller's pose and the held rotator from the held hand's target;
+neither is derived from the other. That check is now mandatory before any probe
+on this branch ships - **three instruments have read zero here for three
+different reasons** (zero by algebra, zero by timing, and nearly zero by an
+unchecked read).
+
+**Superseded - the actor question is closed:** Same sweep.
+If no `actor read FAILED` line appears, the zeros are real and finding (1) above
+stands: stop trying to fix the actor at CalcView or at `late_write`, and go find
+the seam that changes it afterwards. If the failure line DOES appear, the whole
+reading is void and the probe needs a valid object before it measures anything.
+
+**The seam hunt cannot use a Present hook without breaking this branch.** The
+only Present seams are in `src/core/` (`openxr_runtime.h`'s
+`on_present_begin`/`on_present_end`), and `git diff 282fa51..HEAD -- src/core/`
+must stay EMPTY. Any later-than-scenedraw sample has to be reached from the
+bioshock1r adapter's own hooks, or the core change has to be purely additive and
+opted into from the adapter.
+
+**Superseded - do not do this:** Hold the off hand still, turn the
+held weapon through a wide yaw sweep, and read
+`grep -a FREEPROBE %LOCALAPPDATA%\BioshockVR\bioshockvr.log`. Non-zero degrees
+with a displacement that tracks the held hand confirms the actor mismatch and
+makes this the same bug as the head-turn desync - fix the actor, not the hand.
+Zero degrees clears the actor entirely and the coupling is somewhere not yet
+looked at.
+
+**Do not attempt another fix from reasoning first.** Three have been tried across
+s70/s71 (`117f10c`, `4ff7bd7`, `c0983d1`) plus `2cdab5e` here; every one was
+sound in its own terms and none moved the symptom, because each reasoned about
+where the actor IS rather than what reaches the renderer.
+
+### Session log 2026-08-29
+
+**Headset-verified by the tester:** both hands drawn at once; the off-hand
+sleeve no longer stretches; the earlier arm IK still *"pretty good overall"*.
+
+**Built but NOT verified:** the corrected `FREEPROBE` (`90485c0`) - installed,
+never run. Everything else on this branch has been through the headset.
+
+**Diagnostics ARMED in the shipping build**, all read-only, all always-on
+because the tester cannot type in the headset - strip or gate before release:
+`FREEPROBE`, `FREEHAND`, `LATEWRITE`, `ACTORWATCH`, `ARMIK`, `ANIMPIN`,
+`ANIMREJECT`, `ANIMDIR`, `CLUSTERTEST` (an F10 button), `ROLLCHECK`, `FOVPROBE`,
+`LEFTBONE`.
+
+**Method note worth more than the code.** The instrument was tautological and
+still read as a finding for one exchange. s68 recorded this exact failure
+("the instruments that lied") and it recurred anyway, in a probe added
+specifically to stop guessing. **Before believing a silent probe, ask what it
+would print if the defect were present.**
+
 ## KNOWN ISSUE: the viewmodel desyncs when the HEAD moves (open, s70)
 
 **Reported, reproducible, not fixed.** Moving the view in the headset pulls the

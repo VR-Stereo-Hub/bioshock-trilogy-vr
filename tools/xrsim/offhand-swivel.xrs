@@ -1,0 +1,94 @@
+# offhand-swivel.xrs - does the OFF hand move when only the HELD hand rotates?
+#
+# The reported bug (s71): "Rotating the right hand causes the left one to move as
+# well... it doesnt apply rotation to the left hand, but it just moves it
+# positionally in a swivel depending on right hand rotation horizontally."
+#
+# THIS IS THE TEST A HUMAN CANNOT RUN. The whole question is whether the off hand
+# moves *while its own controller is still*, and a person cannot hold a
+# controller still to the precision the answer needs - every headset run of this
+# was confounded by the tester's own off-hand drift. The simulator parks the left
+# controller on an exact pose and never touches it again, so anything the left
+# hand does afterwards was caused by the RIGHT hand and nothing else.
+#
+# THE ORACLE IS A PAIR, and neither half is sufficient alone:
+#
+# 1. THE INPUT, from the mod's own log - FREETARGET prints the world point the
+#    free hand is ASKED to reach, beside the held hand's rotator:
+#      grep -a FREETARGET %LOCALAPPDATA%\BioshockVR\bioshockvr.log
+#    Across this sweep that point must not change. Measured 2026-08-30: it was
+#    BIT-IDENTICAL - (-37343.1 491.4 7801.2) at held yaw -18.2, -27.1 and -146.2.
+#
+# 2. THE OUTPUT, from the captures:
+#      .\tools\img-diff.ps1 -A swivel_yawP60_left.png -B swivel_yawM60_left.png -Grid 12
+#    The off hand occupies the lower-CENTRE-LEFT of the frame. If that block
+#    lights up while its controller never moved, the bug is live.
+#
+# Input identical + output moved = the defect is downstream of the target
+# computation. That pairing is the finding; run BOTH halves or the run is
+# worthless. Measured 2026-08-30 in Medical Pavilion: the off hand was visible at
+# lower-centre-left at yaw -60 and absent at yaw +60, with the input identical.
+#
+# READ THE BBOX, NOT THE MEAN. BS1 interiors are dark and a hand crossing the
+# frame can read below the standing-still floor on mean-abs-diff - the trap
+# coupling-hand.xrs already documents.
+#
+# WHAT THIS DOES NOT DO: it cannot load a save. Run it against a level where a
+# weapon is already equipped and both hands are drawn; an empty-handed or
+# menu-state run answers nothing, because there is no off hand to move.
+#
+# Stereo is armed here rather than left to the caller, for the reason
+# coupling-hand.xrs gives: `vrstereo on` is sticky and testing mono has misled
+# this project before.
+# ================== PRECONDITION. DO NOT SKIP. ==================
+#
+# THE SIM HOLDING A POSE DOES NOT MEAN THE MOD IS READING IT. Measured
+# 2026-08-30, and it invalidated a whole run that had already been reported as
+# a reproduction: xrsim-state showed handR exactly where it was put
+# (pos -0.60 1.30 -0.45) while the mod's own FREETARGET line showed the held
+# actor FROZEN at yaw -27.1, loc (-37374.7 449.1 7868.8) through a 1.8 m
+# controller move. The captures still differed - because BS1's scenery,
+# lighting and NPCs move on their own - so the diff looked exactly like a
+# reproduction and was not one.
+#
+# So before believing ANY capture from this file, prove the plumbing:
+#
+#   .\tools\xrsim-cmd.ps1 "hand r grip pose  1.20 1.30 -0.45 0 0 0"
+#   .\tools\xrsim-cmd.ps1 "hand r grip pose -0.60 1.30 -0.45 0 0 0"
+#   grep -a FREETARGET %LOCALAPPDATA%\BioshockVR\bioshockvr.log | tail -3
+#
+# The `actorLoc=` field MUST move by roughly 100 UU per metre (coupling-hand.xrs
+# records 110 UU for 1.1 m). If it does not move, the mod is not seeing the
+# simulated controllers and every capture below is a picture of the scenery.
+# ================================================================
+reset
+@mod vrstereo on
+@mod vrhands on; vrhands mode brvr
+@frames 60
+@assert projectionViews eq 2
+
+# THE OFF HAND IS PARKED HERE AND NEVER TOUCHED AGAIN. Every `hand` line below
+# addresses `r` only. If you add a `hand l` line after this point you have
+# destroyed the experiment.
+hand l grip pose -0.25 1.30 -0.40 0 0 0
+hand r grip pose 0.25 1.30 -0.45 0 0 0
+@frames 40
+@shot swivel_yaw00
+@assert layersLastFrame ge 3
+
+# Sweep the HELD hand's yaw only - position and pitch/roll held constant, so yaw
+# is the single variable. +60 and -60 bracket the reported "horizontally".
+hand r grip pose 0.25 1.30 -0.45 0 60 0
+@frames 40
+@shot swivel_yawP60
+
+hand r grip pose 0.25 1.30 -0.45 0 -60 0
+@frames 40
+@shot swivel_yawM60
+
+# Back to centre. A hand that does NOT return to its yaw00 position is a second
+# finding - it would mean the coupling is cumulative rather than a function of
+# the current pose, which is a different bug with a different fix.
+hand r grip pose 0.25 1.30 -0.45 0 0 0
+@frames 40
+@shot swivel_yaw00_return
