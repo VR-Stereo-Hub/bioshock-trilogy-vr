@@ -2743,6 +2743,72 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         sub3(W, S, dir);
         const float dRaw = norm3(dir);
         float d = dRaw;
+        // ---- s74a SHOULDER: does turning the HEAD move the shoulder anchor? -
+        //
+        // Reported by the tester at the end of s73 and never chased: "head
+        // rotation moves each arm's shoulder position". s70i already fixed the
+        // head LEAN case - base[XYZ] is the camera BEFORE the head offset, so a
+        // lean cannot drag the anchor - and it fixed the TURN case on paper by
+        // subtracting driveYawOffsetRad. There is a concrete reason to doubt
+        // that the paper fix reaches the real build: the body-follow transfer
+        // ships at INSTANT 1:1 (body.cpp, g_ratePerSec 0, g_deadzoneDeg 0), so
+        // the residual being subtracted here is ~0 in steady state and the body
+        // yaw simply IS the head yaw. If that is what is happening then the
+        // shoulder is not leaking the head at all - it is faithfully following a
+        // body that snaps to the head - and the fix belongs in the transfer or
+        // in the frame the offsets are expressed in, NOT in this solve.
+        //
+        // WHAT THIS PRINTS IF THE DEFECT IS PRESENT. The s73 method note is
+        // explicit that a probe is worthless until its failing signature is
+        // written down first, so, before any run:
+        //
+        //   camYaw moves, bodyYaw moves WITH it, driveYaw stays ~0
+        //       -> the transfer is carrying the head. Not an arm bug; the arm is
+        //          doing the right thing with a body that turned.
+        //   camYaw moves, bodyYaw HOLDS, shoulder moves anyway
+        //       -> a genuine leak downstream of the yaw. base[XYZ] is next.
+        //   camYaw moves, bodyYaw moves, and sh->hand HOLDS
+        //       -> shoulder and hand orbit together, rigidly. Percept only.
+        //   camYaw moves and sh->hand CHANGES
+        //       -> the arm really is stretching, and by exactly this much.
+        //
+        // sh->hand is the discriminator that matters. The shoulder MOVING is
+        // expected the moment the body yaws - both it and the hand orbit the
+        // same centre - so absolute motion proves nothing on its own. What the
+        // tester can actually see is the shoulder moving RELATIVE to a hand that
+        // did not move, and that is this distance.
+        //
+        // recenterYaw is printed because the two anchors do not agree about it:
+        // the HAND is placed at yaw (bodyYaw - recenterYaw) by
+        // frame_context.h's xr_pose_to_game, while the shoulder above uses plain
+        // bodyYaw. That difference is constant under a head turn, so it cannot
+        // be this defect - but it does mean a RECENTER rotates the shoulder out
+        // from under the hands, and the number is free to print here.
+        {
+            static uint64_t s_shLog[2][2] = {{0, 0}, {0, 0}};
+            const uint64_t nowSh = GetTickCount64();
+            const int role = freeBank ? 1 : 0;
+            if (nowSh - s_shLog[role][hand] >= 400) {
+                s_shLog[role][hand] = nowSh;
+                auto wrap180 = [](float dg) {
+                    while (dg > 180.0f) dg -= 360.0f;
+                    while (dg < -180.0f) dg += 360.0f;
+                    return dg;
+                };
+                BVR_LOG("[bones] SHOULDER: %s %s world (%.1f %.1f %.1f) | base "
+                        "(%.1f %.1f %.1f) | camYaw %+.1f bodyYaw %+.1f driveYaw %+.1f "
+                        "recenterYaw %+.1f deg | sh->hand %.1f UU (reach %.1f). Stand "
+                        "STILL and turn your HEAD only: camYaw must move. If bodyYaw "
+                        "moves with it, the body-follow transfer is carrying the head; "
+                        "if sh->hand also moves, the arm is stretching.",
+                        hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
+                        sWorld[0], sWorld[1], sWorld[2], ctx.baseX, ctx.baseY, ctx.baseZ,
+                        wrap180(static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree),
+                        wrap180(yawRad * kRadToDeg),
+                        wrap180(ctx.driveYawOffsetRad * kRadToDeg),
+                        wrap180(ctx.recenterYawRad * kRadToDeg), dRaw, L1 + L2);
+            }
+        }
         // ---- s73: AND THE LENGTHS ARE ALREADY IN THAT SPACE -----------------
         //
         // s72r divided L1/L2 by the rig scale on the reasoning that S and W had
