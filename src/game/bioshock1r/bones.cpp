@@ -474,6 +474,26 @@ std::atomic<float> g_shoulderUpCm[2] = {-28.60f, -19.80f};
 // s70k: how far the elbow sits OUT from straight-down, 0 = hanging, 1 = level
 // with the shoulder. Human elbows rest down and a little outward.
 std::atomic<float> g_elbowOut{0.35f};
+// ---- s75: SIZE THE RIG'S ARM TO THE PLAYER'S ------------------------------
+//
+// Multiplies the authored segment lengths. The rig's arm is a fixed length and
+// the player's is not, and when the two disagree the solve spends its life at
+// the limits: the s74 log had shoulder-to-hand running 39.9..87.9 UU against a
+// 66.2 UU authored reach, i.e. past full extension on 19 of 44 samples with the
+// tester standing still. At that point the elbow is locked straight and the
+// forearm is covering the shortfall on its own, which is the "super long wrist"
+// percept from s73.
+//
+// One number, because everything about the arm is defined against L1 and L2 -
+// scale them and the triangle, the reach and the elbow all follow. FRIK does
+// the same thing (rollingrock/Fallout-4-VR-Body, GPL-3.0, same licence as this
+// repo): armLength is a configured value adjusted in its in-VR body menu, and
+// every arm quantity scales off it.
+//
+// The authored FRACTIONS the twist helpers sit at along the forearm must not
+// change with it - see the divisor at the helper loop, which cancels this
+// deliberately. Without that, a longer arm would bunch them toward the elbow.
+std::atomic<float> g_armScale{1.00f};
 // s70k: exponential smoothing on the solved elbow, ms. The hand is NEVER
 // smoothed - that would put latency on your own tracking, which is the one thing
 // a VR viewmodel must not do. Only the derived joint is eased.
@@ -2215,6 +2235,10 @@ void set_shoulder_cm(int hand, float fwd, float right, float up) {
 }
 float elbow_out() { return g_elbowOut.load(std::memory_order_relaxed); }
 void set_elbow_out(float v) { g_elbowOut.store(v, std::memory_order_relaxed); }
+float arm_scale() { return g_armScale.load(std::memory_order_relaxed); }
+void set_arm_scale(float v) {
+    g_armScale.store(v < 0.5f ? 0.5f : (v > 2.0f ? 2.0f : v), std::memory_order_relaxed);
+}
 unsigned elbow_smooth_ms() { return g_elbowSmoothMs.load(std::memory_order_relaxed); }
 void set_elbow_smooth_ms(unsigned v) {
     g_elbowSmoothMs.store(v, std::memory_order_relaxed);
@@ -2666,8 +2690,12 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         sub3(g_freeArmW0[hand], ar[2].p, aEW);
         float aSEn[3] = {aSE[0], aSE[1], aSE[2]};
         float aEWn[3] = {aEW[0], aEW[1], aEW[2]};
-        const float L1 = norm3(aSEn) * s;
-        const float L2 = norm3(aEWn) * s;
+        // s75: armScale sizes the authored arm to the PLAYER's arm. Here and
+        // only here - the triangle, the reach and the elbow are all defined
+        // against L1 and L2, so scaling at the source carries to all of them.
+        const float armScale = g_armScale.load(std::memory_order_relaxed);
+        const float L1 = norm3(aSEn) * s * armScale;
+        const float L2 = norm3(aEWn) * s * armScale;
 
         // ---- THE SHOULDER IS ANCHORED TO YOUR BODY, NOT TO THE RIG ---------
         //
@@ -3610,7 +3638,11 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                 float off0[3];
                 sub3(ar[k].p, ar[2].p, off0);
                 float t = off0[0] * aEWn[0] + off0[1] * aEWn[1] + off0[2] * aEWn[2];
-                t = (L2 > 1e-4f) ? (t * s) / L2 : 0.0f;
+                // s75: * armScale so it CANCELS the scale baked into L2. These
+                // are authored FRACTIONS along the forearm - lengthening the arm
+                // must not bunch the twist helpers toward the elbow, which is
+                // what dividing a scaled L2 into an unscaled numerator would do.
+                t = (L2 > 1e-4f) ? (t * s * armScale) / L2 : 0.0f;
                 if (t < 0.0f) t = 0.0f;
                 if (t > 1.0f) t = 1.0f;
                 const float tp[3] = {E[0] + (W[0] - E[0]) * t, E[1] + (W[1] - E[1]) * t,
@@ -6441,6 +6473,20 @@ void draw_debug_ui() {
             g_shoulderUpCm[uh].store(su, std::memory_order_relaxed);
         ImGui::Text("editing the %s shoulder (follows the driven hand)",
                     uh == 1 ? "RIGHT" : "LEFT");
+        float asc = g_armScale.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("arm length scale", &asc, 0.5f, 2.0f, "%.3f"))
+            g_armScale.store(asc, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Sizes the RIG's arm to YOUR arm. 1.0 is the authored length.\n\n"
+                "The rig's arm is a fixed length and yours is not. When the two\n"
+                "disagree the solve sits at full extension: the elbow locks\n"
+                "straight and the forearm covers the shortfall on its own,\n"
+                "which is the \"super long wrist\" look.\n\n"
+                "Measured s74: shoulder-to-hand ran 39.9-87.9 UU against a\n"
+                "66.2 UU authored reach - past full extension on 19 of 44\n"
+                "samples while standing still. Raise this until reaching out\n"
+                "no longer stretches the forearm.");
         float eo = g_elbowOut.load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("elbow out", &eo, 0.0f, 1.0f, "%.2f"))
             g_elbowOut.store(eo, std::memory_order_relaxed);

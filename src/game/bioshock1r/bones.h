@@ -167,6 +167,11 @@ void shoulder_cm(int hand, float* fwd, float* right, float* up);
 void set_shoulder_cm(int hand, float fwd, float right, float up);
 float elbow_out();
 void set_elbow_out(float v);
+// s75: multiplies the authored arm segment lengths, sizing the rig's arm to the
+// PLAYER's. The rig's is fixed and the player's is not; when they disagree the
+// solve sits at full extension and the forearm covers the shortfall alone.
+float arm_scale();
+void set_arm_scale(float v);
 unsigned elbow_smooth_ms();
 void set_elbow_smooth_ms(unsigned v);
 float elbow_follow_wrist();
