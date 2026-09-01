@@ -148,6 +148,8 @@ void watch_status();
 bool wfix_install();
 void wfix_set(bool on);
 void wfix_status();
+bool wfix_enabled(); // the post-writer repaint is armed (F10 A/B checkbox)
+bool wfix_hooked();  // the writer hook is installed (rig resolved at least once)
 // `vrbones flick on|off` gates only the [flick] minute log line; the counters
 // always count (they are a handful of relaxed atomics on actual catches).
 bool flicker_log();

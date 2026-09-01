@@ -1300,6 +1300,9 @@ void wfix_set(bool on) {
     BVR_LOG("[b2r] command: vrbones wfix %s (post-writer repaint in pass 1)", on ? "on" : "off");
 }
 
+bool wfix_enabled() { return g_wPostFix.load(std::memory_order_relaxed); }
+bool wfix_hooked() { return g_wCreated; }
+
 void wfix_status() {
     BVR_LOG("[b2r] wfix %s hooked=%d: writer returns seen %u (tick %u, pass1 %u, pass2 %u); "
             "post-writer catches hands/weapon = %u/%u",

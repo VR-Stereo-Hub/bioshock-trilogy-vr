@@ -3052,6 +3052,16 @@ void draw_debug_ui() {
             if (ImGui::SliderFloat("anim wrist travel (0 = glued)", &at, 0.0f, 1.0f))
                 bones::set_anim_trans(at);
         }
+
+        // Session 74: the left-eye flicker fix, exposed for an in-headset A/B
+        // (untick = the pre-fix behaviour: the engine's pass-1 skeleton update
+        // renders raw in the LEFT eye; tick = repainted the moment it returns).
+        ImGui::Separator();
+        bool wfix = bones::wfix_enabled();
+        if (ImGui::Checkbox("LEFT-EYE FLICKER FIX (s74)  <-- untick to compare", &wfix))
+            bones::wfix_set(wfix);
+        ImGui::SameLine();
+        ImGui::TextDisabled(bones::wfix_hooked() ? "(hooked)" : "(arms when the rig resolves)");
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {
