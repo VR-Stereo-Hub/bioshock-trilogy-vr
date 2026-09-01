@@ -380,6 +380,8 @@ static XrResult impl_EndFrame(XrSession session, const XrFrameEndInfo* info) noe
     // state.json reports whatever the last capture happened to see and an agent
     // polling "is the laser armed yet" reads a stale answer.
     compositor_note_layers(sub);
+    const uint32_t hashEvery = g.hashEvery.load();
+    if (hashEvery > 0 && (sub.frameIndex % hashEvery) == 0) compositor_hash_frame(sub);
     if (capture || g.composeAlways.load()) compositor_on_end_frame(sub, capture);
     swapchains_begin_frame_census();
     return XR_SUCCESS;
