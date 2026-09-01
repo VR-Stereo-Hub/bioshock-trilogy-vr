@@ -21,6 +21,17 @@ session and was measured, photographed and A-B'd. Full mechanism write-up:
   counters show one repaint per pass-1 writer return; rest pose untouched;
   user: "now there's no snapping". Correction to the earlier read: the RIGHT
   eye was always correct - the LEFT eye rendered the raw restamp.
+- **HEADSET-CONFIRMED (Quest 3 / VDXR): "the flicker went away".** F10 checkbox
+  "LEFT-EYE FLICKER FIX (s74)" under HANDS + AIM is the in-headset A/B.
+- **The menu flicker is NOT a BS2 bug** - the user was thinking of another
+  game. The [hudgate] burn train is real but nobody perceives it; parked.
+- **Staging input regression found in the headset test and fixed:** the s63
+  "F10 panel clicks with the right trigger" swallow (xinput_bridge.cpp) zeroed
+  RT + right stick for the game whenever the overlay was visible - on BS2 the
+  panel cannot be closed from inside the headset (no F10 there), so one F10
+  visit killed fire and turning for the session. Now gated to pad-drive mode
+  (BS1 opt-in), which is the only mode where the swallow has a purpose; the
+  overlay logs SHOWN/hidden transitions.
 - **The "left eye flicker" is THREE artifacts, now separated:**
   1. **Hand/weapon pose snap** - FIXED above. ([pair] + per-eye source hashes
      were CLEAN throughout -> s62's pairing-layer hypotheses exonerated.)
