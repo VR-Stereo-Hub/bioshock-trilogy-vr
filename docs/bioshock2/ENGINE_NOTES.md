@@ -2555,3 +2555,57 @@ the cause, and the restamp PRESSURE is state-dependent: ~0/min on a fresh
 idle boot vs ~1600/min after sustained play (the testers' "after playing for a
 while", and s41's ~10-minute onset). Shots are the reliable on-demand restamp
 source (the s62b fire-snap and this artifact are one mechanism).
+
+### Session 74 (cont.) - the left-eye flicker FIXED: the writer named and hooked
+
+**Why every earlier rung missed it.** A six-point sentinel probe (pass 1
+entry/flush/post-drain, pass 2 the same; `vrbones race`) read the hands bank
+as OURS at every point of the pair - even with the full mask scanned - while
+the left eye demonstrably rendered the engine's pose. The repaint sites were
+all correct and all too late: the bank was clean everywhere we could look, and
+the image was still wrong. Inference had run out; the writer had to be caught.
+
+**The write-watch (`vrbones watch on`).** Three debug registers on the first
+driven weapon-hand bone, a vectored handler recording writer EIP + EBP chain +
+pair context. Result, one salvo: ONE engine routine writes the pose (RVA
+0xEF751D..31, the three 16-byte groups), reached from
+- the game tick (x1324; chain 0x5FB816 <- 0x57798D <- 0x578270) - the normal
+  animation update the PE-lane repaint already absorbs, and
+- INSIDE PASS 1 ONLY (x33, ~2 per shot; chain 0x5FB816 <- 0x5E65D7 <-
+  0x3816C0) - never in pass 2.
+
+The shared call site 0x5FB810 is `mov eax,[esi]; call [eax+0xA4]` guarded by
+`cmp byte [esi+0xA0],0` and followed by `mov byte [esi+0xA0],0`: a
+DIRTY-FLAGGED virtual update on the SkeletonInstance (vtable slot 0xA4/4 = 41,
+vtable = patterns::kSkeletonInstanceVtableRva, resolved at runtime to RVA
+0x3398D, an ILT jump thunk). The pass-1 caller enters through another virtual
+(`call [vtbl+0x100]` at 0x5E65D5) - the render-side per-view update of the
+hands. Pass 2 is clean because the flag is already clear by then. That is the
+whole "left eye only" story: pass 1 re-evaluates the skeleton after every
+repaint site and before the mesh is drawn; pass 2 does not.
+
+**The fix (`vrbones wfix`, ships ON, auto-installed at rig resolve).** MinHook
+on that vtable-slot function with a convention-agnostic NAKED detour: filter
+`this` to g_skel / g_wSkel (every other skeletal mesh passes through
+untouched), game thread only, swap the caller's return address for a stub,
+jump to the original with the stack intact; the stub saves all registers +
+x87 state, runs `pe_repaint(3)` (site 3 -> catch phases 6/7) when pass 1 is
+in flight, restores, returns to the real caller. The repaint therefore lands
+between the writer and the mesh draw - the one window no earlier rung could
+reach.
+
+**Verification (sim, three-state A-B-A, same boot):**
+- counters: fix ON - every pass-1 writer return is followed by a catch (34
+  returns -> 66 hand catches; +24 -> +48); fix OFF - returns continue, catches
+  frozen; ON again - resumes 2 catches per return.
+- images: per-eye frame-to-frame diffs in the hands region track within ~2
+  with the fix ON; with it OFF the LEFT eye spikes alone (f002926 L25.4 vs
+  R9.3, f002972 L28.2 vs R17.0) - the raw recoil pose in the left eye with the
+  driven pose in the right, frozen on camera (evidence dir, `f002926_sbs.png`).
+- rest pose fix ON vs OFF: mean-abs-diff 0.14, 0.5% pixels - the fix moves
+  nothing at rest.
+- user, flat window: "now there's no snapping".
+- game stable across three hooked boots; the hook is inert for NPC skeletons.
+
+**Still open:** the menu-transition burn (artifact B, [hudgate]) and the
+weapon scale flicker (artifact C, not yet reproduced on a fresh boot).

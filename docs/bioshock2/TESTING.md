@@ -80,7 +80,14 @@ leader-miss intervals - the menu-transition flicker fires a 5/5-reproducible
 train of these on every pause open/close). Sim side, `xrsim-cmd "hash every 1"`
 fingerprints every submitted frame's per-eye SOURCE texture into
 `capture\eyehash.tsv`, and `tools\eye-seq-diff.ps1` turns that into a
-left-stale / right-stale / eye-swap / age-spike / luma-pop verdict. `exec` stays
+left-stale / right-stale / eye-swap / age-spike / luma-pop verdict. The s74 fix
+and its probes: `vrbones wfix on|off|status|install` (the post-writer repaint -
+ships ON, auto-installed at rig resolve; `off` is the flat A/B), `vrbones race`
+(+ the `[race]` minute line: sentinel state at six points of the pair),
+`vrbones watch on|off` (hardware write-watch on the sentinel bone - lists engine
+writer RVAs + pair context; debug only), `vrbones fullmask on|off` (repaint
+decision scans every masked bone), `vrbones p1fix|p2fix on|off` (pass-entry
+repaints - superseded by wfix, kept as levers). `exec` stays
 BS1-only by design - BS2 engine-state writes go through script setters via
 FindFunctionChecked + ProcessEvent (the vrxhair precedent, ENGINE_NOTES s42).
 

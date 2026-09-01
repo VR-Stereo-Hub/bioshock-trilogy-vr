@@ -11,13 +11,19 @@ session and was measured, photographed and A-B'd. Full mechanism write-up:
 
 ### Current state
 
+- **ARTIFACT 1 IS FIXED (the constant left-eye hand/weapon snap).** The
+  write-watch named the writer: the engine's dirty-flagged SkeletonInstance
+  update (vtable slot 0xA4) re-runs INSIDE PASS 1 only, after every repaint
+  site and before the hands mesh is drawn. `vrbones wfix` (auto-installed at
+  rig resolve, ships ON) hooks that virtual with a naked ret-hook and repaints
+  the driven pose the moment it returns. Three-state A-B-A in the sim: per-eye
+  temporal gap <=2.6 with the fix vs left-only spikes of 16-19 without;
+  counters show one repaint per pass-1 writer return; rest pose untouched;
+  user: "now there's no snapping". Correction to the earlier read: the RIGHT
+  eye was always correct - the LEFT eye rendered the raw restamp.
 - **The "left eye flicker" is THREE artifacts, now separated:**
-  1. **Hand/weapon pose snap** (the constant one): pass 2 / RIGHT eye always
-     renders the engine's authored pose (drive never re-applied - the
-     camera.cpp:2319 TODO); pass 1 / LEFT eye intermittently loses the
-     restamp race. Photographed per-eye (evidence dir below). [pair] + per-eye
-     source hashes CLEAN throughout -> s62's pairing-layer hypotheses
-     exonerated for this symptom.
+  1. **Hand/weapon pose snap** - FIXED above. ([pair] + per-eye source hashes
+     were CLEAN throughout -> s62's pairing-layer hypotheses exonerated.)
   2. **Menu-transition burn** (tester report 3): 5/5 reproducible witness
      train - 3 leaderMiss intervals on open, ~145 HUD draws burned into 3
      pairs (both eyes) on close, one unheld-right generation split per
@@ -38,9 +44,10 @@ session and was measured, photographed and A-B'd. Full mechanism write-up:
 
 ### Next steps
 
-1. Fix session for artifact 1 (the big one): re-apply/verify the bone drive
-   for pass 2 and close the pass-1 restamp window (design against the s41
-   retarget architecture; A-B-A with the s74 capture protocol).
+1. **Headset confirmation of the artifact-1 fix** (Quest 3 + VDXR, then
+   SteamVR): play 10+ min, fire a lot, confirm no left-eye snap; `vrbones
+   wfix off` is the in-session A/B. Then a diag31 build to the issue-#31
+   reporters.
 2. Fix session for artifact 2: raise the HUD gate on the same present it is
    decided (or arm hud redirect during the transition window), and suppress
    the unheld-right by keeping the hold across the cine boundary.
