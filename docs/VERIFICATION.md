@@ -406,7 +406,28 @@ compare against rather than a guess:
   lone-left pair breaks (a pass-2 skip after the left tag - see `skip`
   silent/stall/foreign for WHY); `reb>0` marks the mid-session resolution
   change the reporter performed. `mirror` prints the vrmirror pin state so a
-  `vrmirror off` A/B is legible in the same log line.
+  `vrmirror off` A/B is legible in the same log line. s74 correction: a
+  lone-left break parks the RIGHT eye, not the left - read `stale` BOTH ways.
+  s74 adds `deep=` (tag-ring pops that found a full pair queued - a sustained
+  nonzero is the phase-offset tell no other counter sees).
+- **`vrbones diag31 on` -> `[pairEdge]` / `[hudgate]` event-edge lines** (BS2,
+  s74): timestamped one-shots at each pairing break (lone-left,
+  untagged-close, untag-capture, acquire/wait-fail, hold-expired,
+  unheld-right) and at each per-eye HUD-burn interval (`burn eye=... `,
+  `leaderMiss eye=...`). A tester's "I saw it at 12:03" is answered by
+  grepping the minute around 12:03 for these. Known good signal: every BS2
+  pause open/close fires 3 leaderMiss + 6 burn + 1 unheld-right (the menu
+  flicker mechanism, 5/5 in sim).
+- **xrsim `hash every <n>` + `tools\eye-seq-diff.ps1`** (s74): the temporal
+  per-eye oracle. One TSV row per Nth submitted frame with an FNV hash of
+  each eye's SOURCE projection texture, per-eye release age and luma
+  (`capture\eyehash.tsv`, latest row mirrored in state.json `eyeHash`). The
+  differ flags left-stale / right-stale / eye-swap / age-spike / one-eye
+  luma-pop; exit 0 clean, 2 anomalies. Trap it exists to close: eye-check
+  legs 1-5 pass with identical eye images, and the PNG capture path cannot
+  see a repeated frame. Sim baseline at the save: 1651 projection rows, zero
+  anomalies - while the pose-snap flicker was VISIBLY firing, which is the
+  proof that artifact lives in frame content, not frame identity.
 - **BS2 pause menu**: seam commands and the pad are BOTH dead while paused (the
   PE-tail service lane starves - ENGINE_NOTES s42 #4); an unfocused-paused game
   writes nothing and false-positives log-age wedge checks. `game-key Space` wakes

@@ -2,6 +2,53 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-09-01 - s74: BS2 issue #31 diagnosed LIVE - the flicker decomposed
+
+Branch `claude/bioshock2-left-eye-flicker-3ca08e` (off `staging`), diagnosis-only
+per the evidence-first gate. The flicker reproduced CONSTANTLY in a flat xrsim
+session and was measured, photographed and A-B'd. Full mechanism write-up:
+`docs/bioshock2/ENGINE_NOTES.md` session 74.
+
+### Current state
+
+- **The "left eye flicker" is THREE artifacts, now separated:**
+  1. **Hand/weapon pose snap** (the constant one): pass 2 / RIGHT eye always
+     renders the engine's authored pose (drive never re-applied - the
+     camera.cpp:2319 TODO); pass 1 / LEFT eye intermittently loses the
+     restamp race. Photographed per-eye (evidence dir below). [pair] + per-eye
+     source hashes CLEAN throughout -> s62's pairing-layer hypotheses
+     exonerated for this symptom.
+  2. **Menu-transition burn** (tester report 3): 5/5 reproducible witness
+     train - 3 leaderMiss intervals on open, ~145 HUD draws burned into 3
+     pairs (both eyes) on close, one unheld-right generation split per
+     transition. Photographed (pause menu warped into the left eye image).
+  3. **Weapon scale flicker** (open): seen by the user with the drive off;
+     not yet reproduced on a fresh boot; suspects fgfov cadence / profile
+     writes / long-uptime state.
+- New instruments landed (all opt-in, BS1 untouched): `vrbones diag31`,
+  [pairEdge] + [hudgate] event-edge witnesses, [pair] `deep=` field, xrsim
+  `hash every N` per-eye source hashing + `tools/eye-seq-diff.ps1`.
+- Bug found in the s62 probe premise (lone-left parks the RIGHT eye, not the
+  left) - comments corrected, fix-session scope.
+- Crash-persistence bug found: a hard kill leaves the mod's written game FOV
+  baked in Shared.ini (this boot: option 138, user's real option 100). The
+  user's ini is CURRENTLY polluted - restore before their next flat session.
+- Evidence archive: `%LOCALAPPDATA%\BioshockVR\bs2\evidence-s74-flicker\`
+  (605 files: per-eye PNG pairs, eyehash.tsv). NOT in git (game-derived).
+
+### Next steps
+
+1. Fix session for artifact 1 (the big one): re-apply/verify the bone drive
+   for pass 2 and close the pass-1 restamp window (design against the s41
+   retarget architecture; A-B-A with the s74 capture protocol).
+2. Fix session for artifact 2: raise the HUD gate on the same present it is
+   decided (or arm hud redirect during the transition window), and suppress
+   the unheld-right by keeping the hold across the cine boundary.
+3. Reproduce artifact 3 (scale): long soak with `hash every 1` + weapon-region
+   metric, fgfov/profile write logging if it shows.
+4. Restore the user's FOV option (100) and decide the crash-restore guard.
+5. Testers: ship a diag31 build + one-line arm instruction once 1-2 land.
+
 ## Session 2026-08-30 - s72/s73: the off hand's ARM, decoupled and rotating
 
 **TWO branches and two draft PRs**, split at the point the arm work began:

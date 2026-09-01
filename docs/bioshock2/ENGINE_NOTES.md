@@ -2476,3 +2476,72 @@ revisit only if the user reports them.
   `drive=authored+look`.
 - v0.7.0 (CMakeLists), packaged with tools/package.ps1 - ONE zip serves both
   games (the adapter registry picks by host exe).
+
+### Session 74 (2026-09-01) - issue #31 diagnosed live: the "left eye flicker" decomposed
+
+The flicker reproduced CONSTANTLY in a flat xrsim session (user watching the
+desktop window, which pins to the LEFT eye), which turned issue #31 from a
+headset-only report into a measured, photographed defect. Three separate
+artifacts were untangled; per-eye source hashes and the [pair] counters were
+CLEAN throughout, so the XR pairing/submission layer (s62's H1-H6 candidates)
+is EXONERATED for the visible symptom.
+
+**A. The hand/weapon pose snap (the constant "left eye flicker").**
+Per-eye captures (evidence: `%LOCALAPPDATA%\BioshockVR\bs2\evidence-s74-flicker\`,
+frames f116157/f116166 vs f116187/f116205) show, within ONE clean pair:
+- pass 2 / RIGHT eye renders the engine's AUTHORED viewmodel pose every tick
+  (`second_pass_replay` never re-applies the bone drive - the known TODO at
+  camera.cpp:2319-2322);
+- pass 1 / LEFT eye usually renders the DRIVEN pose but intermittently loses
+  the race to an engine restamp and renders authored for a frame - the flip
+  the user sees (and the desktop mirror shows), at the [flick] pe1 cadence
+  (~27 catches/s, dmax 16 ms exposure).
+So the headset percept is constant inter-eye pose rivalry plus a temporal flip
+in the left eye. fl1/fl2 stay 0 while wrong poses render, so the flush-point
+sentinel is NOT what the renderer consumes - the pass's mesh data is built
+earlier in the traversal. A-B: `vrhands off` removes the driven pose and the
+snap (partially confirmed live; blackout interrupted the controlled A-B-A).
+
+**B. The menu-transition burn (tester report "flickers when navigating menus").
+5/5 reproducible; witnessed and photographed.** Every pause-menu OPEN logs 3
+`[hudgate] leaderMiss` intervals (2 LEFT, 1 RIGHT: menu swf draws with no world
+pass, inside the 3-interval screen-only hysteresis window) and every CLOSE logs
+~145 unarmed swf draws burned into SIX consecutive presents (3 pairs, both
+eyes) before the gate rises - plus ONE `[pairEdge] unheld-right` (pose
+generations split across the resync pair) at every transition. Photographic
+evidence: f030038_left = the PAUSE MENU warped into the left projection eye.
+The s62 H1 hypothesis (gate one draw late, one left frame) was directionally
+right but understated: the cine-quad hysteresis holds the gate down for ~3
+pairs and hits BOTH eyes.
+
+**C. The weapon SCALE flicker (open).** With the drive off the user still saw
+the weapon flip big/small on the window. Not yet reproduced on a fresh boot
+(74-frame weapon-region sweep flat in both eyes); candidates: fgfov lens-write
+cadence, weapon-profile/wscale writes, or long-uptime state ("after playing a
+while"). Needs a longer soak or the user's live confirmation window.
+
+**Corrections and traps recorded this session:**
+- The s62 [pair] premise "any pair break leaves the LEFT eye stale" is wrong
+  for lone-left breaks (pass-2 skip): those park the RIGHT eye. Probe comments
+  amended (openxr_runtime.cpp/.h); watch staleL AND staleR.
+- Crash persistence: a hard kill (blackout) while the game fov write is live
+  leaves the written FOV baked in Shared.ini - this boot read back
+  `saved option 138` where the user's real option is 100. Any tester crash
+  does the same; the next boot then runs with a polluted option. NOT yet
+  fixed; restore the user's option and consider a startup sanity note.
+- xrsim `capture every` had a sticky captureTag (one `shot` poisoned all later
+  sequences into one filename) - fixed: arming a sequence clears the tag.
+
+**New instruments (all opt-in / sim-side, no frame-behavior change):**
+- `vrbones diag31 on|off` - umbrella: [flick]+[pair] minute lines,
+  `[pairEdge]` event-edge lines (lone-left, untagged-close, untag-capture,
+  acquire/wait-fail, hold-expired, unheld-right), `[hudgate]` witnesses (gate
+  transitions, per-eye burn and leaderMiss intervals).
+- `[pair]` minute line grew `deep=` (pops that found a full pair queued - the
+  H3 phase-offset tell; 0 all session).
+- xrsim `hash every <n>` - per-frame FNV hash + release-age + luma of each
+  eye's SOURCE projection texture into `capture\eyehash.tsv`; surfaced in
+  state.json (`eyeHash`); `tools/eye-seq-diff.ps1` flags left-stale,
+  right-stale, eye-swap, age-spike, one-eye luma-pop. Baseline: 1651
+  projection frames, zero anomalies, while the pose snap was visibly firing -
+  the class-A artifact lives in frame CONTENT, not frame identity.
