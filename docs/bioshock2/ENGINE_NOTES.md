@@ -2545,3 +2545,13 @@ while"). Needs a longer soak or the user's live confirmation window.
   right-stale, eye-swap, age-spike, one-eye luma-pop. Baseline: 1651
   projection frames, zero anomalies, while the pose snap was visibly firing -
   the class-A artifact lives in frame CONTENT, not frame identity.
+
+**s74 addendum - artifact A causally CONFIRMED live (three-state A-B-A, user
+witnessed on the flat window):** (1) `vrhands off` -> snap gone; (2) drive on
+but a fresh idle boot -> snap gone AND [flick] pe1 ~0/min (no ambient
+restamps); (3) drive on + rapid fire -> snap visible, ~4 pe1 catches per shot.
+The snap therefore requires BOTH the drive and an engine restamp - the race is
+the cause, and the restamp PRESSURE is state-dependent: ~0/min on a fresh
+idle boot vs ~1600/min after sustained play (the testers' "after playing for a
+while", and s41's ~10-minute onset). Shots are the reliable on-demand restamp
+source (the s62b fire-snap and this artifact are one mechanism).
