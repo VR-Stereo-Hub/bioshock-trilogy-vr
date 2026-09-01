@@ -710,7 +710,15 @@ int force_inline_flush(void* scene, void* group) {
 //    [gate+8] -> latch) nanoseconds before the engine's own `cmp [esi+8],0`:
 //    latch clear = the Wait(INFINITE) will be entered. Under 1t wait2/s
 //    reads 0 - correctly, the freeze window is gone.
+std::atomic<int> g_inFlush; // defined with the s74 accessors below
+
+struct FlushScope {
+    FlushScope() { g_inFlush.fetch_add(1, std::memory_order_relaxed); }
+    ~FlushScope() { g_inFlush.fetch_sub(1, std::memory_order_relaxed); }
+};
+
 void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group) {
+    FlushScope flushScope;
     g_flushPointEntries.fetch_add(1, std::memory_order_relaxed);
     // Session 41 round 2 (the residual left-eye flicker): this is the LAST
     // game-thread point before the inline drain submits the pass. A skeleton
@@ -719,6 +727,10 @@ void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group)
     // it here. Self-gating (one 48-byte sentinel per driven hand when fresh,
     // no-op otherwise), pass-2 verbatim semantics live inside pe_repaint.
     // Session 42: site 1 = flush point, for the flicker catch-phase split.
+    // Session 74: race probe points 1/4 (flush, BEFORE the repaint) and 2/5
+    // (after the inline drain returned - did the drain itself write the bank?).
+    const bool inPass2 = g_inSecondDraw.load(std::memory_order_relaxed);
+    bvr::b2r::bones::probe_point(inPass2 ? 4 : 1);
     bvr::b2r::bones::pe_repaint(1);
     // Session 38: forcing the inline branch KEEPS RUNNING through teardown, on
     // purpose. The first version of this gate stopped forcing once a close
@@ -732,6 +744,7 @@ void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group)
         int r = force_inline_flush(scene, group);
         if (r > 0) {
             g_forcedInline.fetch_add(1, std::memory_order_relaxed);
+            bvr::b2r::bones::probe_point(inPass2 ? 5 : 2);
             return;
         }
         if (r < 0) {
@@ -839,6 +852,10 @@ void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void*
     // trace say whether the game is sitting inside the RE-ENTERED scene draw.
     bvr::vr::set_draw_stage("secondDraw");
     g_inSecondDraw.store(true, std::memory_order_relaxed);
+    // Session 74: race probe point 3 (pass-2 entry) + the optional entry
+    // repaint (`vrbones p2fix on`) - pass 2 gets the verbatim driven pose.
+    bvr::b2r::bones::probe_point(3);
+    if (bvr::b2r::bones::entry_fix(1)) bvr::b2r::bones::pe_repaint(2);
     bool ok = call_draw_guarded(reinterpret_cast<DrawFn>(g_draw.original), ecx, edx, a1,
                                 a2, a3, a4);
     g_inSecondDraw.store(false, std::memory_order_relaxed);
@@ -1023,6 +1040,36 @@ void heartbeat(uint64_t now) {
         s_prevSkipSilent = skipSilent;
         s_prevSkipStall = skipStall;
         s_prevSkipForeign = skipForeign;
+
+        // Session 74: the pose-race probe, per-minute deltas. Each field is
+        // foreign-hands/foreign-weapon at that point of the pair; a nonzero
+        // column names WHERE the authored pose enters the frame.
+        static bones::RaceStats s_prevRace;
+        bones::RaceStats rs;
+        bones::race_snapshot(&rs);
+        BVR_LOG("[race] min=%llu p1 entry=%u/%u flush=%u/%u drained=%u/%u | "
+                "p2 entry=%u/%u flush=%u/%u drained=%u/%u | calls=%u/%u | "
+                "entryCatch p1=%u/%u p2=%u/%u | fix=%d/%d",
+                static_cast<unsigned long long>((now - s_flickStartMs) / 60000),
+                rs.foreign[0][0] - s_prevRace.foreign[0][0],
+                rs.foreign[0][1] - s_prevRace.foreign[0][1],
+                rs.foreign[1][0] - s_prevRace.foreign[1][0],
+                rs.foreign[1][1] - s_prevRace.foreign[1][1],
+                rs.foreign[2][0] - s_prevRace.foreign[2][0],
+                rs.foreign[2][1] - s_prevRace.foreign[2][1],
+                rs.foreign[3][0] - s_prevRace.foreign[3][0],
+                rs.foreign[3][1] - s_prevRace.foreign[3][1],
+                rs.foreign[4][0] - s_prevRace.foreign[4][0],
+                rs.foreign[4][1] - s_prevRace.foreign[4][1],
+                rs.foreign[5][0] - s_prevRace.foreign[5][0],
+                rs.foreign[5][1] - s_prevRace.foreign[5][1],
+                rs.calls[0] - s_prevRace.calls[0], rs.calls[3] - s_prevRace.calls[3],
+                rs.entryCatch[0][0] - s_prevRace.entryCatch[0][0],
+                rs.entryCatch[0][1] - s_prevRace.entryCatch[0][1],
+                rs.entryCatch[1][0] - s_prevRace.entryCatch[1][0],
+                rs.entryCatch[1][1] - s_prevRace.entryCatch[1][1],
+                rs.entryFix[0] ? 1 : 0, rs.entryFix[1] ? 1 : 0);
+        s_prevRace = rs;
     }
     s_prev = cur;
     s_prevStreams = streams;
@@ -1048,8 +1095,13 @@ void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, v
         // lone tag; core's tag ring self-heals at depth > 2.
         if (g_stereo.load(std::memory_order_relaxed) &&
             !g_poisoned.load(std::memory_order_relaxed) &&
-            callerRva == patterns::kSceneBuildGameplayRetRva)
+            callerRva == patterns::kSceneBuildGameplayRetRva) {
             bvr::vr::sr_push_eye(-1);
+            // Session 74: race probe point 0 (pass-1 entry) + the optional
+            // entry repaint (fix candidate, `vrbones p1fix on`).
+            bvr::b2r::bones::probe_point(0);
+            if (bvr::b2r::bones::entry_fix(0)) bvr::b2r::bones::pe_repaint(2);
+        }
     }
 
     LARGE_INTEGER t0, t1, freq;
@@ -1471,6 +1523,10 @@ bool in_second_draw() {
     uint32_t t = g_secondPassTid.load(std::memory_order_relaxed);
     return t != 0 && t == GetCurrentThreadId();
 }
+
+int draw_depth() { return g_activeDepth.load(std::memory_order_relaxed); }
+bool in_flush() { return g_inFlush.load(std::memory_order_relaxed) != 0; }
+uint32_t draw_tid() { return g_lastDrawTid.load(std::memory_order_relaxed); }
 
 void request_vrstereo(bool on) {
     g_vrstereoPending.store(on ? 1 : 0, std::memory_order_relaxed);

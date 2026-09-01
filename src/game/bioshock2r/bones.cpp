@@ -10,6 +10,7 @@
 #include "game/bioshock2r/scenedraw.h"
 
 #include <windows.h>
+#include <MinHook.h>
 
 #include <atomic>
 #include <cmath>
@@ -142,15 +143,36 @@ std::atomic<uint32_t> g_peRepaints{0}; // restamps caught mid-draw (flicker fix)
 // BASELINE, not a survivor count. The survivor signal is the late-window
 // catches (fl*) and a large write->catch latency (g_catchDeltaMaxMs): a
 // restamp that sat unrepainted for most of the pass plausibly rendered.
-std::atomic<uint32_t> g_catch[4][2] = {};
-std::atomic<uint32_t> g_catchDeltaMaxMs[4] = {}; // window max, drained on snapshot
+// Session 74 widens the phase table: 4/5 = the pass-ENTRY repaint (site 2),
+// the fix candidate armed by `vrbones p1fix|p2fix`.
+// 6/7 = the post-WRITER repaint (site 3, the s74 fix: right after the engine's
+// pose writer returns inside pass 1).
+std::atomic<uint32_t> g_catch[8][2] = {};
+std::atomic<uint32_t> g_catchDeltaMaxMs[8] = {}; // window max, drained on snapshot
 std::atomic<uint32_t> g_driveAdoptEvents[2] = {}; // [0] hand drives, [1] wskel drives
 std::atomic<uint32_t> g_worldChanges{0};
 std::atomic<uint32_t> g_wRescans{0};
 std::atomic<bool> g_flickLog{true}; // [flick] minute line (counters always count)
 
+// --- Session 74: the pose-RACE probe ----------------------------------------
+// The per-eye captures proved the RIGHT eye renders the engine's authored pose
+// every tick while fl2 stayed 0 - so the bank is ours at pass-2 flush yet the
+// image is not. This probe samples the same sentinel at six points of the
+// pair (pass 1 entry / flush / post-drain, pass 2 entry / flush / post-drain)
+// and counts "foreign at this point", which says WHERE the bank flips instead
+// of arguing it from counters that only see the repaint sites.
+std::atomic<uint32_t> g_probeCalls[6] = {};
+std::atomic<uint32_t> g_probeForeign[6][2] = {}; // [point][0 hands, 1 weapon]
+std::atomic<int> g_probeFirstDiff[6] = {};       // last first-differing bone index seen
+std::atomic<bool> g_entryFix[2] = {}; // repaint at pass 1 / pass 2 ENTRY
+// The s41 sentinel compares ONE bone (the first masked) - a restamp that
+// leaves that bone alone and moves the elbow/wrist/gun bones is invisible to
+// it. fullmask makes the repaint decision (and the probe, always) scan every
+// masked bone: `vrbones fullmask on|off`.
+std::atomic<bool> g_fullMask{false};
+
 void note_catch(int phase, int kind, uint32_t latMs) {
-    if (phase < 0 || phase > 3) return;
+    if (phase < 0 || phase > 7) return;
     g_catch[phase][kind].fetch_add(1, std::memory_order_relaxed);
     // Torn max under the dev-only threaded substrate is an accepted diagnostic
     // hazard (matches pe_repaint's existing exposure); shipping config is 1t.
@@ -252,6 +274,13 @@ bool resolve_rig() {
     g_refValid = false;
     BVR_LOG("[b2r] bones: rig resolved - AHands %p skel %p pose %p x%d bones", g_hands,
             g_skel, g_pose, g_boneCount);
+    // Session 74: the left-eye flicker fix rides the rig. The engine's
+    // dirty-flagged skeleton update re-evaluates the hands INSIDE pass 1 (never
+    // pass 2), after every repaint site and before the mesh is drawn; hooking
+    // it here means the driven pose is repainted the moment it returns. The
+    // hook is a static vtable slot, so installing once is enough; the
+    // this-filter in the detour follows g_skel/g_wSkel across re-resolves.
+    wfix_install();
     return true;
 }
 
@@ -861,26 +890,41 @@ void release(const char* why, int hand) {
     }
 }
 
+// First masked bone of hand h whose 48-byte pose differs from our last write,
+// or -1. scanAll=false reproduces the s41 sentinel (first masked bone only);
+// true scans the whole mask (session 74: the sentinel missed restamps that
+// leave the first bone alone and move the elbow/wrist/gun bones).
+int first_foreign_bone(int h, bool scanAll) {
+    for (int i = 0; i < g_boneCount; ++i) {
+        if (!g_writtenMask[h][i]) continue;
+        if (memcmp(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48) != 0)
+            return i;
+        if (!scanAll) return -1;
+    }
+    return -1;
+}
+int first_foreign_wbone(bool scanAll) {
+    for (int i = 0; i < g_wBoneCount; ++i) {
+        if (!g_wWrittenValid[i]) continue;
+        if (memcmp(g_wPose + i * patterns::kSkelPoseStride, g_wWritten[i], 48) != 0)
+            return i;
+        if (!scanAll) return -1;
+    }
+    return -1;
+}
+
 void pe_repaint(int site) {
     if (!g_pose || !g_refValid) return;
     uint64_t now = GetTickCount64();
     // Session 42: catch phase for the flicker instrumentation (site 0 = the
     // PE lane, 1 = the flush point; odd = pass 2).
     int phase = site * 2 + (scenedraw::in_second_draw() ? 1 : 0);
+    const bool scanAll = g_fullMask.load(std::memory_order_relaxed);
     for (int h = 0; h < 2; ++h) {
         if (now - g_writeStampMs[h] > 100) continue; // not driving, nothing to defend
-        // Sentinel: the first masked bone. Animation restamps translation and
-        // rotation, so a 48-byte compare catches it the moment it lands.
-        int s = -1;
-        for (int i = 0; i < g_boneCount; ++i)
-            if (g_writtenMask[h][i]) {
-                s = i;
-                break;
-            }
-        if (s < 0) continue;
-        if (memcmp(g_pose + s * patterns::kSkelPoseStride, g_written[s], 48) == 0)
-            continue;
         if (!is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride)) return;
+        // Sentinel (s41): the first masked bone; fullmask (s74): any masked bone.
+        if (first_foreign_bone(h, scanAll) < 0) continue;
         // Session 41, absorb-then-recompose: the restamp is INPUT, not an
         // enemy - adopt it into g_anim first, then rewrite this frame
         // composed on the fresh pose. Pass 1 only: the second pass must
@@ -901,14 +945,7 @@ void pe_repaint(int site) {
     // Weapon skeleton (session 41): same sentinel, same absorb-then-recompose
     // on pass 1 / verbatim on pass 2.
     if (g_wPose && g_wStampMs && now - g_wStampMs <= 100 && wskel_intact()) {
-        int s = -1;
-        for (int i = 0; i < g_wBoneCount; ++i)
-            if (g_wWrittenValid[i]) {
-                s = i;
-                break;
-            }
-        if (s >= 0 &&
-            memcmp(g_wPose + s * patterns::kSkelPoseStride, g_wWritten[s], 48) != 0) {
+        if (first_foreign_wbone(scanAll) >= 0) {
             if (!scenedraw::in_second_draw()) {
                 float ws = g_wScale.load(std::memory_order_relaxed);
                 if (!(ws > 0.05f && ws < 20.0f)) ws = 1.0f;
@@ -923,6 +960,393 @@ void pe_repaint(int site) {
             note_catch(phase, 1, static_cast<uint32_t>(now - g_wStampMs));
         }
     }
+}
+
+void probe_point(int p) {
+    if (p < 0 || p > 5 || !g_pose || !g_refValid) return;
+    g_probeCalls[p].fetch_add(1, std::memory_order_relaxed);
+    uint64_t now = GetTickCount64();
+    if (!is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride)) return;
+    // The probe always scans the FULL mask - it exists to see what the
+    // sentinel cannot.
+    int firstDiff = -1;
+    for (int h = 0; h < 2; ++h) {
+        if (now - g_writeStampMs[h] > 100) continue;
+        int b = first_foreign_bone(h, true);
+        if (b >= 0 && (firstDiff < 0 || b < firstDiff)) firstDiff = b;
+    }
+    if (firstDiff >= 0) {
+        g_probeForeign[p][0].fetch_add(1, std::memory_order_relaxed);
+        g_probeFirstDiff[p].store(firstDiff, std::memory_order_relaxed);
+    }
+    if (g_wPose && g_wStampMs && now - g_wStampMs <= 100 && wskel_intact()) {
+        if (first_foreign_wbone(true) >= 0)
+            g_probeForeign[p][1].fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void set_full_mask(bool on) { g_fullMask.store(on, std::memory_order_relaxed); }
+bool full_mask() { return g_fullMask.load(std::memory_order_relaxed); }
+
+// --- Session 74: hardware write-watch on the sentinel bone -----------------
+// Every probe says the bank is ours at every point we can look, yet pass 1's
+// image carries the restamp. So: stop inferring the writer, CATCH it. Three
+// debug registers cover the first masked weapon-hand bone (bytes 0-3, 16-19,
+// 32-35 of its 48-byte pose), a vectored handler records the writer's EIP
+// plus a short EBP return chain and WHERE in the pair it fired (tick / pass 1
+// / pass 2 / flush), and our own module's writes are filtered out. Armed on
+// the game thread only (`vrbones watch on`); the registers are cleared on
+// `off`. Debug-only instrument - never ships armed.
+namespace {
+struct WatchHit {
+    uint32_t eip = 0;      // RVA in the game exe (or raw address if foreign)
+    uint32_t ret[3] = {};  // EBP-chain return RVAs
+    uint8_t ctx = 0;       // 0 tick, 1 pass1, 2 pass2, +4 = inside flush
+    uint32_t count = 0;
+};
+std::atomic<bool> g_watchOn{false};
+std::atomic<uint32_t> g_watchOurs{0}, g_watchEngine{0}, g_watchForeign{0};
+PVOID g_watchVeh = nullptr;
+uint8_t* g_watchAddr = nullptr;
+uint32_t g_watchTid = 0;
+WatchHit g_watchHits[12];
+std::atomic<int> g_watchHitN{0};
+uintptr_t g_selfBase = 0, g_selfEnd = 0, g_gameBase = 0, g_gameEnd = 0;
+
+void module_range(void* addrInModule, uintptr_t* base, uintptr_t* end) {
+    HMODULE m = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       static_cast<LPCWSTR>(addrInModule), &m);
+    if (!m) { *base = *end = 0; return; }
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(m);
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<uint8_t*>(m) + dos->e_lfanew);
+    *base = reinterpret_cast<uintptr_t>(m);
+    *end = *base + nt->OptionalHeader.SizeOfImage;
+}
+
+LONG CALLBACK watch_veh(EXCEPTION_POINTERS* ep) {
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
+        return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT* c = ep->ContextRecord;
+    if ((c->Dr6 & 0x7) == 0) return EXCEPTION_CONTINUE_SEARCH; // not our DR0-2
+    c->Dr6 = 0;
+    const uintptr_t eip = c->Eip;
+    if (eip >= g_selfBase && eip < g_selfEnd) {
+        g_watchOurs.fetch_add(1, std::memory_order_relaxed);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    uint8_t ctx = 0;
+    if (scenedraw::draw_depth() > 0) ctx = scenedraw::in_second_draw() ? 2 : 1;
+    if (scenedraw::in_flush()) ctx |= 4;
+    uint32_t rva = (eip >= g_gameBase && eip < g_gameEnd)
+                       ? static_cast<uint32_t>(eip - g_gameBase) : static_cast<uint32_t>(eip);
+    if (eip >= g_gameBase && eip < g_gameEnd)
+        g_watchEngine.fetch_add(1, std::memory_order_relaxed);
+    else
+        g_watchForeign.fetch_add(1, std::memory_order_relaxed);
+    // Dedupe on (eip, ctx); keep the first 12 distinct sites.
+    int n = g_watchHitN.load(std::memory_order_relaxed);
+    for (int i = 0; i < n; ++i) {
+        if (g_watchHits[i].eip == rva && g_watchHits[i].ctx == ctx) {
+            ++g_watchHits[i].count;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    if (n < 12) {
+        WatchHit& h = g_watchHits[n];
+        h.eip = rva;
+        h.ctx = ctx;
+        h.count = 1;
+        uintptr_t ebp = c->Ebp;
+        for (int k = 0; k < 3; ++k) {
+            if (!is_memory_valid(reinterpret_cast<void*>(ebp), 8)) break;
+            uintptr_t ret = *reinterpret_cast<uintptr_t*>(ebp + 4);
+            h.ret[k] = (ret >= g_gameBase && ret < g_gameEnd)
+                           ? static_cast<uint32_t>(ret - g_gameBase) : static_cast<uint32_t>(ret);
+            ebp = *reinterpret_cast<uintptr_t*>(ebp);
+        }
+        g_watchHitN.store(n + 1, std::memory_order_relaxed);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+// Debug registers are per thread and must be set from OUTSIDE the target:
+// a helper thread suspends the game thread, edits DR0-2/DR7, resumes.
+void watch_apply(uint32_t tid, uint8_t* addr, bool arm) {
+    HANDLE th = OpenThread(THREAD_ALL_ACCESS, FALSE, tid);
+    if (!th) {
+        BVR_LOG("[b2r] watch: OpenThread(%u) failed (%lu)", tid, GetLastError());
+        return;
+    }
+    if (SuspendThread(th) == static_cast<DWORD>(-1)) {
+        BVR_LOG("[b2r] watch: SuspendThread failed (%lu)", GetLastError());
+        CloseHandle(th);
+        return;
+    }
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (GetThreadContext(th, &ctx)) {
+        if (arm) {
+            ctx.Dr0 = reinterpret_cast<uintptr_t>(addr);
+            ctx.Dr1 = reinterpret_cast<uintptr_t>(addr + 16);
+            ctx.Dr2 = reinterpret_cast<uintptr_t>(addr + 32);
+            // L0-L2 enable; RW=01 (write), LEN=11 (4 bytes) for each.
+            ctx.Dr7 = 0x1 | 0x4 | 0x10 | (0x1u << 16) | (0x3u << 18) | (0x1u << 20) |
+                      (0x3u << 22) | (0x1u << 24) | (0x3u << 26);
+        } else {
+            ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = 0;
+            ctx.Dr7 = 0;
+        }
+        ctx.Dr6 = 0;
+        if (!SetThreadContext(th, &ctx))
+            BVR_LOG("[b2r] watch: SetThreadContext failed (%lu)", GetLastError());
+    } else {
+        BVR_LOG("[b2r] watch: GetThreadContext failed (%lu)", GetLastError());
+    }
+    ResumeThread(th);
+    CloseHandle(th);
+}
+} // namespace
+
+void watch_set(bool on) {
+    if (on) {
+        if (g_watchOn.load(std::memory_order_relaxed)) return;
+        if (!g_pose || !g_refValid) {
+            BVR_LOG("[b2r] watch: no live pose bank - resolve the rig first");
+            return;
+        }
+        int s = -1;
+        for (int i = 0; i < g_boneCount && s < 0; ++i)
+            if (g_writtenMask[1][i]) s = i;
+        if (s < 0)
+            for (int i = 0; i < g_boneCount && s < 0; ++i)
+                if (g_writtenMask[0][i]) s = i;
+        if (s < 0) {
+            BVR_LOG("[b2r] watch: no driven bone yet (vrhands on and wait a tick)");
+            return;
+        }
+        uint32_t tid = scenedraw::draw_tid();
+        if (!tid) {
+            BVR_LOG("[b2r] watch: no draw thread seen yet");
+            return;
+        }
+        module_range(reinterpret_cast<void*>(&watch_set), &g_selfBase, &g_selfEnd);
+        module_range(GetModuleHandleW(nullptr), &g_gameBase, &g_gameEnd);
+        g_watchAddr = g_pose + s * patterns::kSkelPoseStride;
+        g_watchTid = tid;
+        g_watchHitN.store(0, std::memory_order_relaxed);
+        g_watchOurs.store(0); g_watchEngine.store(0); g_watchForeign.store(0);
+        if (!g_watchVeh) g_watchVeh = AddVectoredExceptionHandler(1, watch_veh);
+        uint32_t t = tid;
+        uint8_t* a = g_watchAddr;
+        HANDLE h = CreateThread(nullptr, 0,
+                                [](LPVOID p) -> DWORD {
+                                    auto* args = static_cast<uintptr_t*>(p);
+                                    watch_apply(static_cast<uint32_t>(args[0]),
+                                                reinterpret_cast<uint8_t*>(args[1]), true);
+                                    delete[] args;
+                                    return 0;
+                                },
+                                new uintptr_t[2]{t, reinterpret_cast<uintptr_t>(a)}, 0, nullptr);
+        if (h) CloseHandle(h);
+        g_watchOn.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b2r] watch ARMED on bone %d @ %p (thread %u) - engine writers will be "
+                "logged by `vrbones watch status`", s, g_watchAddr, tid);
+    } else {
+        if (!g_watchOn.load(std::memory_order_relaxed)) return;
+        uint32_t t = g_watchTid;
+        HANDLE h = CreateThread(nullptr, 0,
+                                [](LPVOID p) -> DWORD {
+                                    watch_apply(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p)),
+                                                nullptr, false);
+                                    return 0;
+                                },
+                                reinterpret_cast<LPVOID>(static_cast<uintptr_t>(t)), 0, nullptr);
+        if (h) { WaitForSingleObject(h, 2000); CloseHandle(h); }
+        g_watchOn.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b2r] watch off");
+    }
+}
+
+// --- Session 74: the post-writer repaint (the fix) ---------------------------
+// The write-watch named ONE engine routine as the pose writer, reached from
+// the game tick (handled by the PE-lane repaint) and, ~2x per shot, from a
+// render-side path INSIDE pass 1 only - after every repaint site and before
+// the hands mesh is drawn, so the LEFT eye renders the raw restamp. The fix is
+// to repaint the driven pose the moment that writer RETURNS while pass 1 is
+// in flight. The routine's signature is unknown, so the detour is naked and
+// convention-agnostic: on entry it swaps the caller's return address for a
+// stub and jumps to the original untouched; the stub runs the repaint with
+// every register (and the x87 state) preserved and returns to the real
+// caller. Game thread only (TEB tid check); nested calls pass through.
+namespace {
+void* g_wTarget = nullptr;
+void* g_wOrig = nullptr;
+uintptr_t g_wRetSaved = 0; // the hooked call's real return address (game thread)
+uint32_t g_wTid = 0;
+bool g_wCreated = false;
+std::atomic<bool> g_wPostFix{true}; // the fix ships ON; `vrbones wfix off` is the A/B
+std::atomic<uint32_t> g_wPost{0}, g_wPostPass1{0}, g_wPostPass2{0}, g_wPostTick{0};
+
+void __cdecl w_post() {
+    g_wPost.fetch_add(1, std::memory_order_relaxed);
+    if (scenedraw::draw_depth() <= 0) {
+        g_wPostTick.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (scenedraw::in_second_draw()) {
+        g_wPostPass2.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_wPostPass1.fetch_add(1, std::memory_order_relaxed);
+    if (g_wPostFix.load(std::memory_order_relaxed)) pe_repaint(3);
+}
+
+__declspec(naked) void w_ret_stub() {
+    __asm {
+        pushad
+        pushfd
+        sub esp, 108
+        fnsave [esp]
+        call w_post
+        frstor [esp]
+        add esp, 108
+        popfd
+        popad
+        push dword ptr [g_wRetSaved]
+        mov dword ptr [g_wRetSaved], 0
+        ret
+    }
+}
+
+__declspec(naked) void w_detour() {
+    __asm {
+        push eax
+        ; only OUR two skeleton instances (ecx = this): every other skeletal
+        ; mesh in the level passes straight through untouched
+        cmp ecx, [g_skel]
+        je ours
+        cmp ecx, [g_wSkel]
+        jne passthrough
+      ours:
+        mov eax, fs:[0x24]           ; current thread id (TEB)
+        cmp eax, [g_wTid]
+        jne passthrough
+        cmp dword ptr [g_wRetSaved], 0
+        jne passthrough              ; nested call - leave it alone
+        mov eax, [esp + 4]           ; the caller's return address
+        mov [g_wRetSaved], eax
+        mov eax, offset w_ret_stub
+        mov [esp + 4], eax
+      passthrough:
+        pop eax
+        jmp dword ptr [g_wOrig]
+    }
+}
+} // namespace
+
+// The writer's call site (RVA 0x5FB810, named by the watch's EBP chain) is
+// `mov eax,[esi]; call [eax+0xA4]` guarded by `cmp byte [esi+0xA0],0` - a
+// dirty-flagged virtual update on the skeleton instance (slot 0xA4/4 = 41 of
+// the SkeletonInstance vtable the rig scan already identifies), which is also
+// why pass 2 never restamps: the flag is clear by then.
+constexpr uint32_t kSkelInstUpdateSlot = 0xA4;
+
+bool wfix_install() {
+    if (g_wCreated) return true;
+    if (!g_imageBase) {
+        BVR_LOG("[b2r] wfix: image base unknown - resolve the rig first");
+        return false;
+    }
+    if (!g_gameBase) module_range(GetModuleHandleW(nullptr), &g_gameBase, &g_gameEnd);
+    const uint8_t* vt = g_imageBase + patterns::kSkeletonInstanceVtableRva;
+    if (!is_memory_valid(vt + kSkelInstUpdateSlot, sizeof(void*))) {
+        BVR_LOG("[b2r] wfix: SkeletonInstance vtable slot unreadable");
+        return false;
+    }
+    uint8_t* target = *reinterpret_cast<uint8_t* const*>(vt + kSkelInstUpdateSlot);
+    if (!is_memory_valid(target, 16)) {
+        BVR_LOG("[b2r] wfix: resolved target %p is not readable", target);
+        return false;
+    }
+    const uint32_t retRva = 0x5FB816;
+    g_wTid = scenedraw::draw_tid();
+    g_wTarget = target;
+    MH_STATUS st = MH_CreateHook(g_wTarget, reinterpret_cast<void*>(&w_detour), &g_wOrig);
+    if (st != MH_OK) {
+        BVR_LOG("[b2r] wfix: MH_CreateHook(0x%X) failed: %s",
+                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target) - g_gameBase),
+                MH_StatusToString(st));
+        return false;
+    }
+    st = MH_EnableHook(g_wTarget);
+    if (st != MH_OK) {
+        BVR_LOG("[b2r] wfix: MH_EnableHook failed: %s", MH_StatusToString(st));
+        return false;
+    }
+    g_wCreated = true;
+    BVR_LOG("[b2r] wfix: writer HOOKED at RVA 0x%X (from call site 0x%X; bytes %02X %02X %02X "
+            "%02X %02X %02X %02X %02X) - `vrbones wfix on` arms the post-writer repaint",
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target) - g_gameBase), retRva - 5,
+            target[0], target[1], target[2], target[3], target[4], target[5], target[6],
+            target[7]);
+    return true;
+}
+
+void wfix_set(bool on) {
+    if (on && !g_wCreated && !wfix_install()) return;
+    g_wPostFix.store(on, std::memory_order_relaxed);
+    BVR_LOG("[b2r] command: vrbones wfix %s (post-writer repaint in pass 1)", on ? "on" : "off");
+}
+
+void wfix_status() {
+    BVR_LOG("[b2r] wfix %s hooked=%d: writer returns seen %u (tick %u, pass1 %u, pass2 %u); "
+            "post-writer catches hands/weapon = %u/%u",
+            g_wPostFix.load() ? "ON" : "off", g_wCreated ? 1 : 0, g_wPost.load(),
+            g_wPostTick.load(), g_wPostPass1.load(), g_wPostPass2.load(),
+            g_catch[6][0].load(), g_catch[6][1].load());
+}
+
+void watch_status() {
+    BVR_LOG("[b2r] watch %s: hits ours=%u engine=%u foreign=%u, %d distinct sites",
+            g_watchOn.load() ? "ON" : "off", g_watchOurs.load(), g_watchEngine.load(),
+            g_watchForeign.load(), g_watchHitN.load());
+    int n = g_watchHitN.load(std::memory_order_relaxed);
+    static const char* kCtx[8] = {"tick", "pass1", "pass2", "?", "tick+flush",
+                                  "pass1+flush", "pass2+flush", "?"};
+    for (int i = 0; i < n; ++i) {
+        const WatchHit& h = g_watchHits[i];
+        BVR_LOG("[b2r]   writer RVA 0x%X x%u in %s <- 0x%X <- 0x%X <- 0x%X", h.eip, h.count,
+                kCtx[h.ctx & 7], h.ret[0], h.ret[1], h.ret[2]);
+    }
+}
+
+void race_snapshot(RaceStats* out) {
+    if (!out) return;
+    for (int p = 0; p < 6; ++p) {
+        out->calls[p] = g_probeCalls[p].load(std::memory_order_relaxed);
+        for (int k = 0; k < 2; ++k)
+            out->foreign[p][k] = g_probeForeign[p][k].load(std::memory_order_relaxed);
+    }
+    for (int k = 0; k < 2; ++k) {
+        out->entryCatch[0][k] = g_catch[4][k].load(std::memory_order_relaxed);
+        out->entryCatch[1][k] = g_catch[5][k].load(std::memory_order_relaxed);
+    }
+    for (int p = 0; p < 6; ++p)
+        out->firstDiff[p] = g_probeFirstDiff[p].load(std::memory_order_relaxed);
+    out->entryFix[0] = g_entryFix[0].load(std::memory_order_relaxed);
+    out->entryFix[1] = g_entryFix[1].load(std::memory_order_relaxed);
+    out->fullMask = g_fullMask.load(std::memory_order_relaxed);
+}
+
+void set_entry_fix(int pass, bool on) {
+    if (pass < 0 || pass > 1) return;
+    g_entryFix[pass].store(on, std::memory_order_relaxed);
+}
+
+bool entry_fix(int pass) {
+    return (pass < 0 || pass > 1) ? false : g_entryFix[pass].load(std::memory_order_relaxed);
 }
 
 void set_anim_mode(bool on) {
@@ -1171,6 +1595,56 @@ bool handle_command(const char* args) {
             g_flickLog.store(false, std::memory_order_relaxed);
         BVR_LOG("[b2r] command: vrbones flick %s (counters always count)",
                 g_flickLog.load(std::memory_order_relaxed) ? "on" : "off");
+        return true;
+    }
+    if (strncmp(args, "p1fix", 5) == 0 || strncmp(args, "p2fix", 5) == 0) {
+        // p1fix|p2fix on|off - repaint the driven pose at that pass's ENTRY
+        // (the session-74 fix candidate; the [race] line grades it).
+        int pass = args[1] == '2' ? 1 : 0;
+        if (strstr(args + 5, "on")) set_entry_fix(pass, true);
+        else if (strstr(args + 5, "off")) set_entry_fix(pass, false);
+        BVR_LOG("[b2r] command: vrbones p%dfix %s (entry repaint pass 1=%d pass 2=%d)",
+                pass + 1, entry_fix(pass) ? "on" : "off", entry_fix(0) ? 1 : 0,
+                entry_fix(1) ? 1 : 0);
+        return true;
+    }
+    if (strncmp(args, "race", 4) == 0) {
+        RaceStats rs;
+        race_snapshot(&rs);
+        BVR_LOG("[b2r] race totals: p1 entry=%u/%u flush=%u/%u drained=%u/%u | "
+                "p2 entry=%u/%u flush=%u/%u drained=%u/%u | calls %u/%u/%u/%u/%u/%u "
+                "| firstDiff %d/%d/%d/%d/%d/%d | entry catches p1=%u/%u p2=%u/%u | "
+                "fix p1=%d p2=%d fullmask=%d (hands/weapon)",
+                rs.foreign[0][0], rs.foreign[0][1], rs.foreign[1][0], rs.foreign[1][1],
+                rs.foreign[2][0], rs.foreign[2][1], rs.foreign[3][0], rs.foreign[3][1],
+                rs.foreign[4][0], rs.foreign[4][1], rs.foreign[5][0], rs.foreign[5][1],
+                rs.calls[0], rs.calls[1], rs.calls[2], rs.calls[3], rs.calls[4],
+                rs.calls[5], rs.firstDiff[0], rs.firstDiff[1], rs.firstDiff[2],
+                rs.firstDiff[3], rs.firstDiff[4], rs.firstDiff[5],
+                rs.entryCatch[0][0], rs.entryCatch[0][1], rs.entryCatch[1][0],
+                rs.entryCatch[1][1], rs.entryFix[0] ? 1 : 0, rs.entryFix[1] ? 1 : 0,
+                rs.fullMask ? 1 : 0);
+        return true;
+    }
+    if (strncmp(args, "wfix", 4) == 0) {
+        if (strstr(args + 4, "on")) wfix_set(true);
+        else if (strstr(args + 4, "off")) wfix_set(false);
+        else if (strstr(args + 4, "install")) wfix_install();
+        wfix_status();
+        return true;
+    }
+    if (strncmp(args, "watch", 5) == 0) {
+        if (strstr(args + 5, "on")) watch_set(true);
+        else if (strstr(args + 5, "off")) watch_set(false);
+        watch_status();
+        return true;
+    }
+    if (strncmp(args, "fullmask", 8) == 0) {
+        if (strstr(args + 8, "on")) set_full_mask(true);
+        else if (strstr(args + 8, "off")) set_full_mask(false);
+        BVR_LOG("[b2r] command: vrbones fullmask %s (repaint decision scans %s)",
+                full_mask() ? "on" : "off",
+                full_mask() ? "every masked bone" : "the first masked bone only");
         return true;
     }
     if (strncmp(args, "diag31", 6) == 0) {
