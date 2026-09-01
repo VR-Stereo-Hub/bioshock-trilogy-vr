@@ -117,6 +117,44 @@ struct FlickerStats {
     uint32_t wRescans;
 };
 void flicker_snapshot(FlickerStats* out);
+
+// Session 74: the pose-RACE probe. Samples the drive's sentinel bones at six
+// points of the stereo pair - 0 pass-1 entry, 1 pass-1 flush (before the
+// repaint), 2 pass-1 post-drain, 3 pass-2 entry, 4 pass-2 flush, 5 pass-2
+// post-drain - and counts "bank is foreign here", per hands bank / weapon
+// skeleton. pe_repaint(2) is the pass-ENTRY repaint (phases 4/5 in the catch
+// table), armed per pass by set_entry_fix (`vrbones p1fix|p2fix`).
+struct RaceStats {
+    uint32_t calls[6] = {};
+    uint32_t foreign[6][2] = {};
+    int firstDiff[6] = {};          // last first-differing hand bone at that point
+    uint32_t entryCatch[2][2] = {}; // [pass][hands/weapon]
+    bool entryFix[2] = {};
+    bool fullMask = false;
+};
+void probe_point(int p);
+void race_snapshot(RaceStats* out);
+void set_entry_fix(int pass, bool on);
+bool entry_fix(int pass);
+// s74: repaint decision scans every masked bone instead of the first one.
+void set_full_mask(bool on);
+bool full_mask();
+// s74: hardware write-watch on the sentinel bone (`vrbones watch on|off`);
+// status lists the engine writer RVAs and where in the pair they fired.
+void watch_set(bool on);
+void watch_status();
+// s74 fix: hook the writer the watch named and repaint the driven pose right
+// after it returns inside pass 1 (`vrbones wfix install|on|off|status`).
+bool wfix_install();       // installs NOW - call only from the game thread's poll lane
+void apply_pending_wfix(); // poll lane: installs a posted request (rig resolve / F10)
+void wfix_on_draw_entry(uint32_t tid); // DrawDetour depth 0: refresh tid, clear the ret slot
+void wfix_set(bool on);
+void wfix_status();
+// s74: the six-point race probe is off unless armed (it costs syscalls per pair).
+void set_race_probe(bool on);
+bool race_probe();
+bool wfix_enabled(); // the post-writer repaint is armed (F10 A/B checkbox)
+bool wfix_hooked();  // the writer hook is installed (rig resolved at least once)
 // `vrbones flick on|off` gates only the [flick] minute log line; the counters
 // always count (they are a handful of relaxed atomics on actual catches).
 bool flicker_log();

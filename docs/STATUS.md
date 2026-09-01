@@ -2,6 +2,71 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-09-01 - s74: BS2 issue #31 diagnosed LIVE - the flicker decomposed
+
+Branch `claude/bioshock2-left-eye-flicker-3ca08e` (off `staging`), diagnosis-only
+per the evidence-first gate. The flicker reproduced CONSTANTLY in a flat xrsim
+session and was measured, photographed and A-B'd. Full mechanism write-up:
+`docs/bioshock2/ENGINE_NOTES.md` session 74.
+
+### Current state
+
+- **ARTIFACT 1 IS FIXED (the constant left-eye hand/weapon snap).** The
+  write-watch named the writer: the engine's dirty-flagged SkeletonInstance
+  update (vtable slot 0xA4) re-runs INSIDE PASS 1 only, after every repaint
+  site and before the hands mesh is drawn. `vrbones wfix` (auto-installed at
+  rig resolve, ships ON) hooks that virtual with a naked ret-hook and repaints
+  the driven pose the moment it returns. Three-state A-B-A in the sim: per-eye
+  temporal gap <=2.6 with the fix vs left-only spikes of 16-19 without;
+  counters show one repaint per pass-1 writer return; rest pose untouched;
+  user: "now there's no snapping". Correction to the earlier read: the RIGHT
+  eye was always correct - the LEFT eye rendered the raw restamp.
+- **HEADSET-CONFIRMED (Quest 3 / VDXR): "the flicker went away".** F10 checkbox
+  "LEFT-EYE FLICKER FIX (s74)" under HANDS + AIM is the in-headset A/B.
+- **The menu flicker is NOT a BS2 bug** - the user was thinking of another
+  game. The [hudgate] burn train is real but nobody perceives it; parked.
+- **Staging input regression found in the headset test and fixed:** the s63
+  "F10 panel clicks with the right trigger" swallow (xinput_bridge.cpp) zeroed
+  RT + right stick for the game whenever the overlay was visible - on BS2 the
+  panel cannot be closed from inside the headset (no F10 there), so one F10
+  visit killed fire and turning for the session. Now gated to pad-drive mode
+  (BS1 opt-in), which is the only mode where the swallow has a purpose; the
+  overlay logs SHOWN/hidden transitions.
+- **The "left eye flicker" is THREE artifacts, now separated:**
+  1. **Hand/weapon pose snap** - FIXED above. ([pair] + per-eye source hashes
+     were CLEAN throughout -> s62's pairing-layer hypotheses exonerated.)
+  2. **Menu-transition burn** (tester report 3): 5/5 reproducible witness
+     train - 3 leaderMiss intervals on open, ~145 HUD draws burned into 3
+     pairs (both eyes) on close, one unheld-right generation split per
+     transition. Photographed (pause menu warped into the left eye image).
+  3. **Weapon scale flicker** (open): seen by the user with the drive off;
+     not yet reproduced on a fresh boot; suspects fgfov cadence / profile
+     writes / long-uptime state.
+- New instruments landed (all opt-in, BS1 untouched): `vrbones diag31`,
+  [pairEdge] + [hudgate] event-edge witnesses, [pair] `deep=` field, xrsim
+  `hash every N` per-eye source hashing + `tools/eye-seq-diff.ps1`.
+- Bug found in the s62 probe premise (lone-left parks the RIGHT eye, not the
+  left) - comments corrected, fix-session scope.
+- Crash-persistence bug found: a hard kill leaves the mod's written game FOV
+  baked in Shared.ini (this boot: option 138, user's real option 100). The
+  user's ini is CURRENTLY polluted - restore before their next flat session.
+- Evidence archive: `%LOCALAPPDATA%\BioshockVR\bs2\evidence-s74-flicker\`
+  (605 files: per-eye PNG pairs, eyehash.tsv). NOT in git (game-derived).
+
+### Next steps
+
+1. **Headset confirmation of the artifact-1 fix** (Quest 3 + VDXR, then
+   SteamVR): play 10+ min, fire a lot, confirm no left-eye snap; `vrbones
+   wfix off` is the in-session A/B. Then a diag31 build to the issue-#31
+   reporters.
+2. Fix session for artifact 2: raise the HUD gate on the same present it is
+   decided (or arm hud redirect during the transition window), and suppress
+   the unheld-right by keeping the hold across the cine boundary.
+3. Reproduce artifact 3 (scale): long soak with `hash every 1` + weapon-region
+   metric, fgfov/profile write logging if it shows.
+4. Restore the user's FOV option (100) and decide the crash-restore guard.
+5. Testers: ship a diag31 build + one-line arm instruction once 1-2 land.
+
 ## Session 2026-08-30 - s72/s73: the off hand's ARM, decoupled and rotating
 
 **TWO branches and two draft PRs**, split at the point the arm work began:

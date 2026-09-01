@@ -2403,6 +2403,9 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 // game thread outside hooked calls. Also the MENU-arming
                 // path - BS2's menu never runs PlayerCalcView.
                 scenedraw::apply_pending_vrstereo();
+                // s74: the left-eye flicker writer hook installs from this
+                // same lane (rig resolve and the F10 checkbox only post it).
+                bones::apply_pending_wfix();
                 // Overlay/command-posted resolution apply (session 37): live
                 // window resize + ini persistence, on the game thread, and it
                 // works from the main menu for the same reason vrstereo
@@ -3052,6 +3055,16 @@ void draw_debug_ui() {
             if (ImGui::SliderFloat("anim wrist travel (0 = glued)", &at, 0.0f, 1.0f))
                 bones::set_anim_trans(at);
         }
+
+        // Session 74: the left-eye flicker fix, exposed for an in-headset A/B
+        // (untick = the pre-fix behaviour: the engine's pass-1 skeleton update
+        // renders raw in the LEFT eye; tick = repainted the moment it returns).
+        ImGui::Separator();
+        bool wfix = bones::wfix_enabled();
+        if (ImGui::Checkbox("LEFT-EYE FLICKER FIX (s74)  <-- untick to compare", &wfix))
+            bones::wfix_set(wfix);
+        ImGui::SameLine();
+        ImGui::TextDisabled(bones::wfix_hooked() ? "(hooked)" : "(arms when the rig resolves)");
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {

@@ -65,6 +65,15 @@ bool second_pass_for_current_thread(float* yawDegOut);
 // dispatch accounting.
 bool in_second_draw();
 
+// Session 74 (the write-watch): where in the pair the current thread is.
+// draw_depth 0 = outside any hooked Draw (the game tick), 1 = inside pass 1
+// (or pass 2 - combine with in_second_draw), in_flush = inside the flush
+// point detour (traversal done, drain pending/done). draw_tid = the thread
+// that last entered Draw (the game thread under 1t).
+int draw_depth();
+bool in_flush();
+uint32_t draw_tid();
+
 // One-toggle "VR stereo" request: posts the on/off intent; the game thread
 // applies camera mode + stereo outside any hooked call (the overlay checkbox
 // draws on the render thread and must never install hooks itself).
