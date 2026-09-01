@@ -1047,6 +1047,7 @@ void heartbeat(uint64_t now) {
         static bones::RaceStats s_prevRace;
         bones::RaceStats rs;
         bones::race_snapshot(&rs);
+        if (bones::race_probe())
         BVR_LOG("[race] min=%llu p1 entry=%u/%u flush=%u/%u drained=%u/%u | "
                 "p2 entry=%u/%u flush=%u/%u drained=%u/%u | calls=%u/%u | "
                 "entryCatch p1=%u/%u p2=%u/%u | fix=%d/%d",
@@ -1088,6 +1089,7 @@ void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, v
     uint32_t presentLowAtEntry = static_cast<uint32_t>(bvr::d3d11_hook::present_count());
     if (depth == 0) {
         g_activeTid.store(tid, std::memory_order_relaxed);
+        bvr::b2r::bones::wfix_on_draw_entry(tid); // s74: writer hook tid refresh + ret-slot reset
         probe_cam_actor(a1);
         // Pass-1 eye tag: this Draw's present captures as the LEFT eye. The
         // camera side caches the driven base and applies -IPD/2 on the

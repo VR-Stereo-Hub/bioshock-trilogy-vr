@@ -439,6 +439,7 @@ constexpr uint32_t kPmStaleAgeMs = 50; // > any healthy cadence (SR ~14ms, AER ~
 std::atomic<bool> g_pairEdgeLog{false};
 std::atomic<int> g_srLastPop{0};      // what THIS present popped; hud interval attribution
 std::atomic<uint32_t> g_pmPopDeep{0}; // pops that found a full pair queued (phase-offset tell)
+bool g_unheldRight = false;           // present thread: unheld-right transition latch
 
 // Session 42 (Infinite I6 judder): pair-CADENCE statistics. The judder question
 // is not "how many pairs per second" but "how EVENLY are they spaced" - a mean
@@ -3683,6 +3684,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
     if (pairSecond) {
         if (srSign == +1) {
             g_srPairs.fetch_add(1, std::memory_order_relaxed);
+            if (g_unheldRight) {
+                if (g_pairEdgeLog.load(std::memory_order_relaxed))
+                    BVR_LOG("[pairEdge] unheld-right ended (pairs hold again)");
+                g_unheldRight = false;
+            }
             // Pair-cadence sample (session 42): stamp the CLOSE of the pair -
             // the one moment per pair that exists exactly once on exactly one
             // thread. g_qpcFreq is initialized by the PhaseScope wrapping this
@@ -3739,18 +3745,20 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         srSign < 0 ? "next LEFT" : "untagged",
                         srSign < 0 ? "LEFT" : "index 0");
         }
-    } else if (srSign == +1 && srFrame &&
-               g_pairEdgeLog.load(std::memory_order_relaxed)) {
+    } else if (srSign == +1 && srFrame) {
         // Issue #31 (H2): a RIGHT-tagged present with no hold open ran its own
         // xrWaitFrame + xrLocateViews, so the two eyes of this pair are tagged
         // from DIFFERENT locate generations - the left eye's pose is one
         // display period behind, which reprojection turns into a left-only
-        // lateral double under head motion.
-        BVR_LOG("[pairEdge] unheld-right (right present without a pair hold - "
-                "pose generations split across this pair; shouldRender=%d "
-                "pacing=%d)",
-                g_frameState.shouldRender ? 1 : 0,
-                g_srPairPacing.load(std::memory_order_relaxed) ? 1 : 0);
+        // lateral double under head motion. Transition-logged: with pair
+        // pacing off every tick lands here, and that is a state, not an event.
+        if (!g_unheldRight && g_pairEdgeLog.load(std::memory_order_relaxed))
+            BVR_LOG("[pairEdge] unheld-right BEGAN (right present without a pair "
+                    "hold - pose generations split across the pair; shouldRender=%d "
+                    "pacing=%d)",
+                    g_frameState.shouldRender ? 1 : 0,
+                    g_srPairPacing.load(std::memory_order_relaxed) ? 1 : 0);
+        g_unheldRight = true;
     }
     bool pairHold = srFrame && srSign < 0 && !pairSecond &&
                     g_srPairPacing.load(std::memory_order_relaxed) &&

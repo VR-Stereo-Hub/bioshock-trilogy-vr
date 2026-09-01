@@ -170,6 +170,14 @@ std::atomic<bool> g_entryFix[2] = {}; // repaint at pass 1 / pass 2 ENTRY
 // it. fullmask makes the repaint decision (and the probe, always) scan every
 // masked bone: `vrbones fullmask on|off`.
 std::atomic<bool> g_fullMask{false};
+// The race probe is a diagnostic (its answer is in ENGINE_NOTES s74); it costs
+// syscalls at six points per pair, so it is OFF unless armed (`vrbones race
+// on`, or diag31).
+std::atomic<bool> g_raceProbe{false};
+// The writer hook installs from the game thread's poll lane (outside hooked
+// calls), never from inside a Draw or the overlay: rig resolve and the F10
+// checkbox only POST the request here.
+std::atomic<bool> g_wfixPending{false};
 
 void note_catch(int phase, int kind, uint32_t latMs) {
     if (phase < 0 || phase > 7) return;
@@ -280,7 +288,9 @@ bool resolve_rig() {
     // it here means the driven pose is repainted the moment it returns. The
     // hook is a static vtable slot, so installing once is enough; the
     // this-filter in the detour follows g_skel/g_wSkel across re-resolves.
-    wfix_install();
+    // POSTED, not installed: this runs inside the CalcView dispatch of a
+    // hooked Draw, and hooks install only from the poll lane (apply_pending_wfix).
+    g_wfixPending.store(true, std::memory_order_relaxed);
     return true;
 }
 
@@ -922,9 +932,11 @@ void pe_repaint(int site) {
     const bool scanAll = g_fullMask.load(std::memory_order_relaxed);
     for (int h = 0; h < 2; ++h) {
         if (now - g_writeStampMs[h] > 100) continue; // not driving, nothing to defend
-        if (!is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride)) return;
         // Sentinel (s41): the first masked bone; fullmask (s74): any masked bone.
+        // Compare FIRST: this runs on every ProcessEvent dispatch, and the
+        // VirtualQuery below is only worth paying once a restamp is in hand.
         if (first_foreign_bone(h, scanAll) < 0) continue;
+        if (!is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride)) return;
         // Session 41, absorb-then-recompose: the restamp is INPUT, not an
         // enemy - adopt it into g_anim first, then rewrite this frame
         // composed on the fresh pose. Pass 1 only: the second pass must
@@ -963,6 +975,7 @@ void pe_repaint(int site) {
 }
 
 void probe_point(int p) {
+    if (!g_raceProbe.load(std::memory_order_relaxed)) return;
     if (p < 0 || p > 5 || !g_pose || !g_refValid) return;
     g_probeCalls[p].fetch_add(1, std::memory_order_relaxed);
     uint64_t now = GetTickCount64();
@@ -987,6 +1000,8 @@ void probe_point(int p) {
 
 void set_full_mask(bool on) { g_fullMask.store(on, std::memory_order_relaxed); }
 bool full_mask() { return g_fullMask.load(std::memory_order_relaxed); }
+void set_race_probe(bool on) { g_raceProbe.store(on, std::memory_order_relaxed); }
+bool race_probe() { return g_raceProbe.load(std::memory_order_relaxed); }
 
 // --- Session 74: hardware write-watch on the sentinel bone -----------------
 // Every probe says the bank is ours at every point we can look, yet pass 1's
@@ -1246,12 +1261,12 @@ __declspec(naked) void w_detour() {
 }
 } // namespace
 
-// The writer's call site (RVA 0x5FB810, named by the watch's EBP chain) is
-// `mov eax,[esi]; call [eax+0xA4]` guarded by `cmp byte [esi+0xA0],0` - a
-// dirty-flagged virtual update on the skeleton instance (slot 0xA4/4 = 41 of
-// the SkeletonInstance vtable the rig scan already identifies), which is also
-// why pass 2 never restamps: the flag is clear by then.
-constexpr uint32_t kSkelInstUpdateSlot = 0xA4;
+// The writer's call site (patterns::kSkelInstUpdateCallSiteRva, named by the
+// watch's EBP chain) is `mov eax,[esi]; call [eax+0xA4]` guarded by
+// `cmp byte [esi+0xA0],0` - a dirty-flagged virtual update on the skeleton
+// instance (patterns::kSkelInstUpdateSlot of the SkeletonInstance vtable the
+// rig scan already identifies), which is also why pass 2 never restamps: the
+// flag is clear by then.
 
 bool wfix_install() {
     if (g_wCreated) return true;
@@ -1261,43 +1276,61 @@ bool wfix_install() {
     }
     if (!g_gameBase) module_range(GetModuleHandleW(nullptr), &g_gameBase, &g_gameEnd);
     const uint8_t* vt = g_imageBase + patterns::kSkeletonInstanceVtableRva;
-    if (!is_memory_valid(vt + kSkelInstUpdateSlot, sizeof(void*))) {
+    if (!is_memory_valid(vt + patterns::kSkelInstUpdateSlot, sizeof(void*))) {
         BVR_LOG("[b2r] wfix: SkeletonInstance vtable slot unreadable");
         return false;
     }
-    uint8_t* target = *reinterpret_cast<uint8_t* const*>(vt + kSkelInstUpdateSlot);
+    uint8_t* target = *reinterpret_cast<uint8_t* const*>(vt + patterns::kSkelInstUpdateSlot);
     if (!is_memory_valid(target, 16)) {
         BVR_LOG("[b2r] wfix: resolved target %p is not readable", target);
         return false;
     }
-    const uint32_t retRva = 0x5FB816;
+    // The tid is refreshed at every Draw entry (wfix_on_draw_entry); this is
+    // only the value until the next Draw.
     g_wTid = scenedraw::draw_tid();
     g_wTarget = target;
     MH_STATUS st = MH_CreateHook(g_wTarget, reinterpret_cast<void*>(&w_detour), &g_wOrig);
-    if (st != MH_OK) {
+    // A hook that was created but failed to enable last time is still there:
+    // retry the enable rather than failing forever on ALREADY_CREATED.
+    if (st != MH_OK && st != MH_ERROR_ALREADY_CREATED) {
         BVR_LOG("[b2r] wfix: MH_CreateHook(0x%X) failed: %s",
                 static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target) - g_gameBase),
                 MH_StatusToString(st));
         return false;
     }
     st = MH_EnableHook(g_wTarget);
-    if (st != MH_OK) {
+    if (st != MH_OK && st != MH_ERROR_ENABLED) {
         BVR_LOG("[b2r] wfix: MH_EnableHook failed: %s", MH_StatusToString(st));
         return false;
     }
     g_wCreated = true;
-    BVR_LOG("[b2r] wfix: writer HOOKED at RVA 0x%X (from call site 0x%X; bytes %02X %02X %02X "
-            "%02X %02X %02X %02X %02X) - `vrbones wfix on` arms the post-writer repaint",
-            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target) - g_gameBase), retRva - 5,
-            target[0], target[1], target[2], target[3], target[4], target[5], target[6],
-            target[7]);
+    BVR_LOG("[b2r] wfix: writer HOOKED at RVA 0x%X (slot 0x%X, call site 0x%X; bytes %02X "
+            "%02X %02X %02X %02X %02X %02X %02X) - `vrbones wfix off` is the A/B",
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target) - g_gameBase),
+            patterns::kSkelInstUpdateSlot, patterns::kSkelInstUpdateCallSiteRva, target[0],
+            target[1], target[2], target[3], target[4], target[5], target[6], target[7]);
     return true;
 }
 
+void apply_pending_wfix() {
+    if (!g_wfixPending.load(std::memory_order_relaxed)) return;
+    if (g_wCreated || wfix_install()) g_wfixPending.store(false, std::memory_order_relaxed);
+}
+
+void wfix_on_draw_entry(uint32_t tid) {
+    // Every Draw entry on the game thread: refresh the thread the detour
+    // accepts (it was 0 if the rig resolved before the first hooked Draw) and
+    // clear the saved-return slot - nothing of ours is on the stack here, so a
+    // slot left set by an unwind that skipped the ret stub is stale.
+    g_wTid = tid;
+    g_wRetSaved = 0;
+}
+
 void wfix_set(bool on) {
-    if (on && !g_wCreated && !wfix_install()) return;
+    if (on && !g_wCreated) g_wfixPending.store(true, std::memory_order_relaxed); // poll lane installs
     g_wPostFix.store(on, std::memory_order_relaxed);
-    BVR_LOG("[b2r] command: vrbones wfix %s (post-writer repaint in pass 1)", on ? "on" : "off");
+    BVR_LOG("[b2r] command: vrbones wfix %s (post-writer repaint in pass 1%s)", on ? "on" : "off",
+            (on && !g_wCreated) ? "; hook install posted to the poll lane" : "");
 }
 
 bool wfix_enabled() { return g_wPostFix.load(std::memory_order_relaxed); }
@@ -1384,6 +1417,9 @@ void flicker_snapshot(FlickerStats* out) {
         // semantics without a second clear pass racing a concurrent catch.
         out->dmaxMs[p] = g_catchDeltaMaxMs[p].exchange(0, std::memory_order_relaxed);
     }
+    // Phases 4-7 (s74 entry / post-writer sites) are read by the [race] and
+    // wfix reports; drain their window max here too so it does not pin.
+    for (int p = 4; p < 8; ++p) g_catchDeltaMaxMs[p].exchange(0, std::memory_order_relaxed);
     out->driveAdoptEvents[0] = g_driveAdoptEvents[0].load(std::memory_order_relaxed);
     out->driveAdoptEvents[1] = g_driveAdoptEvents[1].load(std::memory_order_relaxed);
     out->adopts[0] = g_adopts[0].load(std::memory_order_relaxed);
@@ -1436,6 +1472,7 @@ void on_world_change(const char* why) {
     g_scanDormant = false;
     g_scanMisses = 0;
     g_worldChanges.fetch_add(1, std::memory_order_relaxed); // flicker correlate
+    g_wRetSaved = 0; // a world change can unwind past the writer ret-stub
 }
 
 void* hands_actor() {
@@ -1566,7 +1603,7 @@ bool handle_command(const char* args) {
         {
             // Session 42: cumulative flicker catches + the printed invariant.
             uint32_t sum = 0;
-            for (int p = 0; p < 4; ++p)
+            for (int p = 0; p < 8; ++p) // s74: phases 4-7 (entry / post-writer) count too
                 for (int k = 0; k < 2; ++k)
                     sum += g_catch[p][k].load(std::memory_order_relaxed);
             uint32_t pe = g_peRepaints.load(std::memory_order_relaxed);
@@ -1612,6 +1649,10 @@ bool handle_command(const char* args) {
         return true;
     }
     if (strncmp(args, "race", 4) == 0) {
+        // race [on|off] - arm/disarm the six-point probe (off by default: it
+        // costs syscalls per pair), then print the totals either way.
+        if (strstr(args + 4, "on")) set_race_probe(true);
+        else if (strstr(args + 4, "off")) set_race_probe(false);
         RaceStats rs;
         race_snapshot(&rs);
         BVR_LOG("[b2r] race totals: p1 entry=%u/%u flush=%u/%u drained=%u/%u | "
@@ -1659,9 +1700,11 @@ bool handle_command(const char* args) {
             g_flickLog.store(true, std::memory_order_relaxed);
             bvr::vr::set_pair_edge_log(true);
             bvr::hud::set_gate_log(true);
+            set_race_probe(true);
         } else if (strstr(args + 6, "off")) {
             bvr::vr::set_pair_edge_log(false);
             bvr::hud::set_gate_log(false);
+            set_race_probe(false);
         }
         BVR_LOG("[b2r] command: vrbones diag31 %s (minute lines %s, pairEdge "
                 "%s, hudgate %s)",

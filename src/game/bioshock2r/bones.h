@@ -145,9 +145,14 @@ void watch_set(bool on);
 void watch_status();
 // s74 fix: hook the writer the watch named and repaint the driven pose right
 // after it returns inside pass 1 (`vrbones wfix install|on|off|status`).
-bool wfix_install();
+bool wfix_install();       // installs NOW - call only from the game thread's poll lane
+void apply_pending_wfix(); // poll lane: installs a posted request (rig resolve / F10)
+void wfix_on_draw_entry(uint32_t tid); // DrawDetour depth 0: refresh tid, clear the ret slot
 void wfix_set(bool on);
 void wfix_status();
+// s74: the six-point race probe is off unless armed (it costs syscalls per pair).
+void set_race_probe(bool on);
+bool race_probe();
 bool wfix_enabled(); // the post-writer repaint is armed (F10 A/B checkbox)
 bool wfix_hooked();  // the writer hook is installed (rig resolved at least once)
 // `vrbones flick on|off` gates only the [flick] minute log line; the counters

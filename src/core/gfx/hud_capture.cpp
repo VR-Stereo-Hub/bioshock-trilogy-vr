@@ -1443,24 +1443,25 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
     //               a declared screen-only span - the whole HUD rendered into
     //               this eye's world image (the muzzle-flash H4 window); the
     //               3-interval hysteresis swallows exactly these blips.
+    // The unarmed-route delta is tracked on EVERY present (one relaxed load),
+    // so arming the witness later never sees the pre-arm cumulative count as
+    // a burn - the first live run, and the first re-arm, were both fooled by
+    // an inside-the-gate delta.
+    static unsigned s_prevUnarmed = 0; // present thread only
+    const unsigned unarmed = g_cPass[kRouteUnarmed].load(std::memory_order_relaxed);
+    const unsigned unarmedDelta = unarmed - s_prevUnarmed;
+    s_prevUnarmed = unarmed;
     if (g_gateLog.load(std::memory_order_relaxed)) {
-        // present thread only; primed==false on the first armed interval so
-        // the pre-arm cumulative count is swallowed instead of logged as a
-        // burn (it fooled the first live run of this witness).
-        static unsigned s_prevUnarmed = 0;
-        static bool s_primed = false;
-        const unsigned unarmed = g_cPass[kRouteUnarmed].load(std::memory_order_relaxed);
-        const unsigned unarmedDelta = s_primed ? unarmed - s_prevUnarmed : 0;
-        s_prevUnarmed = unarmed;
-        s_primed = true;
         const bool world = scene_leader() != nullptr;
         const int eye = bvr::vr::sr_last_pop_sign();
         const char* eyeName = eye < 0 ? "LEFT" : (eye > 0 ? "RIGHT" : "untagged");
-        if (unarmedDelta > 0 && world)
+        // Only eye-TAGGED presents can burn: with stereo off the gate is down
+        // by design on every present, and that is not the menu-exit window.
+        if (unarmedDelta > 0 && world && eye != 0)
             BVR_LOG("[hudgate] burn eye=%s unarmedSwfDraws=%u swf=%d (gate was "
                     "DOWN while a world pass ran - HUD burned into this eye)",
                     eyeName, unarmedDelta, g_swfDrawsThisInterval);
-        if (!world && g_swfDrawsThisInterval >= 20 &&
+        if (!world && g_swfDrawsThisInterval >= 20 && eye != 0 &&
             !g_screenOnlyOn.load(std::memory_order_relaxed))
             BVR_LOG("[hudgate] leaderMiss eye=%s swf=%d (no scene leader this "
                     "interval outside a screen-only span - HUD went into this "
