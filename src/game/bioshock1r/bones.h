@@ -172,6 +172,12 @@ void set_elbow_out(float v);
 // solve sits at full extension and the forearm covers the shortfall alone.
 float arm_scale();
 void set_arm_scale(float v);
+// s75: how far the forearm may pronate/supinate before it runs out, degrees.
+// The twist angle is accumulated across frames to kill the atan2 seam, and
+// without this it winds without bound. ~85 is the real joint's limit; 180
+// restores the old unlimited behaviour.
+float arm_twist_limit_deg();
+void set_arm_twist_limit_deg(float v);
 unsigned elbow_smooth_ms();
 void set_elbow_smooth_ms(unsigned v);
 float elbow_follow_wrist();

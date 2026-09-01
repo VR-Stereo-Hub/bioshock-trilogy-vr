@@ -176,6 +176,14 @@ bool g_freeRefValid[2] = {false, false};
 Qts g_freeArmRef[2][5];
 float g_freeArmW0[2][3] = {};
 bool g_freeArmRefValid[2] = {false, false};
+// s73f: the last UNWRAPPED twist angle, per hand. Continuity only - not
+// smoothing, which s73c removed for good reason. See the unwrap in solve_arm().
+//
+// s75: moved up here from beside the elbow state, because it is cleared in
+// free_ref_drop() above and belongs with the reference it is measured against.
+// It is STATE, and it now gets dropped whenever that reference does.
+float g_twistPrev[2] = {0.0f, 0.0f};
+bool g_twistHavePrev[2] = {false, false};
 // s72e: the ACTOR ROTATION the free arm was captured in. The arm's twist is
 // expressed against this rather than against whatever the held wrist has
 // produced since - see the qArmFix banner in solve_arm().
@@ -205,6 +213,12 @@ void free_ref_drop(const char* why) {
                 why);
     g_freeRefValid[0] = g_freeRefValid[1] = false;
     g_freeArmRefValid[0] = g_freeArmRefValid[1] = false;
+    // s75: the accumulated twist belongs to the reference it was measured
+    // against. Dropping one without the other is what let a wound-up angle from
+    // the previous weapon land on the next one's arm - the same shape as the
+    // s72 mid-equip latch, which is the reason this drop exists at all.
+    g_twistHavePrev[0] = g_twistHavePrev[1] = false;
+    g_twistPrev[0] = g_twistPrev[1] = 0.0f;
 }
 struct CachedSleeve {
     int idx;
@@ -507,10 +521,6 @@ std::atomic<float> g_elbowFollowWrist{0.60f};
 // s72m ARMHOLD: what solve_arm last wrote to the FREE arm's five bones, so the
 // next frame can ask whether it survived. Every arm fix in s72 assumed our write
 // is what renders; this is the probe that checked it.
-// s73f: the last UNWRAPPED twist angle, per hand. Continuity only - not
-// smoothing, which s73c removed for good reason. See the unwrap in solve_arm().
-float g_twistPrev[2] = {0.0f, 0.0f};
-bool g_twistHavePrev[2] = {false, false};
 Qts g_freeArmWrote[2][5];
 bool g_freeArmWroteValid[2] = {false, false};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
@@ -910,6 +920,26 @@ std::atomic<bool> g_collapseOff{false};
 // than a wrist, so lower it if the bicep reads as over-turning; `vrbones
 // armtwist 0.5` and look, rather than another rebuild each time.
 std::atomic<float> g_armTwistShare{1.0f};
+// ---- s75: A REAL FOREARM RUNS OUT OF TWIST ---------------------------------
+//
+// s73f's unwrap made the twist angle continuous across frames to kill the atan2
+// seam, which was right and stays. But it accumulates without bound, so rolling
+// the wrist far enough in one direction wound the angle past 180, past 360, and
+// took the bicep and forearm around with it. Reported as "once you do enough
+// wrist twist it starts to go all the way around".
+//
+// Anatomy gives the number rather than leaving it tuned. Pronation and
+// supination happen in the FOREARM, the radius rotating over the ulna, and that
+// joint has a hard end: about 85 degrees of supination and 71-80 of pronation,
+// roughly 170-180 degrees total. An arm can roll the hand nearly 360 degrees,
+// but the rest of that comes from the SHOULDER rotating, not from the forearm
+// winding - which is why the hand keeps going and the forearm must not.
+//
+// One symmetric limit rather than a separate 85 and 75: the difference is not
+// visible here and it is one number to tune instead of two.
+//
+// 180 restores the old effectively-unlimited behaviour, so this A/Bs itself.
+std::atomic<float> g_armTwistLimitDeg{85.0f};
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -2098,6 +2128,12 @@ void on_world_change() {
     g_cacheHiddenCount = 0;
     g_clWritten[0] = g_clWritten[1] = false;
     motion_reset(); // a new rig is a new bone history, not a frame of motion
+    // s75: and the accumulated arm twist. It is carried across frames on
+    // purpose (s73f's seam fix), which means it is state, and state that is
+    // never cleared is state that outlives what it described - a wound-up angle
+    // from the old world would be applied to the new one's arm on frame one.
+    g_twistHavePrev[0] = g_twistHavePrev[1] = false;
+    g_twistPrev[0] = g_twistPrev[1] = 0.0f;
     // Session 29: the sleeve latch dies with the world too. It was hoisted out
     // of drive() so release() could reach it, which also means it now has to be
     // cleared here - a stale `true` would make release() write a dead world's
@@ -2238,6 +2274,11 @@ void set_elbow_out(float v) { g_elbowOut.store(v, std::memory_order_relaxed); }
 float arm_scale() { return g_armScale.load(std::memory_order_relaxed); }
 void set_arm_scale(float v) {
     g_armScale.store(v < 0.5f ? 0.5f : (v > 2.0f ? 2.0f : v), std::memory_order_relaxed);
+}
+float arm_twist_limit_deg() { return g_armTwistLimitDeg.load(std::memory_order_relaxed); }
+void set_arm_twist_limit_deg(float v) {
+    g_armTwistLimitDeg.store(v < 0.0f ? 0.0f : (v > 180.0f ? 180.0f : v),
+                             std::memory_order_relaxed);
 }
 unsigned elbow_smooth_ms() { return g_elbowSmoothMs.load(std::memory_order_relaxed); }
 void set_elbow_smooth_ms(unsigned v) {
@@ -3526,6 +3567,31 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                         while (d > 3.14159265f) d -= 6.2831853f;
                         while (d < -3.14159265f) d += 6.2831853f;
                         theta = g_twistPrev[hand] + d;
+                    }
+                    // ---- s75: AND THEN IT HAS TO RUN OUT --------------------
+                    //
+                    // The accumulator above has no upper bound and was never
+                    // reset, so rolling the wrist one way wound it past 180,
+                    // past 360, and the gradient took the bicep and forearm
+                    // around with it: "once you do enough wrist twist it starts
+                    // to go all the way around". A forearm cannot do that -
+                    // pronation/supination is the radius over the ulna and it
+                    // stops at roughly 85 degrees either side. Past that a real
+                    // arm rolls the hand by rotating the SHOULDER, which is a
+                    // different joint and not this angle.
+                    //
+                    // STORE THE CLAMPED VALUE, not the raw one. Keeping the raw
+                    // accumulator would let it keep winding out of sight and
+                    // then snap when it came back into range - a worse bug than
+                    // the one being fixed, and an easy one to write by accident.
+                    // Clamping the state means the twist simply stops at the
+                    // limit and starts unwinding the instant the wrist does,
+                    // which is what an arm at the end of its rotation does.
+                    {
+                        const float lim =
+                            g_armTwistLimitDeg.load(std::memory_order_relaxed) / kRadToDeg;
+                        if (theta > lim) theta = lim;
+                        if (theta < -lim) theta = -lim;
                     }
                     g_twistPrev[hand] = theta;
                     g_twistHavePrev[hand] = true;
@@ -6487,6 +6553,21 @@ void draw_debug_ui() {
                 "66.2 UU authored reach - past full extension on 19 of 44\n"
                 "samples while standing still. Raise this until reaching out\n"
                 "no longer stretches the forearm.");
+        float atl = g_armTwistLimitDeg.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("arm twist limit (deg)", &atl, 0.0f, 180.0f, "%.0f"))
+            g_armTwistLimitDeg.store(atl, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "How far the forearm may twist before it runs out.\n\n"
+                "The twist angle is carried continuously across frames to kill\n"
+                "an atan2 seam, and without a limit it winds without bound -\n"
+                "roll your wrist far enough one way and the arm goes all the\n"
+                "way around.\n\n"
+                "A real forearm stops: pronation and supination are the radius\n"
+                "rotating over the ulna, about 85 deg either side. Past that a\n"
+                "real arm rolls the hand by turning the SHOULDER instead, which\n"
+                "is a different joint and not this angle.\n\n"
+                "180 restores the old unlimited behaviour for comparison.");
         float eo = g_elbowOut.load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("elbow out", &eo, 0.0f, 1.0f, "%.2f"))
             g_elbowOut.store(eo, std::memory_order_relaxed);
