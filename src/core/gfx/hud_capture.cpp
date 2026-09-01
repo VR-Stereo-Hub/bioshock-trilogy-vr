@@ -20,6 +20,7 @@ namespace {
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_force{false};
 std::atomic<bool> g_gate{false};
+std::atomic<bool> g_gateLog{false}; // [hudgate] issue #31 witness, opt-in
 // Session 42 (BS2): the game composites gameswf directly on the BACKBUFFER
 // (bind = RENDER_TARGET only) and its tonemap is an INDEXED quad - both fail
 // BS1's fingerprints. Per-game opt-in; default off keeps BS1 bit-identical.
@@ -1433,6 +1434,40 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
     (void)swapchain; // letterbox sampling moved to letterbox_sample (detour HEAD)
     fov_watch_on_present(ctx); // session 22: map last interval's cb0 copy
 
+    // [hudgate] (issue #31, opt-in): the two one-eye HUD-burn signatures, read
+    // at interval end BEFORE the counters roll. Runs after vr::on_present_end
+    // popped this present's eye tag, so the interval is eye-attributable.
+    //   burn:       gameswf draws hit the unarmed route while a world pass ran
+    //               (the gate was still down - the menu-exit H1 window).
+    //   leaderMiss: >=20 swf draws but NO scene leader this interval, outside
+    //               a declared screen-only span - the whole HUD rendered into
+    //               this eye's world image (the muzzle-flash H4 window); the
+    //               3-interval hysteresis swallows exactly these blips.
+    if (g_gateLog.load(std::memory_order_relaxed)) {
+        // present thread only; primed==false on the first armed interval so
+        // the pre-arm cumulative count is swallowed instead of logged as a
+        // burn (it fooled the first live run of this witness).
+        static unsigned s_prevUnarmed = 0;
+        static bool s_primed = false;
+        const unsigned unarmed = g_cPass[kRouteUnarmed].load(std::memory_order_relaxed);
+        const unsigned unarmedDelta = s_primed ? unarmed - s_prevUnarmed : 0;
+        s_prevUnarmed = unarmed;
+        s_primed = true;
+        const bool world = scene_leader() != nullptr;
+        const int eye = bvr::vr::sr_last_pop_sign();
+        const char* eyeName = eye < 0 ? "LEFT" : (eye > 0 ? "RIGHT" : "untagged");
+        if (unarmedDelta > 0 && world)
+            BVR_LOG("[hudgate] burn eye=%s unarmedSwfDraws=%u swf=%d (gate was "
+                    "DOWN while a world pass ran - HUD burned into this eye)",
+                    eyeName, unarmedDelta, g_swfDrawsThisInterval);
+        if (!world && g_swfDrawsThisInterval >= 20 &&
+            !g_screenOnlyOn.load(std::memory_order_relaxed))
+            BVR_LOG("[hudgate] leaderMiss eye=%s swf=%d (no scene leader this "
+                    "interval outside a screen-only span - HUD went into this "
+                    "eye's image)",
+                    eyeName, g_swfDrawsThisInterval);
+    }
+
     // Session 22 kind (a): screen-only interval verdict (hysteresis over
     // present intervals, transitions logged - the flat instrument). Computed
     // BEFORE the vote reset below. The 20-draw floor keeps single stray swf
@@ -1527,8 +1562,27 @@ void set_enabled(bool on) {
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
 
 void set_gate(bool stereoActive) {
+    // [hudgate] (issue #31, opt-in): the gate is set at present TAIL but
+    // consumed by the NEXT draw, so a rising edge always lands one pass late -
+    // and the first tagged pass after a menu is the LEFT one. Transition lines
+    // make that window visible in a tester log.
+    if (g_gateLog.load(std::memory_order_relaxed)) {
+        bool was = g_gate.load(std::memory_order_relaxed);
+        if (was != stereoActive)
+            BVR_LOG("[hudgate] gate %s (consumed by the NEXT draw pass; eye "
+                    "this present popped: %d)",
+                    stereoActive ? "RAISED" : "dropped", bvr::vr::sr_last_pop_sign());
+    }
     g_gate.store(stereoActive, std::memory_order_relaxed);
 }
+
+void set_gate_log(bool on) {
+    g_gateLog.store(on, std::memory_order_relaxed);
+    BVR_LOG("[hudgate] witness %s", on ? "ARMED (gate transitions + one-eye "
+                                         "HUD-burn intervals will log)"
+                                       : "off");
+}
+bool gate_log() { return g_gateLog.load(std::memory_order_relaxed); }
 
 void set_force(bool on) {
     g_force.store(on, std::memory_order_relaxed);

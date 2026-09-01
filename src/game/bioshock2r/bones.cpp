@@ -1173,6 +1173,27 @@ bool handle_command(const char* args) {
                 g_flickLog.load(std::memory_order_relaxed) ? "on" : "off");
         return true;
     }
+    if (strncmp(args, "diag31", 6) == 0) {
+        // diag31 on|off|status - the issue-#31 umbrella: minute lines
+        // ([flick]+[pair]) plus the event-edge witnesses ([pairEdge] pairing
+        // breaks in core, [hudgate] one-eye HUD-burn intervals). One verb so a
+        // tester arms everything the hunt needs in one line.
+        if (strstr(args + 6, "on")) {
+            g_flickLog.store(true, std::memory_order_relaxed);
+            bvr::vr::set_pair_edge_log(true);
+            bvr::hud::set_gate_log(true);
+        } else if (strstr(args + 6, "off")) {
+            bvr::vr::set_pair_edge_log(false);
+            bvr::hud::set_gate_log(false);
+        }
+        BVR_LOG("[b2r] command: vrbones diag31 %s (minute lines %s, pairEdge "
+                "%s, hudgate %s)",
+                bvr::vr::pair_edge_log() ? "on" : "off",
+                g_flickLog.load(std::memory_order_relaxed) ? "on" : "off",
+                bvr::vr::pair_edge_log() ? "on" : "off",
+                bvr::hud::gate_log() ? "on" : "off");
+        return true;
+    }
     // cluster l|r <lo> <hi> <anchor> [extra]
     if (sscanf_s(args, "cluster %7s %d %d %d %d", side, (unsigned)sizeof side, &lo, &hi,
                  &anchor, &extra) >= 4) {

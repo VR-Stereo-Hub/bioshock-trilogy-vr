@@ -999,7 +999,7 @@ void heartbeat(uint64_t now) {
         uint32_t skipForeign = g_foreignCallerSkips.load(std::memory_order_relaxed);
         BVR_LOG("[pair] min=%llu pairs=%u ab=%u(exp=%u lft=%u unt=%u) "
                 "cap=%u/%u stale=%u/%u age<=%u/%u ms acqF=%u waitF=%u untag=%u "
-                "skip=%u/%u/%u ring=%u/%u/%u skew=%u reb=%u mirror=%d",
+                "skip=%u/%u/%u ring=%u/%u/%u skew=%u reb=%u mirror=%d deep=%u",
                 static_cast<unsigned long long>((now - s_flickStartMs) / 60000),
                 pp.pairs - s_prevPair.pairs, pp.aborts - s_prevPair.aborts,
                 pp.abortExpired - s_prevPair.abortExpired,
@@ -1017,7 +1017,8 @@ void heartbeat(uint64_t now) {
                 pp.ringPopped - s_prevPair.ringPopped,
                 pp.ringDropped - s_prevPair.ringDropped,
                 pp.ringCleared - s_prevPair.ringCleared,
-                pp.rebuilds - s_prevPair.rebuilds, pp.mirrorOn ? 1 : 0);
+                pp.rebuilds - s_prevPair.rebuilds, pp.mirrorOn ? 1 : 0,
+                pp.popDeep - s_prevPair.popDeep);
         s_prevPair = pp;
         s_prevSkipSilent = skipSilent;
         s_prevSkipStall = skipStall;

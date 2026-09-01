@@ -91,6 +91,11 @@ bool enabled();
 // override arms the redirect with no XR session - REQUIRED for flat testing
 // (projectionReady can never be true without a headset).
 void set_gate(bool stereoActive);
+// [hudgate] issue #31 witness (opt-in, default off; BS2 arms it): logs gate
+// transitions and one-eye HUD-burn intervals (unarmed swf draws over a world
+// pass; leader-miss blips outside screen-only spans).
+void set_gate_log(bool on);
+bool gate_log();
 void set_force(bool on);
 bool force();
 

@@ -428,6 +428,18 @@ std::atomic<uint32_t> g_pmAgeMax[2] = {};    // worst capture age at submit, ms
 std::atomic<uint64_t> g_pmLastCapMs[2] = {}; // tick of last SR capture per eye
 constexpr uint32_t kPmStaleAgeMs = 50; // > any healthy cadence (SR ~14ms, AER ~28ms)
 
+// Issue #31 hunt, this session: event-edge witnesses over the same mechanisms
+// the minute counters aggregate. A tester says "I saw the flicker at 12:03";
+// a minute-window counter cannot answer that, a timestamped line can. Off by
+// default and armed only by the BS2 adapter, so BS1/BSI logs are untouched.
+// NOTE the s62 premise above ("any pair break leaves the LEFT eye stale") is
+// only true for breaks on the RIGHT present; a lone-left break (pass 2
+// skipped) captures a fresh LEFT and submits with the RIGHT eye old - so the
+// probe must watch BOTH eyes, and staleR is as interesting as staleL.
+std::atomic<bool> g_pairEdgeLog{false};
+std::atomic<int> g_srLastPop{0};      // what THIS present popped; hud interval attribution
+std::atomic<uint32_t> g_pmPopDeep{0}; // pops that found a full pair queued (phase-offset tell)
+
 // Session 42 (Infinite I6 judder): pair-CADENCE statistics. The judder question
 // is not "how many pairs per second" but "how EVENLY are they spaced" - a mean
 // of 13.9 ms with 5 ms of swing reprojects differently every frame while both
@@ -940,18 +952,40 @@ std::atomic<bool> g_loggedFirstMirror{false};
 int sr_pop_eye() {
     uint32_t tail = g_srTail.load(std::memory_order_relaxed);
     uint32_t head = g_srHead.load(std::memory_order_acquire);
-    if (tail == head) return 0;
+    if (tail == head) {
+        g_srLastPop.store(0, std::memory_order_relaxed);
+        return 0;
+    }
     if (head - tail > 2) {
         // More than a pair in flight: submit/present pairing skewed (mode
         // boundary). Drop everything and resync from mono.
         g_srTail.store(head, std::memory_order_relaxed);
         g_srCleared.fetch_add(1, std::memory_order_relaxed);
         BVR_LOG("xr: sr tag ring skewed (depth %u) - cleared", head - tail);
+        g_srLastPop.store(0, std::memory_order_relaxed);
         return 0;
+    }
+    // Issue #31 (H3): in the healthy 1t loop a tag is popped by the Present
+    // inside the same engine Draw that pushed it, so depth at pop is 1. A pop
+    // that finds a FULL PAIR queued means push/present phase slipped by one -
+    // the offset the depth>2 self-heal above can never see. Counted always,
+    // transition-logged when the edge witness is armed. Present thread only.
+    static bool s_wasDeep = false;
+    if (head - tail == 2) {
+        g_pmPopDeep.fetch_add(1, std::memory_order_relaxed);
+        if (!s_wasDeep && g_pairEdgeLog.load(std::memory_order_relaxed))
+            BVR_LOG("[pairEdge] popDeep BEGAN (a full pair was queued at pop - "
+                    "eye tags now trail their presents by one)");
+        s_wasDeep = true;
+    } else if (s_wasDeep) {
+        if (g_pairEdgeLog.load(std::memory_order_relaxed))
+            BVR_LOG("[pairEdge] popDeep ended (pop depth back to 1)");
+        s_wasDeep = false;
     }
     int sign = g_srRing[tail & (kSrRingSize - 1)].load(std::memory_order_relaxed);
     g_srTail.store(tail + 1, std::memory_order_release);
     g_srPopped.fetch_add(1, std::memory_order_relaxed);
+    g_srLastPop.store(sign, std::memory_order_relaxed);
     return sign;
 }
 
@@ -2797,6 +2831,9 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         BVR_LOG("xr: pair hold outlived %u ms with no right-eye present - "
                 "aborting it (presents stopped mid-pair? alt-tab/level load)",
                 kPairHoldMaxMs);
+        if (g_pairEdgeLog.load(std::memory_order_relaxed))
+            BVR_LOG("[pairEdge] hold-expired (left was captured, its right "
+                    "sibling never presented)");
         g_srPairOpen = false;
         g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
         g_pmAbortExpired.fetch_add(1, std::memory_order_relaxed);
@@ -3694,7 +3731,26 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 g_pmAbortLeft.fetch_add(1, std::memory_order_relaxed);
             else
                 g_pmAbortUntag.fetch_add(1, std::memory_order_relaxed);
+            if (g_pairEdgeLog.load(std::memory_order_relaxed))
+                BVR_LOG("[pairEdge] %s (pair broke on the %s present; this "
+                        "submit captures fresh %s and the OTHER eye rides its "
+                        "old image)",
+                        srSign < 0 ? "lone-left" : "untagged-close",
+                        srSign < 0 ? "next LEFT" : "untagged",
+                        srSign < 0 ? "LEFT" : "index 0");
         }
+    } else if (srSign == +1 && srFrame &&
+               g_pairEdgeLog.load(std::memory_order_relaxed)) {
+        // Issue #31 (H2): a RIGHT-tagged present with no hold open ran its own
+        // xrWaitFrame + xrLocateViews, so the two eyes of this pair are tagged
+        // from DIFFERENT locate generations - the left eye's pose is one
+        // display period behind, which reprojection turns into a left-only
+        // lateral double under head motion.
+        BVR_LOG("[pairEdge] unheld-right (right present without a pair hold - "
+                "pose generations split across this pair; shouldRender=%d "
+                "pacing=%d)",
+                g_frameState.shouldRender ? 1 : 0,
+                g_srPairPacing.load(std::memory_order_relaxed) ? 1 : 0);
     }
     bool pairHold = srFrame && srSign < 0 && !pairSecond &&
                     g_srPairPacing.load(std::memory_order_relaxed) &&
@@ -3723,14 +3779,23 @@ void on_present_end(IDXGISwapChain* swapchain) {
             // [pair] probe: an untagged present in projection mode captures
             // into the LEFT swapchain (index 0) - candidate mechanism for a
             // wrong-content left eye.
-            if (projectionMode && !srFrame && !aerActive)
+            if (projectionMode && !srFrame && !aerActive) {
                 g_pmUntaggedProj.fetch_add(1, std::memory_order_relaxed);
+                if (g_pairEdgeLog.load(std::memory_order_relaxed))
+                    BVR_LOG("[pairEdge] untag-capture (untagged present wrote "
+                            "the LEFT swapchain, index 0)");
+            }
             uint32_t index = 0;
             int64_t tAcq = phase_now();
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             XrResult acqRes = xrAcquireSwapchainImage(g_swapchains[target], &ai, &index);
-            if (XR_FAILED(acqRes))
+            if (XR_FAILED(acqRes)) {
                 g_pmAcqFail.fetch_add(1, std::memory_order_relaxed);
+                if (g_pairEdgeLog.load(std::memory_order_relaxed))
+                    BVR_LOG("[pairEdge] acquire-fail eye=%d (%s) - this eye "
+                            "keeps its previous released image",
+                            target, res_str(acqRes));
+            }
             if (XR_SUCCEEDED(acqRes)) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
@@ -3740,12 +3805,17 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     imageReady = XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi));
                 }
                 phase_record(kPhAcquire, tAcq);
-                if (!imageReady)
+                if (!imageReady) {
                     // The release below still runs (spec requires it), which
                     // makes an UNDEFINED-content image the eye's most recently
                     // released one - counted, because that is one of the
                     // stale-left candidate mechanisms.
                     g_pmWaitFail.fetch_add(1, std::memory_order_relaxed);
+                    if (g_pairEdgeLog.load(std::memory_order_relaxed))
+                        BVR_LOG("[pairEdge] wait-fail eye=%d (an UNDEFINED "
+                                "image becomes this eye's released one)",
+                                target);
+                }
                 if (imageReady) {
                     // Same size + same typeless family (guaranteed at creation),
                     // so a straight GPU copy carries the frame - overlay
@@ -5400,8 +5470,18 @@ void pair_probe(PairProbe* out) {
     out->ringPopped = g_srPopped.load(std::memory_order_relaxed);
     out->ringDropped = g_srDropped.load(std::memory_order_relaxed);
     out->ringCleared = g_srCleared.load(std::memory_order_relaxed);
+    out->popDeep = g_pmPopDeep.load(std::memory_order_relaxed);
     out->mirrorOn = g_mirror.load(std::memory_order_relaxed);
 }
+
+void set_pair_edge_log(bool on) {
+    g_pairEdgeLog.store(on, std::memory_order_relaxed);
+    BVR_LOG("[pairEdge] witness %s", on ? "ARMED (event-edge lines will name "
+                                          "each pairing break as it happens)"
+                                        : "off");
+}
+bool pair_edge_log() { return g_pairEdgeLog.load(std::memory_order_relaxed); }
+int sr_last_pop_sign() { return g_srLastPop.load(std::memory_order_relaxed); }
 
 } // namespace bvr::vr
 
@@ -5487,6 +5567,9 @@ const char* cine_drive_name(CineDrive) { return "authored"; }
 float rendered_hfov_deg() { return 0.0f; }
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
+void set_pair_edge_log(bool) {}
+bool pair_edge_log() { return false; }
+int sr_last_pop_sign() { return 0; }
 void set_laser(const LaserConfig&) {}
 void set_aim_dot(const AimDotConfig&) {}
 void set_hud_quad(float, float, float) {}

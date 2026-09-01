@@ -435,11 +435,14 @@ void sr_push_eye(int eyeSign); // game thread, at submit; -1 left, +1 right
 // --- s62: the [pair] probe (issue #31, BS2 left-eye double image) -----------
 // Cumulative counters over the per-eye present pairing layer - the quantity
 // the bone-restamp [flick] instrument does NOT measure. The right-tagged
-// present submits BOTH eyes' most-recently-released images, so any pair break
-// leaves the LEFT eye stale while the right stays fresh; `staleL` counts
-// stereo submits whose left capture was older than 50 ms, and ageMax tracks
-// the worst observed capture age at submit. Read by the BS2 adapter's minute
-// line; purely additive (nothing in core prints, BS1/BSI behavior unchanged).
+// present submits BOTH eyes' most-recently-released images, so a pair break
+// parks ONE eye on an old image - WHICH eye depends on the break: a break on
+// the right present leaves the LEFT stale, but a lone-left break (pass 2
+// skipped) captures a fresh left and submits with the RIGHT old. The s62
+// premise that every break lands on the left was wrong (found this session);
+// watch staleL AND staleR. ageMax tracks the worst observed capture age at
+// submit. Read by the BS2 adapter's minute line; purely additive (nothing in
+// core prints, BS1/BSI behavior unchanged).
 struct PairProbe {
     uint32_t pairs = 0;          // completed L->R pairs
     uint32_t aborts = 0;         // total pair aborts (all kinds)
@@ -457,9 +460,20 @@ struct PairProbe {
     uint32_t ageMaxL = 0;        // worst capture age at submit, ms - DRAINED on read
     uint32_t ageMaxR = 0;        //   (window = the caller's own read cadence)
     uint32_t ringPushed = 0, ringPopped = 0, ringDropped = 0, ringCleared = 0;
+    uint32_t popDeep = 0;        // pops that found a full pair queued (H3 phase-offset tell)
     bool mirrorOn = false;       // desktop mirror pin state (vrmirror)
 };
 void pair_probe(PairProbe* out);
+
+// Issue #31 event-edge witness (this session): timestamped one-shot log lines
+// at each pairing-break site, so a reported sighting can be matched to a
+// mechanism by wall clock. Off by default; only the BS2 adapter arms it.
+void set_pair_edge_log(bool on);
+bool pair_edge_log();
+// The eye sign the CURRENT present popped (-1 left, +1 right, 0 none) - lets
+// per-present consumers running after the pop (hud interval roll) attribute
+// their interval to an eye.
+int sr_last_pop_sign();
 
 // --- M7: the aim laser ------------------------------------------------------
 // A row of soft dots along the hand's aim ray, submitted as extra XR quad
