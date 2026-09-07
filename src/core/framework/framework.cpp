@@ -6,6 +6,7 @@
 #include "core/util/crash.h"
 #include "core/util/diag.h"
 #include "core/util/log.h"
+#include "core/vr/apilayer_guard.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/adapter_registry.h"
 #include "game/igame_adapter.h"
@@ -143,6 +144,12 @@ void init() {
         BVR_LOG("D3D11 hook install failed - mod disabled, game runs flat");
         return;
     }
+
+    // Ahead of the first OpenXR call, which LoadLibrary's every implicit API
+    // layer: one whose library is x64 cannot load into this 32-bit process and
+    // fails xrCreateInstance for EVERY runtime, native and shim alike. An OBS
+    // capture layer is the measured case. See apilayer_guard.cpp.
+    vr::apilayer_guard();
 
     if (diag::skip("xr")) BVR_LOG("BVR_SKIP: OpenXR instance NOT created");
     else vr::init_instance(); // fail-soft: no runtime just means flat mode

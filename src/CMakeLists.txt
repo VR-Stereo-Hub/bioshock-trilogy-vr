@@ -39,6 +39,8 @@ add_library(bioshockvr SHARED
     core/input/xinput_bridge.h
     core/ui/overlay.cpp
     core/ui/overlay.h
+    core/vr/apilayer_guard.cpp
+    core/vr/apilayer_guard.h
     core/vr/openxr_input.cpp
     core/vr/openxr_input.h
     core/vr/openxr_runtime.cpp
