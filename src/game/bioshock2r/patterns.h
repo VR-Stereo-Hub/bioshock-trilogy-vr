@@ -476,6 +476,12 @@ constexpr uint32_t kSkelSharedDataOffset = 0x8;        // -> SharedSkeletonData
 // {fname_text-resolvable name, index in range} pairs; ambiguity or zero
 // candidates logs and falls back to the raw `vrbones map` dword dump.
 constexpr uint32_t kSkelPoseArrayOffset = 0x44;        // {data, count, max}
+// Session 74 (the left-eye flicker writer, ENGINE_NOTES s74): the dirty-flagged
+// pose update. `cmp byte [inst+0xA0],0; call [vtbl+0xA4]; mov byte [inst+0xA0],0`
+// at the call site below; the slot is what the wfix hook resolves at runtime.
+constexpr uint32_t kSkelInstDirtyOffset = 0xA0;        // byte: update pending
+constexpr uint32_t kSkelInstUpdateSlot = 0xA4;         // vtable byte offset (slot 41)
+constexpr uint32_t kSkelInstUpdateCallSiteRva = 0x5FB810; // FF 90 A4 00 00 00 (6 bytes)
 constexpr uint32_t kSkelPoseStride = 0x30;             // hkQsTransform
 constexpr uint32_t kSkelPoseTransOffset = 0x0;         // vec4
 constexpr uint32_t kSkelPoseQuatOffset = 0x10;         // xyzw

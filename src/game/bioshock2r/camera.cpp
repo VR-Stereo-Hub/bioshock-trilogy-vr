@@ -2403,6 +2403,9 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 // game thread outside hooked calls. Also the MENU-arming
                 // path - BS2's menu never runs PlayerCalcView.
                 scenedraw::apply_pending_vrstereo();
+                // s74: the left-eye flicker writer hook installs from this
+                // same lane (rig resolve and the F10 checkbox only post it).
+                bones::apply_pending_wfix();
                 // Overlay/command-posted resolution apply (session 37): live
                 // window resize + ini persistence, on the game thread, and it
                 // works from the main menu for the same reason vrstereo
