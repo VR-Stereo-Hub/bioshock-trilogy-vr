@@ -174,6 +174,7 @@ the parts that are actually fixed.
 | `CONTRIBUTING.md` | **Branch, commit and PR rules.** Read before your first commit of a session |
 | `docs/ORG-PRACTICES.md` | Repo and `VR-Stereo-Hub` settings that enforce the above (admin) |
 | `docs/STATUS.md` | **Session handoff**: current state, next steps, blockers, session log |
+| `docs/KNOWN-ISSUES.md` | **Known issues + review findings** per game: what is open, what was fixed and in which session, cleanup deferred to the healing session |
 | `docs/ROADMAP.md` | BS1/BS2 milestones M0–M10 with acceptance criteria and checkboxes |
 | `docs/ARCHITECTURE.md` | Module design, core/adapter contract, stereo strategy, decision log |
 | `docs/RESEARCH.md` | All research findings with sources (engine, prior art, VR runtimes, legal) |

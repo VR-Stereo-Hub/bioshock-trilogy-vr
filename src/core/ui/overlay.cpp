@@ -519,6 +519,13 @@ void on_present(IDXGISwapChain* swapchain) {
         g_visible = req != 0;
         ImGui::GetIO().MouseDrawCursor = g_visible;
     }
+    // Transition log (s74): a panel left open in the headset is invisible in
+    // the log otherwise, and under pad drive it swallows fire and turning.
+    static bool s_loggedVisible = false;
+    if (g_visible != s_loggedVisible) {
+        BVR_LOG("overlay: %s", g_visible ? "SHOWN" : "hidden");
+        s_loggedVisible = g_visible;
+    }
     g_visibleApplied.store(g_visible, std::memory_order_relaxed);
 
     if (!g_visible) return;

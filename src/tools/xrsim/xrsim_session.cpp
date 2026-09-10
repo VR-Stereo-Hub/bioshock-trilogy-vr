@@ -668,6 +668,15 @@ ID3D11Texture2D* swapchain_last_image(XrSwapchain handle, uint32_t* outW, uint32
     return sc->images[sc->lastReleased];
 }
 
+bool swapchain_release_info(XrSwapchain handle, uint32_t* outIdx, uint32_t* outFrame) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    SimSwapchain* sc = swapchain_get(handle);
+    if (!sc || !sc->everReleased) return false;
+    if (outIdx) *outIdx = sc->lastReleased;
+    if (outFrame) *outFrame = sc->releasedOnFrame;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Shims
 // ---------------------------------------------------------------------------

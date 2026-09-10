@@ -451,7 +451,10 @@ void compositor_init(ID3D11Device* device, ID3D11DeviceContext* context) {
     XRSIM_LOG("xrsim: compositor ready");
 }
 
+void compositor_hash_cleanup(); // defined with the hash-log statics below
+
 void compositor_shutdown() {
+    compositor_hash_cleanup();
     if (g_encodeRunning.exchange(false)) {
         g_qCv.notify_all();
         if (g_encodeThread.joinable()) g_encodeThread.join();
@@ -895,6 +898,155 @@ void compositor_on_end_frame(const SimSubmission& sub, bool capture) {
         g_queue.push_back(std::move(job));
     }
     g_qCv.notify_one();
+}
+
+// ---------------------------------------------------------------------------
+// Per-eye source-hash log (the BS2 left-eye flicker hunt, issue #31)
+// ---------------------------------------------------------------------------
+// Fingerprints the PROJECTION layer's two source textures - the exact images
+// the game released for each eye - NOT the composited RT: quad layers (laser,
+// HUD) move with the head, so a frozen eye image would still change the
+// composite and mask itself. A repeated hashL while hashR advances is the
+// stale-left signature; hashL matching the previous hashR is the eye-swap
+// signature. relAge counts submitted frames since that eye's swapchain was
+// last released into - the runtime-side witness of "this eye held an old
+// image", independent of the mod's own [pair] bookkeeping.
+// Runs on the present thread inside xrEndFrame (same thread as the capture
+// path), so the statics below need no lock.
+
+namespace {
+
+ID3D11Texture2D* g_hashStaging[2] = {};
+uint32_t g_hashW[2] = {}, g_hashH[2] = {};
+DXGI_FORMAT g_hashFmt[2] = {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN};
+FILE* g_hashFile = nullptr;
+bool g_hashFileFailed = false;
+
+bool hash_source_tex(int eye, ID3D11Texture2D* tex, uint64_t* outHash, double* outLuma) {
+    if (!tex || !g_device || !g_ctx) return false;
+    D3D11_TEXTURE2D_DESC d{};
+    tex->GetDesc(&d);
+    if (g_hashStaging[eye] &&
+        (g_hashW[eye] != d.Width || g_hashH[eye] != d.Height || g_hashFmt[eye] != d.Format)) {
+        g_hashStaging[eye]->Release();
+        g_hashStaging[eye] = nullptr;
+    }
+    if (!g_hashStaging[eye]) {
+        D3D11_TEXTURE2D_DESC sd = d;
+        sd.Usage = D3D11_USAGE_STAGING;
+        sd.BindFlags = 0;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        sd.MiscFlags = 0;
+        sd.MipLevels = 1;
+        sd.ArraySize = 1;
+        sd.SampleDesc = {1, 0};
+        if (FAILED(g_device->CreateTexture2D(&sd, nullptr, &g_hashStaging[eye]))) return false;
+        g_hashW[eye] = d.Width;
+        g_hashH[eye] = d.Height;
+        g_hashFmt[eye] = d.Format;
+    }
+    g_ctx->CopyResource(g_hashStaging[eye], tex);
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (FAILED(g_ctx->Map(g_hashStaging[eye], 0, D3D11_MAP_READ, 0, &m))) return false;
+    // FNV-1a over a fixed subsample (every 8th row, every 4th texel): the grid
+    // is deterministic, so identical images always agree, and any real frame
+    // change lands on it. 2560x2560 -> ~205k texels, well under a millisecond.
+    uint64_t hsh = 1469598103934665603ull;
+    uint64_t lumaSum = 0, samples = 0;
+    const auto* base = static_cast<const uint8_t*>(m.pData);
+    for (uint32_t y = 0; y < d.Height; y += 8) {
+        const uint8_t* row = base + static_cast<size_t>(y) * m.RowPitch;
+        for (uint32_t x = 0; x < d.Width; x += 4) {
+            uint32_t px;
+            memcpy(&px, row + static_cast<size_t>(x) * 4, 4);
+            hsh ^= px;
+            hsh *= 1099511628211ull;
+            const uint32_t rr = px & 0xFF, gg = (px >> 8) & 0xFF, bb = (px >> 16) & 0xFF;
+            lumaSum += (rr * 77 + gg * 151 + bb * 28) >> 8;
+            ++samples;
+        }
+    }
+    g_ctx->Unmap(g_hashStaging[eye], 0);
+    *outHash = hsh;
+    *outLuma = samples ? static_cast<double>(lumaSum) / samples : 0.0;
+    return true;
+}
+
+} // namespace
+
+void compositor_hash_cleanup() {
+    for (int e = 0; e < 2; ++e) {
+        if (g_hashStaging[e]) {
+            g_hashStaging[e]->Release();
+            g_hashStaging[e] = nullptr;
+        }
+        g_hashW[e] = g_hashH[e] = 0;
+        g_hashFmt[e] = DXGI_FORMAT_UNKNOWN;
+    }
+    if (g_hashFile) {
+        fclose(g_hashFile);
+        g_hashFile = nullptr;
+    }
+    g_hashFileFailed = false;
+}
+
+void compositor_hash_frame(const SimSubmission& sub) {
+    if (!g_device || !g_ctx) return;
+
+    const SimLayer* proj = nullptr;
+    for (uint32_t i = 0; i < sub.layerCount; ++i) {
+        if (sub.layers[i].type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+            proj = &sub.layers[i];
+            break;
+        }
+    }
+
+    uint64_t hsh[2] = {};
+    double luma[2] = {};
+    uint32_t idx[2] = {}, relFrame[2] = {}, relAge[2] = {};
+    if (proj) {
+        for (int e = 0; e < 2 && e < static_cast<int>(proj->viewCount); ++e) {
+            const XrSwapchain swp = proj->views[e].subImage.swapchain;
+            if (!swapchain_release_info(swp, &idx[e], &relFrame[e])) continue;
+            relAge[e] = (sub.frameIndex >= relFrame[e])
+                            ? static_cast<uint32_t>(sub.frameIndex - relFrame[e])
+                            : 0;
+            hash_source_tex(e, swapchain_last_image(swp, nullptr, nullptr), &hsh[e], &luma[e]);
+        }
+    }
+
+    for (int e = 0; e < 2; ++e) {
+        g.lastEyeHash[e].store(hsh[e]);
+        g.lastEyeRelAge[e].store(relAge[e]);
+    }
+    g.lastEyeHashFrame.store(sub.frameIndex);
+
+    if (!g_hashFile && !g_hashFileFailed) {
+        wchar_t p[MAX_PATH];
+        swprintf_s(p, L"%s\\capture\\eyehash.tsv", log::dir());
+        g_hashFile = _wfsopen(p, L"w", _SH_DENYNO);
+        if (!g_hashFile) {
+            g_hashFileFailed = true;
+            XRSIM_LOG_ONCE("xrsim: eyehash.tsv could not be opened - hash log disabled");
+            return;
+        }
+        fputs("frame\tdisplayNs\tproj\thashL\thashR\trelAgeL\trelAgeR\timgIdxL\timgIdxR"
+              "\tlumaL\tlumaR\tlayers\tstate\n",
+              g_hashFile);
+    }
+    if (g_hashFile) {
+        fprintf(g_hashFile,
+                "%llu\t%lld\t%d\t%016llx\t%016llx\t%u\t%u\t%u\t%u\t%.2f\t%.2f\t%u\t%s\n",
+                static_cast<unsigned long long>(sub.frameIndex),
+                static_cast<long long>(sub.displayTime), proj ? 1 : 0,
+                static_cast<unsigned long long>(hsh[0]), static_cast<unsigned long long>(hsh[1]),
+                relAge[0], relAge[1], idx[0], idx[1], luma[0], luma[1], sub.layerCount,
+                session_state_name(sub.snap.state));
+        // Flushed per line so a live tail (and a post-crash read) always sees
+        // the latest frame; at 80 presents/s the cost is noise next to the
+        // staging Map above.
+        fflush(g_hashFile);
+    }
 }
 
 } // namespace xrsim

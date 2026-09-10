@@ -127,6 +127,17 @@ struct Globals {
     std::atomic<uint32_t> captureHeight{1104};
     char captureTag[64] = {};
 
+    // Per-eye source fingerprinting (the BS2 left-eye flicker hunt). Every N
+    // submitted frames the projection layer's two SOURCE textures - the images
+    // the game actually released per eye, before any quad is composited over
+    // them - are hashed and appended to capture\eyehash.tsv. This is the
+    // temporal per-eye oracle the PNG capture path cannot be (quad layers move
+    // with the head and would mask a frozen eye image).
+    std::atomic<uint32_t> hashEvery{0};
+    std::atomic<uint64_t> lastEyeHash[2]{};
+    std::atomic<uint32_t> lastEyeRelAge[2]{};
+    std::atomic<uint64_t> lastEyeHashFrame{0};
+
     // Command bookkeeping, surfaced in state.json as the ack channel.
     std::atomic<uint32_t> cmdSeq{0};
     char lastCmd[256] = {};
@@ -161,6 +172,7 @@ uint64_t session_layered_frames();  // layer-carrying submissions (VdxrLayers po
 void swapchains_begin_frame_census();
 void swapchains_for_each(void (*fn)(uint32_t, const SimSwapchain&, void*), void* user);
 ID3D11Texture2D* swapchain_last_image(XrSwapchain handle, uint32_t* outW, uint32_t* outH);
+bool swapchain_release_info(XrSwapchain handle, uint32_t* outIdx, uint32_t* outFrame);
 
 // Resolve a space to a world pose at a given time, using the published snapshot.
 bool space_pose(const SimSpace& space, const FrameSnapshot& snap, Pose& out, bool& tracked);
@@ -231,6 +243,8 @@ void compositor_init(ID3D11Device* device, ID3D11DeviceContext* context);
 void compositor_shutdown();
 void compositor_on_end_frame(const SimSubmission& sub, bool capture);
 void compositor_note_layers(const SimSubmission& sub);
+// Per-eye source-hash log (issue #31 hunt); called from xrEndFrame when armed.
+void compositor_hash_frame(const SimSubmission& sub);
 uint32_t compositor_last_layer_count();
 uint32_t compositor_last_projection_views();
 

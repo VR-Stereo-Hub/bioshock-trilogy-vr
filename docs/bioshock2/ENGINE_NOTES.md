@@ -2476,3 +2476,136 @@ revisit only if the user reports them.
   `drive=authored+look`.
 - v0.7.0 (CMakeLists), packaged with tools/package.ps1 - ONE zip serves both
   games (the adapter registry picks by host exe).
+
+### Session 74 (2026-09-01) - issue #31 diagnosed live: the "left eye flicker" decomposed
+
+The flicker reproduced CONSTANTLY in a flat xrsim session (user watching the
+desktop window, which pins to the LEFT eye), which turned issue #31 from a
+headset-only report into a measured, photographed defect. Three separate
+artifacts were untangled; per-eye source hashes and the [pair] counters were
+CLEAN throughout, so the XR pairing/submission layer (s62's H1-H6 candidates)
+is EXONERATED for the visible symptom.
+
+**A. The hand/weapon pose snap (the constant "left eye flicker").**
+Per-eye captures (evidence: `%LOCALAPPDATA%\BioshockVR\bs2\evidence-s74-flicker\`,
+frames f116157/f116166 vs f116187/f116205) show, within ONE clean pair:
+- pass 2 / RIGHT eye renders the engine's AUTHORED viewmodel pose every tick
+  (`second_pass_replay` never re-applies the bone drive - the known TODO at
+  camera.cpp:2319-2322);
+- pass 1 / LEFT eye usually renders the DRIVEN pose but intermittently loses
+  the race to an engine restamp and renders authored for a frame - the flip
+  the user sees (and the desktop mirror shows), at the [flick] pe1 cadence
+  (~27 catches/s, dmax 16 ms exposure).
+So the headset percept is constant inter-eye pose rivalry plus a temporal flip
+in the left eye. fl1/fl2 stay 0 while wrong poses render, so the flush-point
+sentinel is NOT what the renderer consumes - the pass's mesh data is built
+earlier in the traversal. A-B: `vrhands off` removes the driven pose and the
+snap (partially confirmed live; blackout interrupted the controlled A-B-A).
+
+**B. The menu-transition burn (tester report "flickers when navigating menus").
+5/5 reproducible; witnessed and photographed.** Every pause-menu OPEN logs 3
+`[hudgate] leaderMiss` intervals (2 LEFT, 1 RIGHT: menu swf draws with no world
+pass, inside the 3-interval screen-only hysteresis window) and every CLOSE logs
+~145 unarmed swf draws burned into SIX consecutive presents (3 pairs, both
+eyes) before the gate rises - plus ONE `[pairEdge] unheld-right` (pose
+generations split across the resync pair) at every transition. Photographic
+evidence: f030038_left = the PAUSE MENU warped into the left projection eye.
+The s62 H1 hypothesis (gate one draw late, one left frame) was directionally
+right but understated: the cine-quad hysteresis holds the gate down for ~3
+pairs and hits BOTH eyes.
+
+**C. The weapon SCALE flicker (open).** With the drive off the user still saw
+the weapon flip big/small on the window. Not yet reproduced on a fresh boot
+(74-frame weapon-region sweep flat in both eyes); candidates: fgfov lens-write
+cadence, weapon-profile/wscale writes, or long-uptime state ("after playing a
+while"). Needs a longer soak or the user's live confirmation window.
+
+**Corrections and traps recorded this session:**
+- The s62 [pair] premise "any pair break leaves the LEFT eye stale" is wrong
+  for lone-left breaks (pass-2 skip): those park the RIGHT eye. Probe comments
+  amended (openxr_runtime.cpp/.h); watch staleL AND staleR.
+- Crash persistence: a hard kill (blackout) while the game fov write is live
+  leaves the written FOV baked in Shared.ini - this boot read back
+  `saved option 138` where the user's real option is 100. Any tester crash
+  does the same; the next boot then runs with a polluted option. NOT yet
+  fixed; restore the user's option and consider a startup sanity note.
+- xrsim `capture every` had a sticky captureTag (one `shot` poisoned all later
+  sequences into one filename) - fixed: arming a sequence clears the tag.
+
+**New instruments (all opt-in / sim-side, no frame-behavior change):**
+- `vrbones diag31 on|off` - umbrella: [flick]+[pair] minute lines,
+  `[pairEdge]` event-edge lines (lone-left, untagged-close, untag-capture,
+  acquire/wait-fail, hold-expired, unheld-right), `[hudgate]` witnesses (gate
+  transitions, per-eye burn and leaderMiss intervals).
+- `[pair]` minute line grew `deep=` (pops that found a full pair queued - the
+  H3 phase-offset tell; 0 all session).
+- xrsim `hash every <n>` - per-frame FNV hash + release-age + luma of each
+  eye's SOURCE projection texture into `capture\eyehash.tsv`; surfaced in
+  state.json (`eyeHash`); `tools/eye-seq-diff.ps1` flags left-stale,
+  right-stale, eye-swap, age-spike, one-eye luma-pop. Baseline: 1651
+  projection frames, zero anomalies, while the pose snap was visibly firing -
+  the class-A artifact lives in frame CONTENT, not frame identity.
+
+**s74 addendum - artifact A causally CONFIRMED live (three-state A-B-A, user
+witnessed on the flat window):** (1) `vrhands off` -> snap gone; (2) drive on
+but a fresh idle boot -> snap gone AND [flick] pe1 ~0/min (no ambient
+restamps); (3) drive on + rapid fire -> snap visible, ~4 pe1 catches per shot.
+The snap therefore requires BOTH the drive and an engine restamp - the race is
+the cause, and the restamp PRESSURE is state-dependent: ~0/min on a fresh
+idle boot vs ~1600/min after sustained play (the testers' "after playing for a
+while", and s41's ~10-minute onset). Shots are the reliable on-demand restamp
+source (the s62b fire-snap and this artifact are one mechanism).
+
+### Session 74 (cont.) - the left-eye flicker FIXED: the writer named and hooked
+
+**Why every earlier rung missed it.** A six-point sentinel probe (pass 1
+entry/flush/post-drain, pass 2 the same; `vrbones race`) read the hands bank
+as OURS at every point of the pair - even with the full mask scanned - while
+the left eye demonstrably rendered the engine's pose. The repaint sites were
+all correct and all too late: the bank was clean everywhere we could look, and
+the image was still wrong. Inference had run out; the writer had to be caught.
+
+**The write-watch (`vrbones watch on`).** Three debug registers on the first
+driven weapon-hand bone, a vectored handler recording writer EIP + EBP chain +
+pair context. Result, one salvo: ONE engine routine writes the pose (RVA
+0xEF751D..31, the three 16-byte groups), reached from
+- the game tick (x1324; chain 0x5FB816 <- 0x57798D <- 0x578270) - the normal
+  animation update the PE-lane repaint already absorbs, and
+- INSIDE PASS 1 ONLY (x33, ~2 per shot; chain 0x5FB816 <- 0x5E65D7 <-
+  0x3816C0) - never in pass 2.
+
+The shared call site 0x5FB810 is `mov eax,[esi]; call [eax+0xA4]` guarded by
+`cmp byte [esi+0xA0],0` and followed by `mov byte [esi+0xA0],0`: a
+DIRTY-FLAGGED virtual update on the SkeletonInstance (vtable slot 0xA4/4 = 41,
+vtable = patterns::kSkeletonInstanceVtableRva, resolved at runtime to RVA
+0x3398D, an ILT jump thunk). The pass-1 caller enters through another virtual
+(`call [vtbl+0x100]` at 0x5E65D5) - the render-side per-view update of the
+hands. Pass 2 is clean because the flag is already clear by then. That is the
+whole "left eye only" story: pass 1 re-evaluates the skeleton after every
+repaint site and before the mesh is drawn; pass 2 does not.
+
+**The fix (`vrbones wfix`, ships ON, auto-installed at rig resolve).** MinHook
+on that vtable-slot function with a convention-agnostic NAKED detour: filter
+`this` to g_skel / g_wSkel (every other skeletal mesh passes through
+untouched), game thread only, swap the caller's return address for a stub,
+jump to the original with the stack intact; the stub saves all registers +
+x87 state, runs `pe_repaint(3)` (site 3 -> catch phases 6/7) when pass 1 is
+in flight, restores, returns to the real caller. The repaint therefore lands
+between the writer and the mesh draw - the one window no earlier rung could
+reach.
+
+**Verification (sim, three-state A-B-A, same boot):**
+- counters: fix ON - every pass-1 writer return is followed by a catch (34
+  returns -> 66 hand catches; +24 -> +48); fix OFF - returns continue, catches
+  frozen; ON again - resumes 2 catches per return.
+- images: per-eye frame-to-frame diffs in the hands region track within ~2
+  with the fix ON; with it OFF the LEFT eye spikes alone (f002926 L25.4 vs
+  R9.3, f002972 L28.2 vs R17.0) - the raw recoil pose in the left eye with the
+  driven pose in the right, frozen on camera (evidence dir, `f002926_sbs.png`).
+- rest pose fix ON vs OFF: mean-abs-diff 0.14, 0.5% pixels - the fix moves
+  nothing at rest.
+- user, flat window: "now there's no snapping".
+- game stable across three hooked boots; the hook is inert for NPC skeletons.
+
+**Still open:** the menu-transition burn (artifact B, [hudgate]) and the
+weapon scale flicker (artifact C, not yet reproduced on a fresh boot).
