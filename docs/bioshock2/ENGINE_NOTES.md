@@ -2609,3 +2609,37 @@ reach.
 
 **Still open:** the menu-transition burn (artifact B, [hudgate]) and the
 weapon scale flicker (artifact C, not yet reproduced on a fresh boot).
+### Session 74 (2026-09-01) - the left-eye flicker: mechanism and fix (v0.8.3 hotfix)
+
+The "left eye flicker" (issue #31) is the hand/weapon pose snapping between the driven
+pose and the engine's authored pose. Measured in the flat simulator with per-eye captures
+of one clean stereo pair: pass 1 (LEFT) usually renders the driven hands, pass 2 (RIGHT)
+renders the authored pose; and the left flips to authored whenever the engine's skeleton
+update lands after the mod's last repaint. The XR pairing layer was clean throughout, so
+this is frame CONTENT, not frame identity. Three-state A-B-A, user witnessed: drive off ->
+no snap; drive on + fresh idle boot (no engine restamps) -> no snap; drive on + rapid fire
+(~4 restamps per shot) -> snap. The restamp pressure grows with play time (~0/min on a
+fresh boot, ~1600/min after sustained play) - the testers' "after playing for a while".
+
+**The writer.** A hardware write watch on the hands bank, walking the EBP chain at the
+hit, named the writer every time: the call site at RVA 0x5FB810 is `mov eax,[esi];
+call [eax+0xA4]` guarded by `cmp byte [esi+0xA0],0` and followed by
+`mov byte [esi+0xA0],0` - a dirty-flagged virtual update on the SkeletonInstance (slot
+0xA4/4 = 41 of the vtable the rig scan already resolves, `kSkeletonInstanceVtableRva`).
+It runs inside pass 1 only (the flag is clear by pass 2), after every repaint site and
+before the mesh is drawn. `patterns.h`: `kSkelInstDirtyOffset = 0xA0`,
+`kSkelInstUpdateSlot = 0xA4`, `kSkelInstUpdateCallSiteRva = 0x5FB810`
+(FF 90 A4 00 00 00, 6 bytes; the return address in the chain is 0x5FB816).
+
+**The fix (`vrbones wfix`, ships ON).** The slot's target is resolved from the vtable at
+runtime and hooked with MinHook; a naked detour filters on `this` (the hands or weapon
+skeleton instance) and the game thread, swaps the return address for a ret stub, and the
+stub repaints the driven pose (`pe_repaint(3)`) the moment the engine update returns -
+so the mesh that pass 1 draws is the driven one. Hardening after review: the accepted
+thread id is refreshed at every Draw entry (it was latched once and could be 0 if the rig
+resolved before the first hooked Draw); the saved-return slot is cleared at Draw entry
+and on world change (an unwind past the stub would otherwise disable the fix silently);
+the hook installs from the game thread's poll lane on a posted request, never inside a
+hooked Draw or from the F10 render thread, and an enable failure is retried. F10 checkbox
+"LEFT-EYE FLICKER FIX (s74)" under HANDS + AIM is the in-headset A/B; headset-confirmed
+on Quest 3 / VDXR.
