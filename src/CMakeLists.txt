@@ -77,6 +77,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/recorder.h
     game/bioshock1r/scenedraw.cpp
     game/bioshock1r/scenedraw.h
+    game/bioshock1r/startup_dialog.cpp
+    game/bioshock1r/startup_dialog.h
     game/bioshock2r/aim.cpp
     game/bioshock2r/aim.h
     game/bioshock2r/bioshock2r_adapter.cpp
