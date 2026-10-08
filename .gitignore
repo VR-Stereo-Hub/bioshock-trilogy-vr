@@ -39,3 +39,11 @@ desktop.ini
 /*_left.png
 /*_right.png
 /*_sbs.png
+
+# Third-party reference trees, cloned by tools\external-refs.ps1 (docs/MODDING_SDKS.md).
+# The Unofficial BioShock Editor carries no licence; neither tree is ever committed.
+/external/
+
+# Python bytecode from the offline tools (tools\bsmesh, tools\blender).
+__pycache__/
+*.pyc

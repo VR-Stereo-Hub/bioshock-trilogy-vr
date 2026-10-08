@@ -140,6 +140,7 @@ wait; finishing a feature is not permission to merge it.
 .\tools\tool-paths.ps1 [-Init]               # where IDA, Blender, UModel, ... are on this machine (local file)
 .\tools\ida-run.ps1 -Game bs1 -Stage         # headless IDA (docs/IDA_WORKFLOW.md); then: ida-run.ps1 -Game bs1 <script.py>
 .\tools\model-export.ps1 -Game bs1 -List <pkg>   # UModel; blender-run.ps1 for headless Blender (docs/MODEL_WORKFLOW.md)
+.\tools\bsmesh-export.ps1 -Game bs1 -Package <map> -Mesh <name> [-Check]   # a BS1 rig + Havok clips -> .glb for Blender
 .\tools\uscript-export.ps1 -Game bs1         # the local UnrealScript corpus (tools\uscript\bs1\)
 .\tools\host-test.ps1                        # pure-logic suites in tools\tests\, no game
 .\tools\lint.ps1                             # static checks before a commit
@@ -201,7 +202,9 @@ the parts that are actually fixed.
 | `docs/VERIFICATION.md` | **Verification catalog**: intent -> tool -> command -> how to read the result. The simulated OpenXR runtime, the command seam, screenshots, img-diff, frame dumps, record/replay - and what still needs a human in the headset |
 | `docs/TOOLS.md` | **The tool catalog, by question**: the local tool file, static RE, game content, host tests, running-process diagnostics, debug programs. Check it before deriving anything |
 | `docs/IDA_WORKFLOW.md` | **Headless IDA**: staging each game's exe, the md5 provenance check, the one-question script shape (RVAs, per-game anchors), where IDA sits in the order of work, traps |
-| `docs/MODEL_WORKFLOW.md` | **UModel + headless Blender, FFDec, the UnrealScript corpus**: what extracts per game (BS1 skeletal meshes do NOT), commands, workspace, traps |
+| `docs/MODEL_WORKFLOW.md` | **UModel + headless Blender, our BS1 rig/Havok converter, FFDec, the UnrealScript corpus**: what extracts per game, commands, workspace, traps |
+| `docs/MODDING_SDKS.md` | **The Unofficial BioShock SDK and CodeRed** (third-party, cloned to the gitignored `external\`): compiling new classes toward Remastered, CodeRed for Infinite, the open questions |
+| `docs/bioshock1/HAVOK_AND_PACKAGES.md` | BS1's package, skeletal-mesh and Havok packfile formats, and how each was derived |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |
 | `docs/bioshock2/ENGINE_NOTES.md` | BS2 knowledge base: verified RVAs, the ProcessEvent CalcView seam, BS1 deltas |

@@ -2,6 +2,51 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08 - s80: BS1's Havok rigs into Blender; the SDK and CodeRed read
+
+**Branch `claude/havok-blender`, off `claude/tools-workflows` (PR #86, not merged yet).**
+Offline tools and docs only: no mod source changes. No game was launched.
+
+### Current state
+
+**BS1 skeletal meshes, their Havok skeletons and their animation clips now convert to glTF
+and open in Blender** - the wall s79 hit with UModel. `.\tools\bsmesh-export.ps1 -Game bs1
+-Package <map> -Mesh <name> [-Check]`. Every layout was derived from the game, not guessed:
+the package tables, the `USkeletalMesh` serializer (decompiled, `tools\ida\sk1-sk4`), the
+Havok 2012 packfile, and the Havok class layouts, read out of `BioshockHD.exe`'s own `hkClass`
+initializers (`tools\bsmesh\hkclass_dump.py`). Formats: `docs/bioshock1/HAVOK_AND_PACKAGES.md`.
+
+| Checked | Result |
+|---|---|
+| `NEWPlayerHands` (the arms) | 47 bones (matches ENGINE_NOTES' `R_grip` 43, `IKbindLhandDummy` 44), 130 clips; bind, pistol fidget and Electro Bolt fidget render correctly in Blender; left/right checked numerically |
+| `ProtectorRosie`, `CorpseMale`, `BeaconBall_Mesh` | import and render posed |
+| Batch | `0-Lighthouse` 46/46, `1-Welcome` 69/69, `2-Fisheries` 51/53 (the 2 are empty 813-byte stubs, refused by name) |
+
+**The two references the user asked for are cloned (gitignored `external\`, via
+`tools\external-refs.ps1`) and read**: `docs/MODDING_SDKS.md`.
+
+- **New classes for Remastered - plausible, untested.** The Unofficial BioShock SDK compiles
+  UnrealScript (`ucc make`) for the 2007 game only. Measured offline: Remastered ships the
+  same 12 script packages (`BakedScripts\pc\*.U`, v142/56), its loader accepts any package
+  version >= 60 with no upper bound or licensee check (`tools\ida\pk1`), its exe has no
+  compiler, and `DynamicLoadObject` is there. Route and its three risks in MODDING_SDKS § 1.
+  The SDK installer was NOT run.
+- **CodeRed for Infinite - blocked on GObjObjects**, which ENGINE_NOTES records as not found.
+  Every other field CodeRed needs is mapped to a measured offset or marked unmeasured, and
+  the GObjObjects derivation (two IDA shapes plus a live `InternalIndex == i` read) is written
+  down. Needs a machine with Infinite.
+
+### Next steps
+
+1. Use the rig: sweep `solve_arm` against the real `NEWPlayerHands` weights in Blender (the
+   Dishonored arm-IK validation), and compare a live bone dump against the exported bind pose
+   and clip.
+2. The cheapest test of the new-class route (MODDING_SDKS § 1): needs the 2007 game + SDK and a
+   BS1 by-name ProcessEvent caller, then one launch.
+3. On a machine with Infinite: derive GObjObjects, then generate the CodeRed SDK.
+4. On a machine with BS2: `.\tools\bsmesh-export.ps1 -Game bs2 -Package <map> -List`.
+5. s79's next steps below still stand (the s78 shoulder question first).
+
 ## Session 2026-10-07 - s79: the Dishonored VR mod's tools, ported
 
 **Branch `claude/tools-workflows`, off `staging` after #84 merged.** Tools, the simulator
