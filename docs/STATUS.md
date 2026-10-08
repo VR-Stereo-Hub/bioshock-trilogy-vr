@@ -2,6 +2,77 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-07 - s75-s78 (BS1): the arm's twist and shoulder work, recorded and landed
+
+**Branch `feat/bs1-ik-improvements`, PR to `staging`.** s75-s77 (2026-08-31 to
+09-01) ended without a handoff and left their last stage uncommitted; s78 (this
+session, after a month away) audited the tree, committed it in logical pieces,
+merged `staging` in, and wrote this entry from the code, the commit trail and the
+logs on disk. No game was launched.
+
+### Current state
+
+| change | commit | headset |
+|---|---|---|
+| shoulder in the hands' frame (s74) | `13ed32b` | signed off |
+| arm length scale, default 1.0 (s75) | `890ae21` | not tuned |
+| forearm twist limit 85 deg (s75) | `d03ac49` | superseded by the next row |
+| twist: true-angle accumulator, rest pose, humerus split (s75b-s76) | `5ad5d8d` | iterated against logs, final state NOT signed off |
+| held arm solved through the actor about to be written (s77) | `5453d75` | one 26 s log since, not a test - see below |
+| 64-bit implicit OpenXR layer guard (`src/core/`) | `e929cfe` | ran 2026-09-07: OBS layer disabled, instance created on VDXR |
+| `armcap32` + `tools/armcap.ps1`, `docs/bioshock1/IK-RESEARCH.md` | `0ed156f` | tool built, no capture taken |
+
+`git diff staging...HEAD -- src/core/` is the layer guard ONLY. It changes nothing
+unless an implicit layer that cannot load in a 32-bit process is registered, and
+then it sets that layer's own opt-out variable in this process (never the
+registry). It reaches BS2 and Infinite on purpose: the failure it fixes takes VR
+down in every 32-bit game.
+
+**Rejected in the headset and kept out of this branch:** the FRIK reach stretch
+and shoulder reach offset (`archive/s75-reach-fixes`, 2026-08-31). The left
+shoulder sat forward of the right and the whole arm stretched. Cause: the rig's
+arm (66.2 UU) is shorter than the player's, so both fired on every frame. The
+branch was reset to `13ed32b` and only the arm scale redone. Retry them only
+after the arm scale is tuned - IK-RESEARCH.md section 5 has the table.
+
+**Corrected this session:** IK-RESEARCH.md and a `bones.cpp` comment said this repo
+is GPL-3.0 like FRIK. It is MIT. FRIK is concepts only; no code was copied.
+
+### Next steps
+
+1. **One headset run, one question: does the shoulder stay put when the main
+   wrist rolls?** Both hands still, roll the main wrist slowly both ways. Read
+   `SHOULDERLAND` (always on): the s77 fix predicts ~0 UU on the held arm. The
+   only log since the fix (2026-09-07, 26 s, ordinary play) had both arms at a
+   median 3.7 / max 20.6 UU - better than the 32.3 before, not ~0.
+2. Same run, the free arm's wrist roll: `ARMDIAG` shows the fore/hum split and
+   whether `fp` collapses. Judge whether the forearm still pinches past 85 deg.
+3. Tune the arm scale (F10) before revisiting any reach fix.
+4. Take an `armcap` capture (IK-RESEARCH.md section 7) when there is a session
+   for it - it turns the elbow model and the shoulder position from guesses into
+   fits.
+5. The port of Dishonored VR's tools and workflows (headless IDA, UModel +
+   Blender, the local tool file) is the next branch, off `staging` once this lands.
+
+### Session log 2026-10-07 (s78)
+
+Audit only, then landing. Found three older branches of the same author with
+commits not on `staging` - `docs/viewmodel-rig-differences`,
+`probe/weapon-bob-source`, `archive/s75-reach-fixes` - and checked each: the first
+two were landed later in rewritten form (staging has newer versions of every
+file), the third is the rejected line above. The one thing found only on an old
+branch is a 2026-08-21 note that the wrench idle animations had stopped playing
+(`795bc2f`), judged wanted at the time; not carried forward because the drive
+has been rebuilt twice since.
+
+The uncommitted s75c-s77 tree was split by hunk into the twist commit and the
+actor commit so each reverts on its own; findings went to ENGINE_NOTES sessions
+75-77 in the same commits. Two verbatim chat quotes in the new code comments and
+two in IK-RESEARCH.md were rewritten as observations. Debug and Release build
+clean after the `staging` merge; Debug installed to BS1.
+
+---
+
 ## Session 2026-09-01 - s74: BS2 issue #31 diagnosed LIVE - the flicker decomposed
 
 Branch `claude/bioshock2-left-eye-flicker-3ca08e` (off `staging`), diagnosis-only
