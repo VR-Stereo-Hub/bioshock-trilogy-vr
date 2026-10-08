@@ -519,9 +519,9 @@ std::atomic<float> g_elbowOut{0.35f};
 //
 // One number, because everything about the arm is defined against L1 and L2 -
 // scale them and the triangle, the reach and the elbow all follow. FRIK does
-// the same thing (rollingrock/Fallout-4-VR-Body, GPL-3.0, same licence as this
-// repo): armLength is a configured value adjusted in its in-VR body menu, and
-// every arm quantity scales off it.
+// the same thing (rollingrock/Fallout-4-VR-Body): armLength is a configured
+// value adjusted in its in-VR body menu, and every arm quantity scales off it.
+// FRIK is GPL-3.0 and this repo is MIT, so the idea is taken, not the code.
 //
 // The authored FRACTIONS the twist helpers sit at along the forearm must not
 // change with it - see the divisor at the helper loop, which cancels this
