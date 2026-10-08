@@ -257,6 +257,22 @@ bool sway_kill();
 // log on|off (in-headset telemetry: head/controller/camera/actor/target/bone
 // samples at ~5 Hz so a headset session can be diagnosed from the log)
 void handle_command(const char* args);
+// s82 P1: the skeleton-evaluator probe (`vrbones evalprobe on`), once per CalcView with
+// the hands actor. A no-op while the probe is off.
+void eval_probe_tick(void* handsActor);
+
+// s83 mode 4 (Dishonored hands, docs/bioshock1/HANDS_DISHONORED.md). m4_frame, once per
+// CalcView in mode 4: publishes both hands' world targets (the held hand as mode 3's
+// actor `heldActorLoc` + `gpHeld.rot`, the free hand as mode 3's free-hand target from
+// `gpFree`), the shoulders, and sets the dirty byte so the engine evaluates. It never
+// writes the actor. The composition itself runs in the evaluator hook (m4_after_eval)
+// and again at the scene build (m4_late, from hands::late_write). m4_release hands the
+// skeleton back when leaving mode 4.
+bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const GamePose& gpHeld,
+              const float heldActorLoc[3], bool freeValid, const GamePose& gpFree);
+void m4_after_eval();
+void m4_late();
+void m4_release();
 
 // True while `vrbones log on` - camera.cpp and hands.cpp contribute their
 // raw-pose lines to the same telemetry stream (each site throttles itself to

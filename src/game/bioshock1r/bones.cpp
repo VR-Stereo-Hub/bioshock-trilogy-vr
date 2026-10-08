@@ -18,6 +18,7 @@
 #include "game/bioshock1r/bones.h"
 
 #include "game/bioshock1r/arm_ik.h"
+#include "game/bioshock1r/hand_compose.h"
 
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h" // backbuffer_dims: the lens laws are aspect-parameterised
@@ -27,8 +28,11 @@
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scenedraw.h"
 
 #include <windows.h>
+
+#include <MinHook.h>
 
 #include <imgui.h>
 
@@ -1247,6 +1251,155 @@ bool locate(void* handsActor) {
 void set_dirty(uint8_t v) {
     if (!g_skelInst) return;
     write_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstDirtyOffset, &v, 1);
+}
+
+// ---- s82: THE EVALUATOR HOOK (HANDS_DISHONORED.md P1) ------------------------
+//
+// The Dishonored hand model composes onto the engine's FRESHLY evaluated pose, so it
+// must run the moment the engine rebuilds the bone array. This hooks that routine -
+// SkeletonInstance vtable slot +0x9C (patterns::kSkelInstEvaluateRva, ENGINE_NOTES s82)
+// - the way BS2's wfix hooks its twin (bioshock2r/bones.cpp, s74), duplicated here per the
+// decoupling rule. The routine's convention is not trusted (Hex-Rays reads an @<ebp>
+// argument), so the detour is naked: on entry it swaps the caller's return address for a
+// stub and jumps to the original untouched; the stub runs ev_post() with every register
+// and the x87 state preserved, then returns to the real caller. Only the HANDS rig's
+// instance and only the game thread are taken; everything else passes straight through.
+//
+// P1 is an OBSERVER: ev_post() copies the evaluated pose and counts where in the frame
+// the evaluation ran. Nothing is written. `vrbones evalprobe on` drives it.
+void* g_evOrig = nullptr;
+bool g_evCreated = false;
+uintptr_t g_evRetSaved = 0;  // the hooked call's real return address (game thread)
+uint32_t g_evTid = 0;        // the game thread, refreshed by the probe tick
+uint32_t g_evForeign = 0;    // our instance, another thread (counted in the detour)
+uint32_t g_evNested = 0;
+std::atomic<bool> g_evProbe{false};
+// s83: mode 4 is driving. reapply() and the other mode-3 replays stand down: they would
+// repaint a stale cache over the composed pose and clear the dirty byte mode 4 relies on.
+std::atomic<bool> g_m4On{false};
+std::atomic<uint32_t> g_evPost{0}, g_evTick{0}, g_evPass1{0}, g_evPass2{0};
+uint32_t g_evProbeLastPosts = 0;
+Qts g_evCopy[kMaxBones];
+Qts g_evPrev[kMaxBones];
+int g_evCopyCount = 0;
+void* g_evCopyInst = nullptr; // whose evaluation the copy is - a new rig is a new copy
+bool g_evCopyValid = false, g_evPrevValid = false;
+float g_evAnimDelta = 0.0f; // largest bone move between consecutive evaluations, UU
+struct EvCaller {
+    uint32_t rva = 0, count = 0;
+};
+EvCaller g_evCallers[8];
+
+void __cdecl ev_post() {
+    g_evPost.fetch_add(1, std::memory_order_relaxed);
+    const int depth = scenedraw::build_depth();
+    if (depth <= 0) g_evTick.fetch_add(1, std::memory_order_relaxed);
+    else if (scenedraw::in_second_build()) g_evPass2.fetch_add(1, std::memory_order_relaxed);
+    else g_evPass1.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t rva = g_imageBase ? static_cast<uint32_t>(g_evRetSaved - reinterpret_cast<uintptr_t>(g_imageBase)) : 0;
+    for (EvCaller& c : g_evCallers) {
+        if (c.rva == rva || c.rva == 0) {
+            c.rva = rva;
+            ++c.count;
+            break;
+        }
+    }
+    const int n = g_boneCount < kMaxBones ? g_boneCount : kMaxBones;
+    if (n <= 0 || !g_bones) return;
+    if (g_evCopyValid) {
+        memcpy(g_evPrev, g_evCopy, sizeof(Qts) * n);
+        g_evPrevValid = true;
+    }
+    g_evCopyValid = read_n(g_bones, g_evCopy, sizeof(Qts) * n);
+    g_evCopyCount = g_evCopyValid ? n : 0;
+    g_evCopyInst = g_skelInst;
+    m4_after_eval(); // s83: mode 4 composes onto exactly this pose (a no-op otherwise)
+    if (g_evCopyValid && g_evPrevValid) {
+        for (int i = 0; i < n; ++i) {
+            const float d[3] = {g_evCopy[i].p[0] - g_evPrev[i].p[0], g_evCopy[i].p[1] - g_evPrev[i].p[1],
+                                g_evCopy[i].p[2] - g_evPrev[i].p[2]};
+            const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (m > g_evAnimDelta) g_evAnimDelta = m;
+        }
+    }
+}
+
+__declspec(naked) void ev_ret_stub() {
+    __asm {
+        pushad
+        pushfd
+        sub esp, 108
+        fnsave [esp]
+        call ev_post
+        frstor [esp]
+        add esp, 108
+        popfd
+        popad
+        push dword ptr [g_evRetSaved]
+        mov dword ptr [g_evRetSaved], 0
+        ret
+    }
+}
+
+__declspec(naked) void ev_detour() {
+    __asm {
+        push eax
+        ; only the hands rig's instance (ecx = this)
+        cmp ecx, [g_skelInst]
+        jne passthrough
+        mov eax, fs:[0x24]           ; current thread id (TEB)
+        cmp eax, [g_evTid]
+        je gamethread
+        inc dword ptr [g_evForeign]
+        jmp passthrough
+      gamethread:
+        cmp dword ptr [g_evRetSaved], 0
+        je take
+        inc dword ptr [g_evNested]
+        jmp passthrough              ; nested call - leave it alone
+      take:
+        mov eax, [esp + 4]           ; the caller's return address
+        mov [g_evRetSaved], eax
+        mov eax, offset ev_ret_stub
+        mov [esp + 4], eax
+      passthrough:
+        pop eax
+        jmp dword ptr [g_evOrig]
+    }
+}
+
+bool ev_install() {
+    if (g_evCreated) return true;
+    if (!g_imageBase) return false;
+    const uint8_t* vt = g_imageBase + patterns::kSkeletonInstanceVtableRva;
+    void* slot = nullptr;
+    if (!read_n(vt + patterns::kSkelInstEvaluateSlot, &slot, sizeof slot)) {
+        BVR_LOG("[bones] evalhook: SkeletonInstance vtable slot 0x%X unreadable",
+                patterns::kSkelInstEvaluateSlot);
+        return false;
+    }
+    const uint32_t rva = static_cast<uint32_t>(static_cast<uint8_t*>(slot) - g_imageBase);
+    if (rva != patterns::kSkelInstEvaluateRva) {
+        BVR_LOG("[bones] evalhook: REFUSED - slot 0x%X holds RVA 0x%X, the derived evaluator is "
+                "0x%X (another build? re-run tools\\ida\\hd1_skelinst_update.py)",
+                patterns::kSkelInstEvaluateSlot, rva, patterns::kSkelInstEvaluateRva);
+        return false;
+    }
+    MH_STATUS st = MH_CreateHook(slot, reinterpret_cast<void*>(&ev_detour), &g_evOrig);
+    if (st != MH_OK && st != MH_ERROR_ALREADY_CREATED) {
+        BVR_LOG("[bones] evalhook: MH_CreateHook failed: %s", MH_StatusToString(st));
+        return false;
+    }
+    st = MH_EnableHook(slot);
+    if (st != MH_OK && st != MH_ERROR_ENABLED) {
+        BVR_LOG("[bones] evalhook: MH_EnableHook failed: %s", MH_StatusToString(st));
+        return false;
+    }
+    g_evCreated = true;
+    BVR_LOG("[bones] evalhook: the skeleton evaluator is HOOKED at RVA 0x%X (slot 0x%X) - "
+            "observer only, nothing is written",
+            rva, patterns::kSkelInstEvaluateSlot);
+    return true;
 }
 
 // ---- quat helpers over the Qts layout ---------------------------------------
@@ -6528,6 +6681,7 @@ void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
 }
 
 void reapply() {
+    if (g_m4On.load(std::memory_order_relaxed)) return; // s83: mode 4 composes its own
     // Only replay a FRESH write (the paired first pass of this frame). A stale
     // cache must never keep painting an old pose after the drive stops.
     if (!g_cacheSkelInst || g_cacheSkelInst != g_skelInst || !g_bones) return;
@@ -6569,6 +6723,416 @@ void reapply() {
             }
         }
         wskel_set_dirty(0);
+    }
+}
+
+// ---- s83: MODE 4, THE DISHONORED HANDS (HANDS_DISHONORED.md P4) -------------
+//
+// The hands actor stays where the engine puts it (on the camera, Hands.UpdateLocation)
+// and is never written - so there is no rotation for the engine to overwrite and no roll
+// for it to erase (the ACTORWATCH class, 312 hits in the s81 run). The engine evaluates
+// the hand skeleton every tick (the dirty byte is set every CalcView; s82's simulator run
+// measured one evaluation per tick, always in the game tick, never inside a render pass),
+// and the moment it does, each hand is composed onto that FRESH pose:
+//
+//     D    = Target * inverse(A[wrist])      hand_compose.h, Dishonored's delta
+//     B[i] = D * A[i]                        every bone of the hand - fingers, the weapon
+//                                            attach (43) and its tip (44) - so the
+//                                            animation plays inside a hand that sits
+//                                            exactly on the controller
+//
+// It is composed twice per frame from the same source copy: right after the evaluation
+// (ev_post) and again at the scene build (hands::late_write), with the actor transform
+// read THEN - the one the renderer is about to use, which is Dishonored's draw-time read.
+// The arms are arm IK v2 to the composed wrists, in the engine-placed actor's frame.
+//
+// Targets: the HELD hand takes mode 3's own placement at idle (the actor mode 3 would
+// write, times the wrist captured once per holdable at idle), so every per-weapon profile
+// carries over unchanged and then stays put through every animation. The FREE hand takes
+// mode 3's free-hand target as is - it was already wrist-normalised (s71w).
+namespace {
+struct M4Hand {
+    bool valid = false;
+    float p[3] = {};             // the wrist target, WORLD
+    float q[4] = {0, 0, 0, 1};
+    bool fromIdle = false;       // held hand: built from the idle capture
+};
+struct M4State {
+    bool active = false;
+    uint64_t ms = 0;             // when the targets were set (CalcView)
+    void* actor = nullptr;
+    int held = 1;
+    M4Hand hand[2];
+    // Held hand: mode 3's actor, for the idle-capture composition at compose time.
+    float loc3[3] = {};
+    float q3[4] = {0, 0, 0, 1};
+    // Arms: the shoulders and body axes, WORLD, from the same formula solve_arm uses.
+    float shoulder[2][3] = {};
+    float F[3] = {}, R[3] = {}, U[3] = {};
+    float scale[2] = {1, 1};
+    float armScale = 1;
+    bool arms = false;
+};
+M4State g_m4;
+// The held hand's wrist at idle, component space, per holdable.
+struct M4Idle {
+    bool valid = false;
+    const void* key = nullptr;
+    int hand = -1;
+    uint64_t idleSince = 0;
+    Qts wrist{};
+};
+M4Idle g_m4Idle;
+struct M4ArmHist {
+    bool valid = false;
+    uint64_t ms = 0;
+    float poleBody[3] = {};
+    float twist = 0;
+};
+M4ArmHist g_m4Arm[2];
+std::atomic<uint32_t> g_m4Composes{0}, g_m4Late{0}, g_m4Skips{0};
+
+int m4_wrist(int hand) { return hand == 1 ? patterns::kBoneRWrist : patterns::kBoneLWrist; }
+void m4_range(int hand, int* first, int* last) {
+    *first = hand == 1 ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+    *last = hand == 1 ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+}
+
+void m4_compose(bool late) {
+    if (!g_m4.active || !g_skelInst || !g_bones || !g_evCopyValid || g_evCopyInst != g_skelInst) return;
+    if (GetTickCount64() - g_m4.ms > 250) { // stale targets: a gated frame or a menu
+        g_m4Skips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const int n = g_evCopyCount;
+    if (n < patterns::kHandsRigBoneCount) return;
+    // The actor as the renderer is about to use it - engine-placed, never written here.
+    float aLoc[3];
+    int32_t aRot[3];
+    if (!read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorLocOffset, aLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorViewDirOffset, aRot, 12))
+        return;
+    float k = 1.0f;
+    if (!ds_read(g_m4.actor, &k) || !(k > 0.01f)) k = 1.0f;
+    float qa[4], qaInv[4];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    quat_conj(qa, qaInv);
+    auto to_comp_p = [&](const float w[3], float out[3]) {
+        const float d[3] = {w[0] - aLoc[0], w[1] - aLoc[1], w[2] - aLoc[2]};
+        qts_rotate(qaInv, d, out);
+        for (int i = 0; i < 3; ++i) out[i] /= k;
+    };
+    auto to_comp_v = [&](const float w[3], float out[3]) { qts_rotate(qaInv, w, out); };
+    const Qts* A = g_evCopy;
+    namespace hc = hand_compose;
+    namespace ik = arm_ik;
+    const uint64_t now = GetTickCount64();
+    for (int h = 0; h < 2; ++h) {
+        const M4Hand& T = g_m4.hand[h];
+        if (!T.valid) continue;
+        const int w = m4_wrist(h);
+        // The target, world.
+        float tp[3], tq[4];
+        if (h == g_m4.held) {
+            // Mode 3's placement: its actor times the wrist captured at idle - or, until
+            // a capture exists, times this frame's wrist (exactly what mode 3 renders).
+            const Qts& W = (g_m4Idle.valid && g_m4Idle.hand == h) ? g_m4Idle.wrist : A[w];
+            const float wp[3] = {W.p[0] * k, W.p[1] * k, W.p[2] * k};
+            float r[3];
+            qts_rotate(g_m4.q3, wp, r);
+            for (int i = 0; i < 3; ++i) tp[i] = g_m4.loc3[i] + r[i];
+            quat_mul(g_m4.q3, W.q, tq);
+        } else {
+            memcpy(tp, T.p, 12);
+            memcpy(tq, T.q, 16);
+        }
+        // ...in component space.
+        float cp[3], cq[4];
+        to_comp_p(tp, cp);
+        quat_mul(qaInv, tq, cq);
+        const float s = g_m4.scale[h];
+        hc::Rigid target{ik::normalized(ik::quat(cq)), ik::vec(cp)};
+        ik::Bone src;
+        memcpy(src.p, A[w].p, 12);
+        memcpy(src.q, A[w].q, 16);
+        const hc::Rigid D = hc::delta(target, src, ik::Vec{});
+        int first = 0, last = 0;
+        m4_range(h, &first, &last);
+        ik::Bone composedWrist;
+        for (int i = first; i <= last && i < n; ++i) {
+            // Carried by D, the hand's own offsets from the wrist scaled by the hand scale.
+            const ik::Vec off = (ik::vec(A[i].p) - ik::vec(A[w].p)) * s;
+            const ik::Vec p = target.t + ik::rotate(D.q, off);
+            const ik::Quat q = ik::normalized(ik::mul(D.q, ik::normalized(ik::quat(A[i].q))));
+            float pw[3], qw[4], sw[3] = {A[i].s[0] * s, A[i].s[1] * s, A[i].s[2] * s};
+            ik::put(p, pw);
+            for (int c = 0; c < 4; ++c) qw[c] = q.v[c];
+            if (!write_n(g_bones[i].p, pw, 12)) return;
+            write_n(g_bones[i].q, qw, 16);
+            // The .s channel only where mode 3 writes it too (the scale mode), so the
+            // weapon is not sized twice - its own skeleton lane sizes it (wskel_drive).
+            if (s != 1.0f && scale_selects(g_scaleMode.load(std::memory_order_relaxed), h, i, first))
+                write_n(g_bones[i].s, sw, 12);
+            if (i == w) {
+                memcpy(composedWrist.p, pw, 12);
+                memcpy(composedWrist.q, qw, 16);
+            }
+        }
+        // The arm, to the composed wrist, from the body-frame shoulder.
+        if (!g_m4.arms) continue;
+        const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        ik::Ref ref;
+        ik::Bone* rb[5] = {&ref.clavicle, &ref.upper, &ref.fore, &ref.twist[0], &ref.twist[1]};
+        for (int j = 0; j < 5; ++j) {
+            memcpy(rb[j]->p, A[sl[j]].p, 12);
+            memcpy(rb[j]->q, A[sl[j]].q, 16);
+        }
+        memcpy(ref.wristP, A[w].p, 12);
+        memcpy(ref.wristQ, A[w].q, 16);
+        ik::Input in;
+        float sc[3], fc[3], rc[3], uc[3];
+        to_comp_p(g_m4.shoulder[h], sc);
+        to_comp_v(g_m4.F, fc);
+        to_comp_v(g_m4.R, rc);
+        to_comp_v(g_m4.U, uc);
+        const ik::Vec F = ik::vec(fc), R = ik::vec(rc), U = ik::vec(uc);
+        const float side = h == 1 ? 1.0f : -1.0f;
+        in.shoulder = ik::vec(sc);
+        in.wrist = ik::vec(composedWrist.p);
+        memcpy(in.wristQ, composedWrist.q, 16);
+        in.pole = U * -1.0f + R * (side * g_elbowOut.load(std::memory_order_relaxed)) + F * -0.3f;
+        in.outward = R * side;
+        M4ArmHist& hist = g_m4Arm[h];
+        in.fresh = hist.valid && now - hist.ms < 250;
+        if (in.fresh) {
+            in.priorPole = F * hist.poleBody[0] + R * hist.poleBody[1] + U * hist.poleBody[2];
+            in.priorTwist = hist.twist;
+        }
+        in.scale = s;
+        in.lengthScale = g_m4.armScale;
+        ik::Output o;
+        if (!ik::pose(ref, in, o)) {
+            hist.valid = false;
+            continue;
+        }
+        const ik::Bone* ob[5] = {&o.clavicle, &o.upper, &o.fore, &o.twist[0], &o.twist[1]};
+        for (int j = 0; j < 5; ++j) {
+            const float sv[3] = {A[sl[j]].s[0] * ob[j]->s[0], A[sl[j]].s[1] * ob[j]->s[1],
+                                 A[sl[j]].s[2] * ob[j]->s[2]};
+            write_n(g_bones[sl[j]].p, ob[j]->p, 12);
+            write_n(g_bones[sl[j]].q, ob[j]->q, 16);
+            write_n(g_bones[sl[j]].s, sv, 12);
+        }
+        // History is committed once per evaluation, not per compose, so the late
+        // recompose of the same frame cannot advance it twice.
+        if (!late) {
+            hist.valid = true;
+            hist.ms = now;
+            hist.poleBody[0] = ik::dot(o.basePole, F);
+            hist.poleBody[1] = ik::dot(o.basePole, R);
+            hist.poleBody[2] = ik::dot(o.basePole, U);
+            hist.twist = o.trackedTwist;
+        }
+    }
+    (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
+}
+} // namespace
+
+void m4_after_eval() { m4_compose(false); }
+
+void m4_late() { m4_compose(true); }
+
+void m4_release() {
+    if (!g_m4.active) return;
+    g_m4.active = false;
+    g_m4On.store(false, std::memory_order_relaxed);
+    set_dirty(1); // the engine rebuilds its own pose on the next evaluation
+    BVR_LOG("[bones] mode 4 released - the engine owns the hands again");
+}
+
+bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const GamePose& gpHeld,
+              const float heldActorLoc[3], bool freeValid, const GamePose& gpFree) {
+    if (!handsActor || !locate(handsActor)) return false;
+    g_evTid = GetCurrentThreadId();
+    if (!g_evCreated && !ev_install()) return false;
+    g_freezeOnly.store(false, std::memory_order_relaxed);
+    if (!g_m4.active) {
+        BVR_LOG("[bones] mode 4 (DISHONORED): the actor stays engine-placed; each hand is composed "
+                "onto the engine's fresh pose (one rigid correction per hand) right after every "
+                "evaluation and again at the scene build; arms by arm IK v2");
+        g_m4Idle = M4Idle{};
+        g_m4Arm[0] = g_m4Arm[1] = M4ArmHist{};
+    }
+    g_m4.active = true;
+    g_m4On.store(true, std::memory_order_relaxed);
+    g_m4.actor = handsActor;
+    g_m4.held = held == 1 ? 1 : 0;
+    const uint64_t now = GetTickCount64();
+    g_m4.ms = now;
+
+    // ---- the held hand: mode 3's actor, and the idle capture -------------------------
+    memcpy(g_m4.loc3, heldActorLoc, 12);
+    ue_rot_to_quat(gpHeld.rot, g_m4.q3);
+    g_m4.hand[g_m4.held].valid = true;
+    {
+        void* key = nullptr;
+        if (!hands::current_holdable(&key) || !key) hands::current_ability(&key);
+        if (key != g_m4Idle.key || g_m4Idle.hand != g_m4.held) {
+            g_m4Idle = M4Idle{};
+            g_m4Idle.key = key;
+            g_m4Idle.hand = g_m4.held;
+        }
+        const bool idling = hands_state::current(handsActor) == hands_state::State::Idling;
+        if (!idling) {
+            g_m4Idle.idleSince = 0;
+        } else if (!g_m4Idle.idleSince) {
+            g_m4Idle.idleSince = now;
+        } else if (!g_m4Idle.valid && now - g_m4Idle.idleSince >= 300 && g_evCopyValid) {
+            // 300 ms into Idling: past the equip's ease-in (s68c), the pose the weapon's
+            // profile was tuned against. Taken once per holdable.
+            g_m4Idle.wrist = g_evCopy[m4_wrist(g_m4.held)];
+            g_m4Idle.valid = true;
+            BVR_LOG("[bones] mode 4: %s hand's idle wrist captured for this holdable - the hand "
+                    "now stays where mode 3 puts it at idle, through every animation",
+                    g_m4.held == 1 ? "RIGHT" : "LEFT");
+        }
+    }
+
+    // ---- the free hand: mode 3's free-hand target (drive_free_hand, s71-s72) ---------
+    const int free = 1 - g_m4.held;
+    M4Hand& fh = g_m4.hand[free];
+    fh.valid = freeValid && g_offHandTracked.load(std::memory_order_relaxed);
+    if (fh.valid) {
+        float tf[3], tbr[3], tu[3];
+        const float gameYawRad =
+            static_cast<float>(ctx.camYaw) / kRotUnitsPerRadian - ctx.driveYawOffsetRad;
+        const int32_t gameYawUnits = static_cast<int32_t>(gameYawRad * kRotUnitsPerRadian);
+        FRotator heading{0, gameYawUnits, 0};
+        FRotator local{gpFree.rot.pitch, gpFree.rot.yaw - gameYawUnits, gpFree.rot.roll};
+        float mf[3], mr[3], mu[3], hf[3], hr[3], hu[3];
+        ue_rot_basis(heading, mf, mr, mu);
+        ue_rot_basis(local, hf, hr, hu);
+        from_basis(mf, mr, mu, hf, tf);
+        from_basis(mf, mr, mu, hr, tbr);
+        from_basis(mf, mr, mu, hu, tu);
+        basis_to_quat(tf, tbr, tu, fh.q);
+        float p[3] = {gpFree.loc.x, gpFree.loc.y, gpFree.loc.z};
+        const float uuPerCm = ctx.worldScale / 100.0f;
+        const float vf = g_offHandViewCm[free][0].load(std::memory_order_relaxed) * uuPerCm;
+        const float vr = g_offHandViewCm[free][1].load(std::memory_order_relaxed) * uuPerCm;
+        const float vu = g_offHandViewCm[free][2].load(std::memory_order_relaxed) * uuPerCm;
+        if (vf != 0.0f || vr != 0.0f || vu != 0.0f) {
+            float cf[3], cr[3], cu[3];
+            ue_rot_basis(FRotator{ctx.camPitch, ctx.camYaw, 0}, cf, cr, cu);
+            for (int i = 0; i < 3; ++i) p[i] += cf[i] * vf + cr[i] * vr + cu[i] * vu;
+        }
+        const float o0 = g_offHandPosCm[free][0].load(std::memory_order_relaxed) * uuPerCm;
+        const float o1 = g_offHandPosCm[free][1].load(std::memory_order_relaxed) * uuPerCm;
+        const float o2 = g_offHandPosCm[free][2].load(std::memory_order_relaxed) * uuPerCm;
+        for (int i = 0; i < 3; ++i) p[i] += tf[i] * o0 + tbr[i] * o1 + tu[i] * o2;
+        memcpy(fh.p, p, 12);
+    }
+
+    // ---- the arms: shoulders and body axes, solve_arm's formula (s74d, s72d) ---------
+    g_m4.arms = g_armsMode.load(std::memory_order_relaxed) == 1;
+    {
+        const float uuPerCm = ctx.worldScale / 100.0f;
+        const float yawRad = (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f) -
+                             ctx.driveYawOffsetRad - ctx.recenterYawRad;
+        const float cy = cosf(yawRad), sy = sinf(yawRad);
+        const float F[3] = {cy, sy, 0.0f}, R[3] = {-sy, cy, 0.0f}, U[3] = {0.0f, 0.0f, 1.0f};
+        memcpy(g_m4.F, F, 12);
+        memcpy(g_m4.R, R, 12);
+        memcpy(g_m4.U, U, 12);
+        for (int h = 0; h < 2; ++h) {
+            // s72d: one body - the free arm takes the held arm's shoulder, mirrored.
+            const int sh = g_m4.held;
+            const float mirror = h == g_m4.held ? 1.0f : -1.0f;
+            const float f = g_shoulderFwdCm[sh].load(std::memory_order_relaxed) * uuPerCm;
+            const float r = g_shoulderRightCm[sh].load(std::memory_order_relaxed) * uuPerCm * mirror;
+            const float u = g_shoulderUpCm[sh].load(std::memory_order_relaxed) * uuPerCm;
+            g_m4.shoulder[h][0] = ctx.baseX + cy * f - sy * r;
+            g_m4.shoulder[h][1] = ctx.baseY + sy * f + cy * r;
+            g_m4.shoulder[h][2] = ctx.baseZ + u;
+        }
+        for (int h = 0; h < 2; ++h) g_m4.scale[h] = g_scale[h].load(std::memory_order_relaxed);
+        g_m4.armScale = g_armScale.load(std::memory_order_relaxed);
+    }
+
+    set_dirty(1); // the engine evaluates this tick; ev_post composes the moment it does
+
+    static uint64_t s_log = 0;
+    if (now - s_log >= 2000) {
+        s_log = now;
+        BVR_LOG("[bones] MODE4: %u composes after evaluation, %u at the scene build, %u skipped "
+                "(stale) | held %s %s, free %s | evaluations %u",
+                g_m4Composes.load(), g_m4Late.load(), g_m4Skips.load(), g_m4.held == 1 ? "RIGHT" : "LEFT",
+                g_m4Idle.valid ? "from its idle capture" : "following mode 3's live placement (no idle yet)",
+                fh.valid ? "tracked" : "the game's", g_evPost.load());
+    }
+    return true;
+}
+
+// s82 P1: the evaluator probe. Once per CalcView while `vrbones evalprobe on`: locate the
+// rig, check the last evaluated copy against the live array (nothing should have written
+// it in mode 0), then set the dirty byte so the engine evaluates again. Once a second it
+// logs where the evaluations ran and whether the copy holds - the one question the P1
+// simulator run asks: with the dirty byte set every tick and nothing frozen, does the
+// engine re-animate the hands every frame, and is the hooked copy the pose it draws?
+void eval_probe_tick(void* handsActor) {
+    if (!g_evProbe.load(std::memory_order_relaxed) || !handsActor) return;
+    g_evTid = GetCurrentThreadId();
+    if (!locate(handsActor)) return;
+    if (!g_evCreated && !ev_install()) {
+        g_evProbe.store(false, std::memory_order_relaxed);
+        return;
+    }
+    static uint32_t s_frames = 0, s_checks = 0, s_mismatch = 0, s_lastPost = 0, s_framesNoEval = 0;
+    static float s_worst = 0.0f;
+    static uint64_t s_lastLog = 0;
+    ++s_frames;
+    const uint32_t posts = g_evPost.load(std::memory_order_relaxed);
+    if (posts == s_lastPost) ++s_framesNoEval;
+    s_lastPost = posts;
+    if (g_evCopyValid && g_evCopyCount == g_boneCount) {
+        Qts live[kMaxBones];
+        if (read_n(g_bones, live, sizeof(Qts) * g_evCopyCount)) {
+            ++s_checks;
+            float worst = 0.0f;
+            for (int i = 0; i < g_evCopyCount; ++i)
+                for (int k = 0; k < 3; ++k) worst = fmaxf(worst, fabsf(live[i].p[k] - g_evCopy[i].p[k]));
+            if (worst > 1e-4f) ++s_mismatch;
+            s_worst = fmaxf(s_worst, worst);
+        }
+    }
+    int32_t freeze = 0;
+    float lastEval = 0.0f;
+    uint8_t dirty = 0;
+    read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstFreezeOffset, &freeze, 4);
+    read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstLastEvalTimeOffset, &lastEval, 4);
+    read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstDirtyOffset, &dirty, 1);
+    set_dirty(1);
+    const uint64_t now = GetTickCount64();
+    if (now - s_lastLog >= 1000) {
+        s_lastLog = now;
+        char callers[160] = {};
+        int len = 0;
+        for (const EvCaller& c : g_evCallers)
+            if (c.rva && len < 140) len += snprintf(callers + len, sizeof callers - len, " 0x%X x%u", c.rva, c.count);
+        BVR_LOG("[bones] EVALPROBE: %u frames, %u evaluations (tick %u, pass1 %u, pass2 %u; other "
+                "thread %u, nested %u) = %.2f per frame, %u frames with none | hooked copy vs live "
+                "array: %u checks, %u mismatched, worst %.5f UU | animation moved a bone up to %.2f "
+                "UU between evaluations | freeze %d, last-eval %.3f, dirty-before-set %u | hands "
+                "mode %d | callers:%s",
+                s_frames, posts - g_evProbeLastPosts, g_evTick.load(), g_evPass1.load(), g_evPass2.load(),
+                g_evForeign, g_evNested,
+                s_frames ? static_cast<float>(posts - g_evProbeLastPosts) / s_frames : 0.0f, s_framesNoEval,
+                s_checks, s_mismatch, s_worst, g_evAnimDelta, freeze, lastEval, dirty, hands::drive_mode(),
+                callers);
+        g_evProbeLastPosts = posts;
+        s_frames = s_checks = s_mismatch = s_framesNoEval = 0;
+        s_worst = 0.0f;
+        g_evAnimDelta = 0.0f;
     }
 }
 
@@ -6721,6 +7285,12 @@ void handle_command(const char* args) {
                 BVR_LOG("[bones] poked bone %d z %+0.1f UU -> %.2f", idx, d, z);
             }
         }
+    } else if (strcmp(verb, "evalprobe") == 0) {
+        const bool on = strncmp(rest, "off", 3) != 0;
+        g_evProbe.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] evalprobe %s (s82 P1: hook the skeleton evaluator, set the dirty byte "
+                "every tick, log EVALPROBE once a second; run it in `vrhands mode gun` so the "
+                "drive writes nothing)", on ? "ON" : "off");
     } else if (strcmp(verb, "freeze") == 0) {
         if (!g_skelInst) {
             BVR_LOG("[bones] no skeleton located yet");

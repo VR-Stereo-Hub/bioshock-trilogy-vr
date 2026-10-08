@@ -1872,4 +1872,11 @@ void draw_debug_ui() {
         "control via seam: reentry hook|unhook|on|off|pulse|yaw|dump|arg3|kick");
 }
 
+// s82: where in the frame the caller is, for the skeleton-evaluation hook (bones.cpp).
+int build_depth() { return g_activeDepth.load(std::memory_order_relaxed); }
+bool in_second_build() {
+    const uint32_t t = g_secondPassTid.load(std::memory_order_relaxed);
+    return t != 0 && t == GetCurrentThreadId();
+}
+
 } // namespace bvr::b1r::scenedraw

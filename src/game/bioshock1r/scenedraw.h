@@ -70,4 +70,11 @@ void handle_fgnode_command(const char* args);
 // Read-only telemetry section for the overlay (control is commands-only).
 void draw_debug_ui();
 
+// s82: frame position for the skeleton-evaluation hook. build_depth 0 = the game tick
+// (outside the hooked scene build), 1+ = inside a build; in_second_build = the current
+// thread is running the second (right-eye) build of a stereo pair. Only meaningful while
+// the build hook is live (it is whenever stereo is on).
+int build_depth();
+bool in_second_build();
+
 } // namespace bvr::b1r::scenedraw

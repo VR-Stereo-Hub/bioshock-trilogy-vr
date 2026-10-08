@@ -462,6 +462,15 @@ inline constexpr uint32_t kSkelInstBoneCountOffset = 0x4C;  // int (AHands rig: 
 inline constexpr uint32_t kSkelInstBonesBOffset = 0x54;     // hkQsTransform* array B
 inline constexpr uint32_t kSkelInstBoneCountBOffset = 0x58;
 inline constexpr uint32_t kSkelInstDirtyOffset = 0x88;   // evaluate-if-dirty flag (byte)
+// s82: the EVALUATOR - the engine routine that rebuilds the bone array from the
+// animation. Derived offline (tools\ida\hd1_skelinst_update.py, ENGINE_NOTES s82): vtable
+// slot +0x9C, reached from four call sites each guarded by the dirty byte above, and
+// skipped outright while freeze (+0x20) is set and the last-evaluate time (+0x80) is
+// positive. The slot's target is read from the vtable at runtime and must equal the RVA
+// below, or the hook refuses. BS1's twin of BS2's wfix target (BS2 s74).
+inline constexpr uint32_t kSkelInstEvaluateSlot = 0x9C;
+inline constexpr uint32_t kSkelInstEvaluateRva = 0x597CF0;
+inline constexpr uint32_t kSkelInstLastEvalTimeOffset = 0x80; // float
 // Session 20: bone NAMES. SkeletonInstance +0x08 -> SharedSkeletonData, whose
 // +0xAC map is FName -> bone index (lookup fn 0x5F6500, disassembled): a
 // standard UE hash map - +0x00 pairs base (16-byte pairs: +0 chain next,

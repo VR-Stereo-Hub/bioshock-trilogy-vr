@@ -492,7 +492,7 @@ void log_status() {
     int mode = g_mode.load(std::memory_order_relaxed);
     BVR_LOG("[hands] status: %s | mode=%s pose=%s | hand=%s | writes=%u",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
-            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : "BONES",
+            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : mode == 4 ? "DISHONORED" : "BONES",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
             g_handMode.load(std::memory_order_relaxed) == 0 ? "LEFT"
             : g_handMode.load(std::memory_order_relaxed) == 1
@@ -670,7 +670,7 @@ void load_config() {
         ++n;
         if (strcmp(key, "mode") == 0) {
             int m = static_cast<int>(v);
-            g_mode.store(m < 0 ? 0 : m > 3 ? 3 : m, std::memory_order_relaxed);
+            g_mode.store(m < 0 ? 0 : m > 4 ? 4 : m, std::memory_order_relaxed);
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
         else if (store_hand_key(key, "viewFwdCm", g_viewFwdCm, v)) {}
@@ -771,6 +771,8 @@ void load_config() {
 // until both pointers agree on a new one - so a one-frame null cannot move the
 // drive to the other arm.
 //
+int drive_mode() { return g_mode.load(std::memory_order_relaxed); }
+
 // Modes 0 and 1 stay as manual overrides (left-handed play, and the control
 // condition for any test that needs a fixed hand).
 int active_hand() {
@@ -934,7 +936,7 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     load_config();
     int mode = g_mode.load(std::memory_order_relaxed);
     BVR_LOG("[hands] init: mode=%s (AHands vtable 0x%X, APlayerWeapon vtable 0x%X)",
-            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : "BONES", patterns::kHandsVtableRva,
+            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : mode == 3 ? "BRVR" : mode == 4 ? "DISHONORED" : "BONES", patterns::kHandsVtableRva,
             patterns::kPlayerWeaponVtableRva);
     // s71h: the script seam. Installed here so a refusal is logged once, at
     // startup, next to the rest of the identity gating - not silently at the
@@ -1320,6 +1322,7 @@ void on_calcview(const FrameContext& ctx) {
                 : pendMode == 1 ? "HANDS"
                 : pendMode == 3 ? "BRVR (grip pose for position, aim for rotation, "
                                   "offset SUBTRACTED - BRVR's own values)"
+                : pendMode == 4 ? "DISHONORED"
                                 : "BONES");
     }
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
@@ -1443,6 +1446,7 @@ void on_calcview(const FrameContext& ctx) {
             scripted::note_hand_motion(false, 0.0f, 0.0f, bones::motion_bone());
         }
 
+        bones::eval_probe_tick(rig); // s82 P1, a no-op unless `vrbones evalprobe on`
         if (rig) {
             const bool hide = scripted::want_rig_hidden();
             if (hide) {
@@ -1457,7 +1461,10 @@ void on_calcview(const FrameContext& ctx) {
         }
     }
 
-    if (!gameplayView) return;
+    if (!gameplayView) {
+        bones::m4_release(); // s83: a cutscene or scripted scene owns the hands
+        return;
+    }
 
     bool gunMode = g_mode.load(std::memory_order_relaxed) == 0;
     if (gunMode) {
@@ -1537,7 +1544,9 @@ void on_calcview(const FrameContext& ctx) {
             // Falls back to whatever the single-pose read already gave us if
             // the grip pose is not being tracked, which is BRVR's own gripValid
             // ternary - never refuse to draw a hand over this.
-            if (g_mode.load(std::memory_order_relaxed) == 3) {
+            // s83: mode 4 builds its held-hand target from mode 3's placement, so it
+            // takes the same two poses.
+            if (g_mode.load(std::memory_order_relaxed) >= 3) {
                 bvr::vr::HeadPose hAim{}, hGrip{};
                 if (bvr::vr::get_hand_pose(hand, true, hAim)) {
                     quat[0] = hAim.qx;
@@ -1597,7 +1606,9 @@ void on_calcview(const FrameContext& ctx) {
     // weapons.ini fields. Loading BRVR's values in mode 2 (or the reverse) puts
     // the gun half a metre from where it belongs. See the mode command's log
     // line, which says which convention is live.
-    const bool brvrMode = g_mode.load(std::memory_order_relaxed) == 3;
+    // s83: mode 4 computes mode 3's actor placement too - as the held hand's target,
+    // never as a write.
+    const bool brvrMode = g_mode.load(std::memory_order_relaxed) >= 3;
     float fwd[3], right[3], up[3];
     // ---- s67: THE BASIS THE OFFSET RIDES, AND WHETHER IT CARRIES ROLL -------
     // BRVR, CameraHook.cpp, after the S59 readback measured the game erasing
@@ -1657,6 +1668,32 @@ void on_calcview(const FrameContext& ctx) {
     }
 
     const int driveMode = g_mode.load(std::memory_order_relaxed);
+    if (driveMode == 4) {
+        // s83 MODE 4, the Dishonored hands (HANDS_DISHONORED.md): the actor stays where
+        // the engine puts it and is never written. `loc` + gp.rot is mode 3's actor,
+        // handed over as the held hand's TARGET; the free hand's controller is built
+        // exactly as drive_off_hand() builds it. bones::m4_frame publishes the targets
+        // and the composition runs on the engine's fresh pose.
+        bones::set_freeze_only(false);
+        bones::wskel_drive();
+        const int freeHand = 1 - (hand == 1 ? 1 : 0);
+        bool freeValid = false;
+        GamePose gpFree{};
+        bvr::vr::HeadPose fp{};
+        if (bones::off_hand_tracked() && ctx.vrDriving &&
+            bvr::vr::get_hand_pose(freeHand, /*aimPose=*/false, fp)) {
+            const float fpos[3] = {fp.px, fp.py, fp.pz};
+            const float fq[4] = {fp.qx, fp.qy, fp.qz, fp.qw};
+            float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
+            bones::off_hand_rot_deg(freeHand, &trimP, &trimY, &trimR);
+            gpFree = model_pose_from_xr(ctx, fpos, fq, trimP, trimY, trimR);
+            freeValid = true;
+        }
+        bones::m4_frame(ctx, target, hand, gp, loc, freeValid, gpFree);
+        g_writes.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    bones::m4_release(); // leaving mode 4 hands the skeleton back (a no-op otherwise)
     if (driveMode == 3) {
         // BRVR shape, both halves. The actor write below carries the rig to the
         // controller; this keeps the cluster RIGID at its authored pose so the
@@ -1797,10 +1834,11 @@ void handle_command(const char* args) {
                 on ? "ON" : "OFF", g_peWrites,
                 g_peInstalled ? "installed" : "NOT INSTALLED", on ? "ON" : "OFF");
     } else if (strcmp(verb, "mode") == 0) {
-        int mode = strncmp(rest, "gun", 3) == 0      ? 0
-                   : strncmp(rest, "brvr", 4) == 0   ? 3
-                   : strncmp(rest, "hands", 5) == 0  ? 1
-                                                     : 2;
+        int mode = strncmp(rest, "gun", 3) == 0           ? 0
+                   : strncmp(rest, "brvr", 4) == 0        ? 3
+                   : strncmp(rest, "dishonored", 10) == 0 ? 4
+                   : strncmp(rest, "hands", 5) == 0       ? 1
+                                                          : 2;
         g_mode.store(mode, std::memory_order_relaxed);
         // Leaving the bone drive: hand the skeleton back EXPLICITLY. Simply not
         // calling drive() is not enough (see bones.h release()): reapply() keeps
@@ -1815,6 +1853,8 @@ void handle_command(const char* args) {
                               "position, AIM pose for rotation, grip offset SUBTRACTED along "
                               "the model axes. Offsets in this mode are BRVR's ~44-58 fwd, "
                               "NOT the small mode-2 numbers - see the sign note in on_calcview)"
+                : mode == 4 ? "DISHONORED (s83: actor engine-placed, each hand one rigid "
+                              "correction of the engine's live pose, BRVR's numbers as targets)"
                             : "BONES (M7-v2: hand cluster follows the controller)");
     } else if (strcmp(verb, "viewpos") == 0) {
         // s68: "viewpos [l|r] <fwd> <right> <up>". The hand is optional and
@@ -2204,6 +2244,12 @@ void late_write() {
     if (!g_enabled.load(std::memory_order_relaxed)) return;
 
     const int mode = g_mode.load(std::memory_order_relaxed);
+    if (mode == 4) {
+        // s83: recompose from the same evaluated pose with the actor as it is NOW -
+        // the scene build is about to draw it (Dishonored's draw-time read).
+        bones::m4_late();
+        return;
+    }
     if (mode == 2 || mode == 3) {
         // Bone drive: the cached cluster write is the thing that has to survive
         // the tick, and reapply() already replays exactly it (with its own
@@ -2434,6 +2480,18 @@ void draw_debug_ui() {
                 "mode 2's are a small trim. weapons.ini currently holds BRVR's\n"
                 "values, so BONES will look wrong until they are put back\n"
                 "(weapons.ini.bak-pre-brvr).");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("DISHONORED", &m, 4)) g_pendingMode.store(4, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "DISHONORED (s83) - the Dishonored VR mod's hands. The rig stays on\n"
+                "the camera, never moved; the engine animates it every frame, and\n"
+                "each hand is placed onto its controller by ONE rigid correction of\n"
+                "that live pose - so the wrist sits on the controller through every\n"
+                "reload and shot, and the fingers and the weapon keep animating.\n\n"
+                "Uses the BRVR mode's numbers as they are: the held hand goes where\n"
+                "BRVR puts it at idle (per weapon), the off hand where BRVR's off hand\n"
+                "goes. Arms by ARM IK v2.");
     }
 
     {

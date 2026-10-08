@@ -5913,3 +5913,23 @@ yet. The design that will consume it is `docs/bioshock1/HANDS_DISHONORED.md`.
   | `+0x6429AE` | `+0x6423F0` | |
 
   Hooking the slot function catches all four.
+
+### Session 82b - the evaluator measured live (simulator, one run)
+
+`vrbones evalprobe on` in `vrhands mode gun`, so the drive writes nothing, and the probe
+sets the dirty byte every CalcView. BS1, Welcome to Rapture, stereo on, 138 s, no crash.
+
+| Measured | Value |
+|---|---|
+| Evaluations | 64-71 a second against ~140-150 CalcViews: **once per game tick** (one per stereo pair) |
+| Where | **all in the game tick**, caller `0x598056` (the `+0xA0` gate); **0 in render pass 1, 0 in pass 2** |
+| Thread | 0 on another thread, 0 nested |
+| The hooked copy against the live array at the next CalcView | **0 mismatches in ~19,000 checks** |
+| Freeze / last-eval | freeze 0; last-eval time advancing 1.0 s per second |
+
+So with the dirty byte set and no freeze, the engine rebuilds the hands once per tick, in
+the tick. Nothing re-evaluates between the passes, so a pose composed in the hook is the
+pose both eyes draw.
+
+Not measured: animation content. The save had nothing equipped (`HandsOffscreen`) and the
+bones did not move between evaluations, which is expected for an off-screen rig.

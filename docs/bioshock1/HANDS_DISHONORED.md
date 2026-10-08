@@ -250,6 +250,40 @@ The left-hand numbers are the point. BS1's reloads swing the OFF hand across the
 over a metre's worth of arc. Mode 3 shows that and Dishonored's model removes it; the
 fingers still re-grip.
 
+### P1 done (session 82b) and P4 built (session 83)
+
+**P1**, the evaluator hook as an observer (`vrbones evalprobe on` in `vrhands mode gun`,
+one simulator run). With the dirty byte set each tick:
+
+- the engine evaluates **once per game tick, always in the tick, never inside a render
+  pass**;
+- the hooked copy matched the live array in **all ~19,000 checks**.
+
+Details in ENGINE_NOTES s82b.
+
+**P4**, `vrhands mode dishonored` (mode 4, F10 Drive: DISHONORED), built and installed but
+**not yet run**:
+
+- The hands actor is never written: the engine keeps it on the camera.
+- `m4_frame` (every CalcView) publishes both wrists' WORLD targets and the shoulders, then
+  sets the dirty byte.
+- `m4_compose` writes each hand cluster as `B = D * A`, with
+  `D = Target * inverse(A[wrist])` (`hand_compose.h`). It runs from the evaluator hook
+  right after the engine rebuilds the pose, and again at the scene build
+  (`hands::late_write`) with the actor read at that moment.
+- The arms are arm IK v2 to the composed wrists, with the reference taken from the same
+  live pose.
+- **Held hand target:** mode 3's actor (the same `loc` + aim rotation), times the wrist
+  captured 300 ms into `Idling`, once per holdable. Every per-weapon profile carries over,
+  and the hand then stays at its idle placement through reloads and shots. Before the
+  first capture it follows mode 3's live placement.
+- **Free hand target:** mode 3's free-hand target, unchanged (wrist-normalised since s71w):
+  the heading-local composition, the view cm and the pos cm in the trimmed frame.
+- Stands down in cutscenes and scripted scenes (`m4_release`, so the engine owns the hands
+  there), and `reapply()` is gated off while mode 4 drives.
+- Not done yet: the per-state hand-back (P5), `arms hide` (with hide selected, the engine's
+  own arms show), and Dishonored's grip snapshot button.
+
 The one question P4's first launch must answer: does the hand stay on the controller
 through a full pistol reload, with the fingers animating, and do the shoulders stay put
 while the wrist rolls?

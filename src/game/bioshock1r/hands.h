@@ -83,6 +83,8 @@ void handle_command(const char* args);
 // whose trigger last fired, or the forced choice. Shared with the aim laser so
 // the beam leaves the hand that is actually holding the weapon.
 int active_hand();
+// s82: the hands drive mode (0 gun, 1 hands, 2 bones, 3 BRVR, 4 Dishonored), for logs.
+int drive_mode();
 
 // Live mesh-alignment trim (degrees, per hand) - read by `vraim synccheck` so
 // its model chain sweeps the REAL tuned values (session 20).
