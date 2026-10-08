@@ -64,9 +64,14 @@ game, BRVR, a public engine tree) form hypotheses; only the game's own binary co
 | What is in a mesh (counts, skeleton, skin weights, bbox, a render) | `.\tools\blender-run.ps1 tools\blender\inspect_model.py -- --mesh <file>` |
 | Any offline geometry or skinning test | `.\tools\blender-run.ps1 <script.py> [-Blend <f>] -- <args>` |
 | A HUD/menu movie's layout, ActionScript and frames | `.\tools\flash-export.ps1 -Game <g> -Movie <name>` |
+| **A BS1 skeletal mesh with its Havok skeleton and clips, in Blender** (the arms, a Big Daddy, any rigged mesh) | `.\tools\bsmesh-export.ps1 -Game bs1 -Package <map> -List` / `-Mesh <name> [-Anims <regex>] [-Check]` -> `exports\bs1\<Mesh>.glb` |
+| Did a glTF import intact (armature, skin, actions, posed renders)? | `.\tools\blender-run.ps1 tools\blender\gltf_check.py -- --gltf <f> [--action <regex>] [--render p]` |
+| The Havok class layouts of a game build (what each packfile byte means) | `py tools\bsmesh\hkclass_dump.py <exe> <class...>` (`--all --json` is what `bsmesh-export` caches) |
+| A Vengeance package's names, imports, exports (maps AND `BakedScripts\*.U`) | `tools\bsmesh\vpackage.py` (`Package(path)`) |
 
-**BS1 skeletal meshes and animations do NOT extract** (Havok packages UModel cannot read;
-measured 2026-10-07). Textures, static meshes, UI movies and script do.
+UModel cannot read BS1 skeletal meshes or animations (Havok); `bsmesh-export` can (measured
+2026-10-08, `docs/bioshock1/HAVOK_AND_PACKAGES.md`). Textures, static meshes, UI movies and
+script come out through the other rows.
 
 ### Pure logic, on the host
 

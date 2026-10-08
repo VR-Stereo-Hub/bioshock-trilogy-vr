@@ -39,3 +39,7 @@ desktop.ini
 /*_left.png
 /*_right.png
 /*_sbs.png
+
+# Python bytecode from the offline tools (tools\bsmesh, tools\blender).
+__pycache__/
+*.pyc
