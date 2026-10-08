@@ -137,6 +137,30 @@ bool g_disabled = false;
 
 std::atomic<uint32_t> g_lastLayerCount{0};
 std::atomic<uint32_t> g_lastProjViews{0};
+std::atomic<uint32_t> g_lastQuadLayers{0};
+std::atomic<uint32_t> g_lastQuadAlphaPctX100{0};   // the first quad's alpha coverage at the last shot
+// The per-eye freshness of a projection submit, in FRAMES. A view names a
+// swapchain, and the compositor shows that swapchain's most recently released
+// image; `age` = this submit's frame index minus the frame the image was
+// released in. A healthy pair reads 0/0 (both eyes released inside this frame);
+// an eye at 1 or more is a held image from an earlier frame - the instrument
+// for "one eye stops taking fresh frames". `same` = both views named ONE
+// swapchain (the mono path). Cumulative counters classify every projection
+// submit; `reset` clears them. Ported from the Dishonored VR mod's copy of this
+// simulator; measured on every frame, where the source-hash log below runs only
+// when armed.
+std::atomic<uint32_t> g_lastEyeReleased[2] = {};
+std::atomic<uint32_t> g_lastEyeAge[2] = {};
+std::atomic<uint32_t> g_eyeAgeMax[2] = {};
+std::atomic<bool> g_lastEyeSame{false};
+std::atomic<uint32_t> g_projSubmits{0}, g_projMonoSubmits{0}, g_projStaleSubmits{0};
+std::atomic<int64_t> g_lastEndPhaseNs{0};   // xrEndFrame time minus its displayTime
+// The last capture's composite verdict, published to state.json so a sequence
+// can assert on it (`@assert capNonBlackL ge 50`).
+std::atomic<int> g_capNonBlackPct[2] = {};
+struct CapBbox { bool valid = false; uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0; };
+struct CapStats { CapBbox bbox[2]; double nonBlack[2] = {0, 0}; };
+CapStats g_cap;
 
 // --- the encode queue ------------------------------------------------------
 struct EncodeJob {
@@ -376,7 +400,11 @@ void compositor_init(ID3D11Device* device, ID3D11DeviceContext* context) {
     ID3DBlob* psb1 = nullptr;
     ID3DBlob* psb2 = nullptr;
     ID3DBlob* err = nullptr;
-    const UINT flags = D3DCOMPILE_OPTIMIZATION_LEVEL1;
+    // Row-major packing: the C side builds row-vector matrices (translation in
+    // row 3, v * M) and uploads them as-is; without this flag HLSL reads the
+    // same bytes as a column-major matrix, i.e. transposed. Pairs with the
+    // mat4_view_from_pose fix in xrsim_math.h (both from the Dishonored VR mod).
+    const UINT flags = D3DCOMPILE_OPTIMIZATION_LEVEL1 | D3DCOMPILE_PACK_MATRIX_ROW_MAJOR;
 
     auto fail = [&](const char* what) {
         XRSIM_LOG("xrsim: compositor DISABLED - %s%s%s", what, err ? ": " : "",
@@ -479,7 +507,20 @@ void compositor_shutdown() {
 
 namespace {
 
+// What the SOURCE image of a layer looked like on a capture frame, read back
+// from the swapchain image the app last released. The composite can be black
+// for two very different reasons - the app submitted a black image, or the
+// compositor threw a good image away (a NaN pose, a ray behind the plane) -
+// and only a look at the source tells them apart.
+struct SrcStat {
+    bool present = false;
+    uint32_t w = 0, h = 0, imageIndex = 0, releasedOnFrame = 0;
+    double nonBlackPct = 0.0;
+    double alphaPct = 0.0;      // pixels with alpha above 8/255 (a quad's coverage)
+    uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // non-black bbox, inclusive
+};
 struct LayerStat {
+    SrcStat src[2];   // per eye: the view's image (projection) or the one image (quad)
     const char* kind = "quad";
     uint32_t pixelsCovered[2] = {0, 0};
 };
@@ -628,6 +669,71 @@ void compose_eye(int eye, const SimSubmission& sub, std::vector<LayerStat>& stat
     }
 }
 
+double bbox_pct(const CapBbox& b, uint32_t extent, bool horizontal) {
+    if (!b.valid || extent == 0) return 0.0;
+    const uint32_t span = horizontal ? (b.x1 - b.x0 + 1) : (b.y1 - b.y0 + 1);
+    return 100.0 * span / extent;
+}
+
+const char* src_json(const SrcStat& s, char* buf, size_t n) {
+    if (!s.present) { sprintf_s(buf, n, "null"); return buf; }
+    sprintf_s(buf, n,
+              "{\"w\": %u, \"h\": %u, \"image\": %u, \"releasedOnFrame\": %u, "
+              "\"nonBlackPct\": %.2f, \"alphaPct\": %.2f, \"bbox\": [%u, %u, %u, %u]}",
+              s.w, s.h, s.imageIndex, s.releasedOnFrame, s.nonBlackPct, s.alphaPct, s.x0, s.y0, s.x1, s.y1);
+    return buf;
+}
+
+// Read one swapchain's last released image back (a capture-frame-only stall,
+// like the composite readback) and measure it. Also feeds the swapchain's
+// allZero flag, which existed unused since the sim was written.
+void source_stat(XrSwapchain handle, SrcStat& out) {
+    out = SrcStat{};
+    uint32_t w = 0, h = 0;
+    ID3D11Texture2D* tex = swapchain_last_image(handle, &w, &h);
+    if (!tex || !w || !h) return;
+    D3D11_TEXTURE2D_DESC d{};
+    tex->GetDesc(&d);
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.MiscFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* st = nullptr;
+    if (FAILED(g_device->CreateTexture2D(&d, nullptr, &st)) || !st) return;
+    g_ctx->CopyResource(st, tex);
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (SUCCEEDED(g_ctx->Map(st, 0, D3D11_MAP_READ, 0, &m))) {
+        const auto* src = static_cast<const uint8_t*>(m.pData);
+        uint64_t nonBlack = 0, total = 0, withAlpha = 0;
+        uint32_t x0 = w, y0 = h, x1 = 0, y1 = 0;
+        const uint32_t step = 4;   // every 4th row and column: 1/16 of the image
+        for (uint32_t y = 0; y < h; y += step) {
+            const uint8_t* row = src + static_cast<size_t>(y) * m.RowPitch;
+            for (uint32_t x = 0; x < w; x += step) {
+                ++total;
+                const uint8_t* p = row + x * 4;   // any 8-bit 4-channel order: black is black
+                if (p[3] > 8) ++withAlpha;         // and alpha is the fourth byte in both orders
+                if (p[0] > 8 || p[1] > 8 || p[2] > 8) {
+                    ++nonBlack;
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    if (y > y1) y1 = y;
+                }
+            }
+        }
+        g_ctx->Unmap(st, 0);
+        out.present = true;
+        out.w = w; out.h = h;
+        out.nonBlackPct = total ? 100.0 * nonBlack / total : 0.0;
+        out.alphaPct = total ? 100.0 * withAlpha / total : 0.0;
+        if (nonBlack) { out.x0 = x0; out.y0 = y0; out.x1 = x1; out.y1 = y1; }
+        swapchain_last_info(handle, &out.imageIndex, &out.releasedOnFrame);
+        swapchain_note_black(handle, nonBlack == 0);
+    }
+    st->Release();
+}
+
 std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& stats,
                        const char* baseName, uint32_t w, uint32_t h,
                        const double* meanLuma, const double* nonBlackPct) {
@@ -705,9 +811,19 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
 
     sprintf_s(buf, "  \"layerCount\": %u,\n  \"layers\": [\n", sub.layerCount);
     out += buf;
+    bool firstQuadSeen = false;
     for (uint32_t i = 0; i < sub.layerCount; ++i) {
         const SimLayer& L = sub.layers[i];
         const LayerStat& st = (i < stats.size()) ? stats[i] : LayerStat{};
+        // The first quad layer's alpha coverage reaches state.json as quadAlphaPct
+        // after a shot, so a sequence can fail a HUD whose alpha collapsed to zero
+        // (the eye capture cannot: the projection behind the quad is non-black
+        // either way).
+        if (L.type == XR_TYPE_COMPOSITION_LAYER_QUAD && !firstQuadSeen && st.src[0].present) {
+            firstQuadSeen = true;
+            g_lastQuadAlphaPctX100.store(static_cast<uint32_t>(st.src[0].alphaPct * 100.0 + 0.5));
+        }
+        char sb0[320], sb1[320];
         const bool isProj = L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION;
         SimSpace* sp = space_get(L.space);
         const char* spaceName = "unknown";
@@ -718,20 +834,22 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
         if (isProj) {
             sprintf_s(buf, "    {\"i\": %u, \"type\": \"projection\", \"space\": \"%s\", "
                            "\"viewCount\": %u, \"fovDeg\": {\"l\": %.3f, \"r\": %.3f, \"u\": %.3f, "
-                           "\"d\": %.3f}, \"pixelsCoveredL\": %u, \"pixelsCoveredR\": %u}%s\n",
+                           "\"d\": %.3f}, \"pixelsCoveredL\": %u, \"pixelsCoveredR\": %u, \"src\": [%s, %s]}%s\n",
                       i, spaceName, L.viewCount, rad2deg(L.views[0].fov.angleLeft),
                       rad2deg(L.views[0].fov.angleRight), rad2deg(L.views[0].fov.angleUp),
                       rad2deg(L.views[0].fov.angleDown), st.pixelsCovered[0], st.pixelsCovered[1],
+                      src_json(st.src[0], sb0, sizeof(sb0)), src_json(st.src[1], sb1, sizeof(sb1)),
                       (i + 1 < sub.layerCount) ? "," : "");
         } else {
             sprintf_s(buf, "    {\"i\": %u, \"type\": \"quad\", \"space\": \"%s\", "
                            "\"sizeM\": [%.4f, %.4f], \"pose\": [%.4f, %.4f, %.4f], "
-                           "\"premultiplied\": %s, \"pixelsCoveredL\": %u, \"pixelsCoveredR\": %u}%s\n",
+                           "\"premultiplied\": %s, \"pixelsCoveredL\": %u, \"pixelsCoveredR\": %u, \"src\": [%s, %s]}%s\n",
                       i, spaceName, L.size.width, L.size.height, L.pose.position.x,
                       L.pose.position.y, L.pose.position.z,
                       (L.flags & XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT) ? "true"
                                                                                       : "false",
                       st.pixelsCovered[0], st.pixelsCovered[1],
+                      src_json(st.src[0], sb0, sizeof(sb0)), src_json(st.src[1], sb1, sizeof(sb1)),
                       (i + 1 < sub.layerCount) ? "," : "");
         }
         out += buf;
@@ -818,9 +936,18 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
               devCountH[0], devMaxH[0], devCountH[1], devMaxH[1]);
     out += buf;
 
+    // bbox*: the non-black bounding box of each composited eye (inclusive pixel
+    // coords) and its extent as a percentage of the eye: equal boxes in both
+    // eyes is the mono gate.
     sprintf_s(buf, "  \"stats\": {\"meanLumaL\": %.2f, \"meanLumaR\": %.2f, "
-                   "\"nonBlackPctL\": %.2f, \"nonBlackPctR\": %.2f}\n}\n",
-              meanLuma[0], meanLuma[1], nonBlackPct[0], nonBlackPct[1]);
+                   "\"nonBlackPctL\": %.2f, \"nonBlackPctR\": %.2f, "
+                   "\"bboxL\": [%u, %u, %u, %u], \"bboxR\": [%u, %u, %u, %u], "
+                   "\"bboxPctL\": [%.1f, %.1f], \"bboxPctR\": [%.1f, %.1f]}\n}\n",
+              meanLuma[0], meanLuma[1], nonBlackPct[0], nonBlackPct[1],
+              g_cap.bbox[0].x0, g_cap.bbox[0].y0, g_cap.bbox[0].x1, g_cap.bbox[0].y1,
+              g_cap.bbox[1].x0, g_cap.bbox[1].y0, g_cap.bbox[1].x1, g_cap.bbox[1].y1,
+              bbox_pct(g_cap.bbox[0], w, true), bbox_pct(g_cap.bbox[0], h, false),
+              bbox_pct(g_cap.bbox[1], w, true), bbox_pct(g_cap.bbox[1], h, false));
     out += buf;
     return out;
 }
@@ -829,11 +956,58 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
 
 void compositor_note_layers(const SimSubmission& sub) {
     g_lastLayerCount.store(sub.layerCount);
-    uint32_t projViews = 0;
-    for (uint32_t i = 0; i < sub.layerCount; ++i)
-        if (sub.layers[i].type == XR_TYPE_COMPOSITION_LAYER_PROJECTION)
-            projViews = sub.layers[i].viewCount;
+    uint32_t projViews = 0, quads = 0;
+    g_lastEndPhaseNs.store(now_xr_time() - sub.displayTime);
+    for (uint32_t i = 0; i < sub.layerCount; ++i) {
+        const SimLayer& L = sub.layers[i];
+        if (L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+            projViews = L.viewCount;
+            if (L.viewCount == 2) {
+                // The per-eye release age (see the globals).
+                bool stale = false;
+                for (uint32_t v = 0; v < 2; ++v) {
+                    uint32_t idx = 0, rel = 0;
+                    swapchain_last_info(L.views[v].subImage.swapchain, &idx, &rel);
+                    const uint32_t frame = static_cast<uint32_t>(sub.frameIndex);
+                    const uint32_t age = (rel && rel <= frame) ? frame - rel : 0;
+                    g_lastEyeReleased[v].store(rel);
+                    g_lastEyeAge[v].store(age);
+                    uint32_t m = g_eyeAgeMax[v].load();
+                    while (age > m && !g_eyeAgeMax[v].compare_exchange_weak(m, age)) {}
+                    if (age >= 1) stale = true;
+                }
+                const bool same = L.views[0].subImage.swapchain == L.views[1].subImage.swapchain;
+                g_lastEyeSame.store(same);
+                g_projSubmits.fetch_add(1);
+                if (same) g_projMonoSubmits.fetch_add(1);
+                else if (stale) g_projStaleSubmits.fetch_add(1);
+            }
+        } else if (L.type == XR_TYPE_COMPOSITION_LAYER_QUAD)
+            ++quads;
+    }
     g_lastProjViews.store(projViews);
+    g_lastQuadLayers.store(quads);
+}
+
+uint32_t compositor_eye_released_on_frame(int eye) { return (eye == 0 || eye == 1) ? g_lastEyeReleased[eye].load() : 0; }
+uint32_t compositor_eye_age(int eye) { return (eye == 0 || eye == 1) ? g_lastEyeAge[eye].load() : 0; }
+uint32_t compositor_eye_age_max(int eye) { return (eye == 0 || eye == 1) ? g_eyeAgeMax[eye].load() : 0; }
+bool compositor_eye_same_swapchain() { return g_lastEyeSame.load(); }
+uint32_t compositor_proj_submits(int kind) {
+    return kind == 1 ? g_projMonoSubmits.load() : kind == 2 ? g_projStaleSubmits.load() : g_projSubmits.load();
+}
+double compositor_last_end_phase_ms() { return g_lastEndPhaseNs.load() / 1.0e6; }
+void compositor_reset_pair_stats() {
+    for (int e = 0; e < 2; ++e) { g_lastEyeReleased[e].store(0); g_lastEyeAge[e].store(0); g_eyeAgeMax[e].store(0); }
+    g_lastEyeSame.store(false);
+    g_projSubmits.store(0); g_projMonoSubmits.store(0); g_projStaleSubmits.store(0);
+    g_lastEndPhaseNs.store(0);
+}
+
+uint32_t compositor_last_quad_layers() { return g_lastQuadLayers.load(); }
+double compositor_last_quad_alpha_pct() { return g_lastQuadAlphaPctX100.load() / 100.0; }
+int compositor_last_capture_nonblack(int eye) {
+    return (eye == 0 || eye == 1) ? g_capNonBlackPct[eye].load() : 0;
 }
 
 void compositor_on_end_frame(const SimSubmission& sub, bool capture) {
@@ -868,6 +1042,7 @@ void compositor_on_end_frame(const SimSubmission& sub, bool capture) {
         job.pixels[eye].resize(static_cast<size_t>(g_rtW) * g_rtH * 4);
         const auto* src = static_cast<const uint8_t*>(m.pData);
         uint64_t lumaSum = 0, nonBlackCount = 0;
+        uint32_t bx0 = g_rtW, by0 = g_rtH, bx1 = 0, by1 = 0;
         for (uint32_t y = 0; y < g_rtH; ++y) {
             const uint8_t* row = src + static_cast<size_t>(y) * m.RowPitch;
             memcpy(&job.pixels[eye][static_cast<size_t>(y) * g_rtW * 4], row, g_rtW * 4);
@@ -875,13 +1050,71 @@ void compositor_on_end_frame(const SimSubmission& sub, bool capture) {
                 const uint32_t b = row[x * 4 + 0], gg = row[x * 4 + 1], rr = row[x * 4 + 2];
                 const uint32_t l = (rr * 77 + gg * 151 + b * 28) >> 8;
                 lumaSum += l;
-                if (l > 8) ++nonBlackCount;
+                if (l > 8) {
+                    ++nonBlackCount;
+                    if (x < bx0) bx0 = x;
+                    if (x > bx1) bx1 = x;
+                    if (y < by0) by0 = y;
+                    if (y > by1) by1 = y;
+                }
             }
         }
         g_ctx->Unmap(g_staging[eye], 0);
         const double total = static_cast<double>(g_rtW) * g_rtH;
         meanLuma[eye] = lumaSum / total;
         nonBlack[eye] = 100.0 * nonBlackCount / total;
+        g_cap.bbox[eye] = CapBbox{nonBlackCount > 0, bx0, by0, bx1, by1};
+        g_cap.nonBlack[eye] = nonBlack[eye];
+        g_capNonBlackPct[eye].store(static_cast<int>(nonBlack[eye] + 0.5));
+    }
+
+    // The black-eye discriminator: read every layer's SOURCE image back and
+    // name the side at fault when the composite disagrees with it.
+    for (uint32_t li = 0; li < sub.layerCount; ++li) {
+        const SimLayer& L = sub.layers[li];
+        if (li >= stats.size()) stats.resize(li + 1);
+        if (L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+            for (uint32_t v = 0; v < L.viewCount && v < 2; ++v)
+                source_stat(L.views[v].subImage.swapchain, stats[li].src[v]);
+        } else {
+            source_stat(L.sub.swapchain, stats[li].src[0]);
+            stats[li].src[1] = stats[li].src[0];
+        }
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        if (nonBlack[eye] >= 1.0) continue;   // the composite has content
+        bool named = false;
+        for (uint32_t li = 0; li < sub.layerCount && !named; ++li) {
+            const SrcStat& s = stats[li].src[eye];
+            if (!s.present) continue;
+            const SimLayer& L = sub.layers[li];
+            if (s.nonBlackPct >= 10.0) {
+                double qn = 1.0;
+                XrFovf f{};
+                if (L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION && eye < static_cast<int>(L.viewCount)) {
+                    const XrQuaternionf& q = L.views[eye].pose.orientation;
+                    qn = sqrt(static_cast<double>(q.x) * q.x + static_cast<double>(q.y) * q.y +
+                              static_cast<double>(q.z) * q.z + static_cast<double>(q.w) * q.w);
+                    f = L.views[eye].fov;
+                }
+                XRSIM_LOG("xrsim: eye %s composited BLACK from a source that is %.0f%% non-black "
+                          "(layer %u %s, image %u released on frame %u, pose norm %.3f, fov "
+                          "l/r/u/d %.1f/%.1f/%.1f/%.1f deg) - COMPOSITOR fault",
+                          eye == 0 ? "L" : "R", s.nonBlackPct, li,
+                          L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION ? "projection" : "quad",
+                          s.imageIndex, s.releasedOnFrame, qn, rad2deg(f.angleLeft),
+                          rad2deg(f.angleRight), rad2deg(f.angleUp), rad2deg(f.angleDown));
+                named = true;
+            }
+        }
+        if (!named) {
+            uint32_t withSrc = 0;
+            for (uint32_t li = 0; li < sub.layerCount; ++li) if (stats[li].src[eye].present) ++withSrc;
+            XRSIM_LOG("xrsim: eye %s composited BLACK and %s - APP fault (nothing to show, not "
+                      "a compositor error)",
+                      eye == 0 ? "L" : "R",
+                      withSrc ? "every source image for it is black too" : "no layer carried an image for it");
+        }
     }
 
     char baseName[128];
@@ -1007,7 +1240,7 @@ void compositor_hash_frame(const SimSubmission& sub) {
     if (proj) {
         for (int e = 0; e < 2 && e < static_cast<int>(proj->viewCount); ++e) {
             const XrSwapchain swp = proj->views[e].subImage.swapchain;
-            if (!swapchain_release_info(swp, &idx[e], &relFrame[e])) continue;
+            if (!swapchain_last_info(swp, &idx[e], &relFrame[e])) continue;
             relAge[e] = (sub.frameIndex >= relFrame[e])
                             ? static_cast<uint32_t>(sub.frameIndex - relFrame[e])
                             : 0;

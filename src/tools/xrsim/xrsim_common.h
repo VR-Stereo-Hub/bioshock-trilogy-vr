@@ -229,6 +229,7 @@ XrResult on_seh(const char* what);
 // ---------------------------------------------------------------------------
 XrTime now_xr_time();
 uint64_t now_ms();
+double now_fine_ms();
 
 // Event queue (xrsim_instance.cpp).
 void queue_session_state(XrSession session, XrSessionState state);

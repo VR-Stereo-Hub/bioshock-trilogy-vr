@@ -75,8 +75,17 @@ Write-Host "  EITHER TRIGGER = start/stop     EITHER GRIP = marker" -ForegroundC
 Write-Host "  take the headset off to finish" -ForegroundColor Green
 Write-Host ""
 
-& $exe --elbow $Elbow
-$code = $LASTEXITCODE
+# armcap32 is a plain 32-bit OpenXR client with no layer guard of its own, so an
+# implicit x64 layer (OBS's mirror is the measured one) would fail it at instance
+# creation. Opt those out for this process only, as the mod does for itself.
+. (Join-Path $PSScriptRoot "lib\xr-layers.ps1")
+$layerEnv = Disable-BvrUnloadableXrLayers
+try {
+    & $exe --elbow $Elbow
+    $code = $LASTEXITCODE
+} finally {
+    Restore-BvrXrLayerEnv $layerEnv
+}
 
 $after = Get-ChildItem $outDir -Filter *.csv -ErrorAction SilentlyContinue
 $new = $after | Where-Object { $before -notcontains $_.Name }
