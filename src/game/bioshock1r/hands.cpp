@@ -575,6 +575,7 @@ void save_config() {
         fprintf(f, "shoulderUpCm%s=%.2f\n", s, su);
     }
     fprintf(f, "armScale=%.3f\n", bones::arm_scale());
+    fprintf(f, "armIkV2=%d\n", bones::arm_ik_v2() ? 1 : 0);
     fprintf(f, "armTwistLimitDeg=%.1f\n", bones::arm_twist_limit_deg());
     fprintf(f, "humerusTwistLimitDeg=%.1f\n", bones::humerus_twist_limit_deg());
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
@@ -677,6 +678,7 @@ void load_config() {
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
         else if (strcmp(key, "armScale") == 0) bones::set_arm_scale(v);
+        else if (strcmp(key, "armIkV2") == 0) bones::set_arm_ik_v2(v != 0.0f);
         else if (strcmp(key, "armTwistLimitDeg") == 0) bones::set_arm_twist_limit_deg(v);
         else if (strcmp(key, "humerusTwistLimitDeg") == 0)
             bones::set_humerus_twist_limit_deg(v);

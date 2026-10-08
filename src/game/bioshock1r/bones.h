@@ -175,6 +175,9 @@ void shoulder_cm(int hand, float* fwd, float* right, float* up);
 void set_shoulder_cm(int hand, float fwd, float right, float up);
 float elbow_out();
 void set_elbow_out(float v);
+// s81: which arm solver runs - true the Dishonored one (arm_ik.h), false s70i-s77's.
+bool arm_ik_v2();
+void set_arm_ik_v2(bool on);
 // s75: multiplies the authored arm segment lengths, sizing the rig's arm to the
 // PLAYER's. The rig's is fixed and the player's is not; when they disagree the
 // solve sits at full extension and the forearm covers the shortfall alone.

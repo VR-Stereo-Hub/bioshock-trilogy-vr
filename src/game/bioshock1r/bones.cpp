@@ -17,6 +17,8 @@
 
 #include "game/bioshock1r/bones.h"
 
+#include "game/bioshock1r/arm_ik.h"
+
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h" // backbuffer_dims: the lens laws are aspect-parameterised
 #include "core/util/log.h"
@@ -176,6 +178,33 @@ bool g_freeRefValid[2] = {false, false};
 Qts g_freeArmRef[2][5];
 float g_freeArmW0[2][3] = {};
 bool g_freeArmRefValid[2] = {false, false};
+// s81: the wrist's ROTATION in the same capture, which the s70i-s77 solver never
+// needed and arm_ik.h does: it measures the forearm roll as the wrist's own turn
+// relative to where the solved forearm carries this reference wrist.
+float g_freeArmW0Q[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
+
+// ---- s81: THE ARM, REDONE ON THE DISHONORED SOLVER ------------------------
+//
+// arm_ik.h is the Dishonored VR mod's full-arm IK (itself the left-hand fork's
+// design), pure and host-tested, validated offline on NEWPlayerHands' real weights
+// (tools\arm-ik-sweep.ps1). It replaces the solve, the twist and the writes of
+// solve_arm() below; the inputs that s70-s77 got right - the shoulder in the
+// hands' frame, the DrawScale division, the intended actor transform, the settle-
+// captured reference - are shared. Off restores the s70i-s77 solver exactly.
+std::atomic<bool> g_armIkV2{true};
+// Per hand: the elbow pole and wrist roll from the last solve, for continuity.
+// The pole is kept in BODY axes (forward, right, up), never component space: the
+// held hand's actor turns with the controller, so a component-space pole from
+// last frame points somewhere else this frame.
+struct ArmIkHistory {
+    bool valid = false;
+    uint64_t ms = 0;
+    float poleBody[3] = {};
+    float twist = 0;
+    float w0[3] = {}; // the reference it was measured against; a new one is a reset
+};
+ArmIkHistory g_armIkHist[2];
+std::atomic<uint32_t> g_armIkSolves{0}, g_armIkFails{0}, g_armIkReach{0};
 // s73f: the last UNWRAPPED twist angle, per hand. Continuity only - not
 // smoothing, which s73c removed for good reason. See the unwrap in solve_arm().
 //
@@ -2304,6 +2333,8 @@ void set_shoulder_cm(int hand, float fwd, float right, float up) {
 }
 float elbow_out() { return g_elbowOut.load(std::memory_order_relaxed); }
 void set_elbow_out(float v) { g_elbowOut.store(v, std::memory_order_relaxed); }
+bool arm_ik_v2() { return g_armIkV2.load(std::memory_order_relaxed); }
+void set_arm_ik_v2(bool on) { g_armIkV2.store(on, std::memory_order_relaxed); }
 float arm_scale() { return g_armScale.load(std::memory_order_relaxed); }
 void set_arm_scale(float v) {
     g_armScale.store(v < 0.5f ? 0.5f : (v > 2.0f ? 2.0f : v), std::memory_order_relaxed);
@@ -2715,6 +2746,138 @@ bool barrel_ref_axis(float d0[3]) {
     return true;
 }
 
+// ---- s81: THE ARM ON THE DISHONORED SOLVER ----------------------------------
+//
+// Called from solve_arm() once the inputs both solvers share are built:
+//   W       the wrist (this hand's anchor - the wrist in freeze mode), DrawScale-
+//           divided component space, as the hand drive just placed it
+//   qaUse   world -> component rotation, the actor transform about to be WRITTEN
+//   S       the shoulder, same space as W (s74's frame, s72q's division)
+//   cy, sy  the body yaw basis the shoulder was built in - the frame that does not
+//           turn when the head does (s74d)
+// The IK ends on the wrist AS DRAWN - position and rotation - so the arm follows
+// whatever the hand is doing, animation included (Dishonored's rule: the endpoint
+// is the final hand, after animation blending). Writes the five sleeve bones and
+// caches them for the per-pass repaint, like the solver it replaces.
+void solve_arm_v2(int hand, const float W[3], const float qaUse[4], const float S[3], float s,
+                  float lengthScale, bool freeBank, const float handQ[4],
+                  const float handRefQ[4], float cy, float sy) {
+    namespace ik = arm_ik;
+    const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+    const Qts* ar = g_freeArmRef[hand];
+    int first = 0, last = 0, anchor = 0;
+    cluster_of(hand, &first, &last, &anchor);
+    if (anchor < 0 || anchor >= g_boneCount) return;
+
+    ik::Ref ref;
+    ik::Bone* rb[5] = {&ref.clavicle, &ref.upper, &ref.fore, &ref.twist[0], &ref.twist[1]};
+    for (int k = 0; k < 5; ++k) {
+        memcpy(rb[k]->p, ar[k].p, 12);
+        memcpy(rb[k]->q, ar[k].q, 16);
+    }
+    memcpy(ref.wristP, g_freeArmW0[hand], 12);
+    memcpy(ref.wristQ, handRefQ ? handRefQ : g_freeArmW0Q[hand], 16);
+
+    ik::Input in;
+    in.shoulder = ik::vec(S);
+    in.wrist = ik::vec(W);
+    if (handQ) {
+        memcpy(in.wristQ, handQ, 16);
+    } else if (!read_n(g_bones[anchor].q, in.wristQ, 16)) {
+        return; // the held hand: its wrist as the engine (or the drive) left it
+    }
+    // The body frame in component space. Directions only: DrawScale does not apply.
+    const float Fw[3] = {cy, sy, 0.0f}, Rw[3] = {-sy, cy, 0.0f}, Uw[3] = {0.0f, 0.0f, 1.0f};
+    float Fc[3], Rc[3], Uc[3];
+    qts_rotate(qaUse, Fw, Fc);
+    qts_rotate(qaUse, Rw, Rc);
+    qts_rotate(qaUse, Uw, Uc);
+    const ik::Vec F = ik::vec(Fc), R = ik::vec(Rc), U = ik::vec(Uc);
+    const float side = hand == 1 ? 1.0f : -1.0f;
+    // Dishonored's pole - down, out by `elbow out`, a little back - on BS1's knob.
+    const float eo = g_elbowOut.load(std::memory_order_relaxed);
+    in.pole = U * -1.0f + R * (side * eo) + F * -0.3f;
+    in.outward = R * side;
+
+    ArmIkHistory& h = g_armIkHist[hand];
+    const uint64_t now = GetTickCount64();
+    const bool sameRef = h.valid && memcmp(h.w0, g_freeArmW0[hand], sizeof h.w0) == 0;
+    in.fresh = sameRef && now - h.ms < 250;
+    if (in.fresh) {
+        in.priorPole = F * h.poleBody[0] + R * h.poleBody[1] + U * h.poleBody[2];
+        in.priorTwist = h.twist;
+    }
+    in.scale = s;
+    in.lengthScale = lengthScale;
+
+    ik::Output out;
+    if (!ik::pose(ref, in, out)) {
+        g_armIkFails.fetch_add(1, std::memory_order_relaxed);
+        h.valid = false;
+        return;
+    }
+    g_armIkSolves.fetch_add(1, std::memory_order_relaxed);
+    if (out.joints.reachClamped) g_armIkReach.fetch_add(1, std::memory_order_relaxed);
+
+    const ik::Bone* ob[5] = {&out.clavicle, &out.upper, &out.fore, &out.twist[0], &out.twist[1]};
+    for (int k = 0; k < 5; ++k) {
+        const int idx = armIdx[k];
+        if (idx < 0 || idx >= g_boneCount) continue;
+        // The scale is the reference bone's own, times the hand's scale (the arm is
+        // drawn at the hand's size) and the length stretch along the limb.
+        const float sv[3] = {ar[k].s[0] * ob[k]->s[0], ar[k].s[1] * ob[k]->s[1],
+                             ar[k].s[2] * ob[k]->s[2]};
+        if (!write_n(g_bones[idx].p, ob[k]->p, 12)) return;
+        write_n(g_bones[idx].q, ob[k]->q, 16);
+        write_n(g_bones[idx].s, sv, 12);
+        g_scaleWrote[idx] = true; // the old solver's restore path puts the authored one back
+        if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+            CachedBone& ca = g_cache[g_cacheCount++];
+            ca.idx = idx;
+            memcpy(ca.p, ob[k]->p, 12);
+            memcpy(ca.q, ob[k]->q, 16);
+            memcpy(ca.s, sv, 12);
+            ca.writeScale = true;
+            ca.writeRot = true;
+        }
+    }
+    // s72m's read-back stash, kept for the free arm exactly as the old path keeps it.
+    if (freeBank) {
+        bool okW = true;
+        for (int k = 0; k < 5 && okW; ++k)
+            okW = read_n(&g_bones[armIdx[k]], &g_freeArmWrote[hand][k], sizeof(Qts));
+        g_freeArmWroteValid[hand] = okW;
+    }
+
+    h.valid = true;
+    h.ms = now;
+    h.poleBody[0] = ik::dot(out.basePole, F);
+    h.poleBody[1] = ik::dot(out.basePole, R);
+    h.poleBody[2] = ik::dot(out.basePole, U);
+    h.twist = out.trackedTwist;
+    memcpy(h.w0, g_freeArmW0[hand], sizeof h.w0);
+
+    // ARMIK2: always on, twice a second per hand and role - the run that needs it is
+    // never the one where a checkbox was ticked (s75 ARMDIAG's lesson).
+    static uint64_t s_log[2][2] = {{0, 0}, {0, 0}};
+    const int role = freeBank ? 1 : 0;
+    if (now - s_log[role][hand] >= 500) {
+        s_log[role][hand] = now;
+        const float a = ik::length(ik::vec(ar[2].p) - ik::vec(ar[1].p)) * s * lengthScale;
+        const float b = ik::length(ik::vec(g_freeArmW0[hand]) - ik::vec(ar[2].p)) * s * lengthScale;
+        BVR_LOG("[bones] ARMIK2: %s %s | reach %.1f of %.1f UU%s shoulder moved %.1f | roll "
+                "%+.1f deg (tracked %+.1f, elbow swivel %+.1f) | %s | solves %u fails %u reach %u",
+                hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
+                ik::length(in.wrist - in.shoulder), a + b,
+                out.joints.reachClamped ? " CLAMPED," : ",", out.joints.shoulderShift,
+                out.roll / ik::kDeg, out.trackedTwist / ik::kDeg, out.swivel / ik::kDeg,
+                in.fresh ? "continuing" : "fresh history",
+                g_armIkSolves.load(std::memory_order_relaxed),
+                g_armIkFails.load(std::memory_order_relaxed),
+                g_armIkReach.load(std::memory_order_relaxed));
+    }
+}
+
 // ---- s71: THE ARM SOLVE, CALLABLE FOR EITHER HAND -------------------------
 //
 // Lifted out of drive() unchanged so the FREE hand can use it too. The held
@@ -2922,6 +3085,13 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             S[0] /= rigScale;
             S[1] /= rigScale;
             S[2] /= rigScale;
+        }
+
+        // s81: everything above is the input both solvers share; the Dishonored
+        // solver takes it from here. Off falls through to the s70i-s77 one.
+        if (g_armIkV2.load(std::memory_order_relaxed)) {
+            solve_arm_v2(hand, W, qaUse, S, s, armScale, freeBank, handQ, handRefQ, cy, sy);
+            return;
         }
 
         // ---- s77 SHOULDERLAND: the shoulder we ASK for vs the one that LANDS -
@@ -4546,6 +4716,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                    sizeof g_freeArmRef[hand]);
                             memcpy(g_freeArmW0[hand], g_armW0[hand],
                                    sizeof g_freeArmW0[hand]);
+                            memcpy(g_freeArmW0Q[hand], fresh[anchor].q,
+                                   sizeof g_freeArmW0Q[hand]);
                             ue_rot_to_quat(gp.rot, g_freeArmActorQ[hand]);
                             g_freeArmYaw0[hand] =
                                 (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
@@ -5706,6 +5878,8 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
             }
             memcpy(g_freeArmW0[hand], g_freeRef[hand][anchor - first].p,
                    sizeof g_freeArmW0[hand]);
+            memcpy(g_freeArmW0Q[hand], g_freeRef[hand][anchor - first].q,
+                   sizeof g_freeArmW0Q[hand]);
             ue_rot_to_quat(actorRotNow, g_freeArmActorQ[hand]);
             g_freeArmYaw0[hand] =
                 (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
@@ -6949,6 +7123,25 @@ void draw_debug_ui() {
             g_armsMode.store(1, std::memory_order_relaxed);
         ImGui::SameLine();
         if (ImGui::RadioButton("hide", &am, 2)) g_armsMode.store(2, std::memory_order_relaxed);
+        // s81: the A/B between the two arm solvers, in the headset.
+        bool v2 = g_armIkV2.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("ARM IK v2 (the Dishonored solver)", &v2))
+            g_armIkV2.store(v2, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "On: the arm is solved by the Dishonored VR mod's full-arm IK -\n"
+                "the shoulder slides only when the hand is out of reach, the\n"
+                "elbow keeps its side through singular poses, the forearm shares\n"
+                "the wrist's roll 70%% at the elbow to 100%% at the wrist, and past\n"
+                "80 deg of roll the elbow lifts to carry the rest.\n\n"
+                "Off: the s70-s77 solver, unchanged, for comparison.\n\n"
+                "Same shoulder, arm length and elbow-out sliders either way.\n"
+                "The twist-limit sliders below apply to OFF only.\n"
+                "Log: ARMIK2 lines, always on.");
+        ImGui::Text("v2: %u solves, %u failed, %u out of reach",
+                    g_armIkSolves.load(std::memory_order_relaxed),
+                    g_armIkFails.load(std::memory_order_relaxed),
+                    g_armIkReach.load(std::memory_order_relaxed));
         // s70i: the shoulder JOINT itself, per hand - "each shoulder will need
         // anchoring and positioning like the weapons". The solver anchors the arm
         // here and the elbow follows from it, so this is the one number that
