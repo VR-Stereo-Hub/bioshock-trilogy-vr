@@ -2,6 +2,81 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-07 - s79: the Dishonored VR mod's tools, ported
+
+**Branch `claude/tools-workflows`, off `staging` after #84 merged.** Tools, the simulator
+and docs only: no mod source changes, nothing a player runs. No game was launched.
+
+### Current state
+
+Every tool and workflow the Dishonored VR mod built that applies here is ported, adapted
+to three games, and run on this machine (BS1 is the only game installed on it - BS2 and
+Infinite paths resolve per machine and were not exercised). `docs/TOOLS.md` is the catalog.
+
+| Ported | Verified here |
+|---|---|
+| Local tool file (`tools\tool-paths.ps1`, `%LOCALAPPDATA%\BioshockVR\dev-tools.json`) | `-Init` found IDA 9.3, Blender 5.2, UModel, FFDec, the PSK add-on, Cheat Engine, HxD, BS1's folders |
+| Headless IDA (`tools\ida-run.ps1 -Game`, `tools\ida\`) - per game, RVA-based (these exes relocate) | BS1 staged and analysed: first pass **67 min**, 79,770 functions, Hex-Rays OK, ProcessEvent `+0x375140` bytes MATCH; a script against the saved `.i64` then runs in **5 s** |
+| UModel + headless Blender (`model-export.ps1`, `blender-run.ps1`, `tools\blender\`) | BS1 textures and a static mesh exported and inspected; **BS1 skeletal meshes do NOT extract** (below) |
+| FFDec UI export (`flash-export.ps1`) | BS1's 48 loose `.swf` movies; `HUDPC` -> 504 ActionScript files |
+| UnrealScript corpus (`uscript-export.ps1`, `ExportScripts.cs` + `build.ps1`) | BS1: 12 packages, **1,765 classes, 0 failed** |
+| UE3 natives resolver for Infinite (`ue3-natives.py`) | refuses an unknown build (BS1) as designed; the positive path needs Infinite installed |
+| Host tests (`host-test.ps1`, `tools\tests\`) | `ue-math` (7 checks, 1,040 rotators) and `xrsim-math` (275 poses) pass, each with a negative control that fails |
+| Simulator: per-eye freshness, source-image stats, black-eye attribution, bbox, display-time motion clock, view-matrix fix, adapter tie-break | builds; `xrsim-selftest` passes |
+| `xrsim-run.ps1`: `@key`, `@mark`, `@log`, `@nolog`, same-frame `;` batches | parses; no sequence uses them yet |
+| Unloadable 64-bit OpenXR layer opt-out for 32-bit clients (`tools\lib\xr-layers.ps1`) | the self-test FAILED on this machine without it (OBS mirror layer) and passes with it |
+| Process diagnostics: thread CPU, thread IP sampling, ping watch, crash watcher, symbol archive | parse; symbol archive ran |
+| `tools\lint.ps1` | clean |
+
+**Not ported, on purpose:** the Dishonored launcher/installer, ReShade, DLSS/FSR, support
+bundle, perf plans, its Heart and grab assets - features of that mod, not tools. Its
+`ue3-natives.py class` mode (Dishonored's UTF-16 metadata route, never checked on Infinite).
+The QPC time extension in the simulator (this mod never asks for it). `@modassert` (this
+mod writes no `status.json`).
+
+**The finding that matters for the arm work.** UModel 1590 reads BS1 Remastered's packages
+and exports textures and static meshes, but all three skeletal meshes tried
+(`NEWPlayerHands` - the first-person arms, present in all 20 maps - `BeaconBall_Mesh` and
+`CorpseMale`, in `0-Lighthouse`) stop with `Unknown Havok class: AnimationPackageRoot`.
+So Dishonored's offline IK validation (production solver baked through the original skin
+weights in Blender) has no input for BS1 from the packages. The route left is a mod-side
+rig dump (bone array + the arm draw's vertex buffer -> glTF). `docs/MODEL_WORKFLOW.md` § 2.
+
+**Changed for everyone, flagged for VOID:** `CLAUDE.md` gains a session-protocol line
+pointing at `docs/TOOLS.md` and a Tools block under Build; the simulator's quad placement
+changes (it was wrong - see VERIFICATION 2.6), so quad positions in captures from before
+this branch are not comparable with later ones.
+
+### Next steps
+
+1. **The BS1 headset question from s78 is still the first one**: does the shoulder stay put
+   when the main wrist rolls? (`SHOULDERLAND`, s75-s78 entry below.)
+2. Use the tools on the arm before more headset runs: an IDA series on BS1's skeleton
+   evaluation and its D3D11 skinning path (where the palette goes - the question that
+   decides whether a render-side arm is possible), and a rig dump so Blender can sweep
+   `solve_arm`.
+3. Pull `solve_arm`'s geometry into a pure header with a host suite - the Dishonored arm
+   (`arm_rig.h`) caught its frame and timing bugs there.
+4. On a machine with BS2 / Infinite: `.\tools\ida-run.ps1 -Game bs2 -Stage`, the corpus for
+   each, and `ue3-natives.py` against Infinite (its first run is its own test).
+
+### Session log 2026-10-07 (s79)
+
+Inventoried Dishonored's `tools\` (about 350 files) and kept what is a tool rather than a
+feature. The RE trio (`disasm-rva.py`, `pe-xref.ps1`, `read-dump.py`) was already
+byte-identical here - it started in this repo.
+
+Three defects found while porting, all fixed here: Dishonored's `model-export.ps1 -Find`
+printed blank class and object columns (a second `-match` replaced `$Matches`; its copy
+still has it); PowerShell 5.1 returns a null `ExitCode` from `Start-Process -PassThru`
+unless the handle is read first; and `Get-ChildItem -LiteralPath ... -Include` silently
+returns everything. The simulator's view matrix was the fourth, fixed in Dishonored first
+and now pinned by `xrsim-math` here.
+
+VOID's per-eye source-hash log in the simulator (BS2 issue #31) was kept alongside the
+Dishonored additions; the two answer different questions (what each eye showed vs how old
+it was). `swapchain_release_info` became `swapchain_last_info`, the one rename.
+
 ## Session 2026-10-07 - s75-s78 (BS1): the arm's twist and shoulder work, recorded and landed
 
 **Branch `feat/bs1-ik-improvements`, PR to `staging`.** s75-s77 (2026-08-31 to
