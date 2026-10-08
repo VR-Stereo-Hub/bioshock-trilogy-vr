@@ -1668,7 +1668,12 @@ void on_calcview(const FrameContext& ctx) {
         // Mode 2 has always called this; mode 3 did not, which is why the gun
         // came back full size when the freeze landed.
         bones::wskel_drive();
-        bones::drive(ctx, target, gp, hand);
+        // s77b: and the HELD arm gets the same treatment the off hand has had
+        // since s71b - `loc` paired with gp.rot is the actor this function is
+        // about to write below, so the arm solve divides out the transform the
+        // renderer will actually use instead of the engine's live value, which
+        // ACTORWATCH measures as a sustained 24-41 deg away from ours.
+        bones::drive(ctx, target, gp, hand, loc);
         // s71b: pass the actor transform we are ABOUT to write, never a read of
         // the live one - see drive_free_hand(). This is also why it is called
         // after the held hand: `loc` and `gp.rot` are settled by here.

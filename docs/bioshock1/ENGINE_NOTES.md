@@ -5808,3 +5808,59 @@ rest needed a checkbox nobody ticked.
 
 **Status: built and iterated against headset logs; the final split has not been
 signed off in the headset.**
+
+## Session 77 (2026-09-01) - THE HELD ARM WAS SOLVED THROUGH THE WRONG ACTOR
+
+Recorded 2026-10-07 from the code and the 2026-09-07 log. Reported in the headset:
+rolling the main hand's wrist far enough swivels the shoulder out of position.
+
+### Two actors in one frame
+
+`drive()` pushes the held cluster into component space through the actor as READ
+at its top. The held arm then re-derived its actor from
+`hands::last_actor_write()` - which `hands.cpp` stores only AFTER both arm solves
+have run, so it returned the PREVIOUS frame's write. Hand and arm divided out two
+different transforms, and the shoulder sits 40-70 UU from the actor origin, so
+the residual showed up there as an orbit. The actor's rotation is the main hand's
+wrist - exactly the reported trigger. s71b had found and fixed this identical
+defect for the FREE hand; the held path was never brought along.
+
+### The live read is the WORSE choice - measured with SHOULDERLAND
+
+The first fix made the arm use the same live read as the cluster. SHOULDERLAND
+(below) then measured it, held arm, player still, rolling the main wrist, 84
+samples: the requested shoulder was bit-identical on every sample - the body-frame
+anchor is perfect and never was the defect - while where it LANDED matched on 76
+frames and was 8.75 / 20.0 / 21.0 / 24.6 / 27.5 / 31.4 / 32.3 UU away on the
+other 8.
+
+ACTORWATCH gave the cause: the engine changes the rotation we wrote by a
+SUSTAINED pitch -23.9 yaw +31.6 roll -41.1 deg (four consecutive samples within
+0.5 deg), and `late_write()` puts ours back for the draw. A live read returns the
+engine's actor, not ours; converting through one and rendering through the other
+puts that angle on the shoulder's lever. The control was in the same run - the
+free arm, already handed the intended transform:
+
+| | worst SHOULDERLAND gap |
+|---|---|
+| held arm, live read | 32.27 UU |
+| free arm, intended write | 3.26 UU |
+
+So `drive()` now takes `actorWriteLoc`, the location `hands.cpp` is ABOUT to
+write, paired with `gp.rot` (which is the rotation it writes in mode 3). Null in
+mode 2, where the actor stays engine-placed and the live read is the only
+truthful source. **Never solve against a read of an actor the mod also writes.**
+
+### SHOULDERLAND - the probe, and what it has said since
+
+Carries last frame's pair (the world point asked for, the component point
+written) and re-lifts the component point through THIS frame's actor; the gap is
+the displacement the actor put on the shoulder between conversion and draw.
+Always on, 2 Hz per arm and role, flagged above 5 UU. The comment in `solve_arm()`
+writes down what each hypothesis would print before any run.
+
+**OPEN.** The only log since the fix (2026-09-07, 26 s, not a deliberate wrist-roll
+test) reads, per arm: held median 3.75 / p90 4.87 / max 20.55 UU, free median 3.59
+/ p90 4.87 / max 20.57 UU. The held arm's worst case fell from 32.3 to 20.6 and the
+two arms now agree, but neither is at the ~0 the fix predicts. The next run should
+be the probe's own protocol: both hands still, roll the main wrist slowly.

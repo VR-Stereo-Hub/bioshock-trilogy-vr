@@ -2924,6 +2924,86 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             S[2] /= rigScale;
         }
 
+        // ---- s77 SHOULDERLAND: the shoulder we ASK for vs the one that LANDS -
+        //
+        // The SHOULDER probe prints sWorld, and sWorld can never reveal a
+        // conversion error: it is built in the body frame from camYaw and
+        // base[XYZ], so it is actor-independent BY CONSTRUCTION. It is the
+        // input. Reading it and concluding the shoulder is anchored is the same
+        // shape of mistake as s74a's - checking the quantity that cannot move.
+        //
+        // The OUTPUT is S, a component-space point the renderer lifts back
+        // through whatever actor transform it holds at draw time:
+        //     world = aLoc + A_render * (rigScale * S)
+        // and S was built as inv(A_used) * (sWorld - aLoc_used) / rigScale. The
+        // two cancel to exactly sWorld only when A_render == A_used. When they
+        // differ the shoulder ORBITS aLoc by that difference, on a 40-70 UU
+        // lever - and A is driven by the main hand's wrist, which is the
+        // reported trigger.
+        //
+        // So carry last frame's PAIR - the world point asked for, and the
+        // component point actually written - and re-lift that component point
+        // through THIS frame's actor. The gap is the displacement the actor's
+        // own motion put on the shoulder between our conversion and the draw,
+        // in UU, which is the number nobody has ever had.
+        //
+        // WHAT IT PRINTS UNDER EACH HYPOTHESIS, written before the run:
+        //   gap stays ~0 while the main wrist sweeps
+        //       -> the conversion is sound and the shoulder IS anchored. The
+        //          swivel is somewhere else - the clavicle offset and the qUp
+        //          swing are the next suspects, and both are downstream of here.
+        //   gap grows with wrist SPEED and falls back to 0 when you stop
+        //       -> inter-frame staleness. The s77 fix above should have removed
+        //          it for the held arm; if it is still here, drive()'s own live
+        //          read is not what the renderer uses either and the intended
+        //          write has to come down from hands.cpp.
+        //   gap grows with wrist ANGLE and STAYS while you hold it there
+        //       -> not staleness at all. Something is rewriting the actor
+        //          between our write and the draw, which is s70q/ACTORWATCH
+        //          territory, and the late re-apply is the lever.
+        //
+        // Always on and throttled, per the standing rule that a probe needing a
+        // checkbox is off when it matters. It costs one quat rotate per frame.
+        {
+            static float s_slS[2][2][3] = {};
+            static float s_slW[2][2][3] = {};
+            static bool s_slValid[2][2] = {};
+            static uint64_t s_slLog[2][2] = {};
+            const int slRole = freeBank ? 1 : 0;
+            const uint64_t nowSl = GetTickCount64();
+            if (s_slValid[slRole][hand] && nowSl - s_slLog[slRole][hand] >= 500) {
+                s_slLog[slRole][hand] = nowSl;
+                // Same lift the FOREARM probe uses: component -> world through
+                // the actor this solve was handed, which for the held arm is
+                // now the same one the cluster used.
+                float aQ[4];
+                quat_conj(qaUse, aQ);
+                const float sp[3] = {s_slS[slRole][hand][0] * rigScale,
+                                     s_slS[slRole][hand][1] * rigScale,
+                                     s_slS[slRole][hand][2] * rigScale};
+                float land[3];
+                qts_rotate(aQ, sp, land);
+                for (int c = 0; c < 3; ++c) land[c] += aLoc[c];
+                const float gx = land[0] - s_slW[slRole][hand][0];
+                const float gy = land[1] - s_slW[slRole][hand][1];
+                const float gz = land[2] - s_slW[slRole][hand][2];
+                const float gap = sqrtf(gx * gx + gy * gy + gz * gz);
+                BVR_LOG("[bones] SHOULDERLAND: %s %s | asked (%.1f %.1f %.1f) landed "
+                        "(%.1f %.1f %.1f) | gap %.2f UU (%+.1f %+.1f %+.1f)%s. Hold both "
+                        "hands STILL and ROLL THE MAIN WRIST: this gap is the shoulder "
+                        "orbiting the weapon actor because the transform we divided out "
+                        "is not the one the renderer used. Near 0 means the shoulder is "
+                        "anchored and the swivel is downstream of the anchor.",
+                        hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
+                        s_slW[slRole][hand][0], s_slW[slRole][hand][1],
+                        s_slW[slRole][hand][2], land[0], land[1], land[2], gap, gx, gy,
+                        gz, gap > 5.0f ? "  <-- SHOULDER IS ORBITING THE ACTOR" : "");
+            }
+            memcpy(s_slS[slRole][hand], S, sizeof s_slS[slRole][hand]);
+            memcpy(s_slW[slRole][hand], sWorld, sizeof s_slW[slRole][hand]);
+            s_slValid[slRole][hand] = true;
+        }
+
         // The hand is wherever the cluster write just put the anchor.
         // W is the caller's wrist target: the held hand passes the eased anchor
         // it just wrote (so the arm does not solve to a wrist the hand has left
@@ -4088,7 +4168,8 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         }
 }
 
-bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
+bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+           const float* actorWriteLoc) {
     // Telemetry window: opened here (the once-per-frame pass-1 path) so every
     // module's lines for one sample land together in the log.
     if (g_telemetry.load(std::memory_order_relaxed)) {
@@ -5053,6 +5134,77 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // too. Same inputs it computed inline: the eased anchor this drive just
     // wrote, and the actor transform we INTEND rather than the live one - the
     // engine rewrites the live rotator every frame (s70q).
+    //
+    // ---- s77: THE ARM AND THE HAND WERE USING TWO DIFFERENT ACTORS ---------
+    //
+    // Reported in the headset: the shoulder is not locked where it should be,
+    // and rolling the main hand's wrist far enough swivels it out of position.
+    // This is the mechanism, and it is visible in the code rather than
+    // inferred.
+    //
+    // The whole cluster above is pushed into component space through qaInv /
+    // actorLoc - the actor as READ at the top of drive(). The arm then threw
+    // both of those away and re-derived them from hands::last_actor_write(),
+    // which is a DIFFERENT transform: hands.cpp does not store that until AFTER
+    // both arm solves have run (the g_lastYaw stores sit below bones::drive()
+    // and drive_off_hand() in drive_hands()), so what comes back is the
+    // PREVIOUS frame's write.
+    //
+    // So within one frame the held hand's cluster divided out actor A while its
+    // arm divided out actor A-minus-one-frame. Whichever of the two is closer to
+    // what the renderer finally uses, they cannot both be, and the shoulder sits
+    // at the far end of a 40-70 UU lever from actorLoc - so the residual between
+    // them shows up there as an orbit about the actor. The actor's rotation IS
+    // the main hand's wrist, which is exactly the reported trigger, and the
+    // faster or further that wrist turns the larger the inter-frame residual
+    // gets.
+    //
+    // s71b diagnosed this identical defect for the FREE hand - its banner names
+    // last_actor_write() as the cause of "rotating the right hand causes the
+    // left one to move as well" - and fixed it by taking the transform as an
+    // argument. The held path was never brought along, and the comment directly
+    // above says "the actor transform we INTEND", which is what the code stopped
+    // doing the moment last_actor_write() was allowed to overwrite it.
+    //
+    // ---- s77b: AND THE LIVE READ IS THE WORSE OF THE TWO. MEASURED. --------
+    //
+    // The first cut of s77 used the same actor the cluster reads, on the
+    // reasoning that arm and hand agreeing was a precondition for anything else.
+    // SHOULDERLAND then measured what that actually costs, and it is not small.
+    //
+    // 84 samples, held arm, player standing still and rolling the main wrist:
+    //
+    //   asked   BIT-IDENTICAL on every single sample - (-37382.1 544.4 7811.4)
+    //   landed  equal to asked on 76 frames, and then 8.75, 20.0, 21.0, 24.6,
+    //           27.5, 31.4, 32.3 UU away on the other 8
+    //
+    // The anchor is therefore PERFECT - sWorld never moves, so the body-frame
+    // math is not the defect and never was. What moves is where that anchor
+    // LANDS after the round trip through the actor.
+    //
+    // ACTORWATCH says why, and it is not an inter-frame lag at all: the engine
+    // changes the rotation we wrote, every frame, by a SUSTAINED
+    //     pitch -23.9  yaw +31.6  roll -41.1 deg
+    // (four consecutive samples within 0.5 deg of each other - a standing
+    // offset, not a transient). So a live read does not return our actor; it
+    // returns the engine's, tens of degrees away, while late_write() puts ours
+    // back for the draw. Converting through one and rendering through the other
+    // puts that whole angle on the shoulder's 40-70 UU lever - 20 to 32 UU,
+    // which is the measured spread above and about a quarter of a metre.
+    //
+    // THE CONTROL IS IN THE SAME RUN. The free arm runs this identical probe and
+    // is already handed the intended transform (s71b). Same frames, same wrist:
+    //
+    //   held arm (live read)      worst gap  32.27 UU
+    //   free arm (intended write) worst gap   3.26 UU
+    //
+    // Ten to one, on the one variable that differs. So take what s71b took: the
+    // transform we are ABOUT to write, never a read of the live one. gp.rot IS
+    // the rotation hands.cpp writes in this mode, so qt is already it and only
+    // the location had to be threaded down.
+    //
+    // Null in mode 2 on purpose - there the actor stays engine-placed, we never
+    // write it, and the live read is the only truthful source.
     if (freezeOnly) {
         float Wbuf[3] = {pa[0], pa[1], pa[2]};
         if (pinPos)
@@ -5060,14 +5212,11 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 Wbuf[c] = pa[c] + (g_pinAnchorP[hand][c] - pa[c]) * pinAmt;
         float aLoc[3] = {actorLoc[0], actorLoc[1], actorLoc[2]};
         float qaUse[4] = {qaInv[0], qaInv[1], qaInv[2], qaInv[3]};
-        float wl[3];
-        int32_t wr[3];
-        if (hands::last_actor_write(wl, wr)) {
-            memcpy(aLoc, wl, sizeof aLoc);
-            FRotator wrot{wr[0], wr[1], wr[2]};
-            float qw[4];
-            ue_rot_to_quat(wrot, qw);
-            quat_conj(qw, qaUse);
+        if (actorWriteLoc) {
+            aLoc[0] = actorWriteLoc[0];
+            aLoc[1] = actorWriteLoc[1];
+            aLoc[2] = actorWriteLoc[2];
+            quat_conj(qt, qaUse); // qt = quat(gp.rot) = the rotation about to be written
         }
         solve_arm(ctx, hand, Wbuf, qaUse, aLoc, s, /*freeBank=*/false,
                   /*handQ=*/nullptr, /*rigScale=*/1.0f, /*handRefQ=*/nullptr);

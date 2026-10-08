@@ -32,7 +32,15 @@ void init(const bvr::pattern_scan::ProcessImage& image);
 // `handsActor` is the live AHands actor (validated by the caller). Game
 // thread, once per frame from hands::on_calcview. Returns false if the
 // skeleton could not be reached this frame (caller may fall back).
-bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
+// s77: actorWriteLoc is the actor LOCATION the caller is about to write, paired
+// with gp.rot as the rotation it is about to write. Pass it in mode 3, where we
+// own the actor; leave it null in mode 2, where the actor stays engine-placed
+// and a live read is the only truthful source. MEASURED: the engine changes the
+// rotation we wrote by pitch -24 yaw +32 roll -41 deg before the next frame sees
+// it (ACTORWATCH), so a live read is off by that much, and on the shoulder's
+// 40-70 UU lever that is 20-32 UU of displacement.
+bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+           const float* actorWriteLoc = nullptr);
 
 // Re-write the values the last drive() produced. The stereo second pass runs
 // the ENGINE's CalcView again (which re-evaluates the skeleton over our
