@@ -5886,3 +5886,30 @@ reads out of `0-Lighthouse` (docs/bioshock1/HAVOK_AND_PACKAGES.md). No game was 
   (`g_freeArmW0Q`), which the v2 solver measures the forearm roll against.
 
 The solver, its integration and its validation are in `docs/bioshock1/ARM_IK.md`.
+
+## Session 82 (2026-10-08) - BS1's skeleton evaluator, for a post-evaluation hand drive
+
+Offline, `tools\ida\hd1_skelinst_update.py` against the staged `BioshockHD.exe` (md5
+`b4db411a...`). The BS1 twin of BS2's `wfix` target (BS2 session 74). Not consumed by code
+yet. The design that will consume it is `docs/bioshock1/HANDS_DISHONORED.md`.
+
+- **The evaluator is `SkeletonInstance` vtable slot `+0x9C`** (vtable RVA `0xE19ACC`),
+  target **RVA `+0x597CF0`**, 808 bytes, thiscall with no stack arguments. Hex-Rays reads
+  it as `(int *a1@<ecx>, int a2@<ebp>)`. The `@<ebp>` is probably its SEH frame, so copy
+  BS2's convention-agnostic naked ret-stub rather than trusting a C++ detour.
+- **The gate around it** (decompiled at `+0x598020`, slot `+0xA0`, and inlined at each
+  caller): `if (freeze[+0x20] && lastEvalTime[+0x80] > 0) { dirty[+0x88] = 0; skip }`
+  `else if (dirty) { evaluate(); dirty = 0; }`. So freezing suppresses evaluation
+  entirely, and the dirty byte `+0x88` is the only other switch. That is why the mode-3
+  drive, which clears the dirty byte every frame, sees an evaluation only ~1 frame in 19
+  (ARCHITECTURE s68d).
+- **Four dirty-guarded call sites:**
+
+  | Site | In function | Note |
+  |---|---|---|
+  | `+0x319F55` | `+0x319F00` | Gets the actor's SkeletonInstance (`+0x3FC`), evaluates it, then calls the mesh instance's virtuals `+0x12C` and `+0x128` with a 64-byte matrix: the per-draw skin path, BS2's pass-1 update shape |
+  | `+0x434B28` | `+0x434A70` | |
+  | `+0x598050` | the `+0xA0` gate | |
+  | `+0x6429AE` | `+0x6423F0` | |
+
+  Hooking the slot function catches all four.
