@@ -203,6 +203,7 @@ the parts that are actually fixed.
 | `docs/TOOLS.md` | **The tool catalog, by question**: the local tool file, static RE, game content, host tests, running-process diagnostics, debug programs. Check it before deriving anything |
 | `docs/IDA_WORKFLOW.md` | **Headless IDA**: staging each game's exe, the md5 provenance check, the one-question script shape (RVAs, per-game anchors), where IDA sits in the order of work, traps |
 | `docs/MODEL_WORKFLOW.md` | **UModel + headless Blender, our BS1 rig/Havok converter, FFDec, the UnrealScript corpus**: what extracts per game, commands, workspace, traps |
+| `docs/MODDING_SDKS.md` | **The Unofficial BioShock SDK and CodeRed** (third-party, cloned to the gitignored `external\`): compiling new classes toward Remastered, CodeRed for Infinite, the open questions |
 | `docs/bioshock1/HAVOK_AND_PACKAGES.md` | BS1's package, skeletal-mesh and Havok packfile formats, and how each was derived |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |

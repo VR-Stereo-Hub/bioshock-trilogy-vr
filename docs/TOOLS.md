@@ -73,6 +73,16 @@ UModel cannot read BS1 skeletal meshes or animations (Havok); `bsmesh-export` ca
 2026-10-08, `docs/bioshock1/HAVOK_AND_PACKAGES.md`). Textures, static meshes, UI movies and
 script come out through the other rows.
 
+### Third-party references - `docs/MODDING_SDKS.md`
+
+| Question | Where |
+|---|---|
+| How the 2007 game's packages, editor, UnrealScript compiler (`ucc make`) and `#exec` imports work; whether new classes can reach Remastered | the Unofficial BioShock SDK guide, `external\Unofficial-BioShock-Editor\UnrealEdGuide\` |
+| A full C++ SDK of Infinite's classes (blocked on GObjObjects) | CodeRed Generator, `external\CodeRed-Generator\` |
+
+`.\tools\external-refs.ps1` clones both at the documented commits into the gitignored
+`external\`. Neither is ever committed, and nothing in them is run.
+
 ### Pure logic, on the host
 
 | Question | Tool |

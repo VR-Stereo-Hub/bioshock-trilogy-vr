@@ -66,6 +66,10 @@ against the running game still means reading the bones live (`SkeletonInstance` 
 48-byte transforms, component space - BS1 ENGINE_NOTES) - but now against a known bind pose
 and a known clip, in the same coordinates.
 
+The other direction - an edited `.glb` back into a Havok animation package - is what the
+Unofficial BioShock SDK's `HAVOK BUILD` does, for the 2007 game's package format only. See
+`docs/MODDING_SDKS.md`.
+
 ## 3. Commands
 
 ```powershell
