@@ -1,0 +1,157 @@
+# shoulder-anchor.xrs - does turning the HEAD move the shoulder, and if so, why?
+#
+# The reported bug (end of s73, never chased): "head rotation moves each arm's
+# shoulder position."
+#
+# THIS IS A TEST A HUMAN CANNOT RUN, for the same reason offhand-swivel.xrs
+# gives about the off hand. The question is whether the shoulder moves *while
+# the controllers are still*, and nobody can hold two controllers still to the
+# precision the answer needs - a few centimetres of real hand drift is larger
+# than the effect. The simulator parks both controllers on exact poses and never
+# touches them again, so every millimetre the shoulder-to-hand distance changes
+# afterwards was caused by the HEAD and nothing else.
+#
+# THE ORACLE IS THE LOG, NOT THE CAPTURES. The s74a SHOULDER probe prints the
+# numbers directly, so this file needs no image diff and inherits none of the
+# "BS1 scenery moves on its own" traps that make offhand-swivel.xrs so careful:
+#
+#   grep -a SHOULDER %LOCALAPPDATA%\BioshockVR\bioshockvr.log
+#
+# Each line carries: the shoulder in WORLD, base[XYZ], camYaw, the derived
+# bodyYaw, the drive residual, the recenter yaw, and shoulder-to-hand against
+# the arm's reach. SHOULDER is deliberately outside the s74b probe gate, so it
+# needs no `vrbones probes on` - and leaving the gate shut is what keeps the log
+# readable here.
+#
+# ================== WHY THERE ARE TWO PHASES ==================
+#
+# The hypothesis this file exists to test is that the shoulder is NOT leaking
+# the head at all. bones.cpp anchors it to (camYaw - driveYawOffsetRad), which
+# is meant to be the BODY's yaw - but the body-follows-head transfer ships at
+# instant 1:1 (body.cpp: g_armed true, g_ratePerSec 0, g_deadzoneDeg 0), so in
+# steady state that residual is ~0 and the body yaw simply IS the head yaw. On
+# that reading the shoulder is faithfully following a body that snapped to the
+# head, and the fix belongs in the transfer, not in the arm solve.
+#
+# One phase cannot separate those. Two can, because `vrbody off` disarms the
+# transfer and nothing else:
+#
+#   PHASE A - transfer ARMED (the shipping default)
+#   PHASE B - transfer OFF   (`vrbody off`)
+#
+# HOW TO READ THE PAIR. Compare the SHOULDER lines across each sweep:
+#
+#   A: bodyYaw tracks camYaw and the shoulder moves
+#   B: bodyYaw HOLDS while camYaw moves, and the shoulder HOLDS
+#       -> CONFIRMED. The transfer carries the head into the shoulder. There is
+#          no arm bug; do not touch solve_arm.
+#
+#   B: bodyYaw HOLDS while camYaw moves, and the shoulder MOVES ANYWAY
+#       -> a genuine leak downstream of the yaw. base[XYZ] is the next suspect,
+#          and the base(...) field on the same line already shows whether it is
+#          the one moving.
+#
+#   Either phase: sh->hand CHANGES
+#       -> the arm is really stretching, and by exactly that many UU. If it
+#          holds, shoulder and hand are orbiting the same centre rigidly and
+#          what the tester saw is a percept, not a geometry error.
+#
+# sh->hand is the discriminator. The shoulder MOVING in world proves nothing on
+# its own - the hand orbits the same centre and the whole rig is allowed to yaw
+# with the body. What the tester can actually see is the shoulder moving
+# relative to a hand that did not move.
+#
+# ================== PRECONDITION. DO NOT SKIP. ==================
+#
+# THE SIM HOLDING A POSE DOES NOT MEAN THE MOD IS READING IT. That trap
+# invalidated a whole run on 2026-08-30 that had already been reported as a
+# reproduction (see offhand-swivel.xrs). Here it is cheap to rule out, because
+# the probe prints camYaw itself:
+#
+#   .\tools\xrsim-cmd.ps1 "head rot  60 0 0"
+#   .\tools\xrsim-cmd.ps1 "head rot -60 0 0"
+#   grep -a SHOULDER %LOCALAPPDATA%\BioshockVR\bioshockvr.log | tail -4
+#
+# camYaw MUST differ by roughly 120 deg between those two. If it does not move,
+# the mod is not reading the simulated head and everything below is scenery.
+#
+# A WEAPON MUST BE EQUIPPED AND BOTH HANDS DRAWN. solve_arm() returns early
+# while the arm reference is invalid or either arm is collapsed, and an
+# empty-handed or menu-state run prints no SHOULDER lines at all. An empty grep
+# means "there was no arm to measure", not "the shoulder held still".
+#
+# THE 400 ms THROTTLE IS WALL CLOCK, not frames. The @frames counts below are
+# generous so that each pose yields at least two lines per role and side; if a
+# pose produced only one, raise them rather than trusting a single sample.
+#
+# THE SLEW CAP IS REAL. g_maxDegPerSec is 180, so a 60 deg head step takes about
+# a third of a second to transfer even at rate 0. The settle counts below cover
+# it - but the first line after each step may catch the transient, which is
+# useful in itself: driveYaw is non-zero exactly while the body is catching up.
+
+reset
+@mod vrstereo on
+@mod vrhands on; vrhands mode brvr
+@frames 60
+@assert projectionViews eq 2
+
+# Park BOTH controllers and never touch them again. Everything after this point
+# that moves the shoulder-to-hand distance was the head's doing.
+hand l grip pose -0.25 1.30 -0.40 0 0 0
+hand r grip pose  0.25 1.30 -0.45 0 0 0
+head rot 0 0 0
+@frames 150
+@shot shoulder_A_yaw00
+@assert layersLastFrame ge 3
+
+# ---------------- PHASE A: the transfer as shipped (armed, 1:1) -------------
+head rot 30 0 0
+@frames 150
+@shot shoulder_A_yawP30
+
+head rot 60 0 0
+@frames 150
+@shot shoulder_A_yawP60
+
+head rot 0 0 0
+@frames 150
+@shot shoulder_A_return
+
+head rot -60 0 0
+@frames 150
+@shot shoulder_A_yawM60
+
+head rot 0 0 0
+@frames 150
+
+# ---------------- PHASE B: the same sweep, transfer disarmed ----------------
+# `vrbody off` disarms the body-follows-head yaw transfer and nothing else, so
+# the ONLY difference between the two phases is whether the body was allowed to
+# follow. That is what makes the pair an experiment rather than two runs.
+@mod vrbody off
+@frames 150
+@shot shoulder_B_yaw00
+
+head rot 30 0 0
+@frames 150
+@shot shoulder_B_yawP30
+
+head rot 60 0 0
+@frames 150
+@shot shoulder_B_yawP60
+
+head rot 0 0 0
+@frames 150
+@shot shoulder_B_return
+
+head rot -60 0 0
+@frames 150
+@shot shoulder_B_yawM60
+
+head rot 0 0 0
+@frames 150
+
+# Leave the transfer as it was found - it is the shipping default and a sticky
+# `off` would silently change the next run in this session. `vrstereo on` is
+# sticky for the same reason offhand-swivel.xrs arms it explicitly.
+@mod vrbody on

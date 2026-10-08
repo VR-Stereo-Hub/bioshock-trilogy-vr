@@ -2,6 +2,77 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-07 - s75-s78 (BS1): the arm's twist and shoulder work, recorded and landed
+
+**Branch `feat/bs1-ik-improvements`, PR to `staging`.** s75-s77 (2026-08-31 to
+09-01) ended without a handoff and left their last stage uncommitted; s78 (this
+session, after a month away) audited the tree, committed it in logical pieces,
+merged `staging` in, and wrote this entry from the code, the commit trail and the
+logs on disk. No game was launched.
+
+### Current state
+
+| change | commit | headset |
+|---|---|---|
+| shoulder in the hands' frame (s74) | `13ed32b` | signed off |
+| arm length scale, default 1.0 (s75) | `890ae21` | not tuned |
+| forearm twist limit 85 deg (s75) | `d03ac49` | superseded by the next row |
+| twist: true-angle accumulator, rest pose, humerus split (s75b-s76) | `5ad5d8d` | iterated against logs, final state NOT signed off |
+| held arm solved through the actor about to be written (s77) | `5453d75` | one 26 s log since, not a test - see below |
+| 64-bit implicit OpenXR layer guard (`src/core/`) | `e929cfe` | ran 2026-09-07: OBS layer disabled, instance created on VDXR |
+| `armcap32` + `tools/armcap.ps1`, `docs/bioshock1/IK-RESEARCH.md` | `0ed156f` | tool built, no capture taken |
+
+`git diff staging...HEAD -- src/core/` is the layer guard ONLY. It changes nothing
+unless an implicit layer that cannot load in a 32-bit process is registered, and
+then it sets that layer's own opt-out variable in this process (never the
+registry). It reaches BS2 and Infinite on purpose: the failure it fixes takes VR
+down in every 32-bit game.
+
+**Rejected in the headset and kept out of this branch:** the FRIK reach stretch
+and shoulder reach offset (`archive/s75-reach-fixes`, 2026-08-31). The left
+shoulder sat forward of the right and the whole arm stretched. Cause: the rig's
+arm (66.2 UU) is shorter than the player's, so both fired on every frame. The
+branch was reset to `13ed32b` and only the arm scale redone. Retry them only
+after the arm scale is tuned - IK-RESEARCH.md section 5 has the table.
+
+**Corrected this session:** IK-RESEARCH.md and a `bones.cpp` comment said this repo
+is GPL-3.0 like FRIK. It is MIT. FRIK is concepts only; no code was copied.
+
+### Next steps
+
+1. **One headset run, one question: does the shoulder stay put when the main
+   wrist rolls?** Both hands still, roll the main wrist slowly both ways. Read
+   `SHOULDERLAND` (always on): the s77 fix predicts ~0 UU on the held arm. The
+   only log since the fix (2026-09-07, 26 s, ordinary play) had both arms at a
+   median 3.7 / max 20.6 UU - better than the 32.3 before, not ~0.
+2. Same run, the free arm's wrist roll: `ARMDIAG` shows the fore/hum split and
+   whether `fp` collapses. Judge whether the forearm still pinches past 85 deg.
+3. Tune the arm scale (F10) before revisiting any reach fix.
+4. Take an `armcap` capture (IK-RESEARCH.md section 7) when there is a session
+   for it - it turns the elbow model and the shoulder position from guesses into
+   fits.
+5. The port of Dishonored VR's tools and workflows (headless IDA, UModel +
+   Blender, the local tool file) is the next branch, off `staging` once this lands.
+
+### Session log 2026-10-07 (s78)
+
+Audit only, then landing. Found three older branches of the same author with
+commits not on `staging` - `docs/viewmodel-rig-differences`,
+`probe/weapon-bob-source`, `archive/s75-reach-fixes` - and checked each: the first
+two were landed later in rewritten form (staging has newer versions of every
+file), the third is the rejected line above. The one thing found only on an old
+branch is a 2026-08-21 note that the wrench idle animations had stopped playing
+(`795bc2f`), judged wanted at the time; not carried forward because the drive
+has been rebuilt twice since.
+
+The uncommitted s75c-s77 tree was split by hunk into the twist commit and the
+actor commit so each reverts on its own; findings went to ENGINE_NOTES sessions
+75-77 in the same commits. Two verbatim chat quotes in the new code comments and
+two in IK-RESEARCH.md were rewritten as observations. Debug and Release build
+clean after the `staging` merge; Debug installed to BS1.
+
+---
+
 ## Session 2026-09-01 - s74: BS2 issue #31 diagnosed LIVE - the flicker decomposed
 
 Branch `claude/bioshock2-left-eye-flicker-3ca08e` (off `staging`), diagnosis-only
@@ -66,6 +137,199 @@ session and was measured, photographed and A-B'd. Full mechanism write-up:
    metric, fgfov/profile write logging if it shows.
 4. Restore the user's FOV option (100) and decide the crash-restore guard.
 5. Testers: ship a diag31 build + one-line arm instruction once 1-2 land.
+
+---
+
+## Session 2026-08-30 - s74: the shoulder was in the wrong frame, and it is fixed
+
+**Branch `feat/bs1-ik-improvements`.** Six commits on top of `feat/bs1-off-hand-ik`
+(PR [#62](https://github.com/VR-Stereo-Hub/bioshock-trilogy-vr/pull/62), which was
+rewound to `b0d3c87` so it carries only the s72/s73 arm work).
+`git diff --stat -- src/core/` is EMPTY: this cannot reach BS2 or Infinite.
+Nothing has been merged and no PR is open for this branch yet.
+
+**SIGNED OFF IN THE HEADSET** - tester, after the fix: *"that completely fixed
+it"*.
+
+**Read past line 150 this once.** Prepending this section pushed the s72/s73
+*Corrections that outlive this session* below the usual session-start window,
+and all five still bind - ACTORWATCH is not a defect meter, there is no actor
+race, `SCRIPTSEAM` must stay off while measuring, BS1 has no script-level IK
+surface, and five approaches are recorded as falsified so they are not retried.
+`sed -n '160,215p' docs/STATUS.md`.
+
+### THE FINDING: the shoulder and the hand were in two different frames
+
+Measured from 44 log samples with the tester standing still and turning only his
+head, both controllers held steady.
+
+| | net yaw it was placed at |
+|---|---|
+| hand (`xr_pose_to_game`) | `gameYaw - recenterYaw` |
+| shoulder (`solve_arm`), before the fix | `gameYaw` |
+
+Those differ by a term that is **not constant**, which is the whole point.
+`camera.cpp` advances `g_recenterYawUnits` by exactly what the body transfer
+took, every frame - the `if (moved) g_recenterYawUnits = wrap_rot(...)` line -
+so as the body follows your head, the recenter reference follows with it.
+**Measured: `camYaw - recenterYaw` held flat to within 5-10 deg while `camYaw`
+swept the full +-180 deg.** Only ONE recenter event appears in that log; all the
+rest of the motion is that one line.
+
+That is exactly right for the hand - your real hand did not move in the room
+when you turned your head, so its world position must not rotate - and exactly
+wrong for the shoulder, which swept the lot. Your shoulders did not turn either.
+
+**The damage, with the player standing still:**
+
+| measured | value |
+|---|---|
+| shoulder swing, controllers still | **47.5 UU** right, **45.0 UU** left (~45 cm) |
+| shoulder-to-hand range | **39.9 - 87.9 UU** against a **66.2 UU** reach |
+| samples past full reach | **19 of 44** - elbow clamped straight, forearm over-extending |
+| the two arms | **180 deg out of phase** (right 86.0 while left 39.9) |
+
+The phase relationship is the signature: that is what two shoulders on opposite
+sides of a spine do when swung around a fixed pair of hands.
+
+**The fix is one term.** The shoulder yaw becomes
+`camYaw - driveYaw - recenterYaw`, the same net yaw the hands already use. The
+elbow pole hint and the body-frame round trip the elbow is smoothed in both
+derive from the same `cy`/`sy`, so they inherit it - correct, because all three
+are meant to be the frame that does NOT move when your head does. A stick turn
+still carries all of it: an artificial turn moves `gameYaw` without the transfer
+moving, so `recenterYaw` does not advance and the net yaw changes.
+
+### The dismissal that was wrong, and why it is worth recording
+
+s74a found this exact asymmetry, printed it, and **argued it away in the same
+comment**: *"constant under a head turn, so it cannot be this defect"*. That
+rested on `recenterYaw` being a fixed reference. It is not - the transfer
+advances it - and it was the entire defect.
+
+Two things saved it. The number was printed even though the argument said it was
+irrelevant, and the s73 rule about writing a probe's failing signature down
+before the run meant the raw line was read rather than skimmed. **Print the
+quantity your argument says does not matter; the argument is the thing most
+likely to be wrong.**
+
+The s74c verdict detector never fired once across the whole run, for the same
+root cause: `headYawRad` was published as `a.yawRad - recenter_yaw_rad()`, and
+since both move together that is near constant, so its 25-deg trigger was never
+reached. It is now published RAW - consumers take differences over time, and a
+fixed offset cancels in a difference. The raw `SHOULDER` line prints `headYaw`
+too, because **a probe that depends on a quantity it does not print cannot be
+debugged from its own output.**
+
+### Current state
+
+**The off hand, its arm, and both shoulders are correct and headset-signed-off.**
+The s72/s73 decoupling work stands unchanged; s74 added the frame fix above.
+
+**Confirmed and no longer a hypothesis:** the body-follows-head transfer really
+does run at instant 1:1 - `body.cpp` ships `g_armed{true}`, `g_ratePerSec{0.0f}`,
+`g_deadzoneDeg{0.0f}`, and the log measured a follow ratio of **0.984** across 37
+turns with `driveYaw` flat at ~0. So s70i's `- driveYawOffsetRad` is real algebra
+against a term that is zero by configuration. It is harmless and stays, but it
+was never what anchored the shoulder to the body; `- recenterYawRad` is.
+
+**What s70i did fix, and it is not in doubt:** head *lean*. `base[XYZ]` is the
+camera before the head positional offset (`camera.cpp` re-takes it after the
+head-bob substitution and before the offset is added), so leaning cannot drag
+the anchor.
+
+**The shoulder offsets survived the frame change untouched.** They were tuned
+with the bug present, and the worry was that re-referencing them would displace
+the anchor and force a re-tune. It did not - the numbers mean the same thing
+(forward/right/up from the head) and only the rotation they were applied in
+changed.
+
+**The probes now ship off.** One flag gates the throttle of all seven noisy
+families (`FREEPROBE`, `FREETARGET`, `FREEHOLD`, `FREEANIM`, `ARMHOLD`,
+`FOREARM`, `ARMIK`): `vrbones probes on`, or the F10 checkbox "Diagnostic probes
+(off-hand + arm) in the log". Not persisted to `vrpreset.ini`, the same choice
+`g_telemetry` makes. Gating the throttle and not the computation, so the change
+is provably behaviour-preserving. Three things stay outside the gate on purpose:
+`SCRIPTSEAM` needs nothing (`g_peSeam` already ships false and bails early);
+`FREEPROBE`'s *actor read FAILED* line, because hiding a failure warning behind
+a default-off flag re-opens the "zero by an unchecked read" trap; and `SHOULDER`,
+which is the live question and joins the gate once answered.
+
+**Consequence caught in the same commit:** `offhand-swivel.xrs` used `FREETARGET`
+as half its oracle, so the gate would have silently reduced it to "the captures
+differ" - which that file's own precondition block says is not a reproduction.
+It now arms the probes itself.
+
+### Next steps
+
+1. **Fold `SHOULDER` and `SHOULDER VERDICT` into the probe gate.** The question
+   they were built for is answered, so they are now the only ungated diagnostics
+   left and they belong behind `probes_on()` with the other seven.
+2. **The verdict detector has never fired a single line.** It was silent for the
+   wrong reason and that reason is fixed, but it has still never been seen to
+   work, so it is unproven code. Confirm it fires once before trusting it - or
+   delete it, since the raw line answered the question without it.
+3. **Audit every other consumer of the plain body yaw for the same frame bug.**
+   `grep -n "driveYawOffsetRad" src/game/bioshock1r/` finds them. The shoulder
+   was wrong for two sessions without anyone noticing, and the same
+   `- recenterYawRad` term is missing wherever a body-frame quantity is built
+   next to a hand.
+4. **FRIK research is in flight** (see `docs/bioshock1/IK-RESEARCH.md`): the
+   shoulder reach offset and the elbow constraints, plus whatever else their
+   architecture argues for. Research only - no code on this mod for now, by the
+   tester's direction.
+
+### Session log 2026-08-30 (s74)
+
+**Verified in a headset** (tester ran it): one run of ordinary play with both
+hands held still and the head turning, which produced the 55 log lines the whole
+finding rests on, then a second run confirming the fix - *"that completely fixed
+it"*. Six commits, five builds, all installed.
+
+**The whole answer came from ONE run of ordinary play.** No simulator launch, no
+scripted repro, no commands typed. The two-phase `shoulder-anchor.xrs` was built
+first and never needed: an always-on probe that prints its full state, read
+against a few minutes of normal play, was strictly better than an experiment
+that required the tester to drive it. Reach for the always-on instrument first
+and keep the scripted experiment as the fallback.
+
+**The test was redesigned mid-session, and the reason generalises.** The first
+version was a two-phase simulator script needing `vrbody off` typed between
+sweeps. The tester's answer - *"I'm not running a command while the game is
+running"* - is the same constraint that already made every probe here always-on
+or F10-gated, and it should have been the starting assumption rather than a
+correction. A test that needs a command typed mid-run is a test that does not
+get run. The rewrite moved the A/B inside the mod: it now detects a clean head
+turn during ordinary play and prints the attribution itself.
+
+**That redesign needed a quantity nobody had published.** Inferring the answer
+without disarming the transfer requires the PHYSICAL head yaw, and neither
+`camYaw` (head plus body) nor `driveYawOffsetRad` (only the untransferred part,
+~0 as shipped) can stand in for it. `FrameContext.headYawRad` is new for exactly
+this. Worth remembering: *"the mod can run its own A/B"* usually costs one more
+published signal, and it is normally one the drive already computed and threw
+away.
+
+**Method note, carried from s73 and applied here.** The `SHOULDER` probe's
+comment writes down what it would print under each hypothesis BEFORE any run,
+including the case where it exonerates the arm entirely. The discriminator is
+`sh->hand`, not the shoulder's absolute motion: the shoulder moving in world
+proves nothing on its own, because the hand orbits the same centre and the whole
+rig is allowed to yaw with the body.
+
+**And the new one, which is the most valuable thing this session produced.**
+The defect was found in a number the probe printed only because it was free, and
+which the comment beside it explicitly argued could not be the cause. **Print the
+quantity your argument says does not matter.** The reasoning is the part most
+likely to be wrong, and a printed number costs nothing to carry while a wrong
+dismissal costs sessions - this one had already survived two.
+
+**A gate is a change to every tool that read the log.** The probe gate was one
+flag and eight one-line edits, and the only interesting part was noticing that
+an existing `.xrs` file depended on one of the gated families. Grep the tools
+tree, not just the source tree, before defaulting a diagnostic off.
+
+---
 
 ## Session 2026-08-30 - s72/s73: the off hand's ARM, decoupled and rotating
 
@@ -143,20 +407,9 @@ Full derivations, all fourteen faults and ten standing rules:
 
 ### Next steps
 
-**Head rotation moves each arm's shoulder position.** Reported by the tester and
-not chased. The shoulder is built in `solve_arm()` from `ctx.baseX/Y/Z` plus the
-body yaw (`camYaw - driveYawOffsetRad`), which is deliberately the BODY and not
-the camera - s70i fixed exactly this once already for head *lean*. So either that
-subtraction is not removing all of the head's contribution, or something
-downstream of it re-introduces it. Start by logging the shoulder's WORLD position
-against `camYaw` with the head turning and the body still; if it moves, the
-`driveYawOffsetRad` subtraction is incomplete.
-
-**Before either PR merges:** eight probe families are armed and logging in the
-shipped build - `FREEPROBE`, `FREETARGET`, `FREEHOLD`, `FREEANIM`, `ARMHOLD`,
-`FOREARM`, `ARMIK`, `SCRIPTSEAM`. They are throttled and read-only, but they are
-diagnostics, not shipping behaviour, and should be stripped or default-gated in
-their own commit.
+**Both of this section's first two items were taken up in s74** - the shoulder
+question is now instrumented and the probe families are gated. See the s74 entry
+above; what remains below still stands.
 
 **Deferred by the tester's decision, ready to port:** FRIK's shoulder reach
 offset (`norm(shoulderToHand) * adjust * armLength * 0.08` - ours anchors the

@@ -574,6 +574,9 @@ void save_config() {
         fprintf(f, "shoulderRightCm%s=%.2f\n", s, sr);
         fprintf(f, "shoulderUpCm%s=%.2f\n", s, su);
     }
+    fprintf(f, "armScale=%.3f\n", bones::arm_scale());
+    fprintf(f, "armTwistLimitDeg=%.1f\n", bones::arm_twist_limit_deg());
+    fprintf(f, "humerusTwistLimitDeg=%.1f\n", bones::humerus_twist_limit_deg());
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
     fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
     fprintf(f, "elbowFollowWrist=%.3f\n", bones::elbow_follow_wrist());
@@ -673,6 +676,10 @@ void load_config() {
         else if (store_hand_key(key, "viewRightCm", g_viewRightCm, v)) {}
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
+        else if (strcmp(key, "armScale") == 0) bones::set_arm_scale(v);
+        else if (strcmp(key, "armTwistLimitDeg") == 0) bones::set_arm_twist_limit_deg(v);
+        else if (strcmp(key, "humerusTwistLimitDeg") == 0)
+            bones::set_humerus_twist_limit_deg(v);
         else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
         else if (strcmp(key, "offHandTracked") == 0) bones::set_off_hand_tracked(v != 0.0f);
         else if (strncmp(key, "offHandView", 11) == 0) {
@@ -1661,7 +1668,12 @@ void on_calcview(const FrameContext& ctx) {
         // Mode 2 has always called this; mode 3 did not, which is why the gun
         // came back full size when the freeze landed.
         bones::wskel_drive();
-        bones::drive(ctx, target, gp, hand);
+        // s77b: and the HELD arm gets the same treatment the off hand has had
+        // since s71b - `loc` paired with gp.rot is the actor this function is
+        // about to write below, so the arm solve divides out the transform the
+        // renderer will actually use instead of the engine's live value, which
+        // ACTORWATCH measures as a sustained 24-41 deg away from ours.
+        bones::drive(ctx, target, gp, hand, loc);
         // s71b: pass the actor transform we are ABOUT to write, never a read of
         // the live one - see drive_free_hand(). This is also why it is called
         // after the held hand: `loc` and `gp.rot` are settled by here.

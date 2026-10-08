@@ -32,7 +32,15 @@ void init(const bvr::pattern_scan::ProcessImage& image);
 // `handsActor` is the live AHands actor (validated by the caller). Game
 // thread, once per frame from hands::on_calcview. Returns false if the
 // skeleton could not be reached this frame (caller may fall back).
-bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
+// s77: actorWriteLoc is the actor LOCATION the caller is about to write, paired
+// with gp.rot as the rotation it is about to write. Pass it in mode 3, where we
+// own the actor; leave it null in mode 2, where the actor stays engine-placed
+// and a live read is the only truthful source. MEASURED: the engine changes the
+// rotation we wrote by pitch -24 yaw +32 roll -41 deg before the next frame sees
+// it (ACTORWATCH), so a live read is off by that much, and on the shoulder's
+// 40-70 UU lever that is 20-32 UU of displacement.
+bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+           const float* actorWriteLoc = nullptr);
 
 // Re-write the values the last drive() produced. The stereo second pass runs
 // the ENGINE's CalcView again (which re-evaluates the skeleton over our
@@ -167,6 +175,24 @@ void shoulder_cm(int hand, float* fwd, float* right, float* up);
 void set_shoulder_cm(int hand, float fwd, float right, float up);
 float elbow_out();
 void set_elbow_out(float v);
+// s75: multiplies the authored arm segment lengths, sizing the rig's arm to the
+// PLAYER's. The rig's is fixed and the player's is not; when they disagree the
+// solve sits at full extension and the forearm covers the shortfall alone.
+float arm_scale();
+void set_arm_scale(float v);
+// s75: how far the forearm may pronate/supinate before it runs out, degrees.
+// The twist angle is accumulated across frames to kill the atan2 seam, and
+// without this it winds without bound. ~85 is the real joint's limit; 180
+// restores the old unlimited behaviour.
+float arm_twist_limit_deg();
+void set_arm_twist_limit_deg(float v);
+// s76: how far the HUMERUS may rotate at the shoulder, degrees - where the roll
+// past the forearm's limit goes. A hand reaches nearly 360 deg of roll out of
+// ~175 deg of forearm because internal shoulder rotation accompanies pronation.
+// 0 disables the split, so the forearm alone carries the twist and clamps: that
+// is the s75 behaviour, and it A/Bs the split against it.
+float humerus_twist_limit_deg();
+void set_humerus_twist_limit_deg(float v);
 unsigned elbow_smooth_ms();
 void set_elbow_smooth_ms(unsigned v);
 float elbow_follow_wrist();
@@ -233,6 +259,11 @@ void handle_command(const char* args);
 // raw-pose lines to the same telemetry stream (each site throttles itself to
 // ~5 Hz; the log timestamps correlate the lines of one sample).
 bool telemetry_on();
+
+// True while `vrbones probes on` (F10: "Diagnostic probes"). Gates the s71-s73
+// off-hand/arm probe families, which ship OFF - see the g_probes banner in
+// bones.cpp for what is inside the gate and what is deliberately outside it.
+bool probes_on();
 
 // |render-lock position delta| applied last frame, UU. POSITION-only by
 // construction (the lock never touches rotation) - `vraim synccheck` quotes it

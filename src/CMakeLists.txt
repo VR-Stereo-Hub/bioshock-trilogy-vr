@@ -39,6 +39,8 @@ add_library(bioshockvr SHARED
     core/input/xinput_bridge.h
     core/ui/overlay.cpp
     core/ui/overlay.h
+    core/vr/apilayer_guard.cpp
+    core/vr/apilayer_guard.h
     core/vr/openxr_input.cpp
     core/vr/openxr_input.h
     core/vr/openxr_runtime.cpp
@@ -207,6 +209,17 @@ endif()
 if(BIOSHOCKVR_WITH_OPENXR)
     add_executable(xr_hello32 tools/xr_hello32/main.cpp)
     target_link_libraries(xr_hello32 PRIVATE openxr_loader d3d11 dxgi)
+endif()
+
+# --- armcap32 - arm ground-truth capture --------------------------------------
+# Standalone 32-bit console app that records head + both controller poses to CSV,
+# for fitting a measured elbow model instead of a hand-tuned one. Needs no game:
+# running it outside BioShock keeps the data clean of worldScale, recenterYaw and
+# the rig DrawScale. See docs/bioshock1/IK-RESEARCH.md section 7. Not shipped
+# with the mod - tools/package.ps1 stages an explicit file list.
+if(BIOSHOCKVR_WITH_OPENXR)
+    add_executable(armcap32 tools/armcap32/main.cpp)
+    target_link_libraries(armcap32 PRIVATE openxr_loader d3d11 dxgi)
 endif()
 
 # --- bvr_xrsim32 - the simulated OpenXR runtime -------------------------------
