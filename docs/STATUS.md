@@ -2,6 +2,42 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08 - s82 (BS1): hands vs Dishonored, a deep dive and the port's pure half
+
+**Branch `claude/bs1-hands-dishonored`, off `claude/bs1-arm-ik-redo`** (so the arm IK
+branch stays intact if this is worse). No game launched; no mod behaviour changed.
+
+### Current state
+
+- **The first headset run of arm IK v2 said: "arms and hands kind of suck, the shoulders
+  can still rotate".** The log of that run (`hands.ini mode=3`) explains it:
+  - `ACTORWATCH` fired 312 times: the engine rewrote the hands actor's rotation by up to
+    roll 116 / pitch 44 / yaw 38 degrees between frames;
+  - `ARMIK2` shows the solver healthy throughout (244k solves, 0 failures).
+  The actor carries the rig, so the shoulder rotates with whatever rotation the engine
+  renders. That is a frame problem, not an IK problem.
+- **`docs/bioshock1/HANDS_DISHONORED.md` is the deep dive.** Dishonored keeps the arms on
+  the camera and moves each hand by one rigid correction of its live animated pose. BS1
+  moves the actor and replays frozen poses. The page has the full side-by-side, the BS1
+  equivalent of every Dishonored mechanism, and a P1-P7 port plan.
+- **Derived offline:** BS1's skeleton evaluator (`SkeletonInstance` slot `+0x9C`, RVA
+  `+0x597CF0`, its freeze/dirty gate and four call sites), the hook point for a
+  post-evaluation drive like BS2's `wfix`. Recorded in ENGINE_NOTES s82.
+- **P2 done:** `hand_compose.h`, Dishonored's hand placement, pure; 3,279 host checks.
+- **P3 done:** `tools\hand-compose-sweep.ps1` replays real BS1 clips with the controller
+  still. The game's pistol reload swings the left wrist 118 UU / 180 degrees. The composed
+  wrist stays on the controller (2e-5 UU), the fingers and weapon bones keep their pose in
+  the hand, and the arms solve on every frame.
+
+### Next steps
+
+1. **P1** (needs one simulator launch, ask first): the BS1 post-evaluation hook, observer
+   only. Count evaluations, capture the fresh pose.
+2. **P4**: `vrhands mode dishonored`. Actor engine-placed, dirty set each tick, compose in
+   the hook, grip carried over from mode 3's tuning, arm IK v2 on the composed wrist.
+   Simulator, then the headset question in HANDS_DISHONORED.md section 5.
+3. P5-P7 as planned: hand-back policy, off hand, retiring mode 3's machinery.
+
 ## Session 2026-10-08 - s81 (BS1): the arm IK redone on the Dishonored solver
 
 **Branch `claude/bs1-arm-ik-redo`, off `staging` after #86 and #87 merged.** No game was
