@@ -533,7 +533,13 @@ void apply_line(const char* line) {
     // --- capture ------------------------------------------------------------
     if (a.is(0, "capture")) {
         if (a.is(1, "next")) g.captureCountdown.store(a.u(2, 1));
-        else if (a.is(1, "every")) g.captureEvery.store(a.u(2, 0));
+        else if (a.is(1, "every")) {
+            // A `shot <name>` leaves its tag behind; a sequence run with the
+            // tag still set would overwrite ONE file forever, so arming the
+            // sequence clears it and restores frame-index naming.
+            g.captureTag[0] = '\0';
+            g.captureEvery.store(a.u(2, 0));
+        }
         else if (a.is(1, "off")) { g.captureCountdown.store(0); g.captureEvery.store(0); }
         else if (a.is(1, "layers")) g.captureLayers.store(!a.is(2, "off"));
         else if (a.is(1, "size")) { g.captureWidth.store(a.u(2, 1032)); g.captureHeight.store(a.u(3, 1104)); }
@@ -544,6 +550,15 @@ void apply_line(const char* line) {
     if (a.is(0, "shot")) {
         if (a.n > 1) strncpy_s(g.captureTag, a.s(1), _TRUNCATE);
         g.captureCountdown.store(1);
+        return;
+    }
+    // Per-eye source-hash log (issue #31): `hash every <n>` appends one TSV
+    // line per Nth submitted frame to capture\eyehash.tsv; `hash off` stops.
+    if (a.is(0, "hash")) {
+        if (a.is(1, "every")) g.hashEvery.store(a.u(2, 1));
+        else if (a.is(1, "on")) g.hashEvery.store(1);
+        else if (a.is(1, "off")) g.hashEvery.store(0);
+        else set_error("unknown hash subcommand '%s' (every <n>|on|off)", a.s(1));
         return;
     }
     if (a.is(0, "compose")) {
@@ -576,6 +591,7 @@ void apply_line(const char* line) {
         g.captureCountdown.store(0);
         g.captureEvery.store(0);
         g.captureLayers.store(true);
+        g.hashEvery.store(0);
         pacing_wake();
         return;
     }
@@ -676,6 +692,12 @@ void write_state_json() {
 
     fprintf(f, "  \"layersLastFrame\": %u,\n", compositor_last_layer_count());
     fprintf(f, "  \"projectionViews\": %u,\n", compositor_last_projection_views());
+    fprintf(f, "  \"eyeHash\": {\"frame\": %llu, \"every\": %u, "
+               "\"L\": \"%016llx\", \"R\": \"%016llx\", \"relAgeL\": %u, \"relAgeR\": %u},\n",
+            static_cast<unsigned long long>(g.lastEyeHashFrame.load()), g.hashEvery.load(),
+            static_cast<unsigned long long>(g.lastEyeHash[0].load()),
+            static_cast<unsigned long long>(g.lastEyeHash[1].load()),
+            g.lastEyeRelAge[0].load(), g.lastEyeRelAge[1].load());
     char esc[1024];
     fprintf(f, "  \"captureSeq\": %u,\n", g.captureSeq.load());
     fprintf(f, "  \"lastCapture\": \"%s\",\n", json_escape(g.lastCapturePath, esc, sizeof(esc)));

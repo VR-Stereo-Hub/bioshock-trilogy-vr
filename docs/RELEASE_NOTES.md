@@ -3,6 +3,24 @@
 Newest first. The version is read from `CMakeLists.txt` by `tools/package.ps1`, so the zip
 name, the DLL banner and the tag cannot disagree.
 
+## v0.8.3 - hotfix: the left-eye flicker in BioShock 2
+
+**Fixes the hand and weapon flicker in the left eye in BioShock 2.** If your hands or gun
+kept snapping to a different pose and back - constantly, on every shot, or more and more
+the longer you played - that was this bug. Nothing else changes; update if you play
+BioShock 2. BioShock 1 and BioShock Infinite are untouched.
+
+What was happening: the mod drives the hand skeleton from your controllers, but the
+engine re-evaluates that skeleton once more while it draws the LEFT eye (and only the
+left eye), after the mod's last repaint and just before the mesh is drawn. Whenever that
+re-evaluation ran, the left eye showed the game's own animation pose for a frame while
+the right eye showed the driven one - a race that got more frequent the longer the game
+ran, and fired on every shot. The mod now attaches to that engine update and repaints
+the driven pose the moment it returns, so both eyes always draw the same hands.
+
+There is a checkbox for it in the F10 panel under "HANDS + AIM" ("LEFT-EYE FLICKER FIX
+(s74)") so you can compare with and without in the headset.
+
 ## v0.8.2 - crash fix: loading a save in BioShock 1
 
 **Fixes a crash when loading a save in BioShock 1.** If this hit you, it was not your

@@ -351,7 +351,14 @@ Gamepad compose_synthetic(uint64_t now) {
     // would leave the panel with nothing to click with. This is the last point
     // before the game sees anything, and it also catches the swing pulse above
     // - a wrench swing should not fire while you are aiming at a checkbox.
-    if (bvr::overlay::visible()) {
+    //
+    // Session 74: ONLY under the controller-driven panel (BS1 opt-in). Without
+    // pad drive the trigger cannot click the panel anyway, and a panel that
+    // cannot be closed from inside the headset (no F10 there) would otherwise
+    // take fire and turning with it for the rest of the session - which is
+    // exactly what BS2 shipped into: right trigger and right stick dead after
+    // one F10 visit, everything else alive.
+    if (bvr::overlay::visible() && bvr::overlay::pad_drive()) {
         out.rt = 0;
         // ...and the right stick, which now scrolls the panel. Turning while
         // reading a menu is not something anyone asked for, and leaving it
