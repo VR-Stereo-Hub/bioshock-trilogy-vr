@@ -104,6 +104,11 @@ wait; finishing a feature is not permission to merge it.
 - Touching engine internals? Read the game's `docs/<game>/ENGINE_NOTES.md` first
   (`docs/bioshock1/`, `docs/bioshock2/` or `docs/bioshockinfinite/`). New findings go there, in
   the same commit as the code that uses them.
+- **Before deriving an address, an offset or a behaviour, check `docs/TOOLS.md`** and use the
+  tool that applies: headless IDA, the UnrealScript corpus, UModel + Blender, FFDec, host
+  tests, the simulator. Static before runtime, runtime before headset. Run
+  `.\tools\tool-paths.ps1` (with `-Init` if it reports the file MISSING) so the session
+  knows which tools this machine has.
 - **Validate in the SIMULATOR before handing a build to the user.** `tools\xrsim-launch.ps1`
   runs the game against `bvr_xrsim32.dll`, a simulated 32-bit OpenXR runtime that presents as a
   Quest 3, so head/hand poses, every controller button, deterministic frame stepping and per-eye
@@ -131,7 +136,19 @@ wait; finishing a feature is not permission to merge it.
 .\tools\xrsim-launch.ps1 -Game bs1           # launch against the simulator (no headset needed)
 .\tools\xrsim-cmd.ps1 "head rot 30 0 0"      # drive the simulated head/hands/controls
 .\tools\xrsim-shot.ps1 -Out shot             # per-eye compositor capture + JSON to assert on
+
+.\tools\tool-paths.ps1 [-Init]               # where IDA, Blender, UModel, ... are on this machine (local file)
+.\tools\ida-run.ps1 -Game bs1 -Stage         # headless IDA (docs/IDA_WORKFLOW.md); then: ida-run.ps1 -Game bs1 <script.py>
+.\tools\model-export.ps1 -Game bs1 -List <pkg>   # UModel; blender-run.ps1 for headless Blender (docs/MODEL_WORKFLOW.md)
+.\tools\uscript-export.ps1 -Game bs1         # the local UnrealScript corpus (tools\uscript\bs1\)
+.\tools\host-test.ps1                        # pure-logic suites in tools\tests\, no game
+.\tools\lint.ps1                             # static checks before a commit
 ```
+
+**The tools are catalogued in `docs/TOOLS.md`.** The scripts are ours and committed; their
+OUTPUT (decompiles, databases, extracted meshes, UI movies, script corpora) is game-derived
+and never is. Paid and third-party programs are referenced by path through the local tool
+file, never copied into the tree.
 
 **THE EXE PATHS BELOW ARE ONE MACHINE'S LAYOUT, NOT THE TRUTH.** Since 65f02fa the
 scripts resolve each game per-machine from the Steam library folders, so `-Game bs1`
@@ -163,8 +180,9 @@ the parts that are actually fixed.
   adapters (`bioshock1r/`, `bioshock2r/`, `bioshockinf/` from I1) + `shared/` (engine math,
   no addresses)
 - `third_party/` - pinned submodules: minhook, imgui, OpenXR-SDK
-- `tools/` - build/install/uninstall/log scripts, `lib/` shared helpers,
-  `uscript/` decompile workspace (gitignored)
+- `tools/` - build/install/uninstall/log scripts, `lib/` shared helpers, `ida/` IDAPython
+  scripts, `blender/` Blender scripts, `tests/` host test suites, `uscript-export/` the UELib
+  batch decompiler's source, `uscript/` decompile workspace (gitignored)
 - `docs/` - the project's brain; see index below
 
 ## Docs index
@@ -181,6 +199,9 @@ the parts that are actually fixed.
 | `docs/PORT-CANDIDATES.md` | **BS1 behaviours BS2/Infinite have never been tested with**, and the exact one-line opt-in for each. Add a row in the same commit as any core default only one game opts into |
 | `docs/CONTROLS.md` | **Controller config**: `BioshockVR.ini` reference, which keys are live vs planned, hardware notes that decide the d-pad modifier |
 | `docs/VERIFICATION.md` | **Verification catalog**: intent -> tool -> command -> how to read the result. The simulated OpenXR runtime, the command seam, screenshots, img-diff, frame dumps, record/replay - and what still needs a human in the headset |
+| `docs/TOOLS.md` | **The tool catalog, by question**: the local tool file, static RE, game content, host tests, running-process diagnostics, debug programs. Check it before deriving anything |
+| `docs/IDA_WORKFLOW.md` | **Headless IDA**: staging each game's exe, the md5 provenance check, the one-question script shape (RVAs, per-game anchors), where IDA sits in the order of work, traps |
+| `docs/MODEL_WORKFLOW.md` | **UModel + headless Blender, FFDec, the UnrealScript corpus**: what extracts per game (BS1 skeletal meshes do NOT), commands, workspace, traps |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |
 | `docs/bioshock2/ENGINE_NOTES.md` | BS2 knowledge base: verified RVAs, the ProcessEvent CalcView seam, BS1 deltas |
