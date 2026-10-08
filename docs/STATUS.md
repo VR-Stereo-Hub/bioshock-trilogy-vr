@@ -2,6 +2,42 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08 - s81 (BS1): the arm IK redone on the Dishonored solver
+
+**Branch `claude/bs1-arm-ik-redo`, off `staging` after #86 and #87 merged.** No game was
+launched. The headset test is at the top of `docs/bioshock1/ARM_IK.md`.
+
+### Current state
+
+- **The arm solver is now the Dishonored VR mod's** (`src/game/bioshock1r/arm_ik.h`,
+  pure). That solver is itself the left-hand fork's reach, pole and twist design. F10 > Hands +
+  weapon > ARMS: "ARM IK v2" is **on by default**. Off is the s70i-s77 solver, unchanged.
+- It shares s70-s77's inputs (s74d shoulder frame, s72q DrawScale division, s77 intended
+  actor, s74 settle bank) and replaces the solve, the twist and the bone writes.
+  `ARMIK2` log lines are always on.
+- **Validated offline, three ways:**
+  1. Host suite: 1,442 checks.
+  2. Real-rig sweep, 270 frames, skinned through `NEWPlayerHands`' own weights in Blender:
+     0 failures, joins exact to 1e-5 UU, forearm shaft at least 88.8% of its radius
+     against Dishonored's 85% floor.
+  3. Audit against Dishonored's own header on Dishonored's rig, same poses: elbow
+     direction within 0.03 degrees; shoulder slide, roll tracking and elbow swivel
+     identical. Side-by-side renders are in the model workspace's `verification\`.
+- `git diff staging...HEAD -- src/core/` is empty. Debug and Release build clean; Debug
+  installed to BS1.
+
+### Next steps
+
+1. **Headset, one question** (ARM_IK.md): with the gun arm held out still, roll the
+   wrist slowly both ways. Does the forearm keep its shape and follow, without the
+   shoulder moving? Then A/B it with the checkbox.
+2. If it passes, tune `elbow out` against the new pole (BS1's default is 0.35;
+   Dishonored ships 0.6), then the arm length.
+3. Once v2 is accepted: delete the s70i-s77 solver body and the twist and humerus
+   sliders that only it reads. That is a healing-session job; keep the A/B until then.
+4. Candidate: Dishonored's `ArmIKGameArmInAnim`, if a scripted sequence shows the IK arm
+   fighting the game's.
+
 ## Session 2026-10-08 - s80: BS1's Havok rigs into Blender; the SDK and CodeRed read
 
 **Branch `claude/havok-blender`, off `claude/tools-workflows` (PR #86, not merged yet).**

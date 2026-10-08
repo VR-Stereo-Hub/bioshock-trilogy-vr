@@ -5864,3 +5864,25 @@ test) reads, per arm: held median 3.75 / p90 4.87 / max 20.55 UU, free median 3.
 / p90 4.87 / max 20.57 UU. The held arm's worst case fell from 32.3 to 20.6 and the
 two arms now agree, but neither is at the ~0 the fix predicts. The next run should
 be the probe's own protocol: both hands still, roll the main wrist slowly.
+
+## Session 81 (2026-10-08) - the arm on the Dishonored solver, and what the rig weights say
+
+Offline, from the Havok reference skeleton and skin weights that `tools\bsmesh-export.ps1`
+reads out of `0-Lighthouse` (docs/bioshock1/HAVOK_AND_PACKAGES.md). No game was launched.
+
+- **The arm chain is Biped:** `Clavicle -> UpperArm (43.3 UU) -> Forearm (30.0 UU) -> Hand`.
+  Every limb bone has +X along the limb. `ForeTwist` hangs off `UpperArm` at the elbow;
+  `ForeTwist1` is its child, halfway down the forearm (15.0 UU). The runtime sleeve
+  indices `{3,4,5,22,23}` / `{24,25,26,45,46}` are these bones in the same order: the
+  engine's bone array is the Havok skeleton's order (47 bones, `R_grip` 43,
+  `IKbindLhandDummy` 44, as measured live).
+- **What carries skin** (summed weight per arm): `ForeTwist1` 371, `Hand` 306, `Forearm`
+  238, `UpperArm` 188, **`Clavicle` 0, `ForeTwist` 0**. Whatever is written to the clavicle
+  or the elbow helper is invisible. The forearm's shape is the blend of `Forearm` and
+  `ForeTwist1`: that pair is where a twist gap pinches.
+- **The Havok reference pose has the arms reaching forward** along -Z, with the spine
+  along +X and the right arm on +Y (forward -Z, right +Y, up +X: Unreal's handedness).
+- **New capture:** the settle bank now also keeps the reference wrist's ROTATION
+  (`g_freeArmW0Q`), which the v2 solver measures the forearm roll against.
+
+The solver, its integration and its validation are in `docs/bioshock1/ARM_IK.md`.

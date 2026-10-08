@@ -162,7 +162,23 @@ class Gltf:
 FLOAT, U16, U8, U32 = 5126, 5123, 5121, 5125
 
 
-def convert(pkg, mesh_export, classes, out, lod_index=0, anim_filter=None, scale=1.0, log=print):
+def write_rig(path, bones, parents, ref):
+    """The reference skeleton composed into the rig's own (Unreal, component) space, one
+    bone per line: index name parent  px py pz  qx qy qz qw  sx sy sz. Read by
+    tools\\arm-ik-sweep.cpp. Game-derived: local only, like the .glb."""
+    world = [None] * len(bones)
+    for i in range(len(bones)):
+        loc = (tuple(ref[i]["t"]), tuple(ref[i]["q"]), tuple(ref[i]["s"]))
+        world[i] = loc if parents[i] < 0 else compose(world[parents[i]], loc)
+    with open(path, "w") as f:
+        f.write("# bvr-rig 1: index name parent p[3] q[4] s[3], Unreal component space\n")
+        for i, b in enumerate(bones):
+            t, q, s = world[i]
+            f.write("%d %s %d %s\n" % (i, b, parents[i], " ".join("%.7g" % x for x in (*t, *q, *s))))
+
+
+def convert(pkg, mesh_export, classes, out, lod_index=0, anim_filter=None, scale=1.0, log=print,
+            rig_out=None):
     mesh = skelmesh.parse(pkg, mesh_export)
     if not 0 <= lod_index < len(mesh["lods"]):
         raise SystemExit("*** %s has %d LOD(s), not %d" % (mesh["name"], len(mesh["lods"]), lod_index))
@@ -183,6 +199,9 @@ def convert(pkg, mesh_export, classes, out, lod_index=0, anim_filter=None, scale
     bones = [b["name"] for b in sk["bones"]]
     parents = sk["parentIndices"]
     ref = sk["referencePose"]
+    if rig_out:
+        write_rig(rig_out, bones, parents, ref)
+        log("wrote the reference skeleton to %s" % rig_out)
     log("mesh %s: LOD %d of %d, %d vertices (%d skinned), %d triangles, %d sockets; skeleton %r, %d bones; %d clips"
         % (mesh["name"], lod_index, len(mesh["lods"]), len(lod["vertices"]), lod["num_skinned"],
            len(lod["indices"]) // 3, len(mesh["sockets"]), sk["name"], len(bones), len(root["m_animations"])))
@@ -323,6 +342,7 @@ def main():
     ap.add_argument("--anims", default=None, help="regex over group/clip, or 'none'")
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--rig-out", help="also write the reference skeleton (tools\\arm-ik-sweep.cpp's input)")
     a = ap.parse_args()
     pkg = Package(a.bsm)
     if a.list:
@@ -333,7 +353,8 @@ def main():
     found = pkg.find(a.mesh, "SkeletalMesh")
     if not found:
         raise SystemExit("*** no SkeletalMesh %r in %s (try --list)" % (a.mesh, a.bsm))
-    convert(pkg, found[0], hkread.load_classes(a.classes), a.out, a.lod, a.anims, a.scale)
+    convert(pkg, found[0], hkread.load_classes(a.classes), a.out, a.lod, a.anims, a.scale,
+            rig_out=a.rig_out)
     return 0
 
 

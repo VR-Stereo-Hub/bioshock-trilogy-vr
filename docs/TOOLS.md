@@ -90,7 +90,14 @@ script come out through the other rows.
 | Does this math / state machine / detector do what it claims, over a sweep, with a negative control? | `.\tools\host-test.ps1 [suite]` - one `tools\tests\<name>-tests.cpp` per production header |
 
 Suites so far: `ue-math` (`game/shared/ue_math.h`), `xrsim-math` (the simulator's view
-matrix). The habit it asks for: keep a decision in a header with no engine reads, and test
+matrix), `arm-ik` (`game/bioshock1r/arm_ik.h`, the arm solver).
+
+| Question | Tool |
+|---|---|
+| Does the arm solver hold up on BS1's REAL arm: lengths, wrist join, roll continuity, forearm shape through the original skin weights? | `.\tools\arm-ik-sweep.ps1 [-LengthScale 1.2] [-NoRender]` - sweep + Blender bake + key-pose renders |
+| Do BS1's and Dishonored's arm solvers put the arm in the same place for the same pose? | `.\tools\arm-ik-audit.ps1` - both production headers, each game's rig, side-by-side renders |
+
+`docs/bioshock1/ARM_IK.md` has the numbers they produced. The habit it asks for: keep a decision in a header with no engine reads, and test
 that header here before a headset sees it.
 
 ### Live instrumentation and the simulator - `docs/VERIFICATION.md`

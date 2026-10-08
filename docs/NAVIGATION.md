@@ -77,6 +77,7 @@ grep -n "^## M7" docs/ROADMAP.md        # then sed that range
 | Which tool answers a question (IDA, Blender, UModel, FFDec, host tests, profilers) | `TOOLS.md` | read whole - it is the catalog, ~150 lines |
 | How to run headless IDA, and its traps | `IDA_WORKFLOW.md` | read whole before the first script |
 | What a game's packages, UI movies and scripts give offline | `MODEL_WORKFLOW.md` § 2 | the per-game table first |
+| BS1's arm IK (the Dishonored solver): what it does, how it was validated, the headset test | `bioshock1/ARM_IK.md` | ~170 lines, the test is at the top |
 | BS1's package, skeletal-mesh and Havok formats (what `bsmesh-export` reads) | `bioshock1/HAVOK_AND_PACKAGES.md` | ~150 lines, read the section you need |
 | The Unofficial BioShock SDK, compiling new classes, CodeRed for Infinite | `MODDING_SDKS.md` | ~190 lines; the open-questions table is last |
 

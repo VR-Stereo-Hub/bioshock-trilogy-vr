@@ -2854,3 +2854,25 @@ building a measurement, check that the thing being measured actually occurs.**
 **And a regression is information.** Making the probe right made the symptom worse,
 which is only possible if the probe had been suppressing the real variance. That
 inversion located the answer faster than any of the fixes that preceded it.
+
+### 2026-10-08 (session 81) - the arm solver is Dishonored's, written as bones, not palette
+
+The s70i-s77 arm solve grew one fix per headset report (frames, twist accumulator,
+humerus split, clamps) until no single change could be judged on its own. Meanwhile the
+Dishonored VR mod shipped a full-arm IK that was accepted in a headset. Its algorithm was
+already two-thirds BioShock: it took the left-hand fork's reach, pole and twist design,
+plus this repo's lessons on frames and history. So the arm is now that solver
+(`bioshock1r/arm_ik.h`), pure and host-tested, behind `armIkV2` with the old one as the
+A/B.
+
+**Kept from BS1:** writing the evaluated skeleton rather than Dishonored's draw-time
+palette. Dishonored needed a mesh copy because it cannot write its engine's bones. BS1
+can, its arm bones carry no attachments, and the replay-per-pass cache already makes the
+eyes agree. The s74d shoulder frame is kept as well: it was signed off in the headset, and
+it is the frame the hands are placed in.
+
+**The evidence it rests on** is the offline triple: host suite, real-rig sweep skinned
+through the original weights, and an audit that runs Dishonored's own header on
+Dishonored's rig with the same poses. The audit shows the elbow direction within
+0.03 degrees and the shoulder and roll decisions identical. That is the claim "it is
+Dishonored's solver" made measurable. See `docs/bioshock1/ARM_IK.md`.
