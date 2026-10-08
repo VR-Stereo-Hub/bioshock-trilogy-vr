@@ -178,6 +178,13 @@ void set_arm_scale(float v);
 // restores the old unlimited behaviour.
 float arm_twist_limit_deg();
 void set_arm_twist_limit_deg(float v);
+// s76: how far the HUMERUS may rotate at the shoulder, degrees - where the roll
+// past the forearm's limit goes. A hand reaches nearly 360 deg of roll out of
+// ~175 deg of forearm because internal shoulder rotation accompanies pronation.
+// 0 disables the split, so the forearm alone carries the twist and clamps: that
+// is the s75 behaviour, and it A/Bs the split against it.
+float humerus_twist_limit_deg();
+void set_humerus_twist_limit_deg(float v);
 unsigned elbow_smooth_ms();
 void set_elbow_smooth_ms(unsigned v);
 float elbow_follow_wrist();

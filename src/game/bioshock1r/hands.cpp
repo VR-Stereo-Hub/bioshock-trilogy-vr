@@ -576,6 +576,7 @@ void save_config() {
     }
     fprintf(f, "armScale=%.3f\n", bones::arm_scale());
     fprintf(f, "armTwistLimitDeg=%.1f\n", bones::arm_twist_limit_deg());
+    fprintf(f, "humerusTwistLimitDeg=%.1f\n", bones::humerus_twist_limit_deg());
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
     fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
     fprintf(f, "elbowFollowWrist=%.3f\n", bones::elbow_follow_wrist());
@@ -677,6 +678,8 @@ void load_config() {
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
         else if (strcmp(key, "armScale") == 0) bones::set_arm_scale(v);
         else if (strcmp(key, "armTwistLimitDeg") == 0) bones::set_arm_twist_limit_deg(v);
+        else if (strcmp(key, "humerusTwistLimitDeg") == 0)
+            bones::set_humerus_twist_limit_deg(v);
         else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
         else if (strcmp(key, "offHandTracked") == 0) bones::set_off_hand_tracked(v != 0.0f);
         else if (strncmp(key, "offHandView", 11) == 0) {

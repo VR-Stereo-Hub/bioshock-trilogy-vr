@@ -184,6 +184,20 @@ bool g_freeArmRefValid[2] = {false, false};
 // It is STATE, and it now gets dropped whenever that reference does.
 float g_twistPrev[2] = {0.0f, 0.0f};
 bool g_twistHavePrev[2] = {false, false};
+// s75c: the twist angle at REST, captured with the arm reference. The measured
+// angle is between the forearm's local up and the HAND's, and those two bones do
+// not share an axis convention - s72z subtracts an authored constant for that,
+// and it under-corrects. MEASURED: the free arm's twist sits at a median of -59
+// degrees, 92% of samples negative, 163 past -85 against 5 past +85. So a limit
+// applied about ZERO gives ~26 degrees of travel one way and ~144 the other,
+// which is the reported "collapses clockwise, works counter-clockwise".
+//
+// A joint's limits are about its own rest pose, not about an arbitrary zero, so
+// capture the rest value and clamp about that. Captured on the first measurement
+// after a reference drop, which is the settle gate - the arm is by definition at
+// rest there, which is the whole reason that gate exists.
+float g_twistNeutral[2] = {0.0f, 0.0f};
+bool g_twistHaveNeutral[2] = {false, false};
 // s72e: the ACTOR ROTATION the free arm was captured in. The arm's twist is
 // expressed against this rather than against whatever the held wrist has
 // produced since - see the qArmFix banner in solve_arm().
@@ -219,6 +233,11 @@ void free_ref_drop(const char* why) {
     // s72 mid-equip latch, which is the reason this drop exists at all.
     g_twistHavePrev[0] = g_twistHavePrev[1] = false;
     g_twistPrev[0] = g_twistPrev[1] = 0.0f;
+    // s75c: and the rest pose it is measured against - it was captured with the
+    // reference that is being dropped, so keeping it would clamp the new arm
+    // about the old one's neutral.
+    g_twistHaveNeutral[0] = g_twistHaveNeutral[1] = false;
+    g_twistNeutral[0] = g_twistNeutral[1] = 0.0f;
 }
 struct CachedSleeve {
     int idx;
@@ -940,6 +959,15 @@ std::atomic<float> g_armTwistShare{1.0f};
 //
 // 180 restores the old effectively-unlimited behaviour, so this A/Bs itself.
 std::atomic<float> g_armTwistLimitDeg{85.0f};
+// s76: how far the HUMERUS may rotate at the shoulder, degrees. This is where
+// the roll past the forearm's limit goes, and it is why a hand reaches nearly
+// 360 degrees of roll out of ~175 degrees of forearm - internal shoulder
+// rotation accompanies pronation, external accompanies supination.
+//
+// Having somewhere for the excess to go is the whole fix. Every bounded form
+// before this discarded it and then had to choose between winding, latching and
+// snapping; with the humerus taking the remainder there is nothing to discard.
+std::atomic<float> g_humerusTwistLimitDeg{90.0f};
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -2134,6 +2162,11 @@ void on_world_change() {
     // from the old world would be applied to the new one's arm on frame one.
     g_twistHavePrev[0] = g_twistHavePrev[1] = false;
     g_twistPrev[0] = g_twistPrev[1] = 0.0f;
+    // s75c: and the rest pose it is measured against - it was captured with the
+    // reference that is being dropped, so keeping it would clamp the new arm
+    // about the old one's neutral.
+    g_twistHaveNeutral[0] = g_twistHaveNeutral[1] = false;
+    g_twistNeutral[0] = g_twistNeutral[1] = 0.0f;
     // Session 29: the sleeve latch dies with the world too. It was hoisted out
     // of drive() so release() could reach it, which also means it now has to be
     // cleared here - a stale `true` would make release() write a dead world's
@@ -2279,6 +2312,18 @@ float arm_twist_limit_deg() { return g_armTwistLimitDeg.load(std::memory_order_r
 void set_arm_twist_limit_deg(float v) {
     g_armTwistLimitDeg.store(v < 0.0f ? 0.0f : (v > 180.0f ? 180.0f : v),
                              std::memory_order_relaxed);
+}
+// s77: the humerus limit was shipped with ONE touchpoint - the atomic - and no
+// getter, no ini key, no slider and no console verb. It is the number the whole
+// s76 split turns on (it is where the roll past the forearm's range goes) and it
+// was the only one of these the tester could not touch without a rebuild, which
+// makes the split unfalsifiable in the one place it has to be judged.
+float humerus_twist_limit_deg() {
+    return g_humerusTwistLimitDeg.load(std::memory_order_relaxed);
+}
+void set_humerus_twist_limit_deg(float v) {
+    g_humerusTwistLimitDeg.store(v < 0.0f ? 0.0f : (v > 180.0f ? 180.0f : v),
+                                 std::memory_order_relaxed);
 }
 unsigned elbow_smooth_ms() { return g_elbowSmoothMs.load(std::memory_order_relaxed); }
 void set_elbow_smooth_ms(unsigned v) {
@@ -3109,6 +3154,32 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         // between the last twist helper and the wrist stretched to cover it.
         //
         // The names stay so the triangle below reads unchanged.
+        //
+        // ---- s75 ARMDIAG capture -------------------------------------------
+        //
+        // Filled in as the solve runs, printed at the bottom. These are the
+        // numbers that separate the two DIFFERENT faults reported against the
+        // two arms, in ONE run with nothing to toggle:
+        //
+        //   thetaRaw vs clamped - is the s75 twist clamp engaging at all? The
+        //     twist is only derived when handQ is non-null, which is the FREE
+        //     call alone, so this stays zero for the held arm by construction.
+        //   swingDot - dot(authored shoulder->elbow, solved). Approaching -1
+        //     means the arm is antiparallel to its authored direction, where
+        //     quat_from_to falls into its arbitrary-cardinal-axis branch and
+        //     jumps as it sweeps through: the reported 180 flip.
+        //   poleTilt - how far elbowFollowWrist has swung the pole off the
+        //     body-frame one. This is the HELD arm's mechanism, and the twist
+        //     clamp cannot touch it.
+        float dbgThetaRaw = 0.0f, dbgThetaClamped = 0.0f;
+        bool dbgTwistDerived = false, dbgClampHit = false;
+        float dbgSwingDot = 1.0f, dbgPoleTilt = 0.0f;
+        // How much of each twist reference survived being projected perpendicular
+        // to the forearm axis. Near zero means the angle measured from them is
+        // noise, not a measurement.
+        float dbgFpLen = -1.0f, dbgHpLen = -1.0f;
+        float dbgNeutral = 0.0f;
+        float dbgForeDeg = 0.0f, dbgHumDeg = 0.0f;
         const float L1s = L1, L2s = L2;
         if (L1s > 1e-4f && L2s > 1e-4f && d > 1e-4f) {
             // Keep the triangle closable: never fully straight, never folded
@@ -3250,6 +3321,23 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                 norm3(pole);
             }
 
+            // s75 ARMDIAG: how far elbowFollowWrist has swung the pole off the
+            // body-frame one. Both are projected perpendicular to the arm axis
+            // first, or the comparison is against a vector the solve never uses.
+            {
+                float pb[3] = {poleBody[0], poleBody[1], poleBody[2]};
+                const float pd = pb[0] * dir[0] + pb[1] * dir[1] + pb[2] * dir[2];
+                pb[0] -= dir[0] * pd;
+                pb[1] -= dir[1] * pd;
+                pb[2] -= dir[2] * pd;
+                if (norm3(pb) > 1e-4f) {
+                    float c = pb[0] * pole[0] + pb[1] * pole[1] + pb[2] * pole[2];
+                    if (c > 1.0f) c = 1.0f;
+                    if (c < -1.0f) c = -1.0f;
+                    dbgPoleTilt = acosf(c) * kRadToDeg;
+                }
+            }
+
             float E[3] = {S[0] + dir[0] * aLen + pole[0] * hLen,
                           S[1] + dir[1] * aLen + pole[1] * hLen,
                           S[2] + dir[2] * aLen + pole[2] * hLen};
@@ -3369,6 +3457,11 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             // once the frame is done. Every fix above assumed our write survives,
             // and nothing has checked that.
             float qUp[4], qUpF[4];
+            // s75 ARMDIAG: how close this swing is to antiparallel. quat_from_to
+            // returns an ARBITRARY cardinal-cross axis below -0.999999, and that
+            // axis jumps as the arm sweeps through - a 180 flip, which is what
+            // was reported on the left arm. Approaching -1 here is the tell.
+            dbgSwingDot = aSEn[0] * nSE[0] + aSEn[1] * nSE[1] + aSEn[2] * nSE[2];
             quat_from_to(aSEn, nSE, qUp);
             quat_mul(qUp, ar[1].q, qUpF);
 
@@ -3453,6 +3546,11 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             // construction. That is what makes the result independent of the held
             // hand rather than a correction applied after the fact.
             float twistDeg = 0.0f;
+            // s76: the anatomical split of that one angle. foreDeg is what the
+            // forearm can pronate; humDeg is the rest, which a real arm supplies
+            // by rotating the humerus at the shoulder. Their sum is always the
+            // measured angle, so nothing is discarded and there is no seam.
+            float foreDeg = 0.0f, humDeg = 0.0f;
             float qTwist[4] = {0.0f, 0.0f, 0.0f, 1.0f};
             if (handQ) {
                 // A reference perpendicular from the solved forearm, and the same
@@ -3470,7 +3568,19 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                     fp[i] = fRef[i] - nEW[i] * fd;
                     hp[i] = hRef[i] - nEW[i] * hd;
                 }
-                if (norm3(fp) > 1e-4f && norm3(hp) > 1e-4f) {
+                // s75 ARMDIAG: capture the PRE-normalisation lengths. norm3
+                // returns the length and normalises in place, so these say how
+                // much of each reference actually survived the projection. When
+                // the forearm's local +Z lines up with the forearm AXIS, fp
+                // collapses and its direction is numerical noise - atan2 on noise
+                // is what jumps +-180 between frames. The 1e-4 threshold below
+                // accepts a vector that is 0.01% of unit length, which is orders
+                // of magnitude past the point where the direction means anything.
+                const float fpLen = norm3(fp);
+                const float hpLen = norm3(hp);
+                dbgFpLen = fpLen;
+                dbgHpLen = hpLen;
+                if (fpLen > 1e-4f && hpLen > 1e-4f) {
                     const float cr[3] = {fp[1] * hp[2] - fp[2] * hp[1],
                                          fp[2] * hp[0] - fp[0] * hp[2],
                                          fp[0] * hp[1] - fp[1] * hp[0]};
@@ -3587,16 +3697,95 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                     // Clamping the state means the twist simply stops at the
                     // limit and starts unwinding the instant the wrist does,
                     // which is what an arm at the end of its rotation does.
-                    {
-                        const float lim =
-                            g_armTwistLimitDeg.load(std::memory_order_relaxed) / kRadToDeg;
-                        if (theta > lim) theta = lim;
-                        if (theta < -lim) theta = -lim;
+                    // ---- s75b: CLAMP THE OUTPUT, CARRY THE TRUTH -------------
+                    //
+                    // s75a clamped theta and stored the CLAMPED value back as the
+                    // accumulator, on the reasoning that keeping the raw one would
+                    // let it wind out of sight. That reasoning was wrong and the
+                    // tester's log caught it: at a collapse point, arm completely
+                    // still, every other quantity healthy (swingDot -0.51, fp
+                    // 1.0000, poleTilt 2 deg), raw read +250 degrees frame after
+                    // frame and clamped to +85 - a 165 degree lie held rock steady.
+                    //
+                    // The unwrap works by taking the shortest step FROM THE LAST
+                    // TRUE ANGLE. Pin prev at the limit and that premise is gone:
+                    // with a true measurement near -110, the shortest step from
+                    // +85 wraps to +165, lands on +250, clamps back to +85, and
+                    // re-derives the identical wrong branch next frame. A stable
+                    // fixed point in the wrong place, which is exactly the wrist
+                    // collapsing at a repeatable pose - and at a DIFFERENT pose
+                    // per direction, because which branch it latches depends on
+                    // which side it approached from.
+                    //
+                    // So carry the true angle and clamp only what drives the
+                    // bones. The accumulator keeps its continuity (and with it the
+                    // unwrap's whole reason for existing), while the arm still
+                    // stops at the joint's real limit.
+                    //
+                    // The accumulator is bounded too, at a limit deliberately
+                    // short of the +-180 seam: that stops the unbounded winding
+                    // s75a was written for, without ever letting the value near
+                    // the discontinuity the unwrap exists to hide.
+                    dbgTwistDerived = true;
+                    dbgThetaRaw = theta * kRadToDeg;
+                    // s75c: the first measurement after a reference drop is the
+                    // settle - the arm is at rest by definition there - so that
+                    // is the rest twist this joint's limits are about.
+                    if (!g_twistHaveNeutral[hand]) {
+                        g_twistNeutral[hand] = theta;
+                        g_twistHaveNeutral[hand] = true;
                     }
-                    g_twistPrev[hand] = theta;
+                    const float neutral = g_twistNeutral[hand];
+                    // s76: bound the accumulator at what forearm+humerus can
+                    // actually express together, not at an arbitrary 170. Past
+                    // that the arm genuinely cannot reach the pose without moving
+                    // the elbow swivel, which is future work - but stopping here
+                    // means the angle can never wind somewhere the joints cannot
+                    // follow, which is what left it pinned after a full turn.
+                    const float kAccumLimit =
+                        (g_armTwistLimitDeg.load(std::memory_order_relaxed) +
+                         g_humerusTwistLimitDeg.load(std::memory_order_relaxed)) /
+                        kRadToDeg;
+                    if (theta > neutral + kAccumLimit) theta = neutral + kAccumLimit;
+                    if (theta < neutral - kAccumLimit) theta = neutral - kAccumLimit;
+                    g_twistPrev[hand] = theta; // the TRUE angle, continuous
                     g_twistHavePrev[hand] = true;
+                    // s76: NO output clamp here any more. The split below is what
+                    // limits the forearm now, and clamping first made the split
+                    // meaningless - measured: theta capped at neutral+85, so the
+                    // humerus only ever saw the leftover 37.7 and `sum` stalled at
+                    // 122.7 while the true angle ran on to 300.
+                    dbgThetaClamped = theta * kRadToDeg;
+                    dbgNeutral = neutral * kRadToDeg;
 
-                    twistDeg = theta * kRadToDeg;
+                    // s76: TRAVEL, not the absolute angle. A joint's limits are
+                    // about its own rest pose, and so is the rotation it should
+                    // apply - at rest the arm must sit at its AUTHORED pose with
+                    // zero applied twist. s72z already subtracts an authored
+                    // constant for this and under-corrects; the captured neutral
+                    // is that residual, measured at -59.9 on this rig.
+                    //
+                    // The first cut split the absolute angle while clamping the
+                    // travel, so the two disagreed by the neutral and the arm
+                    // carried a permanent ~60 degree twist at rest.
+                    twistDeg = (theta - neutral) * kRadToDeg;
+                    // Split it. The forearm takes what it can pronate, the
+                    // humerus takes the remainder. foreDeg + humDeg == twistDeg
+                    // by construction, which is the whole point - the excess is a
+                    // real rotation of a real joint, not an error to clamp away.
+                    {
+                        const float fl =
+                            g_armTwistLimitDeg.load(std::memory_order_relaxed);
+                        foreDeg = twistDeg > fl ? fl : (twistDeg < -fl ? -fl : twistDeg);
+                        humDeg = twistDeg - foreDeg;
+                        const float hl =
+                            g_humerusTwistLimitDeg.load(std::memory_order_relaxed);
+                        if (humDeg > hl) humDeg = hl;
+                        if (humDeg < -hl) humDeg = -hl;
+                        dbgClampHit = (foreDeg != twistDeg);
+                        dbgForeDeg = foreDeg;
+                        dbgHumDeg = humDeg;
+                    }
                     quat_axis_angle(nEW[0], nEW[1], nEW[2], theta, qTwist);
                 }
             }
@@ -3619,6 +3808,8 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             // departs from that by.
             if (freeBank && twistDeg != 0.0f) {
                 const float th = twistDeg / kRadToDeg;
+                (void)th; // the split supersedes the single shared angle
+                const float humTh = humDeg / kRadToDeg;
                 float qw[4], out[4];
                 // ---- s73g: THE ELBOW IS A HINGE, SO IT CANNOT TWIST ---------
                 //
@@ -3639,11 +3830,48 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                 // from there to the hand. The bicep visibly rotates, nothing
                 // steps at the elbow, and the wrist end still lands exactly on
                 // the hand.
+                // ---- s76: SPLIT IT ANATOMICALLY, DO NOT DISCARD IT ---------
+                //
+                // The observation that settles this came from the headset: the
+                // player is bound by real controller positions, so every pose a
+                // human can make is anatomically valid. The controller is held in
+                // a real hand on a real arm, so every orientation arriving here was
+                // ALREADY produced by a valid pose. There is no impossible
+                // region, and the roll past the forearm's limit is not error - it
+                // is a real rotation belonging to a joint we were not driving.
+                //
+                // That is why all three bounded forms failed: unbounded
+                // accumulation wound permanently (measured, a 360 deg roll took
+                // the angle -11 -> +349 and pinned it), storing the clamped value
+                // latched 165 deg off, and clamping the wrapped angle snaps ~170
+                // at the far side. Each tries to fit a rotation the arm really
+                // made into one joint that cannot hold it.
+                //
+                // Anatomy says it is two joints (three with the elbow swivel,
+                // which is future work): the forearm pronates ~85 deg, and the
+                // HUMERUS rotates at the shoulder for the rest - which is how a
+                // hand reaches nearly 360 deg of roll from ~175 of forearm.
+                // Internal shoulder rotation naturally accompanies pronation.
+                //
+                // So give the forearm its share, hand the excess to the humerus,
+                // and nothing is thrown away up to the combined limit.
+                //
+                //   humerus : the bicep's own roll about the upper-arm axis
+                //   forearm : ramped 0 at the elbow to `fore` at the wrist by the
+                //             twist helpers below - the elbow is a HINGE and can
+                //             hold no step, so both segments share the humeral
+                //             base and only the forearm carries the gradient
+                //             (s73g established that and it still holds)
+                //
+                // This replaces g_armTwistShare's single hand-tuned constant with
+                // a derivation. The share slider stays live but now only scales
+                // how much of the humeral part the bicep shows.
                 const float share = g_armTwistShare.load(std::memory_order_relaxed);
-                quat_axis_angle(nSE[0], nSE[1], nSE[2], share * th, qw);
+                quat_axis_angle(nSE[0], nSE[1], nSE[2], share * humTh, qw);
                 quat_mul(qw, qUpF, out);
                 memcpy(qUpF, out, sizeof qUpF);
-                quat_axis_angle(nEW[0], nEW[1], nEW[2], share * th, qw);
+                // Same humeral base on the far side of the hinge, no step.
+                quat_axis_angle(nEW[0], nEW[1], nEW[2], share * humTh, qw);
                 quat_mul(qw, qFoF, out);
                 memcpy(qFoF, out, sizeof qFoF);
             }
@@ -3718,8 +3946,15 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                 // its two helpers; a progressive weight is the same idea and is
                 // easier to tune. k==3 is the inboard helper, k==4 the wrist end.
                 // Shared value across the elbow, then a ramp to 1.0 at the hand.
+                // s76: this helper carries the humeral base (shared across the
+                // hinge, so it is the same on both segments) PLUS the forearm's
+                // own pronation ramped by how far along the forearm it sits. At
+                // the wrist end t == 1 and the total is humDeg + foreDeg, which
+                // is the full measured angle - so the hand still lands exactly on
+                // the controller while every segment carries an anatomical share.
                 const float sh = g_armTwistShare.load(std::memory_order_relaxed);
-                const float tw = (k == 3) ? (sh + (1.0f - sh) * 0.5f) : 1.0f;
+                const float twDeg = sh * humDeg + foreDeg * t;
+                const float tw = (twistDeg != 0.0f) ? (twDeg / twistDeg) : 0.0f;
                 float qkBase[4], qkTw[4], qk[4];
                 quat_mul(qFo, ar[k].q, qkBase);
                 // s72p: PIN THE HELPERS' OWN ROLL FIRST, then add the hand's
@@ -3789,6 +4024,48 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                           read_n(&g_bones[armIdx[k]], &g_freeArmWrote[hand][k],
                                  sizeof(Qts));
                 g_freeArmWroteValid[hand] = okW;
+            }
+
+            // ---- s75 ARMDIAG: one line, always on, nothing to toggle --------
+            //
+            // Deliberately NOT behind probes_on(). The last run came back with
+            // 504 SHOULDER lines and zero of everything else, because SHOULDER
+            // happens to be ungated and the rest need a checkbox that was never
+            // ticked - so the one number that would have said whether the twist
+            // clamp works was simply absent. A probe the tester has to enable is
+            // a probe that is off when it matters.
+            //
+            // Reading it, per side and role:
+            //   twist raw vs clamped differing  -> the clamp IS engaging
+            //   twist absent (held arm)         -> expected; handQ is null there
+            //   swingDot heading for -1.00      -> the 180 flip is imminent
+            //   poleTilt large                  -> elbowFollowWrist is swinging
+            //                                      the elbow, and with it the
+            //                                      clavicle that rides qUp
+            {
+                static uint64_t s_adLog[2][2] = {{0, 0}, {0, 0}};
+                const int adRole = freeBank ? 1 : 0;
+                const uint64_t nowAd = GetTickCount64();
+                if (nowAd - s_adLog[adRole][hand] >= 500) {
+                    s_adLog[adRole][hand] = nowAd;
+                    BVR_LOG("[bones] ARMDIAG: %s %s | twist %s raw %+.1f clamped %+.1f%s "
+                            "(limit %.0f) | swingDot %+.3f%s | poleTilt %.1f deg "
+                            "(followWrist %.2f) | sh->hand %.1f reach %.1f | elbowOff "
+                            "%.1f UU | twistRef fp %.4f hp %.4f | neutral %+.1f (travel %+.1f) | SPLIT fore %+.1f hum %+.1f = %+.1f%s",
+                            hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
+                            dbgTwistDerived ? "derived" : "NOT-DERIVED", dbgThetaRaw,
+                            dbgThetaClamped, dbgClampHit ? " CLAMPING" : "",
+                            g_armTwistLimitDeg.load(std::memory_order_relaxed),
+                            dbgSwingDot,
+                            dbgSwingDot < -0.9f ? " NEAR-ANTIPARALLEL, FLIP RISK" : "",
+                            dbgPoleTilt, g_elbowFollowWrist.load(std::memory_order_relaxed),
+                            dRaw, L1s + L2s, hLen, dbgFpLen, dbgHpLen, dbgNeutral,
+                            dbgThetaRaw - dbgNeutral, dbgForeDeg, dbgHumDeg,
+                            dbgForeDeg + dbgHumDeg,
+                            (dbgFpLen >= 0.0f && dbgFpLen < 0.2f)
+                                ? "  <-- fp COLLAPSED, twist angle is noise"
+                                : "");
+                }
             }
 
             static uint64_t s_ikLog[2] = {0, 0};
@@ -6568,6 +6845,21 @@ void draw_debug_ui() {
                 "real arm rolls the hand by turning the SHOULDER instead, which\n"
                 "is a different joint and not this angle.\n\n"
                 "180 restores the old unlimited behaviour for comparison.");
+        float htl = g_humerusTwistLimitDeg.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("humerus twist limit (deg)", &htl, 0.0f, 180.0f, "%.0f"))
+            g_humerusTwistLimitDeg.store(htl, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Where the roll PAST the forearm's limit goes.\n\n"
+                "Your hand reaches nearly 360 deg of roll out of only ~175 deg\n"
+                "of forearm, and the rest is the humerus rotating at the\n"
+                "shoulder - internal rotation goes with pronation, external\n"
+                "with supination. Every position you can make with a controller\n"
+                "is one a real arm made, so the excess is not error to throw\n"
+                "away; it belongs to this joint.\n\n"
+                "0 turns the split OFF - the forearm carries everything and\n"
+                "clamps, which is the older behaviour and what this A/Bs\n"
+                "against. 90 is the real joint's range.");
         float eo = g_elbowOut.load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("elbow out", &eo, 0.0f, 1.0f, "%.2f"))
             g_elbowOut.store(eo, std::memory_order_relaxed);

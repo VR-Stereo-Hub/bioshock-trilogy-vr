@@ -5728,3 +5728,83 @@ while the code becomes one path.
 signed-off, headset-accepted baseline, and unifying is exactly the kind of change
 that trades a known-good half for elegance. The gate is: with `freeBank` forced
 true for both hands, the held arm must be indistinguishable from today.
+
+## Sessions 75-76 (2026-08-31 / 09-01) - THE FOREARM'S TWIST: a rest pose, and a second joint
+
+Recorded 2026-10-07 from the code and the commit trail; the sessions themselves
+ended without a handoff. Everything here is `solve_arm()`, free arm only - the
+held arm's twist is carried by the actor and never derived (`handQ` is null).
+
+### The accumulator must carry the TRUE angle (s75b)
+
+s75 (`d03ac49`) bounded the unwrapped twist at +-85 deg and stored the CLAMPED
+value back as the unwrap's previous angle. Measured at a collapse point, arm
+completely still and every other quantity healthy (swingDot -0.51, fp 1.0000,
+poleTilt 2 deg): raw read +250 deg frame after frame, clamped to +85 - a 165 deg
+error held rock steady.
+
+Why: the unwrap takes the shortest step FROM THE LAST TRUE ANGLE. Pin that at the
+limit and, with a true measurement near -110, the shortest step from +85 wraps to
++165, lands on +250, clamps back to +85, and re-derives the same wrong branch
+next frame. A stable fixed point in the wrong place, at a different pose per
+direction because the branch depends on the side it was approached from.
+
+**Rule: clamp what drives the bones, never the state an unwrap steps from.**
+
+### Joint limits are about the joint's REST pose, not zero (s75c)
+
+The measured twist is between the forearm's local up and the hand's, and those
+two bones do not share an axis convention; s72z subtracts an authored constant
+for that and under-corrects. Measured: the free arm's twist at rest has a median
+of -59 deg (92% of samples negative, 163 past -85 against 5 past +85; -59.9 at
+the captured neutral). A limit centred on zero therefore gave ~26 deg of travel
+one way and ~144 the other - the reported "collapses one way, works the other".
+
+So the rest angle is captured as the first measurement after a reference drop
+(the settle gate - the arm is at rest there by definition), dropped wherever the
+reference is (`free_ref_drop`, `on_world_change`), and both the limit and the
+applied rotation are about it. Splitting the ABSOLUTE angle while clamping the
+travel left a permanent ~60 deg twist at rest; the applied twist is travel.
+
+### The excess belongs to the humerus (s76)
+
+Every single-joint bound failed, each in its own way:
+
+| form | measured failure |
+|---|---|
+| unbounded accumulation | a 360 deg roll took the angle -11 -> +349 and pinned it |
+| store the clamped value | latched 165 deg off (above) |
+| clamp the wrapped angle | snaps ~170 deg at the far side |
+
+The controller is held by a real arm, so every orientation that arrives was made
+by a valid pose; the roll past the forearm's range is a real rotation of a joint
+the solve was not driving. A hand reaches nearly 360 deg of roll from ~175 deg of
+forearm because the humerus rotates at the shoulder for the rest (internal
+rotation with pronation, external with supination).
+
+So the travel is split: the forearm takes up to `armTwistLimitDeg` (85), the
+humerus the remainder up to `humerusTwistLimitDeg` (90), and `fore + hum ==
+travel` by construction up to the combined limit. The humeral part rides both
+segments either side of the elbow (a hinge holds no step - session 73 rule 8);
+only the forearm carries the 0 -> 1 gradient to the wrist. The accumulator is
+bounded at the combined limit instead of an arbitrary 170.
+
+Clamping BEFORE the split made it meaningless: theta capped at neutral+85, the
+humerus only ever saw the leftover 37.7 and the sum stalled at 122.7 while the
+true angle ran on to 300. There is no output clamp ahead of the split now.
+
+`humerusTwistLimitDeg` is in `hands.ini`, the F10 bones panel and has a getter;
+0 turns the split off (the s75 forearm-only clamp) and A/Bs it.
+
+### ARMDIAG - always on, 2 Hz per arm and role
+
+One line per arm: twist raw/clamped/neutral/travel, the fore/hum split, swingDot
+(approaching -1 = `quat_from_to` is near its arbitrary-axis branch, the 180 flip),
+poleTilt (how far `elbowFollowWrist` swung the pole), and the pre-normalisation
+lengths of both twist references (`fp` under 0.2 = the forearm's +Z is along its
+own axis and the angle is noise). Deliberately NOT behind `probes_on()`: the run
+before it came back with 504 ungated SHOULDER lines and nothing else, because the
+rest needed a checkbox nobody ticked.
+
+**Status: built and iterated against headset logs; the final split has not been
+signed off in the headset.**
