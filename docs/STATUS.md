@@ -2,6 +2,35 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08 - s83 (BS1): the evaluator hook measured, and mode 4 (Dishonored hands) built
+
+**Same branch, `claude/bs1-hands-dishonored`.** One simulator run (authorised, one
+question). Mode 4 is built and installed but has **not been run**.
+
+### Current state
+
+- **P1, measured in the simulator.** With the dirty byte set every tick and nothing
+  frozen, BS1 re-evaluates the hand skeleton once per game tick, always in the tick, never
+  in a render pass. The hooked copy matched the live array in ~19,000 of ~19,000 checks.
+  The hook ran 138 s with no crash. ENGINE_NOTES s82b.
+- **P4, mode 4 (`vrhands mode dishonored`, F10 Hands + weapon > Drive: DISHONORED).** The
+  actor is never written. Each hand is one rigid correction of the engine's live pose,
+  composed in the evaluator hook and again at the scene build, with arm IK v2 to the
+  composed wrists. The targets come from mode 3's own numbers: per-weapon profiles for the
+  held hand at idle, the off-hand trims for the other. HANDS_DISHONORED.md section 5.
+- `hands.ini` is untouched (`mode=3`); mode 4 is opt-in from F10.
+
+### Next steps
+
+1. **Headset, one question:** in F10 pick Drive: DISHONORED, equip the pistol, and reload
+   with both controllers still. Does each hand stay on its controller through the reload,
+   with the fingers animating, and do the shoulders stay put when you roll your wrist?
+   Read the `MODE4` log line (every 2 s).
+2. If the held hand sits wrong at idle, that is the idle capture: tune with the BRVR
+   per-weapon profile as before. The capture follows it.
+3. P5: the hand-back for scripted hand animations (Eve, gatherer tools) using
+   `hand_compose::Handoff`; arms-hide support in mode 4.
+
 ## Session 2026-10-08 - s82 (BS1): hands vs Dishonored, a deep dive and the port's pure half
 
 **Branch `claude/bs1-hands-dishonored`, off `claude/bs1-arm-ik-redo`** (so the arm IK
