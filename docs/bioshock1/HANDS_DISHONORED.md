@@ -284,6 +284,33 @@ Details in ENGINE_NOTES s82b.
 - Not done yet: the per-state hand-back (P5), `arms hide` (with hide selected, the engine's
   own arms show), and Dishonored's grip snapshot button.
 
+### First headset run of mode 4, and the arm fixes it asked for (session 83b)
+
+**Tester, 2026-10-08:** "I think it might have been better." The `MODE4` log showed it
+healthy: ~25k composes, 0 stale.
+
+- **Hands:** they stayed on the controllers with the right animations playing in both,
+  and the plasmid hand was right.
+- **Shoulders:** they still moved a little, but naturally. That is the reach slide.
+- **Asked for:**
+  - an arm-size setting, because the arms looked small (they were drawn at the 0.8 hand
+    scale);
+  - shoulders connected, so they move together and stay aligned;
+  - a shoulder-width setting.
+
+**Built (F10 Hands + weapon > ARMS > "DISHONORED mode arms", saved to hands.ini as
+`m4*`):**
+
+| Setting | What it does |
+|---|---|
+| `shoulder width` (`m4ShoulderWidthCm`, default 52) | The shoulders are now ONE bar, Dishonored's shared centre plus total width, the same whichever hand is held. The old per-hand shoulder triples are no longer read in mode 4. |
+| `shoulders forward / up / right` (`m4ShoulderFwdCm` 3.8, `m4ShoulderUpCm` -19.8, `m4ShoulderRightCm` 0) | Place the bar's centre. The defaults reproduce the run's placement exactly. |
+| `shoulders move together` (`m4ShouldersLinked`, default on) | Both arms solve; when reach slides one shoulder, the bar moves by that slide and both arms solve again. The shoulders stay level and aligned. Off restores Dishonored's independent slide. |
+| `hands + arms size` (`m4Size`, default 1.00) | ONE size for the hands and arms together, a multiplier on the hand scale that both are drawn at, so they always match. The tester asked for exactly that ("the arms and hands should scale together"). 1.00 is as in the run. The weapon keeps its own size (`GunScale`). `arm length scale` still stretches only the arm's length on top. |
+
+The `MODE4` line now also logs the width, the linked state, the last bar slide and the
+size. Built and installed, not yet run; the bar slide has no host test yet.
+
 The one question P4's first launch must answer: does the hand stay on the controller
 through a full pistol reload, with the fingers animating, and do the shoulders stay put
 while the wrist rolls?

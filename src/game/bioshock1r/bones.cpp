@@ -6771,9 +6771,25 @@ struct M4State {
     float F[3] = {}, R[3] = {}, U[3] = {};
     float scale[2] = {1, 1};
     float armScale = 1;
+    float armSize = 1;
+    bool linked = true;
     bool arms = false;
 };
 M4State g_m4;
+// s83b: ONE pair of shoulders, Dishonored's model (ARM_IK.md there: a shared centre and a
+// total width, half mirrored). The two shoulders are a single rigid bar: they move together
+// and stay level. Defaults are the right shoulder the s81 headset run used (fwd 3.8, right
+// +-26, up -19.8 cm), as a centre and a width; hands.ini overrides.
+std::atomic<float> g_m4ShFwdCm{3.8f}, g_m4ShRightCm{0.0f}, g_m4ShUpCm{-19.8f};
+std::atomic<float> g_m4ShWidthCm{52.0f};
+// When reach makes one shoulder slide, the other slides by the same amount, so the bar
+// between them never bends or tilts. Off = Dishonored's independent slide.
+std::atomic<bool> g_m4ShLinked{true};
+// ONE size for the hands and the arms together: a multiplier on the hand scale that both
+// the hand clusters and the arms (thickness and length) are drawn at, so they can never
+// disagree. 1 = the hand scale as it is (0.8 by default).
+std::atomic<float> g_m4ArmSize{1.0f};
+std::atomic<float> g_m4BarShift{0.0f}; // the last shoulder slide, UU (log)
 // The held hand's wrist at idle, component space, per holdable.
 struct M4Idle {
     bool valid = false;
@@ -6827,6 +6843,8 @@ void m4_compose(bool late) {
     namespace hc = hand_compose;
     namespace ik = arm_ik;
     const uint64_t now = GetTickCount64();
+    ik::Bone composedWrist[2];
+    bool haveWrist[2] = {false, false};
     for (int h = 0; h < 2; ++h) {
         const M4Hand& T = g_m4.hand[h];
         if (!T.valid) continue;
@@ -6850,7 +6868,7 @@ void m4_compose(bool late) {
         float cp[3], cq[4];
         to_comp_p(tp, cp);
         quat_mul(qaInv, tq, cq);
-        const float s = g_m4.scale[h];
+        const float s = g_m4.scale[h] * g_m4.armSize; // hands and arms share one size
         hc::Rigid target{ik::normalized(ik::quat(cq)), ik::vec(cp)};
         ik::Bone src;
         memcpy(src.p, A[w].p, 12);
@@ -6858,7 +6876,6 @@ void m4_compose(bool late) {
         const hc::Rigid D = hc::delta(target, src, ik::Vec{});
         int first = 0, last = 0;
         m4_range(h, &first, &last);
-        ik::Bone composedWrist;
         for (int i = first; i <= last && i < n; ++i) {
             // Carried by D, the hand's own offsets from the wrist scaled by the hand scale.
             const ik::Vec off = (ik::vec(A[i].p) - ik::vec(A[w].p)) * s;
@@ -6874,64 +6891,120 @@ void m4_compose(bool late) {
             if (s != 1.0f && scale_selects(g_scaleMode.load(std::memory_order_relaxed), h, i, first))
                 write_n(g_bones[i].s, sw, 12);
             if (i == w) {
-                memcpy(composedWrist.p, pw, 12);
-                memcpy(composedWrist.q, qw, 16);
+                memcpy(composedWrist[h].p, pw, 12);
+                memcpy(composedWrist[h].q, qw, 16);
+                haveWrist[h] = true;
             }
         }
-        // The arm, to the composed wrist, from the body-frame shoulder.
-        if (!g_m4.arms) continue;
-        const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
-        ik::Ref ref;
-        ik::Bone* rb[5] = {&ref.clavicle, &ref.upper, &ref.fore, &ref.twist[0], &ref.twist[1]};
-        for (int j = 0; j < 5; ++j) {
-            memcpy(rb[j]->p, A[sl[j]].p, 12);
-            memcpy(rb[j]->q, A[sl[j]].q, 16);
-        }
-        memcpy(ref.wristP, A[w].p, 12);
-        memcpy(ref.wristQ, A[w].q, 16);
-        ik::Input in;
-        float sc[3], fc[3], rc[3], uc[3];
-        to_comp_p(g_m4.shoulder[h], sc);
+    }
+
+    // ---- the arms, solved TOGETHER (s83b) --------------------------------------------
+    //
+    // The shoulders are one bar (a shared centre and a width, from m4_frame). Each arm is
+    // solved to its composed wrist; if reach makes one shoulder slide, the bar slides by
+    // that shift - both shoulders together - and both arms are solved again from it. So
+    // the shoulders move at the same time and stay aligned, which Dishonored's independent
+    // per-arm slide does not do. Unlinked, each slides on its own (Dishonored's form).
+    if (g_m4.arms) {
+        float fc[3], rc[3], uc[3];
         to_comp_v(g_m4.F, fc);
         to_comp_v(g_m4.R, rc);
         to_comp_v(g_m4.U, uc);
         const ik::Vec F = ik::vec(fc), R = ik::vec(rc), U = ik::vec(uc);
-        const float side = h == 1 ? 1.0f : -1.0f;
-        in.shoulder = ik::vec(sc);
-        in.wrist = ik::vec(composedWrist.p);
-        memcpy(in.wristQ, composedWrist.q, 16);
-        in.pole = U * -1.0f + R * (side * g_elbowOut.load(std::memory_order_relaxed)) + F * -0.3f;
-        in.outward = R * side;
-        M4ArmHist& hist = g_m4Arm[h];
-        in.fresh = hist.valid && now - hist.ms < 250;
-        if (in.fresh) {
-            in.priorPole = F * hist.poleBody[0] + R * hist.poleBody[1] + U * hist.poleBody[2];
-            in.priorTwist = hist.twist;
+        ik::Ref ref[2];
+        ik::Input in[2];
+        ik::Vec nominal[2];
+        bool want[2] = {false, false};
+        for (int h = 0; h < 2; ++h) {
+            if (!haveWrist[h]) continue;
+            const int w = m4_wrist(h);
+            const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+            ik::Bone* rb[5] = {&ref[h].clavicle, &ref[h].upper, &ref[h].fore, &ref[h].twist[0], &ref[h].twist[1]};
+            for (int j = 0; j < 5; ++j) {
+                memcpy(rb[j]->p, A[sl[j]].p, 12);
+                memcpy(rb[j]->q, A[sl[j]].q, 16);
+            }
+            memcpy(ref[h].wristP, A[w].p, 12);
+            memcpy(ref[h].wristQ, A[w].q, 16);
+            float sc[3];
+            to_comp_p(g_m4.shoulder[h], sc);
+            nominal[h] = ik::vec(sc);
+            const float side = h == 1 ? 1.0f : -1.0f;
+            ik::Input& I = in[h];
+            I.shoulder = nominal[h];
+            I.wrist = ik::vec(composedWrist[h].p);
+            memcpy(I.wristQ, composedWrist[h].q, 16);
+            I.pole = U * -1.0f + R * (side * g_elbowOut.load(std::memory_order_relaxed)) + F * -0.3f;
+            I.outward = R * side;
+            const M4ArmHist& hist = g_m4Arm[h];
+            I.fresh = hist.valid && now - hist.ms < 250;
+            if (I.fresh) {
+                I.priorPole = F * hist.poleBody[0] + R * hist.poleBody[1] + U * hist.poleBody[2];
+                I.priorTwist = hist.twist;
+            }
+            // The arm at exactly the hand's size (thickness and length), so the two
+            // always match; `arm length scale` multiplies the length on top.
+            I.scale = g_m4.scale[h] * g_m4.armSize;
+            I.lengthScale = g_m4.armScale;
+            want[h] = true;
         }
-        in.scale = s;
-        in.lengthScale = g_m4.armScale;
-        ik::Output o;
-        if (!ik::pose(ref, in, o)) {
-            hist.valid = false;
-            continue;
+        ik::Output out[2];
+        bool ok[2] = {false, false};
+        for (int h = 0; h < 2; ++h)
+            if (want[h]) ok[h] = ik::pose(ref[h], in[h], out[h]);
+        if (g_m4.linked) {
+            // The larger of the two slides moves the whole bar.
+            ik::Vec shift{};
+            float best = 0.0f;
+            for (int h = 0; h < 2; ++h) {
+                if (!ok[h]) continue;
+                const ik::Vec d = out[h].joints.shoulder - nominal[h];
+                if (ik::length(d) > best) {
+                    best = ik::length(d);
+                    shift = d;
+                }
+            }
+            if (!late) g_m4BarShift.store(best, std::memory_order_relaxed);
+            if (best > 0.01f) {
+                for (int h = 0; h < 2; ++h) {
+                    if (!want[h]) continue;
+                    ik::Input I = in[h];
+                    I.shoulder = nominal[h] + shift;
+                    ik::Output o;
+                    if (ik::pose(ref[h], I, o)) {
+                        out[h] = o;
+                        ok[h] = true;
+                    }
+                }
+            }
         }
-        const ik::Bone* ob[5] = {&o.clavicle, &o.upper, &o.fore, &o.twist[0], &o.twist[1]};
-        for (int j = 0; j < 5; ++j) {
-            const float sv[3] = {A[sl[j]].s[0] * ob[j]->s[0], A[sl[j]].s[1] * ob[j]->s[1],
-                                 A[sl[j]].s[2] * ob[j]->s[2]};
-            write_n(g_bones[sl[j]].p, ob[j]->p, 12);
-            write_n(g_bones[sl[j]].q, ob[j]->q, 16);
-            write_n(g_bones[sl[j]].s, sv, 12);
-        }
-        // History is committed once per evaluation, not per compose, so the late
-        // recompose of the same frame cannot advance it twice.
-        if (!late) {
-            hist.valid = true;
-            hist.ms = now;
-            hist.poleBody[0] = ik::dot(o.basePole, F);
-            hist.poleBody[1] = ik::dot(o.basePole, R);
-            hist.poleBody[2] = ik::dot(o.basePole, U);
-            hist.twist = o.trackedTwist;
+        for (int h = 0; h < 2; ++h) {
+            M4ArmHist& hist = g_m4Arm[h];
+            if (!want[h]) continue;
+            if (!ok[h]) {
+                hist.valid = false;
+                continue;
+            }
+            const ik::Output& o = out[h];
+            const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+            const ik::Bone* ob[5] = {&o.clavicle, &o.upper, &o.fore, &o.twist[0], &o.twist[1]};
+            for (int j = 0; j < 5; ++j) {
+                const float sv[3] = {A[sl[j]].s[0] * ob[j]->s[0], A[sl[j]].s[1] * ob[j]->s[1],
+                                     A[sl[j]].s[2] * ob[j]->s[2]};
+                write_n(g_bones[sl[j]].p, ob[j]->p, 12);
+                write_n(g_bones[sl[j]].q, ob[j]->q, 16);
+                write_n(g_bones[sl[j]].s, sv, 12);
+            }
+            // History is committed once per evaluation, not per compose, so the late
+            // recompose of the same frame cannot advance it twice.
+            if (!late) {
+                hist.valid = true;
+                hist.ms = now;
+                hist.poleBody[0] = ik::dot(o.basePole, F);
+                hist.poleBody[1] = ik::dot(o.basePole, R);
+                hist.poleBody[2] = ik::dot(o.basePole, U);
+                hist.twist = o.trackedTwist;
+            }
         }
     }
     (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
@@ -6941,6 +7014,26 @@ void m4_compose(bool late) {
 void m4_after_eval() { m4_compose(false); }
 
 void m4_late() { m4_compose(true); }
+
+void m4_shoulders(float* fwd, float* right, float* up, float* width) {
+    if (fwd) *fwd = g_m4ShFwdCm.load(std::memory_order_relaxed);
+    if (right) *right = g_m4ShRightCm.load(std::memory_order_relaxed);
+    if (up) *up = g_m4ShUpCm.load(std::memory_order_relaxed);
+    if (width) *width = g_m4ShWidthCm.load(std::memory_order_relaxed);
+}
+void set_m4_shoulders(float fwd, float right, float up, float width) {
+    auto clamp = [](float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; };
+    g_m4ShFwdCm.store(clamp(fwd, -60, 60), std::memory_order_relaxed);
+    g_m4ShRightCm.store(clamp(right, -40, 40), std::memory_order_relaxed);
+    g_m4ShUpCm.store(clamp(up, -80, 30), std::memory_order_relaxed);
+    g_m4ShWidthCm.store(clamp(width, 10, 90), std::memory_order_relaxed);
+}
+bool m4_shoulders_linked() { return g_m4ShLinked.load(std::memory_order_relaxed); }
+void set_m4_shoulders_linked(bool on) { g_m4ShLinked.store(on, std::memory_order_relaxed); }
+float m4_arm_size() { return g_m4ArmSize.load(std::memory_order_relaxed); }
+void set_m4_arm_size(float v) {
+    g_m4ArmSize.store(v < 0.5f ? 0.5f : v > 2.0f ? 2.0f : v, std::memory_order_relaxed);
+}
 
 void m4_release() {
     if (!g_m4.active) return;
@@ -7044,19 +7137,20 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const GamePos
         memcpy(g_m4.F, F, 12);
         memcpy(g_m4.R, R, 12);
         memcpy(g_m4.U, U, 12);
+        // s83b: one centre, one width - the same two shoulders whichever hand is held.
+        const float f = g_m4ShFwdCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float r = g_m4ShRightCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float u = g_m4ShUpCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float hw = 0.5f * g_m4ShWidthCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float c[3] = {ctx.baseX + F[0] * f + R[0] * r, ctx.baseY + F[1] * f + R[1] * r, ctx.baseZ + u};
         for (int h = 0; h < 2; ++h) {
-            // s72d: one body - the free arm takes the held arm's shoulder, mirrored.
-            const int sh = g_m4.held;
-            const float mirror = h == g_m4.held ? 1.0f : -1.0f;
-            const float f = g_shoulderFwdCm[sh].load(std::memory_order_relaxed) * uuPerCm;
-            const float r = g_shoulderRightCm[sh].load(std::memory_order_relaxed) * uuPerCm * mirror;
-            const float u = g_shoulderUpCm[sh].load(std::memory_order_relaxed) * uuPerCm;
-            g_m4.shoulder[h][0] = ctx.baseX + cy * f - sy * r;
-            g_m4.shoulder[h][1] = ctx.baseY + sy * f + cy * r;
-            g_m4.shoulder[h][2] = ctx.baseZ + u;
+            const float side = h == 1 ? 1.0f : -1.0f; // left on -R
+            for (int i = 0; i < 3; ++i) g_m4.shoulder[h][i] = c[i] + R[i] * hw * side;
         }
         for (int h = 0; h < 2; ++h) g_m4.scale[h] = g_scale[h].load(std::memory_order_relaxed);
         g_m4.armScale = g_armScale.load(std::memory_order_relaxed);
+        g_m4.armSize = g_m4ArmSize.load(std::memory_order_relaxed);
+        g_m4.linked = g_m4ShLinked.load(std::memory_order_relaxed);
     }
 
     set_dirty(1); // the engine evaluates this tick; ev_post composes the moment it does
@@ -7065,10 +7159,12 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const GamePos
     if (now - s_log >= 2000) {
         s_log = now;
         BVR_LOG("[bones] MODE4: %u composes after evaluation, %u at the scene build, %u skipped "
-                "(stale) | held %s %s, free %s | evaluations %u",
+                "(stale) | held %s %s, free %s | evaluations %u | shoulders %.1f cm apart, %s, "
+                "slid %.1f UU | hands + arms size %.2f",
                 g_m4Composes.load(), g_m4Late.load(), g_m4Skips.load(), g_m4.held == 1 ? "RIGHT" : "LEFT",
                 g_m4Idle.valid ? "from its idle capture" : "following mode 3's live placement (no idle yet)",
-                fh.valid ? "tracked" : "the game's", g_evPost.load());
+                fh.valid ? "tracked" : "the game's", g_evPost.load(), g_m4ShWidthCm.load(),
+                g_m4.linked ? "moving together" : "independent", g_m4BarShift.load(), g_m4.armSize);
     }
     return true;
 }
@@ -7712,6 +7808,43 @@ void draw_debug_ui() {
                     g_armIkSolves.load(std::memory_order_relaxed),
                     g_armIkFails.load(std::memory_order_relaxed),
                     g_armIkReach.load(std::memory_order_relaxed));
+        // s83b: mode 4's arms. One pair of shoulders and the arm's own size; saved to
+        // hands.ini on release, like every other slider here.
+        ImGui::TextDisabled("DISHONORED mode arms (Drive: DISHONORED)");
+        {
+            float sf = g_m4ShFwdCm.load(), sr = g_m4ShRightCm.load(), su = g_m4ShUpCm.load(),
+                  sw = g_m4ShWidthCm.load();
+            bool ch = false;
+            ch |= ImGui::SliderFloat("shoulder width (cm)", &sw, 10.0f, 90.0f, "%.1f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The distance between the two shoulders. They are one bar:\n"
+                                  "this sets its length, the three below place its centre.");
+            ch |= ImGui::SliderFloat("shoulders forward (cm)", &sf, -60.0f, 60.0f, "%.1f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+            ch |= ImGui::SliderFloat("shoulders up (cm)", &su, -80.0f, 30.0f, "%.1f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+            ch |= ImGui::SliderFloat("shoulders right (cm)", &sr, -40.0f, 40.0f, "%.1f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+            if (ch) set_m4_shoulders(sf, sr, su, sw);
+            bool linked = g_m4ShLinked.load();
+            if (ImGui::Checkbox("shoulders move together", &linked)) {
+                g_m4ShLinked.store(linked);
+                hands::save_offsets();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("On: when a hand reaches past the arm's length the shoulders\n"
+                                  "slide toward it TOGETHER, so they stay level and aligned.\n"
+                                  "Off: each shoulder slides on its own (Dishonored's form).");
+            float as = g_m4ArmSize.load();
+            if (ImGui::SliderFloat("hands + arms size", &as, 0.5f, 2.0f, "%.2f")) set_m4_arm_size(as);
+            if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("One size for the hands AND the arms together, so they always\n"
+                                  "match. 1.00 = as now (the hand scale, 0.8 by default); raise it\n"
+                                  "to grow both. `arm length scale` above still stretches only the\n"
+                                  "arm's length on top.");
+        }
         // s70i: the shoulder JOINT itself, per hand - "each shoulder will need
         // anchoring and positioning like the weapons". The solver anchors the arm
         // here and the elbow follows from it, so this is the one number that

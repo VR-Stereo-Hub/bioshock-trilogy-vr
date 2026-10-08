@@ -20,8 +20,17 @@ question). Mode 4 is built and installed but has **not been run**.
   held hand at idle, the off-hand trims for the other. HANDS_DISHONORED.md section 5.
 - `hands.ini` is untouched (`mode=3`); mode 4 is opt-in from F10.
 
+**s83b, after the first mode-4 headset run** ("I think it might have been better"; the
+hands stayed on the controllers with the right animations, plasmid included). The
+shoulders are now one bar with a width setting, they slide together when reach needs it,
+and one `hands + arms size` slider scales the hands and arms together. All under F10 ARMS >
+"DISHONORED mode arms"; HANDS_DISHONORED.md has the table.
+
 ### Next steps
 
+0. **Headset:** in mode 4, raise `hands + arms size` until both look right, and set
+   `shoulder width`. Then check whether the shoulders move together when one hand reaches
+   far: the `MODE4` line logs `slid N UU`.
 1. **Headset, one question:** in F10 pick Drive: DISHONORED, equip the pistol, and reload
    with both controllers still. Does each hand stay on its controller through the reload,
    with the fingers animating, and do the shoulders stay put when you roll your wrist?

@@ -273,6 +273,16 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const GamePos
 void m4_after_eval();
 void m4_late();
 void m4_release();
+// s83b mode-4 arm settings, persisted in hands.ini. One pair of shoulders: a shared centre
+// (cm forward / right / up from the body point) and the total width between them. Linked
+// = when reach slides one shoulder, the other slides with it. m4_arm_size is ONE size for
+// the hands and the arms together: a multiplier on the hand scale both are drawn at.
+void m4_shoulders(float* fwd, float* right, float* up, float* width);
+void set_m4_shoulders(float fwd, float right, float up, float width);
+bool m4_shoulders_linked();
+void set_m4_shoulders_linked(bool on);
+float m4_arm_size();
+void set_m4_arm_size(float v);
 
 // True while `vrbones log on` - camera.cpp and hands.cpp contribute their
 // raw-pose lines to the same telemetry stream (each site throttles itself to

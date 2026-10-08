@@ -576,6 +576,17 @@ void save_config() {
     }
     fprintf(f, "armScale=%.3f\n", bones::arm_scale());
     fprintf(f, "armIkV2=%d\n", bones::arm_ik_v2() ? 1 : 0);
+    {
+        // s83b: mode 4's one pair of shoulders, and its one size for hands + arms.
+        float sf = 0.0f, sr = 0.0f, su = 0.0f, sw = 0.0f;
+        bones::m4_shoulders(&sf, &sr, &su, &sw);
+        fprintf(f, "m4ShoulderFwdCm=%.2f\n", sf);
+        fprintf(f, "m4ShoulderRightCm=%.2f\n", sr);
+        fprintf(f, "m4ShoulderUpCm=%.2f\n", su);
+        fprintf(f, "m4ShoulderWidthCm=%.2f\n", sw);
+        fprintf(f, "m4ShouldersLinked=%d\n", bones::m4_shoulders_linked() ? 1 : 0);
+        fprintf(f, "m4Size=%.3f\n", bones::m4_arm_size());
+    }
     fprintf(f, "armTwistLimitDeg=%.1f\n", bones::arm_twist_limit_deg());
     fprintf(f, "humerusTwistLimitDeg=%.1f\n", bones::humerus_twist_limit_deg());
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
@@ -679,6 +690,18 @@ void load_config() {
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
         else if (strcmp(key, "armScale") == 0) bones::set_arm_scale(v);
         else if (strcmp(key, "armIkV2") == 0) bones::set_arm_ik_v2(v != 0.0f);
+        else if (strncmp(key, "m4Shoulder", 10) == 0 && strcmp(key, "m4ShouldersLinked") != 0) {
+            float sf = 0.0f, sr = 0.0f, su = 0.0f, sw = 0.0f;
+            bones::m4_shoulders(&sf, &sr, &su, &sw);
+            if (strcmp(key, "m4ShoulderFwdCm") == 0) sf = v;
+            else if (strcmp(key, "m4ShoulderRightCm") == 0) sr = v;
+            else if (strcmp(key, "m4ShoulderUpCm") == 0) su = v;
+            else if (strcmp(key, "m4ShoulderWidthCm") == 0) sw = v;
+            bones::set_m4_shoulders(sf, sr, su, sw);
+        }
+        else if (strcmp(key, "m4ShouldersLinked") == 0) bones::set_m4_shoulders_linked(v != 0.0f);
+        else if (strcmp(key, "m4Size") == 0 || strcmp(key, "m4ArmSize") == 0)
+            bones::set_m4_arm_size(v); // m4ArmSize: the name for one build, before it was one size
         else if (strcmp(key, "armTwistLimitDeg") == 0) bones::set_arm_twist_limit_deg(v);
         else if (strcmp(key, "humerusTwistLimitDeg") == 0)
             bones::set_humerus_twist_limit_deg(v);
