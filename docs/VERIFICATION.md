@@ -233,7 +233,11 @@ Written to `%LOCALAPPDATA%\BioshockVR\xrsim\state.json`, atomically replaced, at
 | `framesDiscarded`, `endsOutOfOrder` | Protocol violations, counted rather than fatal |
 | `sessionState`, `sessionRunning`, `actionsAttached` | Session status |
 | `paceMode`, `refreshHz`, `stepsPending`, `idleBlockMs` | Pacing |
-| `layersLastFrame`, `projectionViews` | The live layer census, updated every frame |
+| `layersLastFrame`, `projectionViews`, `quadLayers` | The live layer census, updated every frame |
+| `eyeAgeL/R`, `eyeAgeMaxL/R`, `eyeReleasedOnFrameL/R` | Per-eye freshness of the last projection submit, in frames, **every frame** (not only when `hash` is armed): 0/0 is a healthy pair, 1+ is an eye showing a held image. Max since `reset`. Complements `eyeHash` (WHAT each eye showed) with how OLD it was |
+| `eyeSameSwapchain`, `projSubmits`, `projMonoSubmits`, `projStaleSubmits` | Both views on one swapchain (the mono path), and the cumulative classification of every projection submit |
+| `endPhaseMs` | xrEndFrame time minus its displayTime (negative = closed before its slot) |
+| `capNonBlackL/R`, `quadAlphaPct` | The last CAPTURE's per-eye non-black percent, and the first quad layer's alpha coverage - assertable (`@assert capNonBlackL ge 50`) |
 | `head`, `handL`, `handR`, `controls` | The committed rig |
 | `cmdSeq`, `lastCmd`, `lastCmdError`, `errors` | The ack channel |
 | `captureSeq`, `lastCapture` | Capture bookkeeping |
@@ -260,6 +264,24 @@ The JSON is the point. Beyond the poses and controls it carries:
   28's yaw warp was a 1.84x claim/RENDER mismatch - that class shows up here as
   a measured value that disagrees with the law-derived expectation.
 - `stats.meanLumaL/R`, `stats.nonBlackPctL/R` - is anything actually rendered.
+- `stats.bboxL/R`, `stats.bboxPctL/R` - the non-black bounding box of each eye;
+  equal boxes in both eyes is the mono gate.
+- `layers[].src` - each layer's SOURCE image (the swapchain image the app last
+  released) read back on the capture frame: size, image index, the frame it was
+  released on, non-black and alpha percent, bbox. A black eye is then named in
+  `xrsim.log` as a **COMPOSITOR fault** (the source had content: a NaN pose or a
+  crossed fov - `xrEndFrame` also logs those as `BAD POSE` / `BAD FOV`) or an
+  **APP fault** (the source was black too).
+
+**Quad placement was fixed 2026-10-07** (`xrsim_math.h` `mat4_view_from_pose`,
+plus `D3DCOMPILE_PACK_MATRIX_ROW_MAJOR`): the view matrix used the inverse
+rotation's axes and HLSL read the matrix transposed, so a head-locked quad swung
+by twice the head yaw in captures. Measured and fixed first in the Dishonored VR
+mod's copy of this simulator; here the view math is pinned by a host test
+(`.\tools\host-test.ps1 xrsim-math`: a point ahead of the eye lands on -Z within
+1e-6 m over 275 poses, and the pre-fix basis fails the same test by metres). The
+shader-packing half is not host-testable. Quad screen positions in captures taken
+before that date are not comparable with later ones.
 
 ### 2.7 Scripted sequences
 
@@ -267,8 +289,13 @@ The JSON is the point. Beyond the poses and controls it carries:
 
 | Directive | Effect |
 |---|---|
+| `<cmd>; <cmd>` | sim commands grouped with `;` go as ONE batch, applied on the same frame - a head and a hand that must move together |
 | `@wait <ms>` | sleep |
 | `@frames <n>` | wait for the sim's frame counter to advance n |
+| `@key <name> [n] [ms]` | press a key in the game window (`game-key.ps1`) |
+| `@mark` | forget the mod log written so far; `@log`/`@nolog` look only after the mark |
+| `@log <regex> [<n>s]` | wait up to n s (default 5) for a MOD log line since the mark to match; the match moves the mark, so consecutive `@log` lines assert an ORDER |
+| `@nolog <regex>` | fail if a mod log line since the mark matches (something that must NOT happen) |
 | `@shot <name>` | capture; the result object is collected and returned |
 | `@mod <seam command>` | route to the MOD's `command.txt` via `game-cmd.ps1` |
 | `@assert <k> <op> <v>` | assert on `state.json` (`eq ne gt ge lt le`) |
@@ -276,6 +303,13 @@ The JSON is the point. Beyond the poses and controls it carries:
 
 Shipped: `smoke`, `stereo`, `headlook`, `laser`, `unfocused-pacing`,
 `world-6dof`, `coupling-viewmodel`, `coupling-hand`.
+
+**Interpolated motion (`head to`, `hand <h> to`) runs on the frame's DISPLAY time**
+since 2026-10-07, not `GetTickCount64`: the tick clock steps in ~15.6 ms, so a mod that
+differences successive hand poses (the wrench swing) saw a hand hold still for a frame
+and then jump, and the wall clock drifts against `predictedDisplayTime` after a hitch
+(the Dishonored mod measured a slow reach reading 3.1 m/s). A pose and the display time
+it is stamped with now describe the same instant.
 
 **`@mod` waits a poll period on purpose.** The mod reads its own `command.txt` at 1 Hz on mtime
 change, so two `@mod` lines in a row overwrite each other and the first is silently lost. Group them

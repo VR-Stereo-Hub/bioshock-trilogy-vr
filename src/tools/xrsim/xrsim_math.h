@@ -209,12 +209,19 @@ inline Mat4 mat4_identity() {
     return out;
 }
 
-// World-to-eye for a pose given in world space.
+// World-to-eye for a pose given in world space, as a ROW-VECTOR matrix
+// (v_eye = v_world * M, translation in row 3): the upper 3x3 has the eye's
+// world-space axes as COLUMNS (that is R, the inverse-transpose of R^-1), and
+// row 3 is the inverse pose's translation. Building the columns from the
+// INVERSE rotation's axes gave R^-1 = R^T, which turned the view the wrong way
+// (a head-locked quad swung by twice the yaw; measured 2026-09-02 in the
+// Dishonored VR mod's copy of this simulator, where this fix comes from). It
+// pairs with D3DCOMPILE_PACK_MATRIX_ROW_MAJOR in xrsim_compositor.cpp.
 inline Mat4 mat4_view_from_pose(const Pose& eye) {
     const Pose inv = pose_inverse(eye);
-    const Vec3 r = quat_rotate(inv.q, Vec3{1.0f, 0.0f, 0.0f});
-    const Vec3 u = quat_rotate(inv.q, Vec3{0.0f, 1.0f, 0.0f});
-    const Vec3 f = quat_rotate(inv.q, Vec3{0.0f, 0.0f, 1.0f});
+    const Vec3 r = quat_rotate(eye.q, Vec3{1.0f, 0.0f, 0.0f});
+    const Vec3 u = quat_rotate(eye.q, Vec3{0.0f, 1.0f, 0.0f});
+    const Vec3 f = quat_rotate(eye.q, Vec3{0.0f, 0.0f, 1.0f});
     Mat4 out = mat4_identity();
     out.m[0][0] = r.x; out.m[0][1] = u.x; out.m[0][2] = f.x;
     out.m[1][0] = r.y; out.m[1][1] = u.y; out.m[1][2] = f.y;

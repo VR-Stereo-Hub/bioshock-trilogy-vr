@@ -172,7 +172,8 @@ uint64_t session_layered_frames();  // layer-carrying submissions (VdxrLayers po
 void swapchains_begin_frame_census();
 void swapchains_for_each(void (*fn)(uint32_t, const SimSwapchain&, void*), void* user);
 ID3D11Texture2D* swapchain_last_image(XrSwapchain handle, uint32_t* outW, uint32_t* outH);
-bool swapchain_release_info(XrSwapchain handle, uint32_t* outIdx, uint32_t* outFrame);
+bool swapchain_last_info(XrSwapchain handle, uint32_t* outIndex, uint32_t* outReleasedOnFrame);
+void swapchain_note_black(XrSwapchain handle, bool black);
 
 // Resolve a space to a world pose at a given time, using the published snapshot.
 bool space_pose(const SimSpace& space, const FrameSnapshot& snap, Pose& out, bool& tracked);
@@ -198,7 +199,7 @@ extern FrameGate g_gate;
 // The control channel (xrsim_control.cpp).
 void control_start();
 void control_stop();
-void control_apply_pending();          // called inside xrWaitFrame, the commit point
+void control_apply_pending(double motionClockMs);   // called inside xrWaitFrame, the commit point; the clock `to` motions run on
 void control_write_state();
 void rig_staging_init();
 
@@ -247,6 +248,23 @@ void compositor_note_layers(const SimSubmission& sub);
 void compositor_hash_frame(const SimSubmission& sub);
 uint32_t compositor_last_layer_count();
 uint32_t compositor_last_projection_views();
+uint32_t compositor_last_quad_layers();
+double compositor_last_quad_alpha_pct();          // the first quad's alpha coverage at the last shot (%)
+int compositor_last_capture_nonblack(int eye);   // percent, last capture frame
+// Per-eye release age of the last projection submit, in frames (0 = released inside
+// the submitting frame; 1+ = a held image), the max since `reset`, whether both views
+// named one swapchain (the mono path), the cumulative classification of projection
+// submits (0 all, 1 mono, 2 stale) and the close phase (xrEndFrame time minus its
+// displayTime, ms; negative = closed before its slot). Ported from the Dishonored VR
+// mod's copy of this simulator; complements the source-hash log above, which says
+// WHAT each eye showed, with how OLD it was.
+uint32_t compositor_eye_released_on_frame(int eye);
+uint32_t compositor_eye_age(int eye);
+uint32_t compositor_eye_age_max(int eye);
+bool compositor_eye_same_swapchain();
+uint32_t compositor_proj_submits(int kind);
+double compositor_last_end_phase_ms();
+void compositor_reset_pair_stats();
 
 // ---------------------------------------------------------------------------
 // Entry points implemented outside xrsim_instance.cpp

@@ -32,11 +32,23 @@ void init() {
     // own. Absent, everything lands in the usual data dir.
     DWORD n = GetEnvironmentVariableW(L"BVR_XRSIM_DIR", g_dir, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) {
-        wchar_t local[MAX_PATH];
-        if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local))) return;
-        swprintf_s(g_dir, L"%s\\BioshockVR", local);
-        CreateDirectoryW(g_dir, nullptr);
-        wcscat_s(g_dir, L"\\xrsim");
+        // A game launched through Steam carries no env of ours, but the manifest
+        // that loaded this runtime is in XR_RUNTIME_JSON, and xrsim-install.ps1
+        // writes the manifest INTO the state dir - so its directory is where the
+        // harness looks. Ported from the Dishonored VR mod's copy of this file.
+        wchar_t manifest[MAX_PATH];
+        const DWORD m = GetEnvironmentVariableW(L"XR_RUNTIME_JSON", manifest, MAX_PATH);
+        wchar_t* slash = (m > 0 && m < MAX_PATH) ? wcsrchr(manifest, L'\\') : nullptr;
+        if (slash) {
+            *slash = 0;
+            wcscpy_s(g_dir, manifest);
+        } else {
+            wchar_t local[MAX_PATH];
+            if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local))) return;
+            swprintf_s(g_dir, L"%s\\BioshockVR", local);
+            CreateDirectoryW(g_dir, nullptr);
+            wcscat_s(g_dir, L"\\xrsim");
+        }
     }
     CreateDirectoryW(g_dir, nullptr);
 
@@ -104,6 +116,8 @@ XrTime now_xr_time() {
 }
 
 uint64_t now_ms() { return static_cast<uint64_t>(GetTickCount64()); }
+// Sub-millisecond, for interpolated motion (see Motion::startFineMs).
+double now_fine_ms() { return static_cast<double>(now_xr_time()) * 1e-6; }
 
 XrResult on_seh(const char* what) {
     static std::atomic<uint32_t> s_count{0};

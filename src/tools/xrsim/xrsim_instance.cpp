@@ -368,21 +368,30 @@ static XrResult impl_GetD3D11GraphicsRequirements(XrInstance instance, XrSystemI
     if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
         IDXGIAdapter1* adapter = nullptr;
         SIZE_T best = 0;
+        bool found = false;
+        DXGI_ADAPTER_DESC1 selected{};
         for (UINT i = 0; factory->EnumAdapters1(i, &adapter) == S_OK; ++i) {
             DXGI_ADAPTER_DESC1 desc{};
             adapter->GetDesc1(&desc);
             const bool software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
-            if (!software && desc.DedicatedVideoMemory >= best) {
+            // Stable ties keep the FIRST hardware adapter - the game's default device -
+            // instead of silently taking a later duplicate (one GPU can enumerate under
+            // two LUIDs). The old `>=` took the last tie while the log, written once,
+            // named the first. Fix from the Dishonored VR mod's copy of this simulator.
+            if (!software && (!found || desc.DedicatedVideoMemory > best)) {
+                found = true;
+                selected = desc;
                 best = desc.DedicatedVideoMemory;
                 reqs->adapterLuid = desc.AdapterLuid;
-                XRSIM_LOG_ONCE("xrsim: reporting adapter '%ls' LUID %08lX-%08lX (%llu MB)",
-                               desc.Description, desc.AdapterLuid.HighPart,
-                               desc.AdapterLuid.LowPart,
-                               static_cast<unsigned long long>(desc.DedicatedVideoMemory >> 20));
             }
             adapter->Release();
         }
         factory->Release();
+        if (found)
+            XRSIM_LOG_ONCE("xrsim: reporting selected adapter '%ls' LUID %08lX-%08lX (%llu MB)",
+                           selected.Description, selected.AdapterLuid.HighPart,
+                           selected.AdapterLuid.LowPart,
+                           static_cast<unsigned long long>(selected.DedicatedVideoMemory >> 20));
     }
     return XR_SUCCESS;
 }

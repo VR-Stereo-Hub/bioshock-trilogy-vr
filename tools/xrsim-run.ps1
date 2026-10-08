@@ -1,6 +1,7 @@
 # xrsim-run.ps1 - run a scripted sim sequence (.xrs) and return its captures.
 #
 # A .xrs file is sim commands, one per line, with a few directives:
+#   <cmd>[; <cmd>]        sim commands; ';' sends them as ONE atomic batch (same frame)
 #   #  ...                comment
 #   @wait <ms>            sleep
 #   @frames <n>           wait for the sim's frame counter to advance n
@@ -12,6 +13,16 @@
 #                         overwrite each other before it ever sees them. That is
 #                         the same trap game-batch.ps1 documents, and it silently
 #                         cost a `vraim on` in the first version of this file.
+#   @key <name> [n] [ms]  press a keyboard key in the GAME window (game-key.ps1:
+#                         scancode injection; foregrounds the game).
+#   @mark                 forget the mod log written so far: @log and @nolog only
+#                         look at what the mod wrote AFTER the last mark (the
+#                         start of the sequence is the first mark).
+#   @log <regex> [<n>s]   wait up to n seconds (default 5) for a line of the MOD's
+#                         log, written since the mark, to match. A match moves the
+#                         mark past it, so consecutive @log lines assert an ORDER.
+#   @nolog <regex>        fail if a line since the mark matches (a swing that must
+#                         NOT fire). Does not move the mark.
 #   @assert <k> <op> <v>  assert on state.json (ops: eq ne gt ge lt le)
 #   @fps <min> [secs]     measure frames/s over a window and fail below <min>.
 #                         This is the session-33 oracle: the symptom there was a
@@ -46,6 +57,31 @@ $cmdScript   = Join-Path $PSScriptRoot "xrsim-cmd.ps1"
 $stateScript = Join-Path $PSScriptRoot "xrsim-state.ps1"
 $shotScript  = Join-Path $PSScriptRoot "xrsim-shot.ps1"
 $gameCmd     = Join-Path $PSScriptRoot "game-cmd.ps1"
+$keyScript   = Join-Path $PSScriptRoot "game-key.ps1"
+
+# The mod's log, read shared (the game holds it open) from a byte mark. Same
+# per-game paths as tail-log.ps1. @key/@mark/@log/@nolog and the ';' batch are
+# ported from the Dishonored VR mod's copy of this runner.
+$modLog = switch ($Game) {
+    "bs2"   { "$env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log" }
+    "bsi"   { "$env:LOCALAPPDATA\BioshockVR\bsi\bioshockvr.log" }
+    default { "$env:LOCALAPPDATA\BioshockVR\bioshockvr.log" }
+}
+$script:logMark = if (Test-Path $modLog) { (Get-Item $modLog).Length } else { 0 }
+function Read-ModLogSince([long]$from) {
+    if (-not (Test-Path $modLog)) { return "" }
+    $fs = [IO.File]::Open($modLog, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($from -gt $fs.Length) { $from = 0 }      # the log rotated under us
+        $fs.Seek($from, 'Begin') | Out-Null
+        # Latin-1 on purpose: one byte is one character, so an offset into the text
+        # IS an offset into the file. Decoded as UTF-8, a stray high byte in the log
+        # becomes a 3-byte replacement character, the mark overshoots the file, and
+        # the next read starts from the top and matches lines from before the mark.
+        $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::GetEncoding(28591))
+        return $sr.ReadToEnd()
+    } finally { $fs.Close() }
+}
 
 $shots = @()
 $n = 0
@@ -78,6 +114,34 @@ try {
                 & $gameCmd -Game $Game @modCmds | Out-Null
                 Start-Sleep -Milliseconds $ModPollMs
             }
+            elseif ($line -match '^@key\s+(\S+)(?:\s+(\d+))?(?:\s+(\d+))?') {
+                $rep = if ($Matches[2]) { [int]$Matches[2] } else { 1 }
+                $del = if ($Matches[3]) { [int]$Matches[3] } else { 500 }
+                & $keyScript -Game $Game -Key $Matches[1] -Repeat $rep -Delay $del | Out-Null
+            }
+            elseif ($line -match '^@mark\s*$') {
+                $script:logMark = if (Test-Path $modLog) { (Get-Item $modLog).Length } else { 0 }
+            }
+            elseif ($line -match '^@log\s+(.+?)(?:\s+(\d+)s)?$') {
+                $rx = $Matches[1]; $secs = if ($Matches[2]) { [int]$Matches[2] } else { 5 }
+                $deadline = (Get-Date).AddSeconds($secs); $hit = $null; $text = ""
+                do {
+                    $text = Read-ModLogSince $script:logMark
+                    $hit = [regex]::Match($text, $rx)
+                    if ($hit.Success) { break }
+                    Start-Sleep -Milliseconds 250
+                } while ((Get-Date) -lt $deadline)
+                if (-not $hit.Success) { throw "LOG FAILED: no mod log line matched /$rx/ within ${secs}s of the mark" }
+                $eol = $text.IndexOf("`n", $hit.Index); if ($eol -lt 0) { $eol = $text.Length }
+                $bol = $text.LastIndexOf("`n", [Math]::Max(0, $hit.Index - 1)) + 1
+                Write-Host "      matched: $($text.Substring($bol, $eol - $bol).Trim())"
+                $script:logMark += $eol
+            }
+            elseif ($line -match '^@nolog\s+(.+)$') {
+                $rx = $Matches[1]
+                $hit = [regex]::Match((Read-ModLogSince $script:logMark), $rx)
+                if ($hit.Success) { throw "NOLOG FAILED: the mod log matched /$rx/ since the mark: $($hit.Value)" }
+            }
             elseif ($line -match '^@fps\s+([\d.]+)(?:\s+([\d.]+))?') {
                 $min = [double]$Matches[1]
                 $secs = if ($Matches[2]) { [double]$Matches[2] } else { 3.0 }
@@ -105,7 +169,10 @@ try {
                 if (-not $ok) { throw "ASSERT FAILED: $k ($actual) $op $v" }
             }
             else {
-                & $cmdScript -Dir $Dir -Quiet $line | Out-Null
+                # ';' groups sim commands into ONE atomic batch, applied on the same
+                # frame: a head and a hand that must move TOGETHER cannot be two writes.
+                $simCmds = @($line -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                & $cmdScript -Dir $Dir -Quiet @simCmds | Out-Null
             }
         } catch {
             if (-not $ContinueOnError) { throw }

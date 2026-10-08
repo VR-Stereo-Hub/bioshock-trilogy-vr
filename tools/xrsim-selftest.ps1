@@ -41,14 +41,22 @@ $saved  = $env:XR_RUNTIME_JSON
 $savedD = $env:BVR_XRSIM_DIR
 $out = $null
 $code = 1
+# An implicit x64 layer (OBS's mirror, VD's compatibility layer) fails the loader for any
+# 32-bit client before the sim is even reached; xr_hello32 has no guard of its own.
+. (Join-Path $PSScriptRoot "lib\xr-layers.ps1")
+$layerEnv = Disable-BvrUnloadableXrLayers
 try {
     $env:XR_RUNTIME_JSON = $install.Manifest
     $env:BVR_XRSIM_DIR   = $Dir
+    # 2>&1 under 'Stop' turns the loader's stderr into a terminating error.
+    $ErrorActionPreference = 'Continue'
     $out = & $hello 2>&1 | Out-String
     $code = $LASTEXITCODE
 } finally {
+    $ErrorActionPreference = 'Stop'
     $env:XR_RUNTIME_JSON = $saved
     $env:BVR_XRSIM_DIR   = $savedD
+    Restore-BvrXrLayerEnv $layerEnv
 }
 
 Write-Host $out

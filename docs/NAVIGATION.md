@@ -74,6 +74,9 @@ grep -n "^## M7" docs/ROADMAP.md        # then sed that range
 | A user-reported bug | `TROUBLESHOOTING.md` | small enough to read whole |
 | Prior art, legal, runtime research | `RESEARCH.md` | grep the topic |
 | What shipped in a version | `RELEASE_NOTES.md` | grep the version |
+| Which tool answers a question (IDA, Blender, UModel, FFDec, host tests, profilers) | `TOOLS.md` | read whole - it is the catalog, ~150 lines |
+| How to run headless IDA, and its traps | `IDA_WORKFLOW.md` | read whole before the first script |
+| What a game's packages, UI movies and scripts give offline | `MODEL_WORKFLOW.md` § 2 | the per-game table first |
 
 ---
 

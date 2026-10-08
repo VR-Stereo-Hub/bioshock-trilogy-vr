@@ -668,13 +668,24 @@ ID3D11Texture2D* swapchain_last_image(XrSwapchain handle, uint32_t* outW, uint32
     return sc->images[sc->lastReleased];
 }
 
-bool swapchain_release_info(XrSwapchain handle, uint32_t* outIdx, uint32_t* outFrame) {
+bool swapchain_last_info(XrSwapchain handle, uint32_t* outIndex, uint32_t* outReleasedOnFrame) {
     std::lock_guard<std::mutex> lock(g_mutex);
     SimSwapchain* sc = swapchain_get(handle);
     if (!sc || !sc->everReleased) return false;
-    if (outIdx) *outIdx = sc->lastReleased;
-    if (outFrame) *outFrame = sc->releasedOnFrame;
+    if (outIndex) *outIndex = sc->lastReleased;
+    if (outReleasedOnFrame) *outReleasedOnFrame = sc->releasedOnFrame;
     return true;
+}
+
+// A capture frame measured the last released image: black or not. The streak
+// is what a later `xrsim: ... APP fault` line can quote (a source that has
+// been black for 300 captures is a different bug from one black capture).
+void swapchain_note_black(XrSwapchain handle, bool black) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    SimSwapchain* sc = swapchain_get(handle);
+    if (!sc) return;
+    sc->allZero = black;
+    sc->allZeroStreak = black ? sc->allZeroStreak + 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
