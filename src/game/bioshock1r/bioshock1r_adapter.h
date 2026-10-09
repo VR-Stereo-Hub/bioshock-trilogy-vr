@@ -12,6 +12,8 @@ public:
     bool init(const bvr::pattern_scan::ProcessImage& image) override;
     void setFov(float hfovDeg) override;
     void drawDebugUi() override;
+    void initSettingsUi(ID3D11Device* device) override;
+    bool drawSettingsUi() override;
     bool handleCommand(const char* cmd, const char* args) override;
 };
 

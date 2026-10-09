@@ -59,6 +59,11 @@ add_library(bioshockvr SHARED
     game/bioshock1r/bioshock1r_adapter.cpp
     game/bioshock1r/bioshock1r_adapter.h
     game/bioshock1r/body.cpp
+    game/bioshock1r/menu_model.cpp
+    game/bioshock1r/menu_preferences.cpp
+    game/bioshock1r/menu_theme.cpp
+    game/bioshock1r/menu_view.cpp
+    game/bioshock1r/menu_backend.cpp
     game/bioshock1r/screens.cpp
     game/bioshock1r/probe_bob.cpp
     game/bioshock1r/body.h
@@ -169,6 +174,21 @@ set_target_properties(bioshockvr PROPERTIES PREFIX "")
 # the log always matches the tree it was built from. Session 23: the old
 # hand-edited #define shipped "0.1.0" for v0.1.0, v0.2.0 AND v0.3.0, which made a
 # user's crash log unattributable to a release.
+configure_file(game/bioshock1r/menu_resources.rc.in "${CMAKE_BINARY_DIR}/generated/menu_resources.rc" @ONLY)
+target_sources(bioshockvr PRIVATE "${CMAKE_BINARY_DIR}/generated/menu_resources.rc")
+target_link_libraries(bioshockvr PRIVATE windowscodecs shlwapi ole32)
+option(BIOSHOCKVR_WITH_F10_PREVIEW "Build the offscreen BS1 production-menu renderer" ON)
+if(BIOSHOCKVR_WITH_F10_PREVIEW)
+    add_executable(bvr_f10_preview
+        tools/f10_preview/main.cpp
+        game/bioshock1r/menu_model.cpp
+        game/bioshock1r/menu_preferences.cpp
+        game/bioshock1r/menu_theme.cpp
+        game/bioshock1r/menu_view.cpp
+        "${CMAKE_BINARY_DIR}/generated/menu_resources.rc")
+    target_include_directories(bvr_f10_preview PRIVATE .)
+    target_link_libraries(bvr_f10_preview PRIVATE imgui d3d11 windowscodecs shlwapi ole32)
+endif()
 set(BVR_VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/bvr_version.h")
 # Once at configure time so the header exists for a fresh tree and for IDE parsing.
 execute_process(COMMAND ${CMAKE_COMMAND}

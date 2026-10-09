@@ -1,3 +1,5 @@
+#include "menu_bindings.h"
+#include "menu_backend.h"
 // M6 decoupled aim. Hook behavior (call the original, then adjust the writable
 // out-param) follows the same shape as the CalcView camera hook, i.e.
 // itsloopyo/bioshock-remastered-headtracking (MIT), src/engine_hook.rs.
@@ -1029,6 +1031,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
     }
     const int ph = profile_hand(key);
     if (key.empty()) {
+        menu::profile_changed("",-1);
         // s68: a genuinely UNKNOWN holdable (the rig itself unreadable). This is
         // no longer the plasmid case - that resolves to "Plasmid" below - so it
         // is rare, and it is worth saying out loud rather than silently leaving
@@ -1096,6 +1099,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
                 key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp,
                 p.gripFwd, p.gripRight, p.gripUp, why);
     }
+    menu::profile_changed(key.c_str(),ph);
 }
 
 // Scan-fallback dormancy (session 27). A structural latch, deliberately NOT a
@@ -2250,6 +2254,41 @@ void set_trim(int hand, float pitchDeg, float yawDeg) {
 bool active() {
     return g_enabled.load(std::memory_order_relaxed) && hook_live();
 }
+
+// F10 preference access. Called through the game-thread menu queue; no engine writes.
+float menu_read(menu::Setting id) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::Reticle: return static_cast<float>(g_dot.load(std::memory_order_relaxed));
+        case S::ReticleDistance: return static_cast<float>(g_dotDistM.load(std::memory_order_relaxed));
+        case S::ReticleSize: return static_cast<float>(g_dotSizeDeg.load(std::memory_order_relaxed));
+        case S::Laser: return static_cast<float>(g_laser.load(std::memory_order_relaxed));
+        case S::LaserDots: return static_cast<float>(g_laserDots.load(std::memory_order_relaxed));
+        case S::LaserReach: return static_cast<float>(g_laserFarM.load(std::memory_order_relaxed));
+        case S::LaserSize: return static_cast<float>(g_laserSizeDeg.load(std::memory_order_relaxed));
+        case S::AimRuntimePose: return static_cast<float>(g_useAimPose.load(std::memory_order_relaxed));
+        case S::AimHandOrigin: return static_cast<float>(g_handOrigin.load(std::memory_order_relaxed));
+        case S::AimEnabled: return g_enabled.load(std::memory_order_relaxed);
+        default: return std::numeric_limits<float>::quiet_NaN();
+    }
+}
+bool menu_write(menu::Setting id, float value) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::Reticle: g_dot.store(static_cast<decltype(g_dot.load())>(value), std::memory_order_relaxed); return true;
+        case S::ReticleDistance: g_dotDistM.store(static_cast<decltype(g_dotDistM.load())>(value), std::memory_order_relaxed); return true;
+        case S::ReticleSize: g_dotSizeDeg.store(static_cast<decltype(g_dotSizeDeg.load())>(value), std::memory_order_relaxed); return true;
+        case S::Laser: g_laser.store(static_cast<decltype(g_laser.load())>(value), std::memory_order_relaxed); return true;
+        case S::LaserDots: g_laserDots.store(static_cast<decltype(g_laserDots.load())>(value), std::memory_order_relaxed); return true;
+        case S::LaserReach: g_laserFarM.store(static_cast<decltype(g_laserFarM.load())>(value), std::memory_order_relaxed); return true;
+        case S::LaserSize: g_laserSizeDeg.store(static_cast<decltype(g_laserSizeDeg.load())>(value), std::memory_order_relaxed); return true;
+        case S::AimRuntimePose: g_useAimPose.store(static_cast<decltype(g_useAimPose.load())>(value), std::memory_order_relaxed); return true;
+        case S::AimHandOrigin: g_handOrigin.store(static_cast<decltype(g_handOrigin.load())>(value), std::memory_order_relaxed); return true;
+        case S::AimEnabled: g_pendingEnable.store(value!=0?1:0,std::memory_order_relaxed); return true;
+        default: return false;
+    }
+}
+
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Decoupled aim (M6)", ImGuiTreeNodeFlags_DefaultOpen)) return;

@@ -1,4 +1,5 @@
-﻿// M7 visible hands + weapons. See hands.h for the design; ENGINE_NOTES
+﻿#include "menu_bindings.h"
+// M7 visible hands + weapons. See hands.h for the design; ENGINE_NOTES
 // "Viewmodel / AHands" for the derivations.
 //
 // Two drivable targets, learned from the first in-headset test (2026-07-25):
@@ -2357,6 +2358,40 @@ void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
 void save_offsets() {
     save_config();
 }
+
+// F10 preference access. Called through the game-thread menu queue; no engine writes.
+float menu_read(menu::Setting id) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::LatePosition: return static_cast<float>(g_lateWriteLoc.load(std::memory_order_relaxed));
+        case S::GripRoll: return static_cast<float>(g_offsetRoll.load(std::memory_order_relaxed));
+        case S::ModelAimPose: return static_cast<float>(g_useAimPose.load(std::memory_order_relaxed));
+        case S::HandMode: return static_cast<float>(g_mode.load(std::memory_order_relaxed));
+        case S::HandEnabled: return g_enabled.load(std::memory_order_relaxed);
+        default: return std::numeric_limits<float>::quiet_NaN();
+    }
+}
+bool menu_write(menu::Setting id, float value) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::LatePosition: g_lateWriteLoc.store(static_cast<decltype(g_lateWriteLoc.load())>(value), std::memory_order_relaxed); return true;
+        case S::GripRoll: g_offsetRoll.store(static_cast<decltype(g_offsetRoll.load())>(value), std::memory_order_relaxed); return true;
+        case S::ModelAimPose: g_useAimPose.store(static_cast<decltype(g_useAimPose.load())>(value), std::memory_order_relaxed); return true;
+        case S::HandMode:
+            if(value<2 || value>menu_max_mode()) return false;
+            g_pendingMode.store(static_cast<int>(value),std::memory_order_relaxed); return true;
+        case S::HandEnabled: g_pendingEnable.store(value!=0?1:0,std::memory_order_relaxed); return true;
+        default: return false;
+    }
+}
+int menu_max_mode() {
+#if __has_include("hand_compose.h")
+    return 4; // the separate hand port supplies the post-evaluation implementation
+#else
+    return 3;
+#endif
+}
+
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Hands + weapon (M7)")) return;

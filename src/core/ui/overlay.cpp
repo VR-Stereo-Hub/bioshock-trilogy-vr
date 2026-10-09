@@ -77,6 +77,7 @@ ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11Texture2D* g_rtvBackbuffer = nullptr; // identity only, never deref'd
+ImVec2 g_renderTargetSize{}; // read from the acquired buffer, not a prior XR frame
 HWND g_window = nullptr;
 WNDPROC g_originalWndProc = nullptr;
 
@@ -192,6 +193,11 @@ void InjectControllerPointer() {
         unsigned w = 0, h = 0;
         bvr::vr::fov_audit(&tanH, &tanV, nullptr, &w, &h);
         if (!w || !h) bvr::hud::backbuffer_dims(&w, &h);
+        // The current menu target owns pixel coordinates. XR swapchain sizes
+        // may still describe the previous frame during a resolution change.
+        if(io.DisplaySize.x>0 && io.DisplaySize.y>0) {
+            w=static_cast<unsigned>(io.DisplaySize.x);h=static_cast<unsigned>(io.DisplaySize.y);
+        }
         if (fwd > 0.05f && tanH > 0.0f && tanV > 0.0f && w && h) {
             const float ndcX = (d[0] / fwd) / tanH; // -1 left .. +1 right
             const float ndcY = (d[1] / fwd) / tanV; // -1 down .. +1 up
@@ -345,6 +351,10 @@ bool CreateRenderTarget(IDXGISwapChain* swapchain) {
     if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))))
         return false;
     HRESULT hr = g_device->CreateRenderTargetView(backbuffer, nullptr, &g_rtv);
+    if(SUCCEEDED(hr)) {
+        D3D11_TEXTURE2D_DESC dimensions{};backbuffer->GetDesc(&dimensions);
+        g_renderTargetSize=ImVec2(static_cast<float>(dimensions.Width),static_cast<float>(dimensions.Height));
+    }
     g_rtvBackbuffer = SUCCEEDED(hr) ? backbuffer : nullptr;
     backbuffer->Release();
     return SUCCEEDED(hr);
@@ -378,6 +388,7 @@ bool Init(IDXGISwapChain* swapchain) {
     // the stick was released, like a flywheel.
     io.ConfigInputTrickleEventQueue = false;
     ImGui::StyleColorsDark();
+    if(auto* adapter=game::adapter()) adapter->initSettingsUi(g_device);
     ImGui_ImplWin32_Init(g_window);
     ImGui_ImplDX11_Init(g_device, g_context);
 
@@ -416,6 +427,10 @@ void UpdateSliderTweak() {
 
 void DrawUi() {
     UpdateSliderTweak();
+    if(auto* adapter=game::adapter(); adapter && adapter->drawSettingsUi()) {
+        g_anyItemHovered=ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive();
+        return;
+    }
     // INTERIM DEFAULT, to be replaced by whatever ProbeWindowGeometry logs.
     // The old default was a fixed 420x420 at ImGui's own top-left corner,
     // which is a postage stamp in the far corner of a ~2560x2560 backbuffer -
@@ -424,7 +439,12 @@ void DrawUi() {
     // any resolution.
     {
         unsigned bw = 0, bh = 0;
-        if (bvr::hud::backbuffer_dims(&bw, &bh) && bw && bh) {
+        bvr::hud::backbuffer_dims(&bw, &bh);
+        // BS1 opts into the new menu. Preserve other adapters' existing path.
+        if(g_padDrive.load(std::memory_order_relaxed) && g_renderTargetSize.x>0 && g_renderTargetSize.y>0) {
+            bw=static_cast<unsigned>(g_renderTargetSize.x);bh=static_cast<unsigned>(g_renderTargetSize.y);
+        }
+        if (bw && bh) {
             const float w = static_cast<float>(bw), h = static_cast<float>(bh);
             // 45% of the eye image, centred - so trimming it pulls in equally
             // from the top and the bottom, which is what was asked for. (Before
@@ -586,6 +606,7 @@ void on_resize() {
         g_rtv = nullptr;
     }
     g_rtvBackbuffer = nullptr;
+    g_renderTargetSize=ImVec2(0,0);
 }
 
 bool pad_drive() { return g_padDrive.load(std::memory_order_relaxed); }

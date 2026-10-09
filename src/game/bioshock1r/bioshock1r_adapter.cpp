@@ -1,4 +1,7 @@
 #include "game/bioshock1r/bioshock1r_adapter.h"
+#include "game/bioshock1r/menu_backend.h"
+#include "game/bioshock1r/menu_theme.h"
+#include "game/bioshock1r/menu_view.h"
 
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
@@ -158,6 +161,7 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
                 "%.1f UU (a saved vrpreset.ini loads LATER and overrides all three)",
                 bones::scale(1), bones::weapon_scale(), camera::head_up_uu());
     }
+    menu::load_preferences(); // player choices win after legacy startup defaults
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
@@ -167,13 +171,17 @@ void Bioshock1RAdapter::setFov(float hfovDeg) {
 }
 
 void Bioshock1RAdapter::drawDebugUi() {
-    camera::draw_debug_ui();
-    aim::draw_debug_ui();
-    hands::draw_debug_ui();
-    body::draw_debug_ui();
-    scripted::draw_debug_ui();
-    input_drive::draw_debug_ui();
-    scenedraw::draw_debug_ui();
+    // Kept for the adapter interface; BS1's complete menu owns its diagnostics.
+}
+
+void Bioshock1RAdapter::initSettingsUi(ID3D11Device* device) {
+    menu::theme::initialize(device);
+}
+
+bool Bioshock1RAdapter::drawSettingsUi() {
+    static menu::ViewState state;
+    menu::draw(menu::live_backend(),state);
+    return true;
 }
 
 bool Bioshock1RAdapter::handleCommand(const char* cmd, const char* args) {

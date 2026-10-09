@@ -1,0 +1,7 @@
+#include <windows.h>
+301 RCDATA "@PROJECT_SOURCE_DIR@/assets/ui/f10/rapture-background.png"
+302 RCDATA "@PROJECT_SOURCE_DIR@/assets/ui/f10/rapture-banner.png"
+303 RCDATA "@PROJECT_SOURCE_DIR@/assets/ui/f10/rapture-bronze.png"
+304 RCDATA "@PROJECT_SOURCE_DIR@/assets/ui/f10/rapture-selected.png"
+305 RCDATA "@PROJECT_SOURCE_DIR@/assets/ui/f10/rapture-pipe.png"
+306 RCDATA "@PROJECT_SOURCE_DIR@/assets/ui/f10/rapture-water.png"

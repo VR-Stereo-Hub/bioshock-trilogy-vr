@@ -8,6 +8,7 @@
 #include "core/hooks/pattern_scan.h"
 
 #include <cstdint>
+struct ID3D11Device;
 
 namespace bvr::game {
 
@@ -35,6 +36,10 @@ struct IGameAdapter {
     // ImGui widgets for the overlay's adapter section. Engine-semantic UI
     // (units, offsets) stays behind the seam this way.
     virtual void drawDebugUi() = 0;
+
+    // Additive opt-in: games without a player menu keep their existing overlay.
+    virtual void initSettingsUi(ID3D11Device*) {}
+    virtual bool drawSettingsUi() { return false; }
 
     // Adapter-owned commands from the command.txt seam. core/framework/command
     // calls this BEFORE its own shared vocabulary, so a game can deliberately
