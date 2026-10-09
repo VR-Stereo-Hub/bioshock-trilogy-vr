@@ -3,7 +3,8 @@
 Review candidate on `codex/rapture-launcher`, based on staging `5dd79c0`.
 The rendered appearance still requires the owner's acceptance. The current
 icon follows the owner's supplied medallion and exact game-wordmark references,
-with VR added underneath. This launcher
+with VR integrated beneath the name inside the same plaque. The owner explicitly
+directed **do not install**; deliver a review EXE and renders only. This launcher
 targets **BioShock Remastered (Steam app 409710)**. Its embedded mod is the
 staging build, not the separately installed hand-compatible development build.
 
@@ -136,11 +137,17 @@ never launches a game. It keeps all evidence instead of deleting it.
   click checks yielded when user input was detected, so they are not claimed as
   a completed interactive test suite.
 
-Pending: final icon/render visual acceptance; a real-game install/playtest
-after the owner accepts the candidate; the UAC prompt/worker route on a denied
-real game directory; Steam launch and headset runtime behavior; and a future
-published launcher download. No game was launched during this work. The existing
-installed hand-compatible DLL and player settings were not replaced.
+The full scratch suites passed before the final icon-only revisions. A subsequent
+repeat was blocked by the running-game guard before any write; no game process
+was closed to bypass it. After the owner's explicit do-not-install direction,
+only builds and rendering continued.
+
+Pending: final icon/render visual acceptance. Real-game installation/play,
+the UAC prompt/worker route on a denied game directory, Steam launch, headset
+runtime behavior and a future published launcher download remain unverified.
+No real-game installation or launch is authorized in this review task. No game
+was launched during this work. The existing installed hand-compatible DLL and
+player settings were not replaced.
 
 Recovery handles reported write failures. A process kill or power loss leaves a
 journal and originals for manual recovery; automatic crash-resume is not claimed.

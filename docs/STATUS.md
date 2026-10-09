@@ -15,7 +15,8 @@ management, verified release downloads, shortcuts and local support collection.
 Installation, settings and removal use complete preflight, byte-preserving edits,
 hash verification, recovery journals and rollback. Existing F10, hand, weapon and
 debug tuning is retained. After three initial icon choices, the owner selected
-a brass medallion using the supplied game BIOSHOCK wordmark with VR underneath.
+a brass medallion using the supplied game BIOSHOCK wordmark with VR underneath
+inside the same plaque. The owner explicitly directed **do not install**.
 The revised icon has seven ICO sizes. Scope, reference audit, safety behavior, build
 instructions and verification are documented in `LAUNCHER.md`.
 
@@ -29,8 +30,8 @@ or real player INIs were not replaced. This is not an accepted/released launcher
 
 1. Owner reviews the actual rendered launcher and revised medallion icon.
 2. Incorporate visual feedback before accepting or installing the candidate.
-3. Before any real game install, account for the separately installed hand work.
-   Then define one playtest question and verify the installed log banner.
+3. Keep the installed hand-compatible build untouched. Any later real-game
+   installation needs a new user request; this task is review-only.
 4. UAC flow, Steam launch, headset behavior and a published launcher update need
    validation beyond the scratch and rendering tests. Do not merge unasked.
 
