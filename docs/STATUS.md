@@ -24,8 +24,8 @@ at 100%, 125% and 150% text, with resolution transitions and alignment checks.
 Details, scope and verification: `bioshock1/F10_MENU.md`.
 
 The subsequent authorized install is the hand-compatible build
-`v0.8.3-199-gb0aac21`, not the staging-only DLL. The previous DLL and logs are
-backed up. All 20 INIs were compared in full and remain byte-identical; the
+`v0.8.3-201-g358e08c`, not the staging-only DLL. The previous DLL and logs are
+backed up. All 21 INIs were compared in full and remain byte-identical; the
 loader is unchanged. No game or simulator was launched, and the concurrent
 hand work's original checkout was not edited. Install hash and backup details
 are in `bioshock1/F10_MENU.md`.
@@ -33,7 +33,7 @@ are in `bioshock1/F10_MENU.md`.
 ### Next steps
 
 1. First installed-build question: are F10's pipe sliders level with their labels
-   and values in the headset? Verify the log banner against `v0.8.3-199-gb0aac21`.
+   and values in the headset? Verify the log banner against `v0.8.3-201-g358e08c`.
 2. After the hand branch reaches staging, rebase and rebuild the menu against it.
 3. Continue with one defined headset question per launch. Headset placement at
    the user's normal render resolution, engine-side effects and saved-profile
