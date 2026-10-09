@@ -1,7 +1,23 @@
 # BS1 F10 settings menu
 
-Implementation and offline verification, 2026-10-08. Built only. No installation,
-game launch, or headset acceptance is claimed.
+Implementation and offline verification, 2026-10-08. The separate hand-compatible
+build was subsequently authorized and installed. No game launch or headset
+acceptance is claimed.
+
+## Installed build
+
+The installed DLL is `v0.8.3-199-gb0aac21`, the committed hand implementation at
+`f318f3d` plus this menu in the isolated `codex/rapture-f10-hand-build` branch.
+The original hand checkout's later `039bb69` changes documentation only; its
+`src` tree matches `f318f3d` exactly. The staging-only DLL was not installed.
+
+Installed SHA256:
+`937B785038932FD894A52637D9DD1D878BA393BBDE7889CD9BAACBB0FCCED083`.
+The previous DLL, loader, current and previous logs, and all 20 INIs were backed
+up under the compatibility checkout's `build/install-backups/20261009-005852-673-pre-f10`
+(UTC timestamp). The installed DLL matches its build; a full comparison found
+all 20 INIs byte-identical, including their original line endings. The loader
+was not replaced. No game or simulator was launched.
 
 ## Presentation
 
@@ -120,5 +136,5 @@ single-line close-spaced tabs, brass outlines and inline aligned pipe sliders.
 
 This verifies the native menu and its pure preference model, not engine-side
 effects, filesystem failure behavior in a running game, controller comfort or
-headset readability. Those remain a later installed-build playtest. Do not
+headset readability. Those remain an installed-build playtest. Do not
 install the staging-only DLL over the in-progress hand build.

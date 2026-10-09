@@ -23,17 +23,21 @@ width/linking and combined hand-and-arm size. Native production-view tests pass
 at 100%, 125% and 150% text, with resolution transitions and alignment checks.
 Details, scope and verification: `bioshock1/F10_MENU.md`.
 
-Nothing was installed. No game or simulator was launched. No installed INI was
-changed, and the concurrent hand work's original checkout was not edited.
+The subsequent authorized install is the hand-compatible build
+`v0.8.3-199-gb0aac21`, not the staging-only DLL. The previous DLL and logs are
+backed up. All 20 INIs were compared in full and remain byte-identical; the
+loader is unchanged. No game or simulator was launched, and the concurrent
+hand work's original checkout was not edited. Install hash and backup details
+are in `bioshock1/F10_MENU.md`.
 
 ### Next steps
 
-1. Review the native menu captures and source; retain the existing installed build.
+1. First installed-build question: are F10's pipe sliders level with their labels
+   and values in the headset? Verify the log banner against `v0.8.3-199-gb0aac21`.
 2. After the hand branch reaches staging, rebase and rebuild the menu against it.
-3. When installation is authorized, verify the build banner and run one defined
-   headset question per launch. First question: does F10 retain its readable size
-   and position at the user's normal render resolution? Engine-side effects and
-   saved-profile reload behavior still require game validation.
+3. Continue with one defined headset question per launch. Headset placement at
+   the user's normal render resolution, engine-side effects and saved-profile
+   reload behavior still require game validation.
 
 ## Session 2026-10-08 - s80: BS1's Havok rigs into Blender; the SDK and CodeRed read
 
