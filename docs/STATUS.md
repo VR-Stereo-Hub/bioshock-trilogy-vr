@@ -2,6 +2,67 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08 - s84 handoff (BS1): mode 4's arm settings "did nothing" - because mode 4 was not on
+
+**Branch `claude/bs1-hands-dishonored`** (off `claude/bs1-arm-ik-redo` = draft PR #88;
+no PR of its own yet, because that would stack). HEAD `f318f3d`, pushed. `git diff
+staging...HEAD -- src/core/` is empty: nothing here reaches BS2 or Infinite.
+
+### Current state
+
+- **Built and deployed:** the game folder holds the Debug DLL built from this branch's
+  tree. Its log id reads `v0.8.3-198-g03e1d52-dirty`. That is the same tree as `f318f3d`:
+  the hands+arms size change was built, then amended into the commit. No probe is armed
+  by default (`vrbones evalprobe` is command-only).
+- **Headset report on that build:**
+  - "the hand and arm scale doesn't work"
+  - "we have an unneeded section now"
+  - "the shoulder width didn't do anything", and a horizontal shoulder control is
+    still wanted
+- **What the log says:** `bioshockvr.log` from 19:24 has **zero `MODE4` lines**, and
+  `hands.ini` holds `mode=3`. **That run was in mode 3 (BRVR), where none of the m4
+  sliders are read.** The cause is a bug: the F10 Drive radio sets the mode but never
+  saves it, so every restart comes back to `mode=3`.
+- The slider values themselves DID save: `m4ShoulderFwdCm=0.20`, `m4ShoulderWidthCm=45.60`,
+  `m4Size=1.070`.
+- So the four reports have not yet been tested against mode 4 at all. The first mode-4
+  run (s83b) was healthy: hands on the controllers with the right animations, plasmid
+  included.
+- **Verified:** mode 4's hand placement, in one headset run. **Built only:** the shoulder
+  bar, the width, the linked slide, and the hands+arms size.
+
+### Next steps
+
+1. **Make mode 4 stick.** The Drive radio must save (`save_config()` on change, like
+   every other F10 control). Consider making DISHONORED the default on this branch.
+   Then check each report again IN MODE 4 before changing anything: scale (the hands
+   cluster and the arms both use `g_scale[h] * m4Size`), shoulder width, and
+   `shoulders right`, which already exists as the horizontal control.
+2. **"The unneeded section"** - ask which one. Likely candidates in F10 Hands + weapon >
+   ARMS:
+   - the old per-hand `shoulder fwd/right/up` sliders, which mode 4 no longer reads;
+   - the mode-3-only twist sliders.
+   Hide whatever mode 4 does not use while mode 4 is selected.
+3. **Port Dishonored's hand placement to BOTH hands.** Dishonored moves each hand
+   relative to the PLAYER - the head's yaw frame: forward, right and up as you see
+   them. The step is converted into a trim stored in the palm frame
+   (`hf::palm_target`, target = `O_C * G * trim`). BS1 moves things along the MODEL's
+   axes (BRVR per-weapon offsets, `offHandPosCm`).
+   - Sources in `C:\dev\Dishonored-VR\src\game\dishonored\hands\mesh_split.cpp`:
+     `MpTrimViewStep` (~4916), `MpTrimSave`, `MpCalibTick` (~5016), `MpTrimPanel`
+     (~5257), and the axis notes at ~4987 ("TX across the palm, TY along the fingers,
+     TZ out of the palm").
+   - In mode 4 the target is built in `m4_frame` (bones.cpp, the `s83` block). Both
+     hands should take one trim model: a palm-frame offset plus rotation, edited in the
+     player's view frame.
+   - Keep the per-weapon idle capture, or replace it with the trim, deliberately and in
+     the doc.
+
+### Session log 2026-10-08 (s84)
+
+Handoff only. Found the mode-persistence bug from the log rather than from code: the
+silence of `MODE4` in the latest run, checked against `hands.ini`. Nothing else changed.
+
 ## Session 2026-10-08 - s83 (BS1): the evaluator hook measured, and mode 4 (Dishonored hands) built
 
 **Same branch, `claude/bs1-hands-dishonored`.** One simulator run (authorised, one
