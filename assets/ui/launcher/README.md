@@ -1,4 +1,15 @@
-# Launcher icon candidates
+# Launcher icons
+
+The current review icon is **bioshock-vr-medallion.png / .ico**. The owner
+requested the circular brass medallion, then specified the actual weathered
+silver BIOSHOCK wordmark treatment, with VR immediately below it. The final
+image follows those supplied references using the built-in image generation
+tool. It is an adaptation of BioShock artwork, not a newly invented trademark.
+The BioShock name and artwork belong to their respective owners.
+
+The supplied reference files are not included in the repository. The final
+generated PNG is unmodified, with genuine alpha. The ICO contains the seven
+sizes below. The two intermediate lettering attempts were superseded.
 
 Three original transparent PNGs generated for the launcher on 2026-10-08 using
 the built-in image generation tool. No game assets were extracted or edited.
@@ -6,7 +17,7 @@ The source PNGs are unmodified. `tools/launcher-icons.ps1` converts each into
 a Windows ICO with 16, 24, 32, 48, 64, 128 and 256 pixel entries.
 
 * **A, Bathysphere helmet**: brass diving helmet with a teal VR-like window.
-  Provisional executable icon, pending the owner's selection.
+  Initial alternative, superseded by the requested medallion.
 * **B, Rapture beacon**: lighthouse and waves inside a brass medallion.
 * **C, Rapture VR crest**: stepped Art Deco towers integrated with a teal visor.
 
@@ -16,6 +27,19 @@ The executable uses the six F10 background/control textures directly from
 ## Generation prompts
 
 All three calls used `transparent_background: true`, with no reference image.
+
+The selected medallion used two image-edit stages, also with
+`transparent_background: true`. The owner supplied the medallion reference and
+the high-resolution game wordmark. The game's logo reference was the primary
+source in the final composition. Both saved images were inspected before use.
+
+### Selected medallion, base stage
+
+Use case: precise-object-edit. Asset type: Windows launcher icon. Input image 1 is the user's reference and edit target. Recreate this brass BIOSHOCK Art Deco medallion at crisp high resolution, keeping its round geometric engraved disk, stepped rectangular central nameplate, small perimeter studs, aged bronze-gold material and nearly front-facing composition very close to the reference. The requested change is to add the exact text "VR" prominently centered immediately beneath the exact name "BIOSHOCK". Make BIOSHOCK and VR two clear, balanced lines, with VR in matching embossed Art Deco lettering; adjust only the lower central decorative area as needed to give VR room. Preserve the overall medallion silhouette and the reference's restrained antique brass palette. The letters must be accurately spelled, legible and distinct, with brighter brass edges and dark recessed interiors. Do not add a headset, lighthouse, characters or any additional words. Single centered emblem, square canvas, close framing with a small transparent safety margin on all sides. Remove the black backdrop: genuine transparent background outside the emblem, preserve alpha, no opaque background tile or outside cast shadow. This is an icon used down to 32 pixels, so make the VR letters large enough to remain recognizable and avoid fragile added detail.
+
+### Selected medallion, final composition
+
+Use case: compositing. Create the final BioShock VR launcher icon from these inputs. Image 1 is the PRIMARY exact source graphic: the official BIOSHOCK wordmark plaque, with its normal rounded S, distinctive broad letter proportions, enormous black extruded shadows toward the upper left, scratched and mottled cold silver letter faces, chipped silver outline, rusty green/orange background panels, and silver Rapture skyline under the letters. Preserve this source plaque and the BIOSHOCK lettering as faithfully as possible: it should look like the same graphic placed into the icon, NOT an alternate font, NOT reinterpreted Art Deco lettering, NOT a new angular S, NOT thin gold-outline type. Image 2 supplies ONLY the round brass medallion body, its circular engraved Art Deco frame, perimeter studs, and the placement of VR. REPLACE image 2's whole central BIOSHOCK banner with the faithful plaque from image 1. The intact source plaque should span almost the full width of the round medallion, occupying its center, retaining its silver skyline and entire source lettering. Below that plaque, add a separate clear centered 'VR' in matching weathered cold-silver letters with strong deep black extruded shadows, comfortably within the lower portion of the brass medallion. Keep BIOSHOCK spelled exactly and VR spelled exactly. Preserve the overall circular medallion silhouette from image 2. No extra words. Do not copy image 2's BIOSHOCK letter shapes. Single centered icon on a square canvas, close framing, small transparent margin, real alpha around the whole emblem, no black background rectangle and no presentation mockup.
 
 ### A
 

@@ -6,7 +6,7 @@ $cmake = & $vswhere -latest -products '*' -find 'Common7\IDE\CommonExtensions\Mi
 if (-not $cmake) { throw 'Visual Studio CMake tools were not found.' }
 $install = & $vswhere -latest -products '*' -property installationVersion | Select-Object -First 1
 $generator = if ($install -match '^18\.') { 'Visual Studio 18 2026' } else { 'Visual Studio 17 2022' }
-if (-not (Test-Path -LiteralPath (Join-Path $repo 'assets\ui\launcher\icons\option-a-helmet.ico'))) { & "$PSScriptRoot\launcher-icons.ps1" }
+if (-not (Test-Path -LiteralPath (Join-Path $repo 'assets\ui\launcher\icons\bioshock-vr-medallion.ico'))) { & "$PSScriptRoot\launcher-icons.ps1" }
 & $cmake -S $repo -B "$repo\build" -G $generator -A Win32
 if ($LASTEXITCODE -ne 0) { throw 'Launcher configure failed.' }
 $targets = @('bvr_launcher')

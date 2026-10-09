@@ -1,7 +1,7 @@
 # Standalone native launcher with per-configuration embedded payloads. Its
 # renderer and F10 compile the same theme source and original art resources.
 enable_language(RC)
-set(BVR_LAUNCHER_ICON "${PROJECT_SOURCE_DIR}/assets/ui/launcher/icons/option-a-helmet.ico" CACHE FILEPATH "Launcher icon selected for this review build")
+set(BVR_LAUNCHER_ICON "${PROJECT_SOURCE_DIR}/assets/ui/launcher/icons/bioshock-vr-medallion.ico" CACHE FILEPATH "Launcher icon selected for this review build")
 set(_payload "${CMAKE_BINARY_DIR}/launcher-payload/$<CONFIG>")
 set(_rc "${CMAKE_BINARY_DIR}/launcher-payload/payload.rc")
 set(_openvr "${PROJECT_SOURCE_DIR}/third_party/openvr_headers/bin/win32/openvr_api.dll")

@@ -1,7 +1,9 @@
 # BioShock Remastered VR launcher
 
 Review candidate on `codex/rapture-launcher`, based on staging `5dd79c0`.
-The icon and appearance still require the owner's acceptance. This launcher
+The rendered appearance still requires the owner's acceptance. The current
+icon follows the owner's supplied medallion and exact game-wordmark references,
+with VR added underneath. This launcher
 targets **BioShock Remastered (Steam app 409710)**. Its embedded mod is the
 staging build, not the separately installed hand-compatible development build.
 
@@ -134,7 +136,7 @@ never launches a game. It keeps all evidence instead of deleting it.
   click checks yielded when user input was detected, so they are not claimed as
   a completed interactive test suite.
 
-Pending: owner choice of icon and visual acceptance; a real-game install/playtest
+Pending: final icon/render visual acceptance; a real-game install/playtest
 after the owner accepts the candidate; the UAC prompt/worker route on a denied
 real game directory; Steam launch and headset runtime behavior; and a future
 published launcher download. No game was launched during this work. The existing

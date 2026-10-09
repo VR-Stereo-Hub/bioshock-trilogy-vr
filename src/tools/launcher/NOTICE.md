@@ -11,5 +11,9 @@ BioShock's installation plan, settings mapping and interface are adapted here.
 
 The six Rapture textures and theme renderer come directly from the BioShock
 F10 menu in this repository. No game assets were extracted for this launcher.
-Icon candidates are original images created with the built-in image generation
-tool. They are review candidates until the owner chooses one.
+The initial icon candidates were created with the built-in image generation
+tool. The current medallion is an AI-assisted adaptation of the owner's supplied
+BioShock logo references, with VR added beneath the wordmark. It is not an
+original BioShock trademark; the BioShock name and artwork belong to their
+respective owners. Reference provenance and prompts are in
+`assets/ui/launcher/README.md`.

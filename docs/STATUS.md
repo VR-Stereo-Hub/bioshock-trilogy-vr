@@ -14,8 +14,9 @@ management, verified release downloads, shortcuts and local support collection.
 
 Installation, settings and removal use complete preflight, byte-preserving edits,
 hash verification, recovery journals and rollback. Existing F10, hand, weapon and
-debug tuning is retained. Three original icon choices and multi-size ICOs are
-available; A is provisional. Scope, reference audit, safety behavior, build
+debug tuning is retained. After three initial icon choices, the owner selected
+a brass medallion using the supplied game BIOSHOCK wordmark with VR underneath.
+The revised icon has seven ICO sizes. Scope, reference audit, safety behavior, build
 instructions and verification are documented in `LAUNCHER.md`.
 
 Built RelWithDebInfo/Win32. The host suite has 184 checks and the actual EXE
@@ -26,7 +27,7 @@ or real player INIs were not replaced. This is not an accepted/released launcher
 
 ### Next steps
 
-1. Owner reviews the actual rendered launcher and chooses icon A, B or C.
+1. Owner reviews the actual rendered launcher and revised medallion icon.
 2. Incorporate visual feedback before accepting or installing the candidate.
 3. Before any real game install, account for the separately installed hand work.
    Then define one playtest question and verify the installed log banner.
