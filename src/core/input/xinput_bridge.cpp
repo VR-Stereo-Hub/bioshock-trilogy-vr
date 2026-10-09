@@ -921,6 +921,9 @@ void set_pitch_kill(bool on) {
 bool pitch_kill() { return g_pitchKill.load(std::memory_order_relaxed); }
 
 float stick_deadzone() { return g_deadzone.load(std::memory_order_relaxed); }
+void set_stick_deadzone(float value) {
+    if(value >= 0.0f && value <= 0.4f) g_deadzone.store(value,std::memory_order_relaxed);
+}
 
 void last_composed_triggers(uint8_t* lt, uint8_t* rt) {
     uint16_t t = g_lastTriggers.load(std::memory_order_relaxed);

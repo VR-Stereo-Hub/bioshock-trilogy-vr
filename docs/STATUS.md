@@ -173,6 +173,43 @@ launched. The headset test is at the top of `docs/bioshock1/ARM_IK.md`.
 4. Candidate: Dishonored's `ArmIKGameArmInAnim`, if a scripted sequence shows the IK arm
    fighting the game's.
 
+## Session 2026-10-08: BS1 Rapture F10 menu, offline build only
+
+### Current state
+
+Branch `codex/rapture-f10`, from staging `d5a8066`. BS1 now has a themed native
+settings menu with Basic/Advanced/Debug tiers, applicable controls only, explicit
+hand/profile scopes, player autosave and explicit Debug persistence. One row of
+closely spaced brass-outlined tabs; labels, pipe sliders and values share a row.
+All six original artwork assets match the approved native draft byte for byte.
+
+The panel uses Dishonored's accepted eye-image placement and rescales geometry,
+fonts and the current moved/resized rectangle when resolution changes. BS1's
+viewport and controller pixels use the current render target. Other adapters
+retain their existing menu path.
+
+Built RelWithDebInfo/Win32 both on staging and, in a separate detached checkout,
+with committed hand work `f318f3d`. The latter exposes shared shoulder position,
+width/linking and combined hand-and-arm size. Native production-view tests pass
+at 100%, 125% and 150% text, with resolution transitions and alignment checks.
+Details, scope and verification: `bioshock1/F10_MENU.md`.
+
+The subsequent authorized install is the hand-compatible build
+`v0.8.3-201-g358e08c`, not the staging-only DLL. The previous DLL and logs are
+backed up. All 21 INIs were compared in full and remain byte-identical; the
+loader is unchanged. No game or simulator was launched, and the concurrent
+hand work's original checkout was not edited. Install hash and backup details
+are in `bioshock1/F10_MENU.md`.
+
+### Next steps
+
+1. First installed-build question: are F10's pipe sliders level with their labels
+   and values in the headset? Verify the log banner against `v0.8.3-201-g358e08c`.
+2. After the hand branch reaches staging, rebase and rebuild the menu against it.
+3. Continue with one defined headset question per launch. Headset placement at
+   the user's normal render resolution, engine-side effects and saved-profile
+   reload behavior still require game validation.
+
 ## Session 2026-10-08 - s80: BS1's Havok rigs into Blender; the SDK and CodeRed read
 
 **Branch `claude/havok-blender`, off `claude/tools-workflows` (PR #86, not merged yet).**

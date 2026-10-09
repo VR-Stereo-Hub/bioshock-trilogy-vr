@@ -1,4 +1,6 @@
-﻿// Hook behavior (call the original, then adjust the writable out-params;
+﻿#include "menu_bindings.h"
+#include "menu_backend.h"
+// Hook behavior (call the original, then adjust the writable out-params;
 // publish state through atomics) follows
 // itsloopyo/bioshock-remastered-headtracking (MIT), src/engine_hook.rs.
 
@@ -1185,6 +1187,7 @@ void apply_vr_preset() {
     aim::note_preset_baseline();       // seed source for new weapon profiles
     aim::reapply_weapon_profile();     // the active weapon profile beats the baseline
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
+    menu::reapply_preferences(); // recovery preset must not erase player choices
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
 }
 
@@ -1387,6 +1390,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         BVR_LOG("[b1r] recenter requested (stick chord)");
     }
     if (g_vrPresetSavePending.exchange(false, std::memory_order_relaxed)) save_vr_preset();
+    menu::tick(); // render-thread edits become settings changes on the game thread
     if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed)) {
         game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
                                  static_cast<uint32_t>(req & 0xFFFFFFFFu));
@@ -2373,6 +2377,7 @@ bool install(void* eventPlayerCalcView) {
     // arms the full stack on the first CalcView. `autoVr=0` (or the pinned
     // checkbox) opts out. Must run AFTER load_vr_preset_values so a saved
     // autoVr=0 is honoured.
+    menu::load_preferences(); // includes AutoStart, before the launch decision
     if (g_autoVr.load(std::memory_order_relaxed)) {
         g_vrPresetPending.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] auto-VR: preset apply queued for the first frame (autoVr=0 or "
@@ -2474,6 +2479,54 @@ void set_fov_override(float hfovDeg) {
         g_fovOverride.store(false, std::memory_order_relaxed);
     }
 }
+
+// F10 preference access. Called through the game-thread menu queue; no engine writes.
+float menu_read(menu::Setting id) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::RemoveBob: return static_cast<float>(g_killHeadBob.load(std::memory_order_relaxed));
+        case S::AutoStart: return static_cast<float>(g_autoVr.load(std::memory_order_relaxed));
+        case S::GameFov: return static_cast<float>(g_gameFovDeg.load(std::memory_order_relaxed));
+        case S::GameCrosshair: return static_cast<float>(g_crosshairVisible.load(std::memory_order_relaxed));
+        case S::HideUnarmedReticle: return static_cast<float>(g_hideAimUnarmed.load(std::memory_order_relaxed));
+        case S::LockOnDisabled: return static_cast<float>(g_lockOnDisabled.load(std::memory_order_relaxed));
+        case S::EyeSeparation: return static_cast<float>(g_ipdMm.load(std::memory_order_relaxed));
+        case S::WorldScale: return g_worldScale.load(std::memory_order_relaxed)/100.f;
+        case S::Height: return g_headOffUpUu.load(std::memory_order_relaxed)*100.f/g_worldScale.load(std::memory_order_relaxed);
+        case S::ViewForward: return g_headOffFwdUu.load(std::memory_order_relaxed)*100.f/g_worldScale.load(std::memory_order_relaxed);
+        case S::CustomFov: return g_gameFovWrite.load(std::memory_order_relaxed) && !g_forceHeadsetFov.load(std::memory_order_relaxed);
+        default: return std::numeric_limits<float>::quiet_NaN();
+    }
+}
+bool menu_write(menu::Setting id, float value) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::RemoveBob: g_killHeadBob.store(static_cast<decltype(g_killHeadBob.load())>(value), std::memory_order_relaxed); return true;
+        case S::AutoStart: g_autoVr.store(static_cast<decltype(g_autoVr.load())>(value), std::memory_order_relaxed); return true;
+        case S::GameFov: g_gameFovDeg.store(static_cast<decltype(g_gameFovDeg.load())>(value), std::memory_order_relaxed); return true;
+        case S::GameCrosshair: g_crosshairVisible.store(static_cast<decltype(g_crosshairVisible.load())>(value), std::memory_order_relaxed); return true;
+        case S::HideUnarmedReticle: g_hideAimUnarmed.store(static_cast<decltype(g_hideAimUnarmed.load())>(value), std::memory_order_relaxed); return true;
+        case S::LockOnDisabled: g_lockOnDisabled.store(static_cast<decltype(g_lockOnDisabled.load())>(value), std::memory_order_relaxed); return true;
+        case S::EyeSeparation: g_ipdMm.store(static_cast<decltype(g_ipdMm.load())>(value), std::memory_order_relaxed); return true;
+        case S::WorldScale: {
+            const float ratio=value*100.f/g_worldScale.load(std::memory_order_relaxed);
+            g_headOffUpUu.store(g_headOffUpUu.load(std::memory_order_relaxed)*ratio,std::memory_order_relaxed);
+            g_headOffFwdUu.store(g_headOffFwdUu.load(std::memory_order_relaxed)*ratio,std::memory_order_relaxed);
+            g_worldScale.store(value*100.f,std::memory_order_relaxed); return true;
+        }
+        case S::Height: set_head_up_cm(value); return true;
+        case S::ViewForward: g_headOffFwdUu.store(value*g_worldScale.load(std::memory_order_relaxed)/100.f,std::memory_order_relaxed); return true;
+        case S::CustomFov:
+            g_forceHeadsetFov.store(false,std::memory_order_relaxed);
+            g_gameFovWrite.store(value!=0,std::memory_order_relaxed); return true;
+        default: return false;
+    }
+}
+void menu_recenter() {
+    g_recenterRequested.store(true,std::memory_order_relaxed);
+    bvr::vr::release_screen_anchor();
+}
+
 
 void draw_debug_ui() {
     if (!hook_live()) {

@@ -1,3 +1,4 @@
+#include "menu_bindings.h"
 // M7-v2 bone drive. See bones.h for the contract and ENGINE_NOTES "Skeleton /
 // bone internals" for every offset's derivation.
 //
@@ -7588,6 +7589,60 @@ void handle_command(const char* args) {
                 verb);
     }
 }
+
+// F10 preference access. Called through the game-thread menu queue; no engine writes.
+float menu_read(menu::Setting id, int hand) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::HideInactive: return static_cast<float>(g_hideInactive.load(std::memory_order_relaxed));
+        case S::FreeArmAppearance: return static_cast<float>(g_collapseOff.load(std::memory_order_relaxed));
+        case S::HideHeldArm: return static_cast<float>(g_collapse.load(std::memory_order_relaxed));
+        case S::EquipAnimation: return static_cast<float>(g_showEquipAnim.load(std::memory_order_relaxed));
+        case S::RenderLock: return static_cast<float>(g_renderLock.load(std::memory_order_relaxed));
+        case S::RenderLateral: return static_cast<float>(g_lockGain.load(std::memory_order_relaxed));
+        case S::RenderDepth: return static_cast<float>(g_lockDepthGain.load(std::memory_order_relaxed));
+        case S::PinPosition: return static_cast<float>(g_animPinPos[hand].load(std::memory_order_relaxed));
+        case S::PinRotation: return static_cast<float>(g_animPinRot[hand].load(std::memory_order_relaxed));
+        case S::BoneProbes: return static_cast<float>(g_probes.load(std::memory_order_relaxed));
+        case S::ArmAppearance: return static_cast<float>(g_armsMode.load(std::memory_order_relaxed));
+#if __has_include("arm_ik.h")
+        case S::ArmSolver: return g_armIkV2.load(std::memory_order_relaxed);
+#else
+        case S::ArmSolver: return 0;
+#endif
+        default: return std::numeric_limits<float>::quiet_NaN();
+    }
+}
+bool menu_write(menu::Setting id, int hand, float value) {
+    using S = menu::Setting;
+    switch(id) {
+        case S::HideInactive: g_hideInactive.store(static_cast<decltype(g_hideInactive.load())>(value), std::memory_order_relaxed); return true;
+        case S::FreeArmAppearance: g_collapseOff.store(static_cast<decltype(g_collapseOff.load())>(value), std::memory_order_relaxed); return true;
+        case S::HideHeldArm: g_collapse.store(static_cast<decltype(g_collapse.load())>(value), std::memory_order_relaxed); return true;
+        case S::EquipAnimation: g_showEquipAnim.store(static_cast<decltype(g_showEquipAnim.load())>(value), std::memory_order_relaxed); return true;
+        case S::RenderLock: g_renderLock.store(static_cast<decltype(g_renderLock.load())>(value), std::memory_order_relaxed); return true;
+        case S::RenderLateral: g_lockGain.store(static_cast<decltype(g_lockGain.load())>(value), std::memory_order_relaxed); return true;
+        case S::RenderDepth: g_lockDepthGain.store(static_cast<decltype(g_lockDepthGain.load())>(value), std::memory_order_relaxed); return true;
+        case S::PinPosition: g_animPinPos[hand].store(static_cast<decltype(g_animPinPos[hand].load())>(value), std::memory_order_relaxed); return true;
+        case S::PinRotation: g_animPinRot[hand].store(static_cast<decltype(g_animPinRot[hand].load())>(value), std::memory_order_relaxed); return true;
+        case S::BoneProbes: g_probes.store(static_cast<decltype(g_probes.load())>(value), std::memory_order_relaxed); return true;
+        case S::ArmAppearance:
+            g_armsMode.store(static_cast<int>(value),std::memory_order_relaxed);
+            return true;
+#if __has_include("arm_ik.h")
+        case S::ArmSolver: g_armIkV2.store(value!=0,std::memory_order_relaxed); return true;
+#endif
+        default: return false;
+    }
+}
+bool menu_has_solver_choice() {
+#if __has_include("arm_ik.h")
+    return true;
+#else
+    return false;
+#endif
+}
+
 
 void draw_debug_ui() {
     ImGui::Text("Bones: count %d writes %u hand %d", g_boneCount,

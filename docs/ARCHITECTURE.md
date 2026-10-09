@@ -2876,3 +2876,17 @@ through the original weights, and an audit that runs Dishonored's own header on
 Dishonored's rig with the same poses. The audit shows the elbow direction within
 0.03 degrees and the shoulder and roll decisions identical. That is the claim "it is
 Dishonored's solver" made measurable. See `docs/bioshock1/ARM_IK.md`.
+
+### 2026-10-08: isolate BS1 player preferences from experimental defaults
+
+The reorganized BS1 F10 menu owns a stable settings catalogue and a separate
+`menu-settings.ini` override file. Ordinary edits persist on release; Debug
+values require an explicit save. Existing recovery presets and weapon profile
+loads reapply those overrides rather than silently erasing them. This avoids
+saving every active experiment along with a player's ordinary adjustment.
+
+The production ImGui view is also the offscreen preview target, so layout and
+interaction checks exercise the same widgets and embedded artwork. Resolution
+scaling follows Dishonored's eye-image fractions and proportional resize behavior.
+This changes BS1 through additive adapter hooks; other games keep the old UI.
+See `bioshock1/F10_MENU.md` for applicability, compatibility and unverified work.
