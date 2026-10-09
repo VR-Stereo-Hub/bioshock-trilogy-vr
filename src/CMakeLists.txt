@@ -307,3 +307,8 @@ if(BIOSHOCKVR_WITH_OPENXR AND BIOSHOCKVR_WITH_OVRSHIM)
     # the D3D11 the compositing pipeline needs.
     target_link_libraries(bvr_ovr_shim PRIVATE d3d11)
 endif()
+
+option(BIOSHOCKVR_WITH_LAUNCHER "Build the BioShock Remastered VR launcher" ON)
+if(BIOSHOCKVR_WITH_LAUNCHER AND TARGET bvr_ovr_shim)
+    add_subdirectory(tools/launcher)
+endif()
