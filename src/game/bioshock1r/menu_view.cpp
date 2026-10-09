@@ -232,7 +232,7 @@ void draw(Backend& backend,ViewState& state,const ViewOptions& options) {
             }
             ImGui::TableSetColumnIndex(2);
             const char* currentLevel=level==Level::Basic?"Basic":level==Level::Advanced?"Advanced":"Debug";
-            char levelCaption[48];std::snprintf(levelCaption,sizeof levelCaption,"%s  +###level",currentLevel);
+            char levelCaption[48];std::snprintf(levelCaption,sizeof levelCaption,"%s###level",currentLevel);
             if(theme::button(levelCaption,ImVec2(-1,0))) ImGui::OpenPopup("Options level");
             record("Options");
             if(ImGui::BeginPopup("Options level")) {
