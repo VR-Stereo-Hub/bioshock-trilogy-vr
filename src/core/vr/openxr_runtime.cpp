@@ -5126,6 +5126,14 @@ void set_screen_width_m(float m) {
 }
 
 float screen_height_m() { return g_screenHeightM.load(std::memory_order_relaxed); }
+float screen_distance_m() { return g_screenDistM.load(std::memory_order_relaxed); }
+void set_screen_distance_m(float meters) {
+    if(meters < 0.5f || meters > 5.0f) return;
+    g_screenDistM.store(meters,std::memory_order_relaxed);
+    release_screen_anchor();
+}
+bool cinematic_stereo() { return g_cineStereo.load(std::memory_order_relaxed); }
+void set_cinematic_stereo(bool on) { g_cineStereo.store(on,std::memory_order_relaxed); }
 
 void set_screen_height_m(float m) {
     if (m < -3.0f) m = -3.0f;
@@ -5567,6 +5575,10 @@ int screen_place_mode() { return 0; }
 void set_screen_place_mode(int) {}
 const char* screen_place_name(int) { return "anchor"; }
 float screen_height_m() { return 0.0f; }
+float screen_distance_m() { return 2.0f; }
+void set_screen_distance_m(float) {}
+bool cinematic_stereo() { return false; }
+void set_cinematic_stereo(bool) {}
 void set_screen_height_m(float) {}
 bool cinematic_active() { return false; }
 CineDrive cine_drive() { return CineDrive::Authored; }

@@ -86,6 +86,7 @@ void publish_move_yaw_offset(float deg);
 
 // Radial stick deadzone (fraction 0..0.5) applied by the XR composer.
 float stick_deadzone();
+void set_stick_deadzone(float value);
 
 // Last composed trigger pair (0..255). The M6 aim path uses it to tell which
 // hand a fire event belongs to: we compose this state ourselves, so "which

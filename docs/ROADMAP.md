@@ -703,6 +703,10 @@ kill. Both prerequisites below are now MET.):**
       **In-headset calibration pending.**
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
+      *2026-10-08: Rapture F10 menu implemented and built in isolation. Native offline
+      interaction, alignment and resolution-transition checks pass. Player/Advanced/Debug
+      tiers and scoped persistence are implemented. Not installed or headset-accepted;
+      see `bioshock1/F10_MENU.md`.*
 - [x] **World/viewmodel scale SPLIT - SOLVED 2026-08-14 (session 61, feedback ladder
       rung 1):** the hand/model scale slider exists and is independent of worldScale.
       The s16 "cluster scale blows up the attached weapon" verdict was confounded (that

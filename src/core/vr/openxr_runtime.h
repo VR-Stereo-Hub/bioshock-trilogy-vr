@@ -374,6 +374,10 @@ int screen_place_mode();
 void set_screen_place_mode(int mode);
 const char* screen_place_name(int mode);
 float screen_height_m();
+float screen_distance_m();
+void set_screen_distance_m(float meters);
+bool cinematic_stereo();
+void set_cinematic_stereo(bool on);
 void set_screen_height_m(float m);
 // Quad width in metres. The core DEFAULT is unchanged (2.4); a game opts into a
 // different size from its own adapter, the same way screen placement does.

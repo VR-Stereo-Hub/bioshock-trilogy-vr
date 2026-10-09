@@ -2,6 +2,39 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08: BS1 Rapture F10 menu, offline build only
+
+### Current state
+
+Branch `codex/rapture-f10`, from staging `d5a8066`. BS1 now has a themed native
+settings menu with Basic/Advanced/Debug tiers, applicable controls only, explicit
+hand/profile scopes, player autosave and explicit Debug persistence. One row of
+closely spaced brass-outlined tabs; labels, pipe sliders and values share a row.
+All six original artwork assets match the approved native draft byte for byte.
+
+The panel uses Dishonored's accepted eye-image placement and rescales geometry,
+fonts and the current moved/resized rectangle when resolution changes. BS1's
+viewport and controller pixels use the current render target. Other adapters
+retain their existing menu path.
+
+Built RelWithDebInfo/Win32 both on staging and, in a separate detached checkout,
+with committed hand work `f318f3d`. The latter exposes shared shoulder position,
+width/linking and combined hand-and-arm size. Native production-view tests pass
+at 100%, 125% and 150% text, with resolution transitions and alignment checks.
+Details, scope and verification: `bioshock1/F10_MENU.md`.
+
+Nothing was installed. No game or simulator was launched. No installed INI was
+changed, and the concurrent hand work's original checkout was not edited.
+
+### Next steps
+
+1. Review the native menu captures and source; retain the existing installed build.
+2. After the hand branch reaches staging, rebase and rebuild the menu against it.
+3. When installation is authorized, verify the build banner and run one defined
+   headset question per launch. First question: does F10 retain its readable size
+   and position at the user's normal render resolution? Engine-side effects and
+   saved-profile reload behavior still require game validation.
+
 ## Session 2026-10-08 - s80: BS1's Havok rigs into Blender; the SDK and CodeRed read
 
 **Branch `claude/havok-blender`, off `claude/tools-workflows` (PR #86, not merged yet).**

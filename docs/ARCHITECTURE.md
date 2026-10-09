@@ -2854,3 +2854,17 @@ building a measurement, check that the thing being measured actually occurs.**
 **And a regression is information.** Making the probe right made the symptom worse,
 which is only possible if the probe had been suppressing the real variance. That
 inversion located the answer faster than any of the fixes that preceded it.
+
+### 2026-10-08: isolate BS1 player preferences from experimental defaults
+
+The reorganized BS1 F10 menu owns a stable settings catalogue and a separate
+`menu-settings.ini` override file. Ordinary edits persist on release; Debug
+values require an explicit save. Existing recovery presets and weapon profile
+loads reapply those overrides rather than silently erasing them. This avoids
+saving every active experiment along with a player's ordinary adjustment.
+
+The production ImGui view is also the offscreen preview target, so layout and
+interaction checks exercise the same widgets and embedded artwork. Resolution
+scaling follows Dishonored's eye-image fractions and proportional resize behavior.
+This changes BS1 through additive adapter hooks; other games keep the old UI.
+See `bioshock1/F10_MENU.md` for applicability, compatibility and unverified work.
