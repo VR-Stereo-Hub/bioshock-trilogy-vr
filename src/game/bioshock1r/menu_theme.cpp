@@ -307,6 +307,9 @@ static ImGuiStyle g_savedStyle;
 static float g_savedGlobalScale;
 } // namespace
 void initialize(ID3D11Device* device) {
+    // The standalone launcher can render several independent ImGui contexts.
+    // A missing optional font must fall back to this context, never the last.
+    g_body=g_title=g_small=nullptr;
     auto& io=ImGui::GetIO();
     char windows[MAX_PATH]{};
     GetWindowsDirectoryA(windows,MAX_PATH);

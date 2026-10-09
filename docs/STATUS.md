@@ -2,6 +2,37 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-08: BS1 Rapture launcher review candidate
+
+### Current state
+
+Branch `codex/rapture-launcher`, from staging `5dd79c0`. A standalone Win32
+installer/launcher embeds the staging mod and SteamVR files and reuses the F10
+theme's source and six original textures. Its layout follows the researched
+Dishonored launcher: sidebar pages, persistent Play, player settings, mod
+management, verified release downloads, shortcuts and local support collection.
+
+Installation, settings and removal use complete preflight, byte-preserving edits,
+hash verification, recovery journals and rollback. Existing F10, hand, weapon and
+debug tuning is retained. Three original icon choices and multi-size ICOs are
+available; A is provisional. Scope, reference audit, safety behavior, build
+instructions and verification are documented in `LAUNCHER.md`.
+
+Built RelWithDebInfo/Win32. The host suite has 184 checks and the actual EXE
+integration suite has 35 checks; both use scratch fixtures. Eighteen production
+UI states were rendered at 100%, 150%, 200% and the minimum logical size. Native
+preview inspected. No game was launched and the installed hand-compatible build
+or real player INIs were not replaced. This is not an accepted/released launcher.
+
+### Next steps
+
+1. Owner reviews the actual rendered launcher and chooses icon A, B or C.
+2. Incorporate visual feedback before accepting or installing the candidate.
+3. Before any real game install, account for the separately installed hand work.
+   Then define one playtest question and verify the installed log banner.
+4. UAC flow, Steam launch, headset behavior and a published launcher update need
+   validation beyond the scratch and rendering tests. Do not merge unasked.
+
 ## Session 2026-10-08: BS1 Rapture F10 menu, offline build only
 
 ### Current state
