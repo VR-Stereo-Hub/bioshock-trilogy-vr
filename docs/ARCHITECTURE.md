@@ -2868,3 +2868,43 @@ interaction checks exercise the same widgets and embedded artwork. Resolution
 scaling follows Dishonored's eye-image fractions and proportional resize behavior.
 This changes BS1 through additive adapter hooks; other games keep the old UI.
 See `bioshock1/F10_MENU.md` for applicability, compatibility and unverified work.
+
+### 2026-10-10: DLSS/DLAA and the alternate frame warp - transport in core, policy in the adapter
+
+The Dishonored VR mod's process, ported to BS1 (`bioshock1/TEMPORAL.md`). The split follows
+the decoupling rule: what is genuinely game-agnostic AND new went to core, every default off -
+
+- `core/gfx/dlss_client` + `dlss_ipc.h` and `src/tools/dlss_host`: the 32-to-64 NGX
+  transport. NGX is x64-only and all three games are x86, so any of them would need exactly
+  this; it does nothing until an adapter starts it.
+- Four seams, each null by default so BS2 and Infinite run the old path byte for byte:
+  `frame_inspector::set_draw_tap` (the game's depth binding), `vr::set_eye_processor`
+  (replaces the backbuffer copy for stereo eye images), `vr::set_eye_output_size` (larger
+  eye swapchains for super resolution), and the AlternateEye pair `set_aer_eye_source` /
+  `set_held_rebuild` (an adapter-named eye per image, and a held-eye rebuild every present).
+  `blit::stretch_copy` backs the output size. Rows in `PORT-CANDIDATES.md`.
+
+Everything that knows BioShock - which depth surface is the world, the cameras, the hands
+pass, when history is valid, the F10 controls - is in `bioshock1r/temporal*.cpp` and
+`afw_gpu.cpp`. Two choices worth recording: the guides use the GAME'S camera from CalcView
+(not the XR pose model), so walking and stick turning are exact; and the Dishonored body band
+is off for BS1, because BS1's world depth does not contain the arms - they come from the
+foreground pass, which becomes DLSS's bias mask and the warp's hand depth instead.
+### 2026-10-10 (second round): stereo methods as one BS1 choice; the eye is a property of the FRAME
+
+The first headset run of the alternate frame warp flickered between the eyes: the eye was
+flipped per CalcView CALL, and BS1 makes about four calls per frame (`bioshock1/TEMPORAL.md`).
+The rule now: the eye belongs to the frame, decided once at the render view (the CalcView
+inside the gameplay scene build) and carried by every call of that frame - what BRVR's leader
+site and Dishonored's per-draw tag both do.
+
+AER (BRVR's method) and AFW (Dishonored's) became one F10 choice, "Stereo method", owned by
+`bioshock1r/alt_eye.cpp`; SequentialReentry stays the default. AER reuses core's existing
+SequentialReentry pair path instead of a new submit mode: a pair of alternate-eye frames,
+tagged L then R through `vr::sr_push_eye`, IS what that path already pairs into one XR frame
+with one locate's pose - so the BRVR behaviour needed no new compositor code. What makes the
+two frames one instant lives in the adapter: the right frame takes the left frame's head
+sample and per-call-site cameras, and the engine's frame delta is held on the right frame
+(BRVR's DeltaClamp; re-derived in `patterns.h`). The one core addition is opt-in and off by
+default: `vr::set_sr_drift_resync`, BRVR's eye-queue drift resync, which only BS1's AER
+switches on (a row in `PORT-CANDIDATES.md`).

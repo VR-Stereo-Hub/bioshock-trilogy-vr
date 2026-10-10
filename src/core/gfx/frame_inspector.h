@@ -10,6 +10,8 @@
 #include <cstdint>
 
 struct IDXGISwapChain;
+struct ID3D11DeviceContext;
+struct ID3D11DepthStencilView;
 
 namespace bvr::frame_inspector {
 
@@ -54,6 +56,23 @@ void on_present(IDXGISwapChain* swapchain);
 using MeshSkipFn = bool (*)(unsigned indexCount);
 void set_mesh_skip(MeshSkipFn fn);
 unsigned mesh_skips();
+
+// ---- Temporal seam: a draw tap for the scene depth ---------------------------
+// The adapter's DLSS/DLAA and alternate-frame-warp passes need the game's scene depth,
+// which only the draw stream can identify (the depth surface the world's DrawIndexed
+// calls are made against). Null by default - a game that never sets one runs exactly the
+// detours it ran before. Only the game's own calls are reported (never the mod's, which
+// run under ScopedSuppress or through the original functions). Render thread; keep the
+// callbacks cheap.
+struct DrawTap {
+    // AFTER the game's OMSetRenderTargets (the new depth binding is live).
+    void (*on_setrt)(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv) = nullptr;
+    // BEFORE each game DrawIndexed (the world renders through DrawIndexed only).
+    void (*on_draw_indexed)(ID3D11DeviceContext* ctx) = nullptr;
+    // BEFORE the game's ClearDepthStencilView: the last chance to keep what it clears.
+    void (*on_clear_dsv)(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, unsigned flags) = nullptr;
+};
+void set_draw_tap(const DrawTap* tap);
 
 // Suppress capture of our own rendering (ImGui, VR copies) on this thread
 // for the current scope. Used by the Present detour after on_present().
