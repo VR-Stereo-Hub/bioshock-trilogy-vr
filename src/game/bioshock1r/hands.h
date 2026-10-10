@@ -83,6 +83,8 @@ void handle_command(const char* args);
 // whose trigger last fired, or the forced choice. Shared with the aim laser so
 // the beam leaves the hand that is actually holding the weapon.
 int active_hand();
+// s82: the hands drive mode (0 gun, 1 hands, 2 bones, 3 BRVR, 4 Dishonored), for logs.
+int drive_mode();
 
 // Live mesh-alignment trim (degrees, per hand) - read by `vraim synccheck` so
 // its model chain sweeps the REAL tuned values (session 20).
@@ -170,6 +172,13 @@ bool current_ability(void** out);
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.
 void save_offsets();
+// s86f: the F10 step rows (Dishonored's MpTrimViewStep). A press on the render thread is
+// queued here and converted on the game thread, in the hand's frame of that instant, into
+// the stored trim (bones::off_hand_cm / off_hand_rot_deg). `rot` false: axis 0 right,
+// 1 forward, 2 up, amount in cm. `rot` true: axis 0 yaw (+ right), 1 pitch (+ up),
+// 2 roll (+ top to the right), amount in degrees. steps_pending: any still queued.
+void queue_hand_step(int hand, bool rot, int axis, float amount);
+bool steps_pending();
 
 // s67 view-frame placement (where the gun SITS; cannot create an orbit, unlike
 // the grip offset which is the pivot). Per weapon since s67 - the shotgun sits

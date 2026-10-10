@@ -38,7 +38,9 @@ enum class Setting {
     EffectsInFrame, EffectVertexLimit, EffectRtOnly,
     ScreenDistance, CutsceneDisplay, HideSceneArms, GameSceneHands,
     PinPosition, PinRotation, HideHeldArm, BoneProbes,
-    HandsArmsSize, ShoulderBarForward, ShoulderBarRight, ShoulderBarUp, ShoulderWidth, ShouldersLinked,
+    HandsArmsSize, ShoulderBarForward, ShoulderBarRight, ShoulderBarUp, ShoulderWidth, WeaponFollowsHands,
+    HandPitch, HandYaw, HandRoll, HandGripForward, HandGripRight, HandGripUp,
+    UpperArmLength, ForearmLength, ShowArms,
     Count
 };
 struct Spec {
@@ -57,8 +59,8 @@ struct Spec {
     const char* help = nullptr;
 };
 struct Context {
-    int handMode = 3;
-    int maxHandMode = 3;
+    int handMode = 4;
+    int maxHandMode = 4;
     bool solverV2 = false;
     bool hasSolverChoice = false;
     bool tracking = false;
@@ -77,6 +79,9 @@ struct Backend {
     virtual Context context() const = 0;
     virtual void action(Action action) = 0;
     virtual void diagnostics(Tab tab) = 0;
+    // s86f: the hand step rows (Dishonored's MpTrimViewStep). hand 0/1; rot false = move
+    // (axis 0 right, 1 forward, 2 up; cm), true = turn (0 yaw, 1 pitch, 2 roll; degrees).
+    virtual void hand_step(int, bool, int, float) {}
 };
 const Spec* specs(std::size_t& count);
 const Spec& spec(Setting id);

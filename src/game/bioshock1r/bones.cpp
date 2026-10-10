@@ -18,6 +18,10 @@
 
 #include "game/bioshock1r/bones.h"
 
+#include "game/bioshock1r/arm_ik.h"
+#include "game/bioshock1r/hand_compose.h"
+#include "game/bioshock1r/hand_grip.h"
+
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h" // backbuffer_dims: the lens laws are aspect-parameterised
 #include "core/util/log.h"
@@ -25,9 +29,15 @@
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
+#include "game/bioshock1r/handback.h"
+#include "game/bioshock1r/palette.h"
+#include "game/bioshock1r/palette_math.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scenedraw.h"
 
 #include <windows.h>
+
+#include <MinHook.h>
 
 #include <imgui.h>
 
@@ -177,6 +187,33 @@ bool g_freeRefValid[2] = {false, false};
 Qts g_freeArmRef[2][5];
 float g_freeArmW0[2][3] = {};
 bool g_freeArmRefValid[2] = {false, false};
+// s81: the wrist's ROTATION in the same capture, which the s70i-s77 solver never
+// needed and arm_ik.h does: it measures the forearm roll as the wrist's own turn
+// relative to where the solved forearm carries this reference wrist.
+float g_freeArmW0Q[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
+
+// ---- s81: THE ARM, REDONE ON THE DISHONORED SOLVER ------------------------
+//
+// arm_ik.h is the Dishonored VR mod's full-arm IK (itself the left-hand fork's
+// design), pure and host-tested, validated offline on NEWPlayerHands' real weights
+// (tools\arm-ik-sweep.ps1). It replaces the solve, the twist and the writes of
+// solve_arm() below; the inputs that s70-s77 got right - the shoulder in the
+// hands' frame, the DrawScale division, the intended actor transform, the settle-
+// captured reference - are shared. Off restores the s70i-s77 solver exactly.
+std::atomic<bool> g_armIkV2{true};
+// Per hand: the elbow pole and wrist roll from the last solve, for continuity.
+// The pole is kept in BODY axes (forward, right, up), never component space: the
+// held hand's actor turns with the controller, so a component-space pole from
+// last frame points somewhere else this frame.
+struct ArmIkHistory {
+    bool valid = false;
+    uint64_t ms = 0;
+    float poleBody[3] = {};
+    float twist = 0;
+    float w0[3] = {}; // the reference it was measured against; a new one is a reset
+};
+ArmIkHistory g_armIkHist[2];
+std::atomic<uint32_t> g_armIkSolves{0}, g_armIkFails{0}, g_armIkReach{0};
 // s73f: the last UNWRAPPED twist angle, per hand. Continuity only - not
 // smoothing, which s73c removed for good reason. See the unwrap in solve_arm().
 //
@@ -507,7 +544,7 @@ std::atomic<float> g_shoulderRightCm[2] = {-35.60f, 26.00f};
 std::atomic<float> g_shoulderUpCm[2] = {-28.60f, -19.80f};
 // s70k: how far the elbow sits OUT from straight-down, 0 = hanging, 1 = level
 // with the shoulder. Human elbows rest down and a little outward.
-std::atomic<float> g_elbowOut{0.35f};
+std::atomic<float> g_elbowOut{0.6f}; // s86e: Dishonored's ArmElbowOut; 0.35 was BS1's untested guess (ARM_IK.md)
 // ---- s75: SIZE THE RIG'S ARM TO THE PLAYER'S ------------------------------
 //
 // Multiplies the authored segment lengths. The rig's arm is a fixed length and
@@ -527,7 +564,7 @@ std::atomic<float> g_elbowOut{0.35f};
 // The authored FRACTIONS the twist helpers sit at along the forearm must not
 // change with it - see the divisor at the helper loop, which cancels this
 // deliberately. Without that, a longer arm would bunch them toward the elbow.
-std::atomic<float> g_armScale{1.00f};
+std::atomic<float> g_armScale{0.94f}; // s90: the tester's 2026-10-09 tune (was 1.00)
 // s70k: exponential smoothing on the solved elbow, ms. The hand is NEVER
 // smoothed - that would put latency on your own tracking, which is the one thing
 // a VR viewmodel must not do. Only the derived joint is eased.
@@ -883,7 +920,16 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // 0.760 was the s61 in-headset calibration; 0.80 is BRVR's GunScale, adopted
 // 2026-08-22 for parity (see the g_scale note above for what a 5% change is
 // worth). 1.0 = authored, and at 1.0 the lane drops entirely.
-std::atomic<float> g_wScale{0.80f};
+std::atomic<float> g_wScale{0.83f}; // s90: the tester's 2026-10-09 tune (was 0.80)
+// s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
+// hand's scale (0.8 by default), so the two sides can never disagree. Declared here
+// because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set
+// (the default), the weapon is sized by the same multiplier - g_wScale stays the
+// weapon's own calibration against the hand.
+// s90: the tester's headset tune of 2026-10-09 21:47 is the default (was 0.83, Dishonored's hand;
+// the weapon followed it). With the weapon on its own size (g_wScale) it no longer follows.
+std::atomic<float> g_m4ArmSize{0.85f}; // s86: absolute (HANDS_DISHONORED.md)
+std::atomic<bool> g_m4WeaponFollows{false};
 void* g_wHoldable = nullptr; // the actor the lane is bound to
 void* g_wSkelInst = nullptr;
 Qts* g_wBones = nullptr;
@@ -1219,6 +1265,155 @@ bool locate(void* handsActor) {
 void set_dirty(uint8_t v) {
     if (!g_skelInst) return;
     write_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstDirtyOffset, &v, 1);
+}
+
+// ---- s82: THE EVALUATOR HOOK (HANDS_DISHONORED.md P1) ------------------------
+//
+// The Dishonored hand model composes onto the engine's FRESHLY evaluated pose, so it
+// must run the moment the engine rebuilds the bone array. This hooks that routine -
+// SkeletonInstance vtable slot +0x9C (patterns::kSkelInstEvaluateRva, ENGINE_NOTES s82)
+// - the way BS2's wfix hooks its twin (bioshock2r/bones.cpp, s74), duplicated here per the
+// decoupling rule. The routine's convention is not trusted (Hex-Rays reads an @<ebp>
+// argument), so the detour is naked: on entry it swaps the caller's return address for a
+// stub and jumps to the original untouched; the stub runs ev_post() with every register
+// and the x87 state preserved, then returns to the real caller. Only the HANDS rig's
+// instance and only the game thread are taken; everything else passes straight through.
+//
+// P1 is an OBSERVER: ev_post() copies the evaluated pose and counts where in the frame
+// the evaluation ran. Nothing is written. `vrbones evalprobe on` drives it.
+void* g_evOrig = nullptr;
+bool g_evCreated = false;
+uintptr_t g_evRetSaved = 0;  // the hooked call's real return address (game thread)
+uint32_t g_evTid = 0;        // the game thread, refreshed by the probe tick
+uint32_t g_evForeign = 0;    // our instance, another thread (counted in the detour)
+uint32_t g_evNested = 0;
+std::atomic<bool> g_evProbe{false};
+// s83: mode 4 is driving. reapply() and the other mode-3 replays stand down: they would
+// repaint a stale cache over the composed pose and clear the dirty byte mode 4 relies on.
+std::atomic<bool> g_m4On{false};
+std::atomic<uint32_t> g_evPost{0}, g_evTick{0}, g_evPass1{0}, g_evPass2{0};
+uint32_t g_evProbeLastPosts = 0;
+Qts g_evCopy[kMaxBones];
+Qts g_evPrev[kMaxBones];
+int g_evCopyCount = 0;
+void* g_evCopyInst = nullptr; // whose evaluation the copy is - a new rig is a new copy
+bool g_evCopyValid = false, g_evPrevValid = false;
+float g_evAnimDelta = 0.0f; // largest bone move between consecutive evaluations, UU
+struct EvCaller {
+    uint32_t rva = 0, count = 0;
+};
+EvCaller g_evCallers[8];
+
+void __cdecl ev_post() {
+    g_evPost.fetch_add(1, std::memory_order_relaxed);
+    const int depth = scenedraw::build_depth();
+    if (depth <= 0) g_evTick.fetch_add(1, std::memory_order_relaxed);
+    else if (scenedraw::in_second_build()) g_evPass2.fetch_add(1, std::memory_order_relaxed);
+    else g_evPass1.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t rva = g_imageBase ? static_cast<uint32_t>(g_evRetSaved - reinterpret_cast<uintptr_t>(g_imageBase)) : 0;
+    for (EvCaller& c : g_evCallers) {
+        if (c.rva == rva || c.rva == 0) {
+            c.rva = rva;
+            ++c.count;
+            break;
+        }
+    }
+    const int n = g_boneCount < kMaxBones ? g_boneCount : kMaxBones;
+    if (n <= 0 || !g_bones) return;
+    if (g_evCopyValid) {
+        memcpy(g_evPrev, g_evCopy, sizeof(Qts) * n);
+        g_evPrevValid = true;
+    }
+    g_evCopyValid = read_n(g_bones, g_evCopy, sizeof(Qts) * n);
+    g_evCopyCount = g_evCopyValid ? n : 0;
+    g_evCopyInst = g_skelInst;
+    m4_after_eval(); // s83: mode 4 composes onto exactly this pose (a no-op otherwise)
+    if (g_evCopyValid && g_evPrevValid) {
+        for (int i = 0; i < n; ++i) {
+            const float d[3] = {g_evCopy[i].p[0] - g_evPrev[i].p[0], g_evCopy[i].p[1] - g_evPrev[i].p[1],
+                                g_evCopy[i].p[2] - g_evPrev[i].p[2]};
+            const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (m > g_evAnimDelta) g_evAnimDelta = m;
+        }
+    }
+}
+
+__declspec(naked) void ev_ret_stub() {
+    __asm {
+        pushad
+        pushfd
+        sub esp, 108
+        fnsave [esp]
+        call ev_post
+        frstor [esp]
+        add esp, 108
+        popfd
+        popad
+        push dword ptr [g_evRetSaved]
+        mov dword ptr [g_evRetSaved], 0
+        ret
+    }
+}
+
+__declspec(naked) void ev_detour() {
+    __asm {
+        push eax
+        ; only the hands rig's instance (ecx = this)
+        cmp ecx, [g_skelInst]
+        jne passthrough
+        mov eax, fs:[0x24]           ; current thread id (TEB)
+        cmp eax, [g_evTid]
+        je gamethread
+        inc dword ptr [g_evForeign]
+        jmp passthrough
+      gamethread:
+        cmp dword ptr [g_evRetSaved], 0
+        je take
+        inc dword ptr [g_evNested]
+        jmp passthrough              ; nested call - leave it alone
+      take:
+        mov eax, [esp + 4]           ; the caller's return address
+        mov [g_evRetSaved], eax
+        mov eax, offset ev_ret_stub
+        mov [esp + 4], eax
+      passthrough:
+        pop eax
+        jmp dword ptr [g_evOrig]
+    }
+}
+
+bool ev_install() {
+    if (g_evCreated) return true;
+    if (!g_imageBase) return false;
+    const uint8_t* vt = g_imageBase + patterns::kSkeletonInstanceVtableRva;
+    void* slot = nullptr;
+    if (!read_n(vt + patterns::kSkelInstEvaluateSlot, &slot, sizeof slot)) {
+        BVR_LOG("[bones] evalhook: SkeletonInstance vtable slot 0x%X unreadable",
+                patterns::kSkelInstEvaluateSlot);
+        return false;
+    }
+    const uint32_t rva = static_cast<uint32_t>(static_cast<uint8_t*>(slot) - g_imageBase);
+    if (rva != patterns::kSkelInstEvaluateRva) {
+        BVR_LOG("[bones] evalhook: REFUSED - slot 0x%X holds RVA 0x%X, the derived evaluator is "
+                "0x%X (another build? re-run tools\\ida\\hd1_skelinst_update.py)",
+                patterns::kSkelInstEvaluateSlot, rva, patterns::kSkelInstEvaluateRva);
+        return false;
+    }
+    MH_STATUS st = MH_CreateHook(slot, reinterpret_cast<void*>(&ev_detour), &g_evOrig);
+    if (st != MH_OK && st != MH_ERROR_ALREADY_CREATED) {
+        BVR_LOG("[bones] evalhook: MH_CreateHook failed: %s", MH_StatusToString(st));
+        return false;
+    }
+    st = MH_EnableHook(slot);
+    if (st != MH_OK && st != MH_ERROR_ENABLED) {
+        BVR_LOG("[bones] evalhook: MH_EnableHook failed: %s", MH_StatusToString(st));
+        return false;
+    }
+    g_evCreated = true;
+    BVR_LOG("[bones] evalhook: the skeleton evaluator is HOOKED at RVA 0x%X (slot 0x%X) - "
+            "observer only, nothing is written",
+            rva, patterns::kSkelInstEvaluateSlot);
+    return true;
 }
 
 // ---- quat helpers over the Qts layout ---------------------------------------
@@ -2305,6 +2500,8 @@ void set_shoulder_cm(int hand, float fwd, float right, float up) {
 }
 float elbow_out() { return g_elbowOut.load(std::memory_order_relaxed); }
 void set_elbow_out(float v) { g_elbowOut.store(v, std::memory_order_relaxed); }
+bool arm_ik_v2() { return g_armIkV2.load(std::memory_order_relaxed); }
+void set_arm_ik_v2(bool on) { g_armIkV2.store(on, std::memory_order_relaxed); }
 float arm_scale() { return g_armScale.load(std::memory_order_relaxed); }
 void set_arm_scale(float v) {
     g_armScale.store(v < 0.5f ? 0.5f : (v > 2.0f ? 2.0f : v), std::memory_order_relaxed);
@@ -2387,6 +2584,10 @@ float weapon_scale() {
 
 void wskel_drive() {
     float ws = g_wScale.load(std::memory_order_relaxed);
+    // s86: `weapon size` is the weapon against a 0.8 hand (BRVR's HandsScale, which the 0.8
+    // GunScale default was set beside), so at size 0.8 it is exactly itself.
+    if (g_m4On.load(std::memory_order_relaxed) && g_m4WeaponFollows.load(std::memory_order_relaxed))
+        ws *= g_m4ArmSize.load(std::memory_order_relaxed) / 0.8f;
     if (ws == 1.0f) {
         // 1.0 is a total drop on BOTH lanes - no adoption, no writes, no cached
         // pointers. A lane only ever exists while the knob is off 1.0. This is
@@ -2716,6 +2917,138 @@ bool barrel_ref_axis(float d0[3]) {
     return true;
 }
 
+// ---- s81: THE ARM ON THE DISHONORED SOLVER ----------------------------------
+//
+// Called from solve_arm() once the inputs both solvers share are built:
+//   W       the wrist (this hand's anchor - the wrist in freeze mode), DrawScale-
+//           divided component space, as the hand drive just placed it
+//   qaUse   world -> component rotation, the actor transform about to be WRITTEN
+//   S       the shoulder, same space as W (s74's frame, s72q's division)
+//   cy, sy  the body yaw basis the shoulder was built in - the frame that does not
+//           turn when the head does (s74d)
+// The IK ends on the wrist AS DRAWN - position and rotation - so the arm follows
+// whatever the hand is doing, animation included (Dishonored's rule: the endpoint
+// is the final hand, after animation blending). Writes the five sleeve bones and
+// caches them for the per-pass repaint, like the solver it replaces.
+void solve_arm_v2(int hand, const float W[3], const float qaUse[4], const float S[3], float s,
+                  float lengthScale, bool freeBank, const float handQ[4],
+                  const float handRefQ[4], float cy, float sy) {
+    namespace ik = arm_ik;
+    const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+    const Qts* ar = g_freeArmRef[hand];
+    int first = 0, last = 0, anchor = 0;
+    cluster_of(hand, &first, &last, &anchor);
+    if (anchor < 0 || anchor >= g_boneCount) return;
+
+    ik::Ref ref;
+    ik::Bone* rb[5] = {&ref.clavicle, &ref.upper, &ref.fore, &ref.twist[0], &ref.twist[1]};
+    for (int k = 0; k < 5; ++k) {
+        memcpy(rb[k]->p, ar[k].p, 12);
+        memcpy(rb[k]->q, ar[k].q, 16);
+    }
+    memcpy(ref.wristP, g_freeArmW0[hand], 12);
+    memcpy(ref.wristQ, handRefQ ? handRefQ : g_freeArmW0Q[hand], 16);
+
+    ik::Input in;
+    in.shoulder = ik::vec(S);
+    in.wrist = ik::vec(W);
+    if (handQ) {
+        memcpy(in.wristQ, handQ, 16);
+    } else if (!read_n(g_bones[anchor].q, in.wristQ, 16)) {
+        return; // the held hand: its wrist as the engine (or the drive) left it
+    }
+    // The body frame in component space. Directions only: DrawScale does not apply.
+    const float Fw[3] = {cy, sy, 0.0f}, Rw[3] = {-sy, cy, 0.0f}, Uw[3] = {0.0f, 0.0f, 1.0f};
+    float Fc[3], Rc[3], Uc[3];
+    qts_rotate(qaUse, Fw, Fc);
+    qts_rotate(qaUse, Rw, Rc);
+    qts_rotate(qaUse, Uw, Uc);
+    const ik::Vec F = ik::vec(Fc), R = ik::vec(Rc), U = ik::vec(Uc);
+    const float side = hand == 1 ? 1.0f : -1.0f;
+    // Dishonored's pole - down, out by `elbow out`, a little back - on BS1's knob.
+    const float eo = g_elbowOut.load(std::memory_order_relaxed);
+    in.pole = U * -1.0f + R * (side * eo) + F * -0.3f;
+    in.outward = R * side;
+
+    ArmIkHistory& h = g_armIkHist[hand];
+    const uint64_t now = GetTickCount64();
+    const bool sameRef = h.valid && memcmp(h.w0, g_freeArmW0[hand], sizeof h.w0) == 0;
+    in.fresh = sameRef && now - h.ms < 250;
+    if (in.fresh) {
+        in.priorPole = F * h.poleBody[0] + R * h.poleBody[1] + U * h.poleBody[2];
+        in.priorTwist = h.twist;
+    }
+    in.scale = s;
+    in.lengthScale = lengthScale;
+
+    ik::Output out;
+    if (!ik::pose(ref, in, out)) {
+        g_armIkFails.fetch_add(1, std::memory_order_relaxed);
+        h.valid = false;
+        return;
+    }
+    g_armIkSolves.fetch_add(1, std::memory_order_relaxed);
+    if (out.joints.reachClamped) g_armIkReach.fetch_add(1, std::memory_order_relaxed);
+
+    const ik::Bone* ob[5] = {&out.clavicle, &out.upper, &out.fore, &out.twist[0], &out.twist[1]};
+    for (int k = 0; k < 5; ++k) {
+        const int idx = armIdx[k];
+        if (idx < 0 || idx >= g_boneCount) continue;
+        // The scale is the reference bone's own, times the hand's scale (the arm is
+        // drawn at the hand's size) and the length stretch along the limb.
+        const float sv[3] = {ar[k].s[0] * ob[k]->s[0], ar[k].s[1] * ob[k]->s[1],
+                             ar[k].s[2] * ob[k]->s[2]};
+        if (!write_n(g_bones[idx].p, ob[k]->p, 12)) return;
+        write_n(g_bones[idx].q, ob[k]->q, 16);
+        write_n(g_bones[idx].s, sv, 12);
+        g_scaleWrote[idx] = true; // the old solver's restore path puts the authored one back
+        if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+            CachedBone& ca = g_cache[g_cacheCount++];
+            ca.idx = idx;
+            memcpy(ca.p, ob[k]->p, 12);
+            memcpy(ca.q, ob[k]->q, 16);
+            memcpy(ca.s, sv, 12);
+            ca.writeScale = true;
+            ca.writeRot = true;
+        }
+    }
+    // s72m's read-back stash, kept for the free arm exactly as the old path keeps it.
+    if (freeBank) {
+        bool okW = true;
+        for (int k = 0; k < 5 && okW; ++k)
+            okW = read_n(&g_bones[armIdx[k]], &g_freeArmWrote[hand][k], sizeof(Qts));
+        g_freeArmWroteValid[hand] = okW;
+    }
+
+    h.valid = true;
+    h.ms = now;
+    h.poleBody[0] = ik::dot(out.basePole, F);
+    h.poleBody[1] = ik::dot(out.basePole, R);
+    h.poleBody[2] = ik::dot(out.basePole, U);
+    h.twist = out.trackedTwist;
+    memcpy(h.w0, g_freeArmW0[hand], sizeof h.w0);
+
+    // ARMIK2: always on, twice a second per hand and role - the run that needs it is
+    // never the one where a checkbox was ticked (s75 ARMDIAG's lesson).
+    static uint64_t s_log[2][2] = {{0, 0}, {0, 0}};
+    const int role = freeBank ? 1 : 0;
+    if (now - s_log[role][hand] >= 500) {
+        s_log[role][hand] = now;
+        const float a = ik::length(ik::vec(ar[2].p) - ik::vec(ar[1].p)) * s * lengthScale;
+        const float b = ik::length(ik::vec(g_freeArmW0[hand]) - ik::vec(ar[2].p)) * s * lengthScale;
+        BVR_LOG("[bones] ARMIK2: %s %s | reach %.1f of %.1f UU%s shoulder moved %.1f | roll "
+                "%+.1f deg (tracked %+.1f, elbow swivel %+.1f) | %s | solves %u fails %u reach %u",
+                hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
+                ik::length(in.wrist - in.shoulder), a + b,
+                out.joints.reachClamped ? " CLAMPED," : ",", out.joints.shoulderShift,
+                out.roll / ik::kDeg, out.trackedTwist / ik::kDeg, out.swivel / ik::kDeg,
+                in.fresh ? "continuing" : "fresh history",
+                g_armIkSolves.load(std::memory_order_relaxed),
+                g_armIkFails.load(std::memory_order_relaxed),
+                g_armIkReach.load(std::memory_order_relaxed));
+    }
+}
+
 // ---- s71: THE ARM SOLVE, CALLABLE FOR EITHER HAND -------------------------
 //
 // Lifted out of drive() unchanged so the FREE hand can use it too. The held
@@ -2923,6 +3256,13 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             S[0] /= rigScale;
             S[1] /= rigScale;
             S[2] /= rigScale;
+        }
+
+        // s81: everything above is the input both solvers share; the Dishonored
+        // solver takes it from here. Off falls through to the s70i-s77 one.
+        if (g_armIkV2.load(std::memory_order_relaxed)) {
+            solve_arm_v2(hand, W, qaUse, S, s, armScale, freeBank, handQ, handRefQ, cy, sy);
+            return;
         }
 
         // ---- s77 SHOULDERLAND: the shoulder we ASK for vs the one that LANDS -
@@ -4547,6 +4887,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                    sizeof g_freeArmRef[hand]);
                             memcpy(g_freeArmW0[hand], g_armW0[hand],
                                    sizeof g_freeArmW0[hand]);
+                            memcpy(g_freeArmW0Q[hand], fresh[anchor].q,
+                                   sizeof g_freeArmW0Q[hand]);
                             ue_rot_to_quat(gp.rot, g_freeArmActorQ[hand]);
                             g_freeArmYaw0[hand] =
                                 (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
@@ -5707,6 +6049,8 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
             }
             memcpy(g_freeArmW0[hand], g_freeRef[hand][anchor - first].p,
                    sizeof g_freeArmW0[hand]);
+            memcpy(g_freeArmW0Q[hand], g_freeRef[hand][anchor - first].q,
+                   sizeof g_freeArmW0Q[hand]);
             ue_rot_to_quat(actorRotNow, g_freeArmActorQ[hand]);
             g_freeArmYaw0[hand] =
                 (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
@@ -6355,6 +6699,7 @@ void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
 }
 
 void reapply() {
+    if (g_m4On.load(std::memory_order_relaxed)) return; // s83: mode 4 composes its own
     // Only replay a FRESH write (the paired first pass of this frame). A stale
     // cache must never keep painting an old pose after the drive stops.
     if (!g_cacheSkelInst || g_cacheSkelInst != g_skelInst || !g_bones) return;
@@ -6396,6 +6741,964 @@ void reapply() {
             }
         }
         wskel_set_dirty(0);
+    }
+}
+
+// ---- s83: MODE 4, THE DISHONORED HANDS (HANDS_DISHONORED.md P4) -------------
+//
+// The hands actor stays where the engine puts it (on the camera, Hands.UpdateLocation)
+// and is never written - so there is no rotation for the engine to overwrite and no roll
+// for it to erase (the ACTORWATCH class, 312 hits in the s81 run). The engine evaluates
+// the hand skeleton every tick (the dirty byte is set every CalcView; s82's simulator run
+// measured one evaluation per tick, always in the game tick, never inside a render pass),
+// and the moment it does, each hand is composed onto that FRESH pose:
+//
+//     D    = Target * inverse(A[wrist])      hand_compose.h, Dishonored's delta
+//     B[i] = D * A[i]                        every bone of the hand - fingers, the weapon
+//                                            attach (43) and its tip (44) - so the
+//                                            animation plays inside a hand that sits
+//                                            exactly on the controller
+//
+// It is composed twice per frame from the same source copy: right after the evaluation
+// (ev_post) and again at the scene build (hands::late_write), with the actor transform
+// read THEN - the one the renderer is about to use, which is Dishonored's draw-time read.
+// The arms are arm IK v2 to the composed wrists, in the engine-placed actor's frame.
+//
+// Targets: the HELD hand takes mode 3's own placement at idle (the actor mode 3 would
+// write, times the wrist captured once per holdable at idle), so every per-weapon profile
+// carries over unchanged and then stays put through every animation. The FREE hand takes
+// mode 3's free-hand target as is - it was already wrist-normalised (s71w).
+namespace {
+struct M4Hand {
+    bool valid = false;
+    float p[3] = {};             // the wrist target, WORLD
+    float q[4] = {0, 0, 0, 1};
+};
+struct M4State {
+    bool active = false;
+    uint64_t ms = 0;             // when the targets were set (CalcView)
+    void* actor = nullptr;
+    int held = 1;
+    M4Hand hand[2];
+    // Arms: the shoulders and body axes, WORLD, from the same formula solve_arm uses.
+    float shoulder[2][3] = {};
+    float F[3] = {}, R[3] = {}, U[3] = {};
+    float scale = 1;             // both hands and both arms (s85: one value, never per hand)
+    float upperLen = 1, foreLen = 1; // s86: each segment's length, on top of the size
+    float uuPerCm = 1;
+    bool arms = false;           // solve the arms (armsMode 1)
+    bool hideArms = false;       // collapse them instead (armsMode 2: hands only)
+    // s86g, for PIVOTPROBE: the raw grip point and the trimmed hand rotation per hand, and
+    // the camera rotation, all WORLD, as of this CalcView.
+    float gripWorld[2][3] = {};
+    FRotator handRot[2] = {};
+    FRotator camRot{};
+    // s90: the final camera, WORLD, for PIVOTPROBE's fg-eye line (compared against the eye the
+    // foreground pass actually renders the hands from - a frame dump's cb0 floats 56..58).
+    float camWorld[3] = {};
+};
+M4State g_m4;
+std::atomic<bool> g_pivotProbe{false};
+// s86: per side, the solved upper-arm head, body cm (fwd, right, up) from the bar centre,
+// and the wrist's distance from its shoulder as a fraction of the arm. For the HANDS line.
+float g_m4Upper[2][3] = {};
+float g_m4ReachFrac[2] = {};
+float g_m4AnchorDev[2] = {}; // s88: the live palm's largest distance from the rigid one, cm (HANDS line)
+// ---- s86: THE SHOULDERS, DISHONORED'S NUMBERS, FROM THE EYE -------------------------
+//
+// One pair of shoulders (s83b): a shared centre and a total width, half mirrored. Since
+// s86 the centre is measured from the EYE (ctx.cam, the final camera: head offset and
+// the headset's own movement included), which is Dishonored's body origin (its
+// arm_ik_draw.inc: body.origin is the draw camera, corrected to the eye centre). s74d-s85
+// measured from ctx.base, the camera before the headset's translation, so leaning
+// forward left the shoulders behind. Your shoulders lean with you.
+//
+// The defaults are the Dishonored fit accepted in a headset on 2026-10-06 and still in
+// that mod's live ini (ArmShoulderForwardCm -16, RightCm 0, UpCm -25, WidthCm 38.1),
+// which the tester calls "perfectly aligned with my body". HANDS_DISHONORED.md s86.
+// s90: forward, right and width are now the tester's BS1 headset tune of 2026-10-09 21:47
+// (with the hands at the eye, s90's head anchor); up keeps the Dishonored -25.
+std::atomic<float> g_m4ShFwdCm{-11.8f}, g_m4ShRightCm{1.6f}, g_m4ShUpCm{-25.0f};
+std::atomic<float> g_m4ShWidthCm{30.4f};
+// ---- s85: THE SHOULDERS STAY WHERE THE SLIDERS PUT THEM -----------------------------
+//
+// s83b's headset run: "a lot of the shoulder settings are confusing and don't work right,
+// several do not move in the right direction". The log of that run says why: `slid` up
+// to 11.5 UU. The solver moves the shoulder whenever the hand is out of reach (or closer
+// than 40% of the arm), and s83b's linked bar then moved BOTH shoulders by the larger of
+// the two slides. So with an arm extended, widening the shoulders was pulled straight back
+// by the slide ("width did nothing"), raising them swung them on a sphere about the wrist,
+// and moving the LEFT hand moved the RIGHT shoulder. No slider could be read by eye.
+//
+// Now the shoulder is a fixed point that only ITS OWN arm's reach can move (s86d: by the
+// solver's slide, Dishonored's form; s85's stretch-first is gone).
+constexpr float kM4EyeToPivotCm = 9.0f; // eye centre to the neck joint, along the head's forward (s86b)
+std::atomic<float> g_m4Slide{0.0f};   // the largest leftover slide, UU (log)
+// ---- s86: THE ARM'S PROPORTIONS, MEASURED AGAINST THE FIT THAT WAS RIGHT ------------
+//
+// Both rigs measured from their reference skeletons (BS1: bs2gltf --rig-out on
+// NEWPlayerHands; Dishonored: its shipped dishonored_vr_arm_rig.bin), in each game's own
+// cm, and Dishonored's drawn at the size its live ini draws it (ModelScale 0.85 on the
+// hand, ArmLengthScale 1.27 on the arm):
+//
+//                      BS1 rig    Dishonored rig   Dishonored as drawn (the fit)
+//   wrist -> last knuckle 20.2        19.7              16.7 cm
+//   upper arm             43.3        23.5              25.3 cm
+//   forearm               30.0        26.0              28.0 cm
+//
+// So the hand matches at a size of 0.83, and at that size BS1's upper arm needs 0.71 of
+// its length and its forearm 1.13: one `arm length` slider could never fit both, which is
+// "the length of the forearm and bicep" being off however it was set.
+std::atomic<float> g_m4UpperLen{0.71f}, g_m4ForeLen{1.13f};
+// s89 (hand_grip.h): pin the FIST CENTRE to the grip pose's origin, and turn the hand so the fist's
+// handle axis and palm normal meet the grip's. `vrhands palette fist|calib on|off`.
+// s89b: the calibration is OFF by default. It assumes the OpenXR spec's grip axes (-Z along the
+// handle, +X the palm normal); on the tester's Virtual Desktop runtime the hands came out turned
+// 180 deg toward the shoulder, so that runtime's grip axes are not the spec's. The orientation is
+// the tester's own tuned trims again; the geometric calibration's equivalent trim is LOGGED beside
+// them (g_calibEqDeg, the HANDS line) so the next run shows what the runtime's axes actually are.
+std::atomic<bool> g_fistAnchor{true}, g_gripCalib{false};
+// s90: THE HANDS SIT WHERE THE EYE IS, NOT WHERE THE PAWN'S EYE IS. The camera carries the head
+// offset sliders (`CameraHeightOffset`, 9 UU up by default) on top of ctx.base + the HMD's offset;
+// the hand target was ctx.base + the controller's offset, so every hand was drawn 9 cm BELOW the
+// real one relative to the eye (measured in the sim: grip - camera read up -23.95 UU where the
+// sim's grip sits 15 cm below its head). A world-frame error like that cannot be cancelled by a
+// palm-frame trim except at the one orientation it was tuned at - "synced forward, desynced when
+// turned". BRVR places its hands relative to the head, so its CameraHeightOffset comes along
+// (CameraHook.cpp); this adds the same vector. `vrhands palette headanchor on|off`.
+std::atomic<bool> g_headAnchor{true};
+float g_calibEqDeg[2][3] = {}; // pitch, yaw, roll the calibration would set, per hand (log)
+bool g_calibEqOk[2] = {false, false};
+struct M4ArmHist {
+    bool valid = false;
+    uint64_t ms = 0;
+    float poleBody[3] = {};
+    float twist = 0;
+};
+M4ArmHist g_m4Arm[2];
+std::atomic<uint32_t> g_m4Composes{0}, g_m4Late{0}, g_m4Skips{0};
+
+int m4_wrist(int hand) { return hand == 1 ? patterns::kBoneRWrist : patterns::kBoneLWrist; }
+void m4_range(int hand, int* first, int* last) {
+    *first = hand == 1 ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+    *last = hand == 1 ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+}
+
+void m4_compose(bool late) {
+    if (!g_m4.active || !g_skelInst || !g_bones || !g_evCopyValid || g_evCopyInst != g_skelInst) return;
+    if (GetTickCount64() - g_m4.ms > 250) { // stale targets: a gated frame or a menu
+        g_m4Skips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const int n = g_evCopyCount;
+    if (n < patterns::kHandsRigBoneCount) return;
+    // The actor as the renderer is about to use it - engine-placed, never written here.
+    float aLoc[3];
+    int32_t aRot[3];
+    if (!read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorLocOffset, aLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorViewDirOffset, aRot, 12))
+        return;
+    float k = 1.0f;
+    if (!ds_read(g_m4.actor, &k) || !(k > 0.01f)) k = 1.0f;
+    float qa[4], qaInv[4];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    quat_conj(qa, qaInv);
+    auto to_comp_p = [&](const float w[3], float out[3]) {
+        const float d[3] = {w[0] - aLoc[0], w[1] - aLoc[1], w[2] - aLoc[2]};
+        qts_rotate(qaInv, d, out);
+        for (int i = 0; i < 3; ++i) out[i] /= k;
+    };
+    auto to_comp_v = [&](const float w[3], float out[3]) { qts_rotate(qaInv, w, out); };
+    const Qts* A = g_evCopy;
+    namespace hc = hand_compose;
+    namespace ik = arm_ik;
+    const uint64_t now = GetTickCount64();
+    ik::Bone composedWrist[2];
+    bool haveWrist[2] = {false, false};
+    // s87: the palette route (palette.h). Off, or the hook refused: the bone writes below.
+    const bool usePalette = palette::active();
+    float hbWeight[2] = {handback::weight(0, now), handback::weight(1, now)};
+    palette::HandXform palX[2];
+    float palmComposed[2][3] = {};
+    for (int h = 0; h < 2; ++h) {
+        const M4Hand& T = g_m4.hand[h];
+        if (!T.valid) continue;
+        const int w = m4_wrist(h);
+        // The target in component space. s86: both hands take the same kind of target -
+        // the controller's grip pose with that hand's own trims (m4_frame) - so nothing
+        // about the two sides differs but the mirror.
+        float cp[3], cq[4];
+        to_comp_p(T.p, cp);
+        quat_mul(qaInv, T.q, cq);
+        // ---- s86d: THE SIZE IS ONE NUMBER, DIVIDED BY THE ACTOR'S DRAWSCALE --------------
+        // The actor's DrawScale (0.80, read every frame as k) multiplies EVERYTHING the
+        // engine renders from component space - bone positions (s72q) and the skin alike.
+        // s86c split the two (positions at size / k, the .s channel at size) on a wrong
+        // reading of s16, and the hand came out "small and stretched like alien hands":
+        // fingers spaced for 0.83, each finger's mesh drawn at 0.66. So both at size / k,
+        // and the drawn size is `size`.
+        const float sPos = g_m4.scale / k, sSkin = g_m4.scale / k;
+        hc::Rigid target{ik::normalized(ik::quat(cq)), ik::vec(cp)};
+        ik::Bone src;
+        memcpy(src.p, A[w].p, 12);
+        memcpy(src.q, A[w].q, 16);
+        // ---- s86c: THE PALM ANCHOR, 1:1 WITH DISHONORED --------------------------------
+        // target.t is where the PALM goes (the controller plus the trim), never the wrist
+        // bone: Dishonored's delta_from_target pins its palm anchor patch there and turns the
+        // hand about it, and hand_compose::delta is that function - the s82 P3 sweep proved
+        // it on the real clips with R_grip and L_Middle1 as the palm. s83 passed a zero
+        // palm (the wrist itself), so every wrist turn swung the hand on a 10 cm lever: the
+        // "huge pivot" the tester found again in s86b. The anchor is the live bone, so
+        // palm_of(A[w], palmLocal) == A[palm].p by construction; the hand is scaled about
+        // it too (Dishonored's scale_about), so sizing never slides the palm off the grip.
+        // s86f: the palm's CENTRE (patterns.h kBone*PalmBones), not R_grip at the heel.
+        const int* pb = h == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
+        ik::Vec palmComp{};
+        for (int j = 0; j < 5; ++j) palmComp = palmComp + ik::vec(A[pb[j]].p) * 0.2f;
+        ik::Vec palmLocal = hc::apply(hc::inverse(hc::frame_of(src)), palmComp);
+        // s88 (Dishonored VR-183): on the palette route the palm is RIGID with the hand bone -
+        // the bind pose's palm centre, measured once through the palette (palette.cpp) - so a
+        // finger animation cannot move the point the hand is placed by.
+        if (usePalette) {
+            float pl[3];
+            if (palette::rigid_palm_local(h, pl)) {
+                // The metric for the HANDS line: how far the live palm centre (the five palm
+                // bones, which finger animation moves) strays from the rigid one - what VR-183
+                // keeps out of the hand's placement.
+                const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+                const float dev = ik::length(palmLocal - ik::vec(pl)) * toCm;
+                if (dev > g_m4AnchorDev[h]) g_m4AnchorDev[h] = dev;
+                palmLocal = ik::vec(pl);
+                palmComp = hc::apply(hc::frame_of(src), palmLocal);
+            }
+        }
+        // s89: THE FIST CENTRE (hand_grip.h, tools\blender\hand_pivot.py). The point pinned to the
+        // controller is where a handle passes through the fist - the grip pose's own origin - not
+        // the knuckle centroid above (4.0 rig units off it, toward the back of the hand and the
+        // wrist), which swung the drawn fist around the real one on every turn. Rebuilt from the
+        // wrist and finger-base heads, which are rigid with the hand, so it does not move with the
+        // fingers either (VR-183's property, kept).
+        if (g_fistAnchor.load(std::memory_order_relaxed)) {
+            const float side = h == 1 ? 1.0f : -1.0f;
+            const int i1 = pb[1], m1 = pb[2], p1 = pb[4]; // kBone*PalmBones: hand, index, middle, ring, pinky
+            hand_grip::Frame fr;
+            if (hand_grip::head_frame(ik::vec(A[w].p), ik::vec(A[i1].p), ik::vec(A[m1].p), ik::vec(A[p1].p), side,
+                                      &fr)) {
+                palmComp = hand_grip::point(fr, hand_grip::kFistCentre);
+                palmLocal = hc::apply(hc::inverse(hc::frame_of(src)), palmComp);
+            }
+        }
+        const hc::Rigid D = hc::delta(target, src, palmLocal);
+        int first = 0, last = 0;
+        m4_range(h, &first, &last);
+        // ---- s87: THE PALETTE ROUTE (palette.h, Dishonored 1.2-1.4) --------------------
+        // The same correction, handed to the skinner instead of written into the skeleton:
+        // x' = target + size/k * D (x - palm) on every matrix of this hand's cluster. The
+        // engine's bones stay the game's, so nothing it reads from them moves.
+        if (usePalette) {
+            palette::HandXform& X = palX[h];
+            X.valid = true;
+            // s88: the hand-back (handback.h, Dishonored 1.8). Weight 1 = the controller, 0 = the
+            // game's clip. The correction is eased toward identity: its rotation slerped, its
+            // scale lerped to the game's, and the PALM moved on the straight line between its
+            // game position and the target (Dishonored blend_transform_palm: interpolating the
+            // translation instead swung the palm on an arc about the mesh origin).
+            const float wgt = hbWeight[h];
+            const palette_math::Blended bl = palette_math::blend_hand(D.q, sPos, palmComp, target.t, wgt);
+            const ik::Quat qb = bl.q;
+            const float sb = bl.s;
+            const ik::Vec palmAt = bl.palmAt;
+            for (int c = 0; c < 4; ++c) X.q[c] = qb.v[c];
+            ik::put(palmAt, X.t);
+            ik::put(palmComp, X.pivot);
+            X.s = sb;
+            const ik::Vec wristNow = palmAt + ik::rotate(qb, (ik::vec(A[w].p) - palmComp) * sb);
+            ik::put(wristNow, X.wrist);
+            memcpy(X.poseP, A[w].p, 12);
+            memcpy(X.poseQ, A[w].q, 16);
+            X.wristBone = w;
+            for (int j = 0; j < 5; ++j) memcpy(X.palmPoseP[j], A[pb[j]].p, 12);
+            ik::put(palmAt, palmComposed[h]);
+            ik::put(wristNow, composedWrist[h].p);
+            // s88: the hand-back trace (30 Hz per hand while it is in effect): where the drawn
+            // palm is against the controller target and the game's own palm, and how far the
+            // game's clip has carried its palm from where it was when the hand-back began.
+            {
+                static uint64_t s_tr[2] = {0, 0}, s_t0[2] = {0, 0};
+                static ik::Vec s_start[2];
+                const bool on = handback::active(h, now);
+                if (on && !s_t0[h]) {
+                    s_t0[h] = now;
+                    s_start[h] = palmComp;
+                }
+                if (!on) s_t0[h] = 0;
+                if (on && !late && now - s_tr[h] >= 33) {
+                    s_tr[h] = now;
+                    const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+                    BVR_LOG("[handback] TRACE %s +%llums w=%.3f | drawn palm %.2f cm from the controller, %.2f cm from "
+                            "the game's palm | the game's palm %.2f cm from where the hand-back began",
+                            h ? "R" : "L", static_cast<unsigned long long>(now - s_t0[h]), wgt,
+                            ik::length(palmAt - target.t) * toCm, ik::length(palmAt - palmComp) * toCm,
+                            ik::length(palmComp - s_start[h]) * toCm);
+                }
+            }
+            const ik::Quat wq = ik::normalized(ik::mul(qb, ik::normalized(ik::quat(A[w].q))));
+            for (int c = 0; c < 4; ++c) composedWrist[h].q[c] = wq.v[c];
+            haveWrist[h] = true;
+            continue;
+        }
+        for (int i = first; i <= last && i < n; ++i) {
+            // Carried by D, the hand's own offsets from the PALM scaled by the hand size.
+            const ik::Vec off = (ik::vec(A[i].p) - palmComp) * sPos;
+            const ik::Vec p = target.t + ik::rotate(D.q, off);
+            const ik::Quat q = ik::normalized(ik::mul(D.q, ik::normalized(ik::quat(A[i].q))));
+            const float s = sSkin;
+            float pw[3], qw[4], sw[3] = {A[i].s[0] * s, A[i].s[1] * s, A[i].s[2] * s};
+            ik::put(p, pw);
+            for (int c = 0; c < 4; ++c) qw[c] = q.v[c];
+            if (!write_n(g_bones[i].p, pw, 12)) return;
+            write_n(g_bones[i].q, qw, 16);
+            // The .s channel only where mode 3 writes it too (the scale mode), so the
+            // weapon is not sized twice - its own skeleton lane sizes it (wskel_drive).
+            if (s != 1.0f && scale_selects(g_scaleMode.load(std::memory_order_relaxed), h, i, first))
+                write_n(g_bones[i].s, sw, 12);
+            if (i == w) {
+                memcpy(composedWrist[h].p, pw, 12);
+                memcpy(composedWrist[h].q, qw, 16);
+                haveWrist[h] = true;
+            }
+        }
+    }
+
+
+    // ---- hands only (s86b): the arm bones pinned AT the wrist, scale 0 ------------------
+    //
+    // s86 sent them 5,000 UU below, as collapse_rig does for the whole rig, and the cuff
+    // exploded: the vertices there are blended between ForeTwist1 (677 of them) and the
+    // hand, and a blend between the hand and a point 50 m away is a 25 m spike. BRVR's
+    // HideBone rule instead: pin each hidden bone at ITS OWN hand's wrist with zero scale,
+    // so a shared vertex pulls toward the wrist point rather than away from the body.
+    // Dishonored cuts the mesh at the wrist and caps it (ARM_HAND_SPLIT.md); BS1 writes
+    // bones, so this is the nearest thing to that cut.
+    if (g_m4.hideArms && !usePalette) {
+        static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        for (int h = 0; h < 2; ++h) {
+            if (!haveWrist[h]) continue;
+            const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+            for (int j = 0; j < 5; ++j) {
+                if (sl[j] >= n) continue;
+                write_n(g_bones[sl[j]].p, composedWrist[h].p, 12);
+                write_n(g_bones[sl[j]].q, composedWrist[h].q, 16);
+                write_n(g_bones[sl[j]].s, kZero, 12);
+            }
+        }
+    }
+
+    // ---- the arms (s83b, s85) --------------------------------------------------------
+    //
+    // The shoulders are one bar (a shared centre and a width, from m4_frame) and stay put
+    // (the s85 banner above). Each arm is solved to its composed wrist on its own.
+    if (g_m4.arms) {
+        float fc[3], rc[3], uc[3];
+        to_comp_v(g_m4.F, fc);
+        to_comp_v(g_m4.R, rc);
+        to_comp_v(g_m4.U, uc);
+        const ik::Vec F = ik::vec(fc), R = ik::vec(rc), U = ik::vec(uc);
+        ik::Ref ref[2];
+        ik::Input in[2];
+        ik::Vec nominal[2];
+        bool want[2] = {false, false};
+        for (int h = 0; h < 2; ++h) {
+            if (!haveWrist[h]) continue;
+            const int w = m4_wrist(h);
+            const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+            ik::Bone* rb[5] = {&ref[h].clavicle, &ref[h].upper, &ref[h].fore, &ref[h].twist[0], &ref[h].twist[1]};
+            for (int j = 0; j < 5; ++j) {
+                memcpy(rb[j]->p, A[sl[j]].p, 12);
+                memcpy(rb[j]->q, A[sl[j]].q, 16);
+            }
+            memcpy(ref[h].wristP, A[w].p, 12);
+            memcpy(ref[h].wristQ, A[w].q, 16);
+            float sc[3];
+            to_comp_p(g_m4.shoulder[h], sc);
+            nominal[h] = ik::vec(sc);
+            const float side = h == 1 ? 1.0f : -1.0f;
+            ik::Input& I = in[h];
+            I.shoulder = nominal[h];
+            I.wrist = ik::vec(composedWrist[h].p);
+            memcpy(I.wristQ, composedWrist[h].q, 16);
+            I.pole = U * -1.0f + R * (side * g_elbowOut.load(std::memory_order_relaxed)) + F * -0.3f;
+            I.outward = R * side;
+            const M4ArmHist& hist = g_m4Arm[h];
+            I.fresh = hist.valid && now - hist.ms < 250;
+            if (I.fresh) {
+                I.priorPole = F * hist.poleBody[0] + R * hist.poleBody[1] + U * hist.poleBody[2];
+                I.priorTwist = hist.twist;
+            }
+            // The arm at exactly the hand's size (thickness and length), so the two
+            // always match; each segment at its own length on top (s86). Positions at
+            // size / k (s86c, the banner at sPos); the .s channel is put back to size when
+            // the bones are written below.
+            I.scale = g_m4.scale / k;
+            I.lengthScale = 1.0f;
+            I.upperLength = g_m4.upperLen;
+            I.foreLength = g_m4.foreLen;
+            // s86d: NO STRETCH. s85 lengthened an arm up to 1.35x before its shoulder could
+            // move; Dishonored never lengthens an arm - past its reach the SHOULDER slides
+            // along the shoulder-wrist line (arm_ik.h solve()), and that is the 1:1 form.
+            // A stretched arm is a longer, bigger arm ("the arms were waaay too big").
+            {
+                const float rig = ik::length(ik::vec(A[sl[2]].p) - ik::vec(A[sl[1]].p)) * I.upperLength +
+                                  ik::length(ik::vec(A[w].p) - ik::vec(A[sl[2]].p)) * I.foreLength;
+                const float reach = rig * I.scale * 0.995f;
+                const float dist = ik::length(I.wrist - I.shoulder);
+                if (!late) g_m4ReachFrac[h] = reach > 1e-3f ? dist / reach : 0.0f;
+            }
+            want[h] = true;
+        }
+        ik::Output out[2];
+        bool ok[2] = {false, false};
+        for (int h = 0; h < 2; ++h) {
+            if (!want[h]) continue;
+            ok[h] = ik::pose(ref[h], in[h], out[h]);
+            if (ok[h] && !late && out[h].joints.shoulderShift > g_m4Slide.load(std::memory_order_relaxed))
+                g_m4Slide.store(out[h].joints.shoulderShift, std::memory_order_relaxed);
+        }
+        for (int h = 0; h < 2; ++h) {
+            M4ArmHist& hist = g_m4Arm[h];
+            if (!want[h]) continue;
+            if (!ok[h]) {
+                hist.valid = false;
+                continue;
+            }
+            const ik::Output& o = out[h];
+            const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+            const ik::Bone* ob[5] = {&o.clavicle, &o.upper, &o.fore, &o.twist[0], &o.twist[1]};
+            if (usePalette) {
+                // s88: Dishonored's arm_ik_draw.inc on BS1's palette. Each sleeve bone's matrix is
+                // carried from the game's bone to the solved one, T = M(solved) * inverse(M(game)),
+                // M(bone) = [R(q) diag(s) | p]; the solver's .s multiplies the game's, so the
+                // linear part is R_o diag(o.s) R_a^T. During a hand-back the arm is lerped toward
+                // the game's own by (1 - weight) (ArmIKGameArmInAnim), so at weight 0 it is the
+                // game's clip exactly.
+                const float wgt = hbWeight[h];
+                palette::HandXform& X = palX[h];
+                for (int j = 0; j < 5; ++j)
+                    palette_math::arm_affine(A[sl[j]].p, A[sl[j]].q, ob[j]->p, ob[j]->q, ob[j]->s, wgt, X.arm[j]);
+                X.armValid = true;
+            }
+            for (int j = 0; j < 5 && !usePalette; ++j) {
+                // s86d: the solver's .s is size / k along and across the bone, drawn x k =
+                // size, like the hand.
+                const float sv[3] = {A[sl[j]].s[0] * ob[j]->s[0], A[sl[j]].s[1] * ob[j]->s[1],
+                                     A[sl[j]].s[2] * ob[j]->s[2]};
+                write_n(g_bones[sl[j]].p, ob[j]->p, 12);
+                write_n(g_bones[sl[j]].q, ob[j]->q, 16);
+                write_n(g_bones[sl[j]].s, sv, 12);
+            }
+            // History is committed once per evaluation, not per compose, so the late
+            // recompose of the same frame cannot advance it twice.
+            if (!late) {
+                hist.valid = true;
+                hist.ms = now;
+                hist.poleBody[0] = ik::dot(o.basePole, F);
+                hist.poleBody[1] = ik::dot(o.basePole, R);
+                hist.poleBody[2] = ik::dot(o.basePole, U);
+                hist.twist = o.trackedTwist;
+                // Where this side's upper-arm head actually landed, body cm from the
+                // bar centre. Mirrored shoulders read equal fwd/up and opposite right.
+                float cw[3], cc[3];
+                for (int i = 0; i < 3; ++i) cw[i] = 0.5f * (g_m4.shoulder[0][i] + g_m4.shoulder[1][i]);
+                to_comp_p(cw, cc);
+                const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+                const ik::Vec d = ik::vec(o.upper.p) - ik::vec(cc);
+                g_m4Upper[h][0] = ik::dot(d, F) * toCm;
+                g_m4Upper[h][1] = ik::dot(d, R) * toCm;
+                g_m4Upper[h][2] = ik::dot(d, U) * toCm;
+            }
+        }
+    }
+    if (usePalette) {
+        // s88: published AFTER the arms, so the IK's sleeve matrices go with the hands. Hands
+        // only collapses the sleeves; the IK replaces them; "the game's arms" leaves them.
+        // The held weapon, Dishonored 1.5: the held hand's correction carried to world,
+        // D_world = L_hand * S * inverse(L_hand); the gather composes it into the weapon's own
+        // space with the weapon actor's transform (read here, as the renderer will use it).
+        palette::WeaponXform wx;
+        const int held = g_m4.held;
+        void* weapon = nullptr;
+        if (palX[held].valid && hands::current_holdable(&weapon) && weapon) {
+            float wLoc[3];
+            int32_t wRot[3];
+            float kw = 1.0f;
+            if (read_n(static_cast<uint8_t*>(weapon) + patterns::kActorLocOffset, wLoc, 12) &&
+                read_n(static_cast<uint8_t*>(weapon) + patterns::kActorViewDirOffset, wRot, 12)) {
+                if (!ds_read(weapon, &kw) || !(kw > 0.01f)) kw = 1.0f;
+                palette::Sim lh, lw, sh;
+                memcpy(lh.q, qa, 16);
+                lh.s = k;
+                memcpy(lh.t, aLoc, 12);
+                ue_rot_to_quat(FRotator{wRot[0], wRot[1], wRot[2]}, lw.q);
+                lw.s = kw;
+                memcpy(lw.t, wLoc, 12);
+                const palette::HandXform& X = palX[held];
+                memcpy(sh.q, X.q, 16);
+                sh.s = X.s;
+                const ik::Vec piv = ik::rotate(ik::normalized(ik::quat(X.q)), ik::vec(X.pivot)) * X.s;
+                sh.t[0] = X.t[0] - piv.x;
+                sh.t[1] = X.t[1] - piv.y;
+                sh.t[2] = X.t[2] - piv.z;
+                wx.valid = true;
+                wx.actor = weapon;
+                wx.dWorld = palette::sim_world(lh, sh);
+                wx.lWeapon = lw;
+            }
+        }
+        palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx);
+        palette::set_link_probe(g_m4.actor, g_skelInst);
+        (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!usePalette) (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
+
+    // ---- s86g: PIVOTPROBE (`vrhands pivotprobe on`) --------------------------------------
+    // The bone-level truth for the simulator loop (PIVOT_SIM_PROTOCOL.md): after the LATE
+    // compose, read the five palm bones back from the engine's array, take their mean to
+    // WORLD through the actor transform the renderer is about to use (loc, rot, DrawScale),
+    // and print it beside the controller's grip point. If the two agree at every controller
+    // orientation, the skeleton is right and the remaining desync is in the render; if they
+    // drift with orientation, it is here.
+    if (late && g_pivotProbe.load(std::memory_order_relaxed)) {
+        static uint64_t s_last = 0;
+        if (now - s_last >= 200) {
+            s_last = now;
+            // s90: the camera in the hands actor's COMPONENT space (the space the skinned hands
+            // draw is in; its cb0 floats 56..58 are the eye the fg pass renders it from, in the
+            // same units), and the view's forward there. dump eye - this = the fg pull.
+            {
+                float camComp[3], fwdW[3], rtW[3], upW[3], fwdC[3];
+                to_comp_p(g_m4.camWorld, camComp);
+                ue_rot_basis(g_m4.camRot, fwdW, rtW, upW);
+                to_comp_v(fwdW, fwdC);
+                BVR_LOG("[bones] PIVOTPROBE CAM: world %.2f %.2f %.2f | component %.3f %.3f %.3f | view fwd "
+                        "(component) %.4f %.4f %.4f | DrawScale %.4f | eye sign %d | head anchor %s",
+                        g_m4.camWorld[0], g_m4.camWorld[1], g_m4.camWorld[2], camComp[0], camComp[1], camComp[2],
+                        fwdC[0], fwdC[1], fwdC[2], k, bvr::vr::current_eye_sign(),
+                        g_headAnchor.load(std::memory_order_relaxed) ? "ON" : "off");
+            }
+            for (int h = 0; h < 2; ++h) {
+                const M4Hand& T = g_m4.hand[h];
+                if (!T.valid || !haveWrist[h]) continue;
+                const int* pb = h == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
+                float mean[3] = {0, 0, 0};
+                if (usePalette) {
+                    // s87: the bones are the game's on the palette route; the palm the skinner
+                    // draws is the composed one.
+                    memcpy(mean, palmComposed[h], 12);
+                } else {
+                    for (int j = 0; j < 5; ++j) {
+                        float p[3];
+                        if (!read_n(g_bones[pb[j]].p, p, 12)) break;
+                        for (int i = 0; i < 3; ++i) mean[i] += p[i] * 0.2f;
+                    }
+                }
+                float r[3], world[3];
+                for (int i = 0; i < 3; ++i) mean[i] *= k;
+                qts_rotate(qa, mean, r);
+                for (int i = 0; i < 3; ++i) world[i] = aLoc[i] + r[i];
+                const float* G = g_m4.gripWorld[h];
+                const float e[3] = {world[0] - G[0], world[1] - G[1], world[2] - G[2]};
+                const float err = sqrtf(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+                const float toCm = g_m4.uuPerCm > 1e-4f ? 1.0f / g_m4.uuPerCm : 1.0f;
+                // The hand's pointing direction against the view, degrees, so the loop can
+                // plot error against angle.
+                float tf[3], tr[3], tu[3], cf[3], cr[3], cu[3];
+                ue_rot_basis(g_m4.handRot[h], tf, tr, tu);
+                ue_rot_basis(g_m4.camRot, cf, cr, cu);
+                const float cosA = tf[0] * cf[0] + tf[1] * cf[1] + tf[2] * cf[2];
+                const float offDeg = acosf(fmaxf(-1.0f, fminf(1.0f, cosA))) * (180.0f / 3.14159265f);
+                BVR_LOG("[bones] PIVOTPROBE %s: palm (written, read back, to world) %.1f %.1f %.1f | controller "
+                        "grip %.1f %.1f %.1f | target %.1f %.1f %.1f | error %.2f cm (fwd %.2f right %.2f up "
+                        "%.2f) | hand %.1f deg off the view | actor loc %.1f %.1f %.1f rot %d %d %d DrawScale "
+                        "%.3f | trim pos %.1f %.1f %.1f cm rot %.1f %.1f %.1f deg",
+                        h ? "R" : "L", world[0], world[1], world[2], G[0], G[1], G[2], T.p[0], T.p[1], T.p[2],
+                        err * toCm, (e[0] * g_m4.F[0] + e[1] * g_m4.F[1]) * toCm,
+                        (e[0] * g_m4.R[0] + e[1] * g_m4.R[1]) * toCm, e[2] * toCm, offDeg, aLoc[0], aLoc[1],
+                        aLoc[2], aRot[0], aRot[1], aRot[2], k, g_offHandPosCm[h][0].load(),
+                        g_offHandPosCm[h][1].load(), g_offHandPosCm[h][2].load(), g_offHandRotDeg[h][0].load(),
+                        g_offHandRotDeg[h][1].load(), g_offHandRotDeg[h][2].load());
+            }
+        }
+    }
+}
+} // namespace
+
+void set_pivot_probe(bool on) {
+    g_pivotProbe.store(on, std::memory_order_relaxed);
+    BVR_LOG("[bones] PIVOTPROBE %s - palm written vs controller grip, 5 Hz per hand", on ? "ON" : "off");
+}
+bool pivot_probe() { return g_pivotProbe.load(std::memory_order_relaxed); }
+
+void m4_after_eval() { m4_compose(false); }
+
+void m4_late() { m4_compose(true); }
+
+void m4_shoulders(float* fwd, float* right, float* up, float* width) {
+    if (fwd) *fwd = g_m4ShFwdCm.load(std::memory_order_relaxed);
+    if (right) *right = g_m4ShRightCm.load(std::memory_order_relaxed);
+    if (up) *up = g_m4ShUpCm.load(std::memory_order_relaxed);
+    if (width) *width = g_m4ShWidthCm.load(std::memory_order_relaxed);
+}
+void set_m4_shoulders(float fwd, float right, float up, float width) {
+    auto clamp = [](float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; };
+    g_m4ShFwdCm.store(clamp(fwd, -60, 60), std::memory_order_relaxed);
+    g_m4ShRightCm.store(clamp(right, -40, 40), std::memory_order_relaxed);
+    g_m4ShUpCm.store(clamp(up, -80, 30), std::memory_order_relaxed);
+    g_m4ShWidthCm.store(clamp(width, 10, 90), std::memory_order_relaxed);
+}
+float m4_arm_size() { return g_m4ArmSize.load(std::memory_order_relaxed); }
+void set_m4_arm_size(float v) {
+    g_m4ArmSize.store(v < 0.3f ? 0.3f : v > 2.0f ? 2.0f : v, std::memory_order_relaxed);
+}
+void m4_segment_lengths(float* upper, float* fore) {
+    if (upper) *upper = g_m4UpperLen.load(std::memory_order_relaxed);
+    if (fore) *fore = g_m4ForeLen.load(std::memory_order_relaxed);
+}
+void set_m4_segment_lengths(float upper, float fore) {
+    auto clamp = [](float v) { return v < 0.25f ? 0.25f : v > 2.0f ? 2.0f : v; };
+    g_m4UpperLen.store(clamp(upper), std::memory_order_relaxed);
+    g_m4ForeLen.store(clamp(fore), std::memory_order_relaxed);
+}
+bool m4_weapon_follows() { return g_m4WeaponFollows.load(std::memory_order_relaxed); }
+void set_m4_weapon_follows(bool on) { g_m4WeaponFollows.store(on, std::memory_order_relaxed); }
+
+void m4_release() {
+    palette::clear();
+    if (!g_m4.active) return;
+    g_m4.active = false;
+    g_m4On.store(false, std::memory_order_relaxed);
+    set_dirty(1); // the engine rebuilds its own pose on the next evaluation
+    BVR_LOG("[bones] hands released - the engine owns the hands again");
+}
+
+bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool valid[2],
+              const GamePose gp[2], const GamePose raw[2]) {
+    if (!handsActor || !locate(handsActor)) return false;
+    g_evTid = GetCurrentThreadId();
+    if (!g_evCreated && !ev_install()) return false;
+    {   // s87: the palette route's hook, once (palette.h); a refusal leaves the bone drive.
+        static bool s_tried = false;
+        if (!s_tried) {
+            s_tried = true;
+            palette::install(g_imageBase);
+        }
+    }
+    g_freezeOnly.store(false, std::memory_order_relaxed);
+    if (!g_m4.active) {
+        BVR_LOG("[bones] HANDS: the actor stays engine-placed; each hand is composed onto the "
+                "engine's fresh pose (one rigid correction per hand, its wrist on the controller) "
+                "right after every evaluation and again at the scene build; arms by arm IK v2");
+        g_m4Arm[0] = g_m4Arm[1] = M4ArmHist{};
+    }
+    g_m4.active = true;
+    g_m4On.store(true, std::memory_order_relaxed);
+    g_m4.actor = handsActor;
+    g_m4.held = held == 1 ? 1 : 0;
+    const uint64_t now = GetTickCount64();
+    g_m4.ms = now;
+    // s88: which hands the game's animation owns this frame, and the blend toward it.
+    handback::tick(handsActor, g_m4.held, now);
+    const float uuPerCm = ctx.worldScale / 100.0f;
+
+    // ---- both hands: the wrist on the controller (s86, Dishonored's placement) ----------
+    //
+    // Until s86 the HELD hand took mode 3's actor placement (the per-weapon profile's
+    // actor-origin-to-hand vector, ~58 cm, times an idle wrist capture) and only the FREE
+    // hand sat on its controller. The two pipelines put the two wrists at different
+    // distances from their controllers, so with the same arm one side ran out of reach
+    // first ("my right arm did not have as much reach as my left"). Now each hand is
+    // drive_free_hand's target (s71-s72): the grip pose, turned by that hand's rotation
+    // trim (done by the caller), moved by its placement and its palm-frame grip offset.
+    // The weapon rides the hand's own bones.
+    //
+    // s86b: THE PLACEMENT IS IN THE CONTROLLER'S FRAME, NOT THE VIEW'S. Until now
+    // `offHandView*` was added along the CAMERA's axes every frame, so turning the head
+    // swung the hand on an arc the size of the offset (the right hand's was 7 cm across:
+    // "rotating my head left and right causes the hands to move, which changes the
+    // length"). Dishonored's trim is stored in the palm frame and only EDITED in the view
+    // frame (MpTrimViewStep converts a press at that instant), so a head turn never moves
+    // a hand. Here the offset lives in the controller's own grip frame, before the rotation
+    // trim - "forward" is where the controller points - which rotates with the hand and
+    // not with the head. `offHand*Cm` (the grip pivot) stays in the trimmed palm frame.
+    for (int h = 0; h < 2; ++h) {
+        M4Hand& H = g_m4.hand[h];
+        H.valid = valid[h];
+        if (!H.valid) continue;
+        const float gameYawRad =
+            static_cast<float>(ctx.camYaw) / kRotUnitsPerRadian - ctx.driveYawOffsetRad;
+        const int32_t gameYawUnits = static_cast<int32_t>(gameYawRad * kRotUnitsPerRadian);
+        FRotator heading{0, gameYawUnits, 0};
+        float mf[3], mr[3], mu[3];
+        ue_rot_basis(heading, mf, mr, mu);
+        auto world_basis = [&](const FRotator& rot, float f[3], float r[3], float u[3]) {
+            FRotator local{rot.pitch, rot.yaw - gameYawUnits, rot.roll};
+            float hf[3], hr[3], hu[3];
+            ue_rot_basis(local, hf, hr, hu);
+            from_basis(mf, mr, mu, hf, f);
+            from_basis(mf, mr, mu, hr, r);
+            from_basis(mf, mr, mu, hu, u);
+        };
+        float tf[3], tbr[3], tu[3], rf[3], rr[3], ru[3];
+        world_basis(gp[h].rot, tf, tbr, tu);  // the trimmed hand: the target's rotation
+        world_basis(raw[h].rot, rf, rr, ru);  // the controller as held
+        basis_to_quat(tf, tbr, tu, H.q);
+        // s89: THE GRIP CALIBRATION (hand_grip.h) - Dishonored's G, solved from the hand's own
+        // geometry instead of a calibration press. The wrist bone is turned so the fist's handle
+        // axis lies along the grip's -Z (forward) and its palm normal along the grip's X, as the
+        // real hand holds the controller; the stored rotation trim is a residual nudge on top
+        // (zero by default since s89). Without it the hand's handle axis met the controller's only
+        // as far as eye-tuned trims got it, and the fist pivot above would sit on a tilted axis.
+        if (g_evCopyValid && g_evCopyInst == g_skelInst && g_evCopyCount >= patterns::kHandsRigBoneCount) {
+            const Qts* A = g_evCopy;
+            const int w = m4_wrist(h);
+            const int* pb = h == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
+            const float side = h == 1 ? 1.0f : -1.0f;
+            hand_grip::Frame fr;
+            if (hand_grip::head_frame(arm_ik::vec(A[w].p), arm_ik::vec(A[pb[1]].p), arm_ik::vec(A[pb[2]].p),
+                                      arm_ik::vec(A[pb[4]].p), side, &fr)) {
+                const arm_ik::Quat wq = arm_ik::normalized(arm_ik::quat(A[w].q));
+                const arm_ik::Vec aL = arm_ik::rotate(arm_ik::conj(wq), hand_grip::dir(fr, hand_grip::kHandleAxis));
+                const arm_ik::Vec nL = arm_ik::rotate(arm_ik::conj(wq), hand_grip::dir(fr, hand_grip::kPalmNormalOut));
+                const arm_ik::Quat C = hand_grip::calibration(aL, nL, side);
+                // The trim (xr_local_trim_quat's pitch / yaw / roll) that would give the same hand:
+                // T = K^-1 C K, K the XR -> UE axis map, so the log can be read against the stored
+                // trims (s89b).
+                {
+                    float cols[3][3];
+                    for (int e = 0; e < 3; ++e) {
+                        const float u[3] = {e == 0 ? 1.0f : 0.0f, e == 1 ? 1.0f : 0.0f, e == 2 ? 1.0f : 0.0f};
+                        const arm_ik::Vec ku{-u[2], u[0], u[1]}; // xr_to_ue
+                        const arm_ik::Vec cu = arm_ik::rotate(C, ku);
+                        cols[e][0] = cu.y; // ue -> xr: (y, z, -x)
+                        cols[e][1] = cu.z;
+                        cols[e][2] = -cu.x;
+                    }
+                    float tq[4], pr, yr, rr2;
+                    quat_from_columns(cols[0], cols[1], cols[2], tq);
+                    xr_local_trim_angles(tq, &pr, &yr, &rr2);
+                    g_calibEqDeg[h][0] = pr * 57.29578f;
+                    g_calibEqDeg[h][1] = yr * 57.29578f;
+                    g_calibEqDeg[h][2] = rr2 * 57.29578f;
+                    g_calibEqOk[h] = true;
+                }
+                if (g_gripCalib.load(std::memory_order_relaxed)) {
+                    const arm_ik::Quat hq = arm_ik::normalized(arm_ik::mul(arm_ik::quat(H.q), C));
+                    for (int c = 0; c < 4; ++c) H.q[c] = hq.v[c];
+                }
+            }
+        }
+        const bool anchored = g_headAnchor.load(std::memory_order_relaxed);
+        const float an[3] = {anchored ? ctx.anchorX : 0.0f, anchored ? ctx.anchorY : 0.0f,
+                             anchored ? ctx.anchorZ : 0.0f};
+        float p[3] = {gp[h].loc.x + an[0], gp[h].loc.y + an[1], gp[h].loc.z + an[2]};
+        g_m4.gripWorld[h][0] = raw[h].loc.x + an[0];
+        g_m4.gripWorld[h][1] = raw[h].loc.y + an[1];
+        g_m4.gripWorld[h][2] = raw[h].loc.z + an[2];
+        g_m4.handRot[h] = gp[h].rot;
+        g_m4.camRot = FRotator{ctx.camPitch, ctx.camYaw, ctx.camRoll};
+        g_m4.camWorld[0] = ctx.camX;
+        g_m4.camWorld[1] = ctx.camY;
+        g_m4.camWorld[2] = ctx.camZ;
+        // s86f: ONE translation per hand, in the palm frame (Dishonored's Trim.t), edited
+        // by the F10 step rows in the view frame at the press (hand_position_step). The
+        // s86b controller-frame placement lane (`offHandView*`) is no longer applied: its
+        // axes were the grip pose's, which tilt up the handle, and the rows do its job.
+        (void)rf; (void)rr; (void)ru;
+        const float o0 = g_offHandPosCm[h][0].load(std::memory_order_relaxed) * uuPerCm;
+        const float o1 = g_offHandPosCm[h][1].load(std::memory_order_relaxed) * uuPerCm;
+        const float o2 = g_offHandPosCm[h][2].load(std::memory_order_relaxed) * uuPerCm;
+        for (int i = 0; i < 3; ++i) p[i] += tf[i] * o0 + tbr[i] * o1 + tu[i] * o2;
+        memcpy(H.p, p, 12);
+    }
+
+    // ---- the arms: shoulders and body axes ----------------------------------------------
+    {
+        const int am = g_armsMode.load(std::memory_order_relaxed);
+        g_m4.arms = am == 1;
+        g_m4.hideArms = am == 2;
+    }
+    {
+        // s86e: THE BAR FACES THE BODY, DISHONORED'S WAY. The net yaw (s74d) is the room's
+        // frame: it does not turn when the head turns, and it does not turn when the PLAYER
+        // turns either - s85b added the recenter-time head yaw, a constant, so a player who
+        // physically turned 90 deg in the room kept shoulders facing the way they faced at
+        // the recenter. Dishonored's body yaw (arm_ik.h BodyYaw: the head's yaw through a
+        // 25-degree deadzone and a 1.5-second relaxation) takes its place: a glance moves
+        // nothing, a turn of the body carries the shoulders. Reset on a recenter and on a
+        // gap, as Dishonored resets on a tracking gap; it then starts at the head's yaw,
+        // which at a recenter is exactly s85b's constant.
+        static arm_ik::BodyYaw s_body;
+        static uint64_t s_bodyMs = 0;
+        static float s_bodyRecenter = 1e9f;
+        if (ctx.vrDriving) {
+            if (ctx.recenterHeadYawRad != s_bodyRecenter || !s_bodyMs || now - s_bodyMs > 250) s_body.reset();
+            const float dt = s_bodyMs ? static_cast<float>(now - s_bodyMs) * 0.001f : 0.0f;
+            s_body.update(ctx.headYawRad, dt);
+            s_bodyMs = now;
+            s_bodyRecenter = ctx.recenterHeadYawRad;
+        }
+        const float bodyYawRad = s_body.valid ? s_body.yaw : ctx.recenterHeadYawRad;
+        const float yawRad = (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f) -
+                             ctx.driveYawOffsetRad - ctx.recenterYawRad + bodyYawRad;
+        const float cy = cosf(yawRad), sy = sinf(yawRad);
+        const float F[3] = {cy, sy, 0.0f}, R[3] = {-sy, cy, 0.0f}, U[3] = {0.0f, 0.0f, 1.0f};
+        memcpy(g_m4.F, F, 12);
+        memcpy(g_m4.R, R, 12);
+        memcpy(g_m4.U, U, 12);
+        // s83b: one centre, one width - the same two shoulders whichever hand is held.
+        // s86: from the eye (the banner at g_m4ShFwdCm).
+        const float f = g_m4ShFwdCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float r = g_m4ShRightCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float u = g_m4ShUpCm.load(std::memory_order_relaxed) * uuPerCm;
+        const float hw = 0.5f * g_m4ShWidthCm.load(std::memory_order_relaxed) * uuPerCm;
+        // s86b: from the head's PIVOT, not the eye. The eyes sit ~9 cm in front of the
+        // neck joint the head turns about, so a 90 deg head turn moves the eye 9 cm sideways
+        // while the shoulders (and the hands, placed in the room) do not: the arm changed
+        // length with the head. Dishonored measures from the eye and lives with it; this
+        // takes the eye's orbit out - cam - 9 cm along the head's forward (pitch included),
+        // put back along the BODY's forward - so at a level head facing the body it is
+        // exactly Dishonored's origin, and a head turn moves nothing.
+        float hfw[3], hrt[3], hup[3];
+        ue_rot_basis(FRotator{ctx.camPitch, ctx.camYaw, 0}, hfw, hrt, hup);
+        const float eye = kM4EyeToPivotCm * uuPerCm;
+        const float o[3] = {ctx.camX - (hfw[0] - F[0]) * eye, ctx.camY - (hfw[1] - F[1]) * eye,
+                            ctx.camZ - (hfw[2] - F[2]) * eye};
+        const float c[3] = {o[0] + F[0] * f + R[0] * r, o[1] + F[1] * f + R[1] * r, o[2] + u};
+        for (int h = 0; h < 2; ++h) {
+            const float side = h == 1 ? 1.0f : -1.0f; // left on -R
+            for (int i = 0; i < 3; ++i) g_m4.shoulder[h][i] = c[i] + R[i] * hw * side;
+        }
+        // s86: ONE size for both sides, absolute on the rig (the per-hand scale pair is a
+        // mode 2/3 lane and no longer enters). "Both arms should scale together without
+        // setting an option."
+        g_m4.scale = g_m4ArmSize.load(std::memory_order_relaxed);
+        g_m4.upperLen = g_m4UpperLen.load(std::memory_order_relaxed);
+        g_m4.foreLen = g_m4ForeLen.load(std::memory_order_relaxed);
+        g_m4.uuPerCm = uuPerCm;
+    }
+    // s85b: how far the head is turned from the bar, for the HANDS line. Looking the way
+    // you faced at recenter, this reads ~0; it is the head turn the bar ignores.
+    float barVsHeadDeg = 0.0f;
+    {
+        const float d = atan2f(g_m4.F[1], g_m4.F[0]);
+        float deg = (static_cast<float>(ctx.camYaw) / kRotUnitsPerRadian - d) * (180.0f / 3.14159265f);
+        barVsHeadDeg = fmodf(deg + 540.0f, 360.0f) - 180.0f;
+    }
+
+    set_dirty(1); // the engine evaluates this tick; ev_post composes the moment it does
+
+    static uint64_t s_log = 0;
+    if (now - s_log >= 2000) {
+        s_log = now;
+        palette::log_status();
+        handback::log_status(now);
+        BVR_LOG("[palette] anchor: the live palm centre strayed up to L %.2f R %.2f cm from the rigid one since "
+                "the last line (finger animation the rigid anchor keeps out of the placement)",
+                g_m4AnchorDev[0], g_m4AnchorDev[1]);
+        g_m4AnchorDev[0] = g_m4AnchorDev[1] = 0.0f;
+        // s89b: the stored trim against what the geometric grip calibration would set. On a
+        // spec-conformant runtime the two should be close; a 180 deg term is the runtime's axes.
+        BVR_LOG("[bones] GRIPCAL %s | trim L %.1f %.1f %.1f, R %.1f %.1f %.1f deg | the geometric calibration "
+                "would be L %.1f %.1f %.1f%s, R %.1f %.1f %.1f%s (pitch yaw roll)",
+                g_gripCalib.load(std::memory_order_relaxed) ? "ON" : "off", g_offHandRotDeg[0][0].load(),
+                g_offHandRotDeg[0][1].load(), g_offHandRotDeg[0][2].load(), g_offHandRotDeg[1][0].load(),
+                g_offHandRotDeg[1][1].load(), g_offHandRotDeg[1][2].load(), g_calibEqDeg[0][0], g_calibEqDeg[0][1],
+                g_calibEqDeg[0][2], g_calibEqOk[0] ? "" : " (not measured)", g_calibEqDeg[1][0], g_calibEqDeg[1][1],
+                g_calibEqDeg[1][2], g_calibEqOk[1] ? "" : " (not measured)");
+        float k = 1.0f;
+        if (!ds_read(handsActor, &k) || !(k > 0.01f)) k = 1.0f;
+        // s85: the stretch and the slide are the largest since the last line, so a
+        // reach between two lines is not missed.
+        BVR_LOG("[bones] HANDS: %u composes after evaluation, %u at the scene build, %u skipped "
+                "(stale) | held %s | L %s, R %s | evaluations %u | shoulders from the head: fwd %.1f "
+                "right %.1f up %.1f cm, %.1f cm apart | size %.3f as drawn (actor DrawScale %.2f), upper arm "
+                "x%.2f, forearm x%.2f, weapon %s | arms %s | reach used L %.0f%% R %.0f%%, "
+                "shoulder slid up to %.1f UU (Dishonored: no stretch, the shoulder slides) | head %.1f deg off the bar "
+                "(recenter yaw %.1f) | solved upper-arm heads, cm fwd/right/up from the bar "
+                "centre: L %.1f %.1f %.1f, R %.1f %.1f %.1f",
+                g_m4Composes.load(), g_m4Late.load(), g_m4Skips.load(), g_m4.held == 1 ? "RIGHT" : "LEFT",
+                g_m4.hand[0].valid ? "tracked" : "the game's", g_m4.hand[1].valid ? "tracked" : "the game's",
+                g_evPost.load(), g_m4ShFwdCm.load(), g_m4ShRightCm.load(), g_m4ShUpCm.load(),
+                g_m4ShWidthCm.load(), g_m4.scale, k, g_m4.upperLen, g_m4.foreLen,
+                g_m4WeaponFollows.load() ? "follows" : "own size",
+                g_m4.arms ? "solved" : g_m4.hideArms ? "hidden (hands only)" : "the game's",
+                g_m4ReachFrac[0] * 100.0f, g_m4ReachFrac[1] * 100.0f,
+                g_m4Slide.exchange(0.0f), barVsHeadDeg, ctx.recenterHeadYawRad * (180.0f / 3.14159265f),
+                g_m4Upper[0][0], g_m4Upper[0][1], g_m4Upper[0][2], g_m4Upper[1][0], g_m4Upper[1][1],
+                g_m4Upper[1][2]);
+    }
+    return true;
+}
+
+// s82 P1: the evaluator probe. Once per CalcView while `vrbones evalprobe on`: locate the
+// rig, check the last evaluated copy against the live array (nothing should have written
+// it in mode 0), then set the dirty byte so the engine evaluates again. Once a second it
+// logs where the evaluations ran and whether the copy holds - the one question the P1
+// simulator run asks: with the dirty byte set every tick and nothing frozen, does the
+// engine re-animate the hands every frame, and is the hooked copy the pose it draws?
+void eval_probe_tick(void* handsActor) {
+    if (!g_evProbe.load(std::memory_order_relaxed) || !handsActor) return;
+    g_evTid = GetCurrentThreadId();
+    if (!locate(handsActor)) return;
+    if (!g_evCreated && !ev_install()) {
+        g_evProbe.store(false, std::memory_order_relaxed);
+        return;
+    }
+    static uint32_t s_frames = 0, s_checks = 0, s_mismatch = 0, s_lastPost = 0, s_framesNoEval = 0;
+    static float s_worst = 0.0f;
+    static uint64_t s_lastLog = 0;
+    ++s_frames;
+    const uint32_t posts = g_evPost.load(std::memory_order_relaxed);
+    if (posts == s_lastPost) ++s_framesNoEval;
+    s_lastPost = posts;
+    if (g_evCopyValid && g_evCopyCount == g_boneCount) {
+        Qts live[kMaxBones];
+        if (read_n(g_bones, live, sizeof(Qts) * g_evCopyCount)) {
+            ++s_checks;
+            float worst = 0.0f;
+            for (int i = 0; i < g_evCopyCount; ++i)
+                for (int k = 0; k < 3; ++k) worst = fmaxf(worst, fabsf(live[i].p[k] - g_evCopy[i].p[k]));
+            if (worst > 1e-4f) ++s_mismatch;
+            s_worst = fmaxf(s_worst, worst);
+        }
+    }
+    int32_t freeze = 0;
+    float lastEval = 0.0f;
+    uint8_t dirty = 0;
+    read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstFreezeOffset, &freeze, 4);
+    read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstLastEvalTimeOffset, &lastEval, 4);
+    read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstDirtyOffset, &dirty, 1);
+    set_dirty(1);
+    const uint64_t now = GetTickCount64();
+    if (now - s_lastLog >= 1000) {
+        s_lastLog = now;
+        char callers[160] = {};
+        int len = 0;
+        for (const EvCaller& c : g_evCallers)
+            if (c.rva && len < 140) len += snprintf(callers + len, sizeof callers - len, " 0x%X x%u", c.rva, c.count);
+        BVR_LOG("[bones] EVALPROBE: %u frames, %u evaluations (tick %u, pass1 %u, pass2 %u; other "
+                "thread %u, nested %u) = %.2f per frame, %u frames with none | hooked copy vs live "
+                "array: %u checks, %u mismatched, worst %.5f UU | animation moved a bone up to %.2f "
+                "UU between evaluations | freeze %d, last-eval %.3f, dirty-before-set %u | hands "
+                "mode %d | callers:%s",
+                s_frames, posts - g_evProbeLastPosts, g_evTick.load(), g_evPass1.load(), g_evPass2.load(),
+                g_evForeign, g_evNested,
+                s_frames ? static_cast<float>(posts - g_evProbeLastPosts) / s_frames : 0.0f, s_framesNoEval,
+                s_checks, s_mismatch, s_worst, g_evAnimDelta, freeze, lastEval, dirty, hands::drive_mode(),
+                callers);
+        g_evProbeLastPosts = posts;
+        s_frames = s_checks = s_mismatch = s_framesNoEval = 0;
+        s_worst = 0.0f;
+        g_evAnimDelta = 0.0f;
     }
 }
 
@@ -6548,6 +7851,12 @@ void handle_command(const char* args) {
                 BVR_LOG("[bones] poked bone %d z %+0.1f UU -> %.2f", idx, d, z);
             }
         }
+    } else if (strcmp(verb, "evalprobe") == 0) {
+        const bool on = strncmp(rest, "off", 3) != 0;
+        g_evProbe.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] evalprobe %s (s82 P1: hook the skeleton evaluator, set the dirty byte "
+                "every tick, log EVALPROBE once a second; run it in `vrhands mode gun` so the "
+                "drive writes nothing)", on ? "ON" : "off");
     } else if (strcmp(verb, "freeze") == 0) {
         if (!g_skelInst) {
             BVR_LOG("[bones] no skeleton located yet");
@@ -6795,6 +8104,25 @@ bool menu_write(menu::Setting id, int hand, float value) {
         default: return false;
     }
 }
+// s88: the arms mode from the console/simulator (0 the game's, 1 solved, 2 hidden).
+// s89: the fist pivot and the grip calibration (hand_grip.h), for the simulator A/B.
+void set_fist_anchor(bool on) {
+    g_fistAnchor.store(on, std::memory_order_relaxed);
+    BVR_LOG("[bones] fist anchor %s", on ? "ON - the fist centre is pinned to the grip" : "off - the knuckle centroid");
+}
+void set_head_anchor(bool on) {
+    g_headAnchor.store(on, std::memory_order_relaxed);
+    BVR_LOG("[bones] head anchor %s", on ? "ON - the hands carry the camera's head offset (relative to the eye)"
+                                         : "off - the hands sit on the pawn's eye point (pre-s90)");
+}
+void set_grip_calibration(bool on) {
+    g_gripCalib.store(on, std::memory_order_relaxed);
+    BVR_LOG("[bones] grip calibration %s", on ? "ON - the fist's handle axis on the grip's -Z" : "off - trims only");
+}
+void set_arms_mode(int mode) {
+    g_armsMode.store(mode < 0 ? 0 : mode > 2 ? 2 : mode, std::memory_order_relaxed);
+    BVR_LOG("[bones] arms: %s", mode == 0 ? "the game's" : mode == 1 ? "solved (IK)" : "hidden (hands only)");
+}
 bool menu_has_solver_choice() {
 #if __has_include("arm_ik.h")
     return true;
@@ -7004,6 +8332,25 @@ void draw_debug_ui() {
             g_armsMode.store(1, std::memory_order_relaxed);
         ImGui::SameLine();
         if (ImGui::RadioButton("hide", &am, 2)) g_armsMode.store(2, std::memory_order_relaxed);
+        // s81: the A/B between the two arm solvers, in the headset.
+        bool v2 = g_armIkV2.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("ARM IK v2 (the Dishonored solver)", &v2))
+            g_armIkV2.store(v2, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "On: the arm is solved by the Dishonored VR mod's full-arm IK -\n"
+                "the shoulder slides only when the hand is out of reach, the\n"
+                "elbow keeps its side through singular poses, the forearm shares\n"
+                "the wrist's roll 70%% at the elbow to 100%% at the wrist, and past\n"
+                "80 deg of roll the elbow lifts to carry the rest.\n\n"
+                "Off: the s70-s77 solver, unchanged, for comparison.\n\n"
+                "Same shoulder, arm length and elbow-out sliders either way.\n"
+                "The twist-limit sliders below apply to OFF only.\n"
+                "Log: ARMIK2 lines, always on.");
+        ImGui::Text("v2: %u solves, %u failed, %u out of reach",
+                    g_armIkSolves.load(std::memory_order_relaxed),
+                    g_armIkFails.load(std::memory_order_relaxed),
+                    g_armIkReach.load(std::memory_order_relaxed));
         // s70i: the shoulder JOINT itself, per hand - "each shoulder will need
         // anchoring and positioning like the weapons". The solver anchors the arm
         // here and the elbow follows from it, so this is the one number that

@@ -77,6 +77,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/console_exec.h
     game/bioshock1r/frame_context.h
     game/bioshock1r/hands.cpp
+    game/bioshock1r/palette.cpp
+    game/bioshock1r/handback.cpp
     game/bioshock1r/hands_state.cpp
     game/bioshock1r/hands_state.h
     game/bioshock1r/hands.h

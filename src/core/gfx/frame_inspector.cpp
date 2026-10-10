@@ -103,6 +103,8 @@ struct Event {
     uint16_t vpW = 0, vpH = 0;
     uint32_t cbBytes[3] = {0, 0, 0}; // VS b0..b2 ByteWidth
     const void* cb0Object = nullptr; // identity of VS b0 (for change tracking)
+    uint32_t vb0Bytes = 0, vb0Stride = 0; // s87: vertex stream 0 (printed after stk=)
+    const void* vb0Object = nullptr;
     bool cb0Captured = false;        // this event carries cb0 contents
     float cb0Data[kCbFloats] = {};
     uint32_t retRva = 0;             // _ReturnAddress mapped into the exe (0 if foreign)
@@ -278,6 +280,19 @@ void tap_maybe_capture(ID3D11Resource* dst, const D3D11_BOX* box, const void* da
 thread_local ID3D11Resource* t_mappedRes = nullptr;
 thread_local void* t_mappedPtr = nullptr;
 thread_local uint32_t t_mappedBytes = 0;
+
+// ---- s87: vertex-buffer upload tap (opt-in, BS1's palette route) -----------
+// BioShock 1's hand draws bind a 576-byte VS b0 and nothing else, so there is
+// no bone palette for a shader to skin with: the engine skins on the CPU and
+// uploads vertices. This tap names the uploads. Armed with n > 0, the next n
+// Unmaps of a WRITE-mapped buffer carrying D3D11_BIND_VERTEX_BUFFER log its
+// ByteWidth, the map type and the Unmap-time callstack (exe RVAs), which is
+// the uploader - the one function a vertex-level hand placement must sit on.
+// Disarmed cost: one relaxed load per Map. No game arms it by default.
+std::atomic<int> g_vbTapShots{0};
+thread_local ID3D11Resource* t_vbRes = nullptr;
+thread_local uint32_t t_vbBytes = 0;
+thread_local uint32_t t_vbMapType = 0;
 
 size_t collect_stack(void* espHint, uint32_t* out, size_t maxOut); // fwd
 
@@ -455,6 +470,20 @@ void capture_draw_state(ID3D11DeviceContext* ctx, Event& ev) {
         ev.cbBytes[i] = bd.ByteWidth;
     }
     ev.cb0Object = cbs[0];
+    {   // s87: the draw's vertex stream 0 - ByteWidth and stride, for a vertex-level
+        // mesh identification (BS1 skins on the CPU; the hands are a known vertex count).
+        ID3D11Buffer* vb = nullptr;
+        UINT stride = 0, off = 0;
+        ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &off);
+        if (vb) {
+            D3D11_BUFFER_DESC bd{};
+            vb->GetDesc(&bd);
+            ev.vb0Bytes = bd.ByteWidth;
+            ev.vb0Stride = stride;
+            ev.vb0Object = vb;
+            vb->Release();
+        }
+    }
 
     // Mode 3 only: record WHICH buffers this draw reads, so the upload table
     // can be joined to the draws that consumed it. On a deferred renderer the
@@ -520,6 +549,22 @@ HRESULT STDMETHODCALLTYPE MapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* re
                                     UINT sub, D3D11_MAP mapType, UINT flags,
                                     D3D11_MAPPED_SUBRESOURCE* mapped) {
     HRESULT hr = g_origMap(ctx, res, sub, mapType, flags, mapped);
+    if (g_vbTapShots.load(std::memory_order_relaxed) > 0 && SUCCEEDED(hr) && sub == 0 &&
+        (mapType == D3D11_MAP_WRITE_DISCARD || mapType == D3D11_MAP_WRITE ||
+         mapType == D3D11_MAP_WRITE_NO_OVERWRITE)) {
+        ID3D11Buffer* buf = nullptr;
+        if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Buffer),
+                                                 reinterpret_cast<void**>(&buf)))) {
+            D3D11_BUFFER_DESC bd{};
+            buf->GetDesc(&bd);
+            buf->Release();
+            if (bd.BindFlags & D3D11_BIND_VERTEX_BUFFER) {
+                t_vbRes = res;
+                t_vbBytes = bd.ByteWidth;
+                t_vbMapType = static_cast<uint32_t>(mapType);
+            }
+        }
+    }
     if (g_watchArmed.load(std::memory_order_relaxed) && SUCCEEDED(hr) && mapped &&
         mapped->pData && sub == 0 &&
         (mapType == D3D11_MAP_WRITE_DISCARD || mapType == D3D11_MAP_WRITE ||
@@ -539,6 +584,22 @@ HRESULT STDMETHODCALLTYPE MapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* re
 }
 
 void STDMETHODCALLTYPE UnmapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* res, UINT sub) {
+    if (sub == 0 && res == t_vbRes) {
+        t_vbRes = nullptr;
+        int shots = g_vbTapShots.load(std::memory_order_relaxed);
+        if (shots > 0 &&
+            g_vbTapShots.compare_exchange_strong(shots, shots - 1, std::memory_order_relaxed)) {
+            uint32_t rvas[10] = {};
+            size_t n = collect_stack(&sub, rvas, 10);
+            char line[256];
+            int len = _snprintf_s(line, sizeof line, _TRUNCATE,
+                                  "[gfx] vbtap: vertex buffer %u B unmapped (map %u) stack:",
+                                  t_vbBytes, t_vbMapType);
+            for (size_t i = 0; i < n && len > 0 && len < 230; ++i)
+                len += _snprintf_s(line + len, sizeof line - len, _TRUNCATE, " 0x%X", rvas[i]);
+            BVR_LOG("%s", line);
+        }
+    }
     if (sub == 0 && res == t_mappedRes) {
         watch_inspect(res, &sub);
         t_mappedRes = nullptr;
@@ -960,6 +1021,8 @@ void write_dump() {
         // anything added after that point is invisible to it, while anything
         // inserted before it would break every BioShock 1 and 2 dump parse. The
         // existing ClearRtv `color=` tail already relies on this.
+        if (ev.vb0Bytes) // s87: vertex stream 0, after stk= for the same reason
+            fprintf(f, " vb0=%u/%u@%p", ev.vb0Bytes, ev.vb0Stride, ev.vb0Object);
         if (g_mode == 3) {
             fprintf(f, " vscb=T%d,T%d,T%d pscb=T%d,T%d,T%d,T%d pscbb=%u/%u/%u/%u", ev.vsCbId[0],
                     ev.vsCbId[1], ev.vsCbId[2], ev.psCbId[0], ev.psCbId[1], ev.psCbId[2],
@@ -1126,6 +1189,11 @@ void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
     g_watchArmed.store(true, std::memory_order_release);
     BVR_LOG("[gfx] cb watch armed: %u pattern floats @ f%u -> capture f%u..f%u (bytes=%u)",
             patCount, patFirst, capFirst, capFirst + capCount - 1, requiredBytes);
+}
+
+void vb_tap_log(int n) {
+    g_vbTapShots.store(n < 0 ? 0 : n, std::memory_order_relaxed);
+    BVR_LOG("[gfx] vbtap: logging the next %d vertex-buffer unmaps (ByteWidth + uploader stack)", n);
 }
 
 uint32_t cb_watch_hits() {

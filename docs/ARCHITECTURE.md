@@ -2855,6 +2855,28 @@ building a measurement, check that the thing being measured actually occurs.**
 which is only possible if the probe had been suppressing the real variance. That
 inversion located the answer faster than any of the fixes that preceded it.
 
+### 2026-10-08 (session 81) - the arm solver is Dishonored's, written as bones, not palette
+
+The s70i-s77 arm solve grew one fix per headset report (frames, twist accumulator,
+humerus split, clamps) until no single change could be judged on its own. Meanwhile the
+Dishonored VR mod shipped a full-arm IK that was accepted in a headset. Its algorithm was
+already two-thirds BioShock: it took the left-hand fork's reach, pole and twist design,
+plus this repo's lessons on frames and history. So the arm is now that solver
+(`bioshock1r/arm_ik.h`), pure and host-tested, behind `armIkV2` with the old one as the
+A/B.
+
+**Kept from BS1:** writing the evaluated skeleton rather than Dishonored's draw-time
+palette. Dishonored needed a mesh copy because it cannot write its engine's bones. BS1
+can, its arm bones carry no attachments, and the replay-per-pass cache already makes the
+eyes agree. The s74d shoulder frame is kept as well: it was signed off in the headset, and
+it is the frame the hands are placed in.
+
+**The evidence it rests on** is the offline triple: host suite, real-rig sweep skinned
+through the original weights, and an audit that runs Dishonored's own header on
+Dishonored's rig with the same poses. The audit shows the elbow direction within
+0.03 degrees and the shoulder and roll decisions identical. That is the claim "it is
+Dishonored's solver" made measurable. See `docs/bioshock1/ARM_IK.md`.
+
 ### 2026-10-08: isolate BS1 player preferences from experimental defaults
 
 The reorganized BS1 F10 menu owns a stable settings catalogue and a separate
@@ -2868,3 +2890,16 @@ interaction checks exercise the same widgets and embedded artwork. Resolution
 scaling follows Dishonored's eye-image fractions and proportional resize behavior.
 This changes BS1 through additive adapter hooks; other games keep the old UI.
 See `bioshock1/F10_MENU.md` for applicability, compatibility and unverified work.
+
+### 2026-10-09 (session 89) - the hand is pinned by its fist centre and aligned by its geometry
+
+The drawn hand is placed by the point where a handle passes through its fist - the controller
+grip pose's own origin (OpenXR /input/grip/pose) - and turned so the fist's handle axis lies on
+the grip's -Z and its palm normal on the grip's X. Both are measured from the rig
+(`tools\blender\hand_pivot.py`) and rebuilt each frame from the wrist and finger-base heads
+(`src/game/bioshock1r/hand_grip.h`). Before s89 the drive pinned the knuckle centroid and
+oriented the hand by eye-tuned trims; a pivot 3 cm off the real fist swings the drawn hand
+asymmetrically on every turn, and no trim can remove that, because a trim is a fixed offset in
+the hand's frame. This is Dishonored's grip calibration G, solved from the mesh instead of a key
+press; the per-hand trim remains as a residual nudge, zero by default. Per-weapon grips are a
+separate layer on top (the weapon's authored hand pose differs per weapon).

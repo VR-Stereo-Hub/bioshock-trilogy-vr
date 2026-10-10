@@ -42,9 +42,12 @@ struct PreviewBackend final : Backend {
         set(Setting::SnapTurn,1);set(Setting::SnapAngle,45);set(Setting::TurnSpeed,1);
         set(Setting::AmmoModifier,1);set(Setting::AmmoStick,1);set(Setting::Swing,1);
         set(Setting::HandSize,1);set(Setting::WeaponSize,1);set(Setting::ArmLength,1);
-        set(Setting::HandsArmsSize,1);set(Setting::ShoulderBarForward,3.8f);
-        set(Setting::ShoulderBarRight,0);set(Setting::ShoulderBarUp,-19.8f);
-        set(Setting::ShoulderWidth,52);set(Setting::ShouldersLinked,1);
+        set(Setting::HandsArmsSize,.83f);set(Setting::ShoulderBarForward,-16);
+        set(Setting::ShoulderBarRight,0);set(Setting::ShoulderBarUp,-25);
+        set(Setting::ShoulderWidth,38.1f);set(Setting::WeaponFollowsHands,1);
+        set(Setting::UpperArmLength,.71f);set(Setting::ForearmLength,1.13f);set(Setting::ShowArms,1);
+        for(auto id:{Setting::HandPitch,Setting::HandYaw,Setting::HandRoll,Setting::HandGripForward,
+                     Setting::HandGripRight,Setting::HandGripUp}) set(id,0);
         set(Setting::ElbowOut,.35f);set(Setting::BodyFollow,1);set(Setting::WorldScale,1);
         set(Setting::HudPanel,1);set(Setting::Reticle,1);set(Setting::Laser,1);
         set(Setting::HandMode,4);set(Setting::ArmSolver,1);

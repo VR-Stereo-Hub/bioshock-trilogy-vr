@@ -70,7 +70,6 @@ void control(Backend& backend,const Spec& s,int hand) {
     } else {
         int current=static_cast<int>(value-s.min);
         int count=static_cast<int>(s.max-s.min)+1;
-        if(s.id==Setting::HandMode) count=backend.context().maxHandMode-1;
         std::vector<const char*> names;
         for(const char* p=s.choices;*p;p+=std::strlen(p)+1) names.push_back(p);
         count=std::min(count,static_cast<int>(names.size()));
@@ -125,6 +124,41 @@ void draw_page(Backend& backend,ViewState& state,Level level,const Context& cont
         const auto shoulder=std::find(sections.begin(),sections.end(),"Shoulder position");
         if(shoulder!=sections.end()) std::rotate(sections.begin(),shoulder,shoulder+1);
     }
+    // s86f: Dishonored's hand rows (its MpTrimPanel): move or turn the selected hand the way
+    // the player sees it, a fixed step per press, held to repeat; the backend converts each
+    // press into the hand's stored trim at that instant.
+    auto hand_rows=[&]{
+        if(!(state.tab==Tab::Hands && context.handMode>=4 && section("Move the hand (as you see it)"))) return;
+        static int stepIx=1;
+        static const float kStepCm[3]={.2f,.5f,2.f},kStepDeg[3]={.5f,2.f,5.f};
+        static const char* kStepName[3]={"Fine","Normal","Coarse"};
+        const float w=(ImGui::GetContentRegionAvail().x-2*ImGui::GetStyle().ItemSpacing.x)/3;
+        for(int i=0;i<3;++i) {
+            if(i) ImGui::SameLine();
+            if(theme::button(kStepName[i],ImVec2(w,0),stepIx==i)) stepIx=i;
+        }
+        theme::note(stepIx==0?"0.2 cm or 0.5 degrees per press.":stepIx==1?"0.5 cm or 2 degrees per press.":"2 cm or 5 degrees per press.");
+        struct Row { const char* neg; const char* pos; bool rot; int axis; };
+        static const Row kRows[6]={{"Move left","Move right",false,0},{"Move down","Move up",false,2},{"Move back","Move forward",false,1},
+                                   {"Pitch down","Pitch up",true,1},{"Yaw left","Yaw right",true,0},{"Roll left","Roll right",true,2}};
+        ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat,true);
+        for(int r=0;r<6;++r) {
+            ImGui::PushID(r);
+            for(int sgn=0;sgn<2;++sgn) {
+                if(sgn) ImGui::SameLine();
+                const float bw=(ImGui::GetContentRegionAvail().x-(sgn?0:ImGui::GetStyle().ItemSpacing.x))/(sgn?1:2);
+                if(theme::button(sgn?kRows[r].pos:kRows[r].neg,ImVec2(bw,0))) {
+                    const float amt=(sgn?1.f:-1.f)*(kRows[r].rot?kStepDeg[stepIx]:kStepCm[stepIx]);
+                    if(state.hand==-1) {backend.hand_step(0,kRows[r].rot,kRows[r].axis,amt);backend.hand_step(1,kRows[r].rot,kRows[r].axis,amt);}
+                    else backend.hand_step(state.hand,kRows[r].rot,kRows[r].axis,amt);
+                }
+                record((std::string("step:")+(sgn?kRows[r].pos:kRows[r].neg)).c_str());
+            }
+            ImGui::PopID();
+        }
+        ImGui::PopItemFlag();
+        theme::note("Hold a button to repeat. Saved at once. Anything held moves with the hand.");
+    };
     for(const auto& name:sections) {
         if(!section(name.c_str())) continue;
         ImGui::PushID(name.c_str());
@@ -144,6 +178,7 @@ void draw_page(Backend& backend,ViewState& state,Level level,const Context& cont
                 theme::note("Choose the opposite stick: one thumb cannot use its thumbrest and stick together.");
         }
         if(name=="Grip pivot") theme::note("Changes where the model pivots. Hand position changes where it sits.");
+        if(name=="Hand and weapon size") hand_rows();
         if(name=="Flat screen for menus and loading") {
             if(theme::button("Recenter screen")) backend.action(Action::RecenterScreen);
             record("RecenterScreen");

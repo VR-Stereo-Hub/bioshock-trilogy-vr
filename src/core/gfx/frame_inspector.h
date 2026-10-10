@@ -82,6 +82,12 @@ bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs);
 // Lifetime accepted-capture count (diagnostic: is the watch firing at all?).
 uint32_t cb_watch_hits();
 
+// s87: log the next n WRITE-mapped VERTEX-buffer unmaps (ByteWidth, map type,
+// Unmap callstack as exe RVAs). Opt-in, off by default; a game that never
+// calls it is on exactly the code path it was on before. BioShock 1 uses it
+// to find its CPU skinner's upload (the hands draws bind no bone palette).
+void vb_tap_log(int n);
+
 // Log the Unmap-time callstack (game-exe RVAs) for the next n fingerprint
 // matches - the discovery instrument for whoever BUILDS the watched values.
 void cb_watch_log_stacks(int n);
