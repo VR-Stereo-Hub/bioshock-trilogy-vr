@@ -4,8 +4,9 @@
 
 ## Session 2026-10-09 - s90 (BS1): the lens pull is zero; the hands were 9 cm below the eye
 
-**Branch `claude/bs1-hands-dishonored`, everything UNCOMMITTED** (s85-s90 in the working tree on
-top of `31bb41a`). Simulator only (11:01 save via `sim-load-save.ps1`); the sim game is closed.
+**Branch `claude/bs1-hands-dishonored`, committed** (s85-s90 as `3585aab`, the defaults as
+`400eb2a`, staging merged in) and PR'd to `staging`. The lens measurement was simulator-only (11:01
+save via `sim-load-save.ps1`); the anchor and the tune were judged in the headset.
 
 ### Current state
 
@@ -504,6 +505,38 @@ launched. The headset test is at the top of `docs/bioshock1/ARM_IK.md`.
    sliders that only it reads. That is a healing-session job; keep the A/B until then.
 4. Candidate: Dishonored's `ArmIKGameArmInAnim`, if a scripted sequence shows the IK arm
    fighting the game's.
+## Session 2026-10-08: BS1 Rapture launcher review candidate
+
+### Current state
+
+Branch `codex/rapture-launcher`, from staging `5dd79c0`. A standalone Win32
+installer/launcher embeds the staging mod and SteamVR files and reuses the F10
+theme's source and six original textures. Its layout follows the researched
+Dishonored launcher: sidebar pages, persistent Play, player settings, mod
+management, verified release downloads, shortcuts and local support collection.
+
+Installation, settings and removal use complete preflight, byte-preserving edits,
+hash verification, recovery journals and rollback. Existing F10, hand, weapon and
+debug tuning is retained. After three initial icon choices, the owner selected
+a brass medallion using the supplied game BIOSHOCK wordmark with VR underneath
+inside the same plaque. The owner explicitly directed **do not install**.
+The revised icon has seven ICO sizes. Scope, reference audit, safety behavior, build
+instructions and verification are documented in `LAUNCHER.md`.
+
+Built RelWithDebInfo/Win32. The host suite has 184 checks and the actual EXE
+integration suite has 35 checks; both use scratch fixtures. Eighteen production
+UI states were rendered at 100%, 150%, 200% and the minimum logical size. Native
+preview inspected. No game was launched and the installed hand-compatible build
+or real player INIs were not replaced. This is not an accepted/released launcher.
+
+### Next steps
+
+1. Owner reviews the actual rendered launcher and revised medallion icon.
+2. Incorporate visual feedback before accepting or installing the candidate.
+3. Keep the installed hand-compatible build untouched. Any later real-game
+   installation needs a new user request; this task is review-only.
+4. UAC flow, Steam launch, headset behavior and a published launcher update need
+   validation beyond the scratch and rendering tests. Do not merge unasked.
 
 ## Session 2026-10-08: BS1 Rapture F10 menu, offline build only
 

@@ -1,0 +1,10 @@
+#include <windows.h>
+#include "payload_ids.h"
+IDR_MOD RCDATA "bioshockvr.dll"
+IDR_PROXY RCDATA "xinput1_3.dll"
+IDR_SHIM RCDATA "bvr_steamvr32.dll"
+IDR_OPENVR RCDATA "openvr_api.dll"
+IDR_VRPRESET RCDATA "vrpreset.ini"
+IDR_HANDS RCDATA "hands.ini"
+IDR_WEAPONS RCDATA "weapons.ini"
+IDR_SUPPORT RCDATA "collect-support.ps1"
