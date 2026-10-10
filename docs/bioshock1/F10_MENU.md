@@ -85,7 +85,10 @@ per-hand `HandForward/Right/Up` (view frame), `HandPitch/Yaw/Roll`,
 `UpperArmLength` and `ForearmLength` under IK. The shoulder keys became
 `ShouldersForward/Right/Up/Width`, measured from the eye, so saved
 `ShoulderBar*` values are ignored as unknown. Defaults are the Dishonored fit
-(HANDS_DISHONORED.md s86). The regular
+(HANDS_DISHONORED.md s86). Session 90 replaced them with the tester's BS1 headset
+tune of 2026-10-09: shoulders forward -11.8 / right 1.6 / width 30.4 cm, hands and
+arms size 0.85, weapon size 0.83 with `WeaponFollowsHands` off, arm length 0.94, the
+aim laser on, and the per-hand palm-frame trims (hands.cpp `load_config`). The regular
 staging build has no mode 4 and does not expose those controls. Compatibility
 with the hand branch requires that commit's public APIs or newer equivalents.
 

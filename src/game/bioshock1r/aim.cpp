@@ -154,7 +154,7 @@ bool g_presetBaselineValid = false;
 // M7 laser: the visible form of this same ray, published to core every frame.
 // It lives here rather than with the hands so it cannot drift from the trim
 // above - a laser that disagrees with the bullet is worse than no laser.
-std::atomic<bool> g_laser{false};
+std::atomic<bool> g_laser{true}; // s90: on by default (the tester's choice; a saved preset still wins)
 std::atomic<int> g_laserDots{6};
 std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 // Session 29 aim dot: ONE lever, default OFF. Unlike the laser it is not a

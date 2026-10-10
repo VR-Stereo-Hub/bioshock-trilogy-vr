@@ -29,16 +29,19 @@ top of `31bb41a`). Simulator only (11:01 save via `sim-load-save.ps1`); the sim 
 - **The tester's position trims (L 7.3/10.9/-6.0, R 7.2/10.7/5.1 cm) were partly compensating the
   9 cm and now over-correct.** They live in `menu-settings.ini` and override the code defaults.
 
+- **Headset (2026-10-09 21:47): "pretty much perfect"** after a retune with the anchor on. That
+  tune is now the code default: palm-frame position L 1.46/7.55/0.12, R 3.91/8.20/-0.37 cm;
+  rotation L -46.95/35.15/133.17, R -64.70/-14.80/17.48 deg; shoulders forward -11.8, right 1.6,
+  width 30.4 cm; hands and arms size 0.85; weapon size 0.83, not following the hands; arm length
+  0.94; the aim laser on. Committed (`3585aab` + the defaults commit) and PR'd to `staging`.
+
 ### Next steps
 
-1. **Headset:** F10 > Hands (Advanced) > "Stored values (palm frame)": set the three position rows
-   to 0 for BOTH hands. Then hold the wrench and turn the hand 90 deg left and right. The fist
-   should stay in your hand both ways. If it sits a little off, nudge it, but expect no more than
-   a centimetre or two. `vrhands palette headanchor off` is the A/B against the old behaviour.
-2. If a turn still desyncs with position trims near zero, the remaining suspect is VDXR's grip
-   axes (`GRIPCAL` line: the geometric calibration vs the tuned rotation trims).
+1. **Weapons attached properly** (new branch off this one): the held weapon on the socket bone
+   (43) so it sits in the fist, and its children (the Tommy Gun's drum mag) carried with it.
+2. **Plasmid effects on the tracked hand** - Dishonored's `fx_follow` is the reference.
 3. Not changed: the aim ray and laser are still built from base (the BRVR note about the dot
-   sitting `CameraHeightOffset` above impacts applies). Step 2 (weapon on socket 43), step 3.
+   sitting `CameraHeightOffset` above impacts applies). VDXR's grip axes (`GRIPCAL`) still open.
 
 ## Session 2026-10-09 - s89c (BS1): HANDOFF - the desync survived the pivot fix; next suspect is the foreground lens pull
 

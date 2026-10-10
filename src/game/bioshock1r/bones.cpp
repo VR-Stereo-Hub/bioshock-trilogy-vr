@@ -564,7 +564,7 @@ std::atomic<float> g_elbowOut{0.6f}; // s86e: Dishonored's ArmElbowOut; 0.35 was
 // The authored FRACTIONS the twist helpers sit at along the forearm must not
 // change with it - see the divisor at the helper loop, which cancels this
 // deliberately. Without that, a longer arm would bunch them toward the elbow.
-std::atomic<float> g_armScale{1.00f};
+std::atomic<float> g_armScale{0.94f}; // s90: the tester's 2026-10-09 tune (was 1.00)
 // s70k: exponential smoothing on the solved elbow, ms. The hand is NEVER
 // smoothed - that would put latency on your own tracking, which is the one thing
 // a VR viewmodel must not do. Only the derived joint is eased.
@@ -920,14 +920,16 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // 0.760 was the s61 in-headset calibration; 0.80 is BRVR's GunScale, adopted
 // 2026-08-22 for parity (see the g_scale note above for what a 5% change is
 // worth). 1.0 = authored, and at 1.0 the lane drops entirely.
-std::atomic<float> g_wScale{0.80f};
+std::atomic<float> g_wScale{0.83f}; // s90: the tester's 2026-10-09 tune (was 0.80)
 // s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
 // hand's scale (0.8 by default), so the two sides can never disagree. Declared here
 // because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set
 // (the default), the weapon is sized by the same multiplier - g_wScale stays the
 // weapon's own calibration against the hand.
-std::atomic<float> g_m4ArmSize{0.83f}; // s86: absolute; 0.83 matches Dishonored's hand (HANDS_DISHONORED.md)
-std::atomic<bool> g_m4WeaponFollows{true};
+// s90: the tester's headset tune of 2026-10-09 21:47 is the default (was 0.83, Dishonored's hand;
+// the weapon followed it). With the weapon on its own size (g_wScale) it no longer follows.
+std::atomic<float> g_m4ArmSize{0.85f}; // s86: absolute (HANDS_DISHONORED.md)
+std::atomic<bool> g_m4WeaponFollows{false};
 void* g_wHoldable = nullptr; // the actor the lane is bound to
 void* g_wSkelInst = nullptr;
 Qts* g_wBones = nullptr;
@@ -6814,8 +6816,10 @@ float g_m4AnchorDev[2] = {}; // s88: the live palm's largest distance from the r
 // The defaults are the Dishonored fit accepted in a headset on 2026-10-06 and still in
 // that mod's live ini (ArmShoulderForwardCm -16, RightCm 0, UpCm -25, WidthCm 38.1),
 // which the tester calls "perfectly aligned with my body". HANDS_DISHONORED.md s86.
-std::atomic<float> g_m4ShFwdCm{-16.0f}, g_m4ShRightCm{0.0f}, g_m4ShUpCm{-25.0f};
-std::atomic<float> g_m4ShWidthCm{38.1f};
+// s90: forward, right and width are now the tester's BS1 headset tune of 2026-10-09 21:47
+// (with the hands at the eye, s90's head anchor); up keeps the Dishonored -25.
+std::atomic<float> g_m4ShFwdCm{-11.8f}, g_m4ShRightCm{1.6f}, g_m4ShUpCm{-25.0f};
+std::atomic<float> g_m4ShWidthCm{30.4f};
 // ---- s85: THE SHOULDERS STAY WHERE THE SLIDERS PUT THEM -----------------------------
 //
 // s83b's headset run: "a lot of the shoulder settings are confusing and don't work right,

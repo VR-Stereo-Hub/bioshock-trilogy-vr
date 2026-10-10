@@ -660,17 +660,19 @@ void load_config() {
     // centre, so the same numbers moved the PALM 8.5 cm off the controller, in the
     // palm's own frame - a lever that turned with every wrist turn. The s87 pivot sweep
     // read exactly 8.49 cm on the left at every orientation and 0.00 once zeroed.
-    // s89c: the tester's own tune of 2026-10-09 20:41 (menu-settings.ini), kept as the DEFAULTS
-    // so a renamed preference key can never drop it again. Position = the palm-frame trim on the
-    // fist-centre pivot (forward / right / up cm); rotation = pitch / yaw / roll deg.
-    bones::set_off_hand_cm(0, 7.27f, 10.92f, -6.01f);
-    bones::set_off_hand_cm(1, 7.16f, 10.68f, 5.11f);
+    // s89c: the tester's own tune (menu-settings.ini), kept as the DEFAULTS so a renamed
+    // preference key can never drop it again. Position = the palm-frame trim on the fist-centre
+    // pivot (forward / right / up cm); rotation = pitch / yaw / roll deg.
+    // s90: the 2026-10-09 21:47 retune with the hands at the eye (the head anchor) - "pretty much
+    // perfect". The s89c position trims (~14 cm) had been compensating the 9 cm head offset.
+    bones::set_off_hand_cm(0, 1.46f, 7.55f, 0.12f);
+    bones::set_off_hand_cm(1, 3.91f, 8.20f, -0.37f);
     // s89b: the rotation trims are the tester's TUNED values again. s89 zeroed them for the
     // geometric grip calibration, which on Virtual Desktop turned both hands 180 deg toward the
     // shoulder (that runtime's grip axes are not the OpenXR spec's), so the calibration is off and
     // these are the orientation: left -30 / 31 / -206 (accepted since s72), right -39.7 / -7.8 / 3.6
     // (the tester's headset retune of 2026-10-09 09:27). The pivot stays the fist centre.
-    bones::set_off_hand_rot_deg(0, -38.27f, 29.02f, 139.96f); // s89c: the 20:41 tune (was -30/31/-206)
+    bones::set_off_hand_rot_deg(0, -46.95f, 35.15f, 133.17f); // s90: the 21:47 tune (s89c -38.3/29.0/140.0)
     bones::set_off_hand_view_cm(0, 4.0f, -2.0f, 4.0f);
     // s74: and the RIGHT hand, which is the free one whenever a plasmid is up.
     // These are the tester's own tuned values, not a mirror - an earlier commit
@@ -678,7 +680,7 @@ void load_config() {
     // small (-32, -4, -8) precisely because the s72z junction fix removed the
     // constant the mirror had been compensating for. Grip stays at zero on this
     // hand; only placement and a light rotation trim were wanted.
-    bones::set_off_hand_rot_deg(1, -64.70f, -14.80f, 17.48f); // s89c: the 20:41 tune
+    bones::set_off_hand_rot_deg(1, -64.70f, -14.80f, 17.48f); // s89c: the 20:41 tune (kept at 21:47)
     bones::set_off_hand_view_cm(1, -6.0f, 4.0f, 8.0f);
     // s72y: the right hand keeps ZERO. s72v seeded a mirror of the left on the
     // theory that the plasmid off hand was missing the left's -206 roll - but
