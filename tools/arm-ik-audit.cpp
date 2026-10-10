@@ -99,10 +99,15 @@ static b::Vec body_of(const Frame& fr, b::Vec v, float side) { // world -> (f, r
 }
 
 int main(int argc, char** argv) {
-    if (argc != 4) {
-        puts("usage: arm-ik-audit <bs1-rig.txt> <dishonored_vr_arm_rig.bin> <out.json>");
+    if (argc != 4 && argc != 6) {
+        puts("usage: arm-ik-audit <bs1-rig.txt> <dishonored_vr_arm_rig.bin> <out.json> [upperLength foreLength]");
         return 2;
     }
+    // s86: BS1's segments at their own lengths (arm_ik.h Input::upperLength/foreLength).
+    // At 0.71 / 1.13 BS1's proportions are Dishonored's, and the elbow gap - the one metric
+    // the s81 audit said geometry alone kept apart - should close.
+    const float upperLength = argc == 6 ? static_cast<float>(atof(argv[4])) : 1.0f;
+    const float foreLength = argc == 6 ? static_cast<float>(atof(argv[5])) : 1.0f;
     std::vector<BsBone> bs;
     if (!load_bs(argv[1], bs)) return 3;
     FILE* f = nullptr;
@@ -136,7 +141,8 @@ int main(int argc, char** argv) {
         r.twist[1] = bs[bsArm[h].idx[4]].bone;
         memcpy(r.wristP, bs[bsArm[h].idx[5]].bone.p, 12);
         memcpy(r.wristQ, bs[bsArm[h].idx[5]].bone.q, 16);
-        bsArm[h].L = b::length(b::vec(r.fore.p) - b::vec(r.upper.p)) + b::length(b::vec(r.wristP) - b::vec(r.fore.p));
+        bsArm[h].L = b::length(b::vec(r.fore.p) - b::vec(r.upper.p)) * upperLength +
+                     b::length(b::vec(r.wristP) - b::vec(r.fore.p)) * foreLength;
     }
 
     FILE* out = nullptr;
@@ -191,6 +197,8 @@ int main(int argc, char** argv) {
                     in.priorPole = bsPrior[h];
                     in.priorTwist = bsTwist[h];
                     in.fresh = frame > 0;
+                    in.upperLength = upperLength;
+                    in.foreLength = foreLength;
                     b::Swing sw;
                     b::Output o;
                     if (!b::swing(a.ref, in, in.pole, sw)) { ++failures; continue; }

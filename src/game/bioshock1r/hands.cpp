@@ -31,6 +31,8 @@
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/handback.h"
+#include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scripted.h"
 
@@ -40,6 +42,8 @@
 #include <imgui.h>
 
 #include <atomic>
+#include <mutex>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -55,6 +59,12 @@ std::atomic<int> g_pendingEnable{-1}; // overlay -> game thread (see aim.cpp)
 // leaving mode 2 has to call bones::release(), which writes the skeleton, and
 // the render thread must never touch engine state directly.
 std::atomic<int> g_pendingMode{-1};
+// s86f: the step rows' queue (hands.h). Small, mutex-guarded; drained once per CalcView.
+namespace {
+struct HandStep { int hand; bool rot; int axis; float amount; };
+std::mutex g_stepMutex;
+std::vector<HandStep> g_steps;
+} // namespace
 // s67: does the grip offset ride a basis that includes ROLL? See the long note
 // at the use site - BRVR found that rotating the offset by a roll the mesh
 // never rendered with "swung the hand through an arc that grew with the twist".
@@ -170,8 +180,11 @@ void* g_peTarget = nullptr;       // resolved UObject::ProcessEvent
 int32_t g_uhvNameIdx = -1;        // FName index of "UpdateHandValues"
 uint32_t g_peWrites = 0;          // how many times the seam re-asserted
 bool g_peInstalled = false;
-std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
-                                      // retired), 2 = bones (M7-v2, default)
+// s86: 4 is THE mode (HANDS_DISHONORED.md): the actor stays engine-placed and each hand is
+// one rigid correction of the engine's live pose, its wrist on the controller. 0-3 (gun,
+// actor pin, bones, BRVR) are the retired paths, reachable only by `vrhands mode` for a
+// comparison, never from the F10 menu or hands.ini.
+std::atomic<int> g_mode{4};
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
@@ -577,17 +590,10 @@ void save_config() {
     }
     fprintf(f, "armScale=%.3f\n", bones::arm_scale());
     fprintf(f, "armIkV2=%d\n", bones::arm_ik_v2() ? 1 : 0);
-    {
-        // s83b: mode 4's one pair of shoulders, and its one size for hands + arms.
-        float sf = 0.0f, sr = 0.0f, su = 0.0f, sw = 0.0f;
-        bones::m4_shoulders(&sf, &sr, &su, &sw);
-        fprintf(f, "m4ShoulderFwdCm=%.2f\n", sf);
-        fprintf(f, "m4ShoulderRightCm=%.2f\n", sr);
-        fprintf(f, "m4ShoulderUpCm=%.2f\n", su);
-        fprintf(f, "m4ShoulderWidthCm=%.2f\n", sw);
-        fprintf(f, "m4ShouldersLinked=%d\n", bones::m4_shoulders_linked() ? 1 : 0);
-        fprintf(f, "m4Size=%.3f\n", bones::m4_arm_size());
-    }
+    // s86d: no m4* keys. The F10 menu owns the hand drive's settings (menu-settings.ini,
+    // F10_MENU.md); the copies hands.ini carried since s83b loaded BEFORE the menu's
+    // defaults and silently won whenever the menu had no saved value - the s86b run
+    // started at size 1.07 from a stale `m4Size=1.070` line ("the arms were waaay too big").
     fprintf(f, "armTwistLimitDeg=%.1f\n", bones::arm_twist_limit_deg());
     fprintf(f, "humerusTwistLimitDeg=%.1f\n", bones::humerus_twist_limit_deg());
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
@@ -649,8 +655,22 @@ void load_config() {
     //
     // Placement (offHandView*) stays at zero: it is the knob for MOVING the
     // hand, and where it sits is a per-player preference rather than a default.
-    bones::set_off_hand_cm(0, -6.0f, 6.0f, 0.0f);
-    bones::set_off_hand_rot_deg(0, -30.0f, 31.0f, -206.0f);
+    // s87: the grip is ZERO now. -6 / 6 / 0 placed the WRIST relative to the grip, which
+    // was right while the wrist was the anchor. Since s86f the anchor is the palm's
+    // centre, so the same numbers moved the PALM 8.5 cm off the controller, in the
+    // palm's own frame - a lever that turned with every wrist turn. The s87 pivot sweep
+    // read exactly 8.49 cm on the left at every orientation and 0.00 once zeroed.
+    // s89c: the tester's own tune of 2026-10-09 20:41 (menu-settings.ini), kept as the DEFAULTS
+    // so a renamed preference key can never drop it again. Position = the palm-frame trim on the
+    // fist-centre pivot (forward / right / up cm); rotation = pitch / yaw / roll deg.
+    bones::set_off_hand_cm(0, 7.27f, 10.92f, -6.01f);
+    bones::set_off_hand_cm(1, 7.16f, 10.68f, 5.11f);
+    // s89b: the rotation trims are the tester's TUNED values again. s89 zeroed them for the
+    // geometric grip calibration, which on Virtual Desktop turned both hands 180 deg toward the
+    // shoulder (that runtime's grip axes are not the OpenXR spec's), so the calibration is off and
+    // these are the orientation: left -30 / 31 / -206 (accepted since s72), right -39.7 / -7.8 / 3.6
+    // (the tester's headset retune of 2026-10-09 09:27). The pivot stays the fist centre.
+    bones::set_off_hand_rot_deg(0, -38.27f, 29.02f, 139.96f); // s89c: the 20:41 tune (was -30/31/-206)
     bones::set_off_hand_view_cm(0, 4.0f, -2.0f, 4.0f);
     // s74: and the RIGHT hand, which is the free one whenever a plasmid is up.
     // These are the tester's own tuned values, not a mirror - an earlier commit
@@ -658,7 +678,7 @@ void load_config() {
     // small (-32, -4, -8) precisely because the s72z junction fix removed the
     // constant the mirror had been compensating for. Grip stays at zero on this
     // hand; only placement and a light rotation trim were wanted.
-    bones::set_off_hand_rot_deg(1, -32.0f, -4.0f, -8.0f);
+    bones::set_off_hand_rot_deg(1, -64.70f, -14.80f, 17.48f); // s89c: the 20:41 tune
     bones::set_off_hand_view_cm(1, -6.0f, 4.0f, 8.0f);
     // s72y: the right hand keeps ZERO. s72v seeded a mirror of the left on the
     // theory that the plasmid off hand was missing the left's -206 roll - but
@@ -681,28 +701,24 @@ void load_config() {
             continue;
         ++n;
         if (strcmp(key, "mode") == 0) {
-            int m = static_cast<int>(v);
-            g_mode.store(m < 0 ? 0 : m > 4 ? 4 : m, std::memory_order_relaxed);
+            // s86: one mode. The key is still written (so an old build reads the file)
+            // and no longer read: a run can never come back in a retired drive.
+            if (static_cast<int>(v) != 4)
+                BVR_LOG("[hands] hands.ini mode=%d ignored - the hands have one drive since s86", static_cast<int>(v));
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
         else if (store_hand_key(key, "viewFwdCm", g_viewFwdCm, v)) {}
         else if (store_hand_key(key, "viewRightCm", g_viewRightCm, v)) {}
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
-        else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
+        else if (strcmp(key, "elbowOut") == 0) {} // s86e: menu-owned (ElbowOut); a stale 0.35 here beat the 0.6 default
         else if (strcmp(key, "armScale") == 0) bones::set_arm_scale(v);
         else if (strcmp(key, "armIkV2") == 0) bones::set_arm_ik_v2(v != 0.0f);
-        else if (strncmp(key, "m4Shoulder", 10) == 0 && strcmp(key, "m4ShouldersLinked") != 0) {
-            float sf = 0.0f, sr = 0.0f, su = 0.0f, sw = 0.0f;
-            bones::m4_shoulders(&sf, &sr, &su, &sw);
-            if (strcmp(key, "m4ShoulderFwdCm") == 0) sf = v;
-            else if (strcmp(key, "m4ShoulderRightCm") == 0) sr = v;
-            else if (strcmp(key, "m4ShoulderUpCm") == 0) su = v;
-            else if (strcmp(key, "m4ShoulderWidthCm") == 0) sw = v;
-            bones::set_m4_shoulders(sf, sr, su, sw);
+        else if (strncmp(key, "m4", 2) == 0) {
+            // s86d: the s83b-s86 keys, no longer read (the banner in save_config).
+            static bool s_said = false;
+            if (!s_said) BVR_LOG("[hands] hands.ini m4* keys ignored since s86d - the F10 menu owns these");
+            s_said = true;
         }
-        else if (strcmp(key, "m4ShouldersLinked") == 0) bones::set_m4_shoulders_linked(v != 0.0f);
-        else if (strcmp(key, "m4Size") == 0 || strcmp(key, "m4ArmSize") == 0)
-            bones::set_m4_arm_size(v); // m4ArmSize: the name for one build, before it was one size
         else if (strcmp(key, "armTwistLimitDeg") == 0) bones::set_arm_twist_limit_deg(v);
         else if (strcmp(key, "humerusTwistLimitDeg") == 0)
             bones::set_humerus_twist_limit_deg(v);
@@ -727,6 +743,12 @@ void load_config() {
             const size_t n = strlen(key);
             const int h = (n && key[n - 1] == 'R') ? 1 : 0;
             const bool isRot = strstr(key, "Deg") != nullptr;
+            // s87: the grip (offHand*Cm) is no longer read from hands.ini. Every value in
+            // a file was tuned for the wrist anchor and puts the palm that far off the
+            // controller (see the default above). The F10 step rows own it now.
+            // s89: nor the rotation (offHand*Deg): it was tuned without the grip calibration.
+            (void)isRot;
+            continue;
             float a = 0.0f, b = 0.0f, c = 0.0f;
             if (isRot) bones::off_hand_rot_deg(h, &a, &b, &c);
             else bones::off_hand_cm(h, &a, &b, &c);
@@ -1693,27 +1715,63 @@ void on_calcview(const FrameContext& ctx) {
 
     const int driveMode = g_mode.load(std::memory_order_relaxed);
     if (driveMode == 4) {
-        // s83 MODE 4, the Dishonored hands (HANDS_DISHONORED.md): the actor stays where
-        // the engine puts it and is never written. `loc` + gp.rot is mode 3's actor,
-        // handed over as the held hand's TARGET; the free hand's controller is built
-        // exactly as drive_off_hand() builds it. bones::m4_frame publishes the targets
-        // and the composition runs on the engine's fresh pose.
+        // THE hand drive (s83, s86; HANDS_DISHONORED.md): the actor stays where the engine
+        // puts it and is never written. Each hand's wrist target is its controller's GRIP
+        // pose turned by that hand's rotation trim - the same build for both hands, so the
+        // two sides can only differ by their trims. `gp`/`loc` above (the per-weapon actor
+        // placement) are not used here; the weapon rides the hand's bones.
         bones::set_freeze_only(false);
         bones::wskel_drive();
-        const int freeHand = 1 - (hand == 1 ? 1 : 0);
-        bool freeValid = false;
-        GamePose gpFree{};
-        bvr::vr::HeadPose fp{};
-        if (bones::off_hand_tracked() && ctx.vrDriving &&
-            bvr::vr::get_hand_pose(freeHand, /*aimPose=*/false, fp)) {
-            const float fpos[3] = {fp.px, fp.py, fp.pz};
-            const float fq[4] = {fp.qx, fp.qy, fp.qz, fp.qw};
-            float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
-            bones::off_hand_rot_deg(freeHand, &trimP, &trimY, &trimR);
-            gpFree = model_pose_from_xr(ctx, fpos, fq, trimP, trimY, trimR);
-            freeValid = true;
+        bool valid[2] = {false, false};
+        GamePose gps[2] = {}, raws[2] = {};
+        std::vector<HandStep> steps;
+        {
+            std::lock_guard<std::mutex> lock(g_stepMutex);
+            steps.swap(g_steps);
         }
-        bones::m4_frame(ctx, target, hand, gp, loc, freeValid, gpFree);
+        if (ctx.vrDriving) {
+            for (int h = 0; h < 2; ++h) {
+                if (h != hand && !bones::off_hand_tracked()) continue;
+                bvr::vr::HeadPose hp2{};
+                if (!bvr::vr::get_hand_pose(h, /*aimPose=*/false, hp2)) continue;
+                const float p2[3] = {hp2.px, hp2.py, hp2.pz};
+                const float q2[4] = {hp2.qx, hp2.qy, hp2.qz, hp2.qw};
+                float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
+                bones::off_hand_rot_deg(h, &trimP, &trimY, &trimR);
+                // s86f: the step rows, converted in THIS frame of this hand (frame_context.h).
+                for (const HandStep& st : steps) {
+                    if (st.hand != h) continue;
+                    if (st.rot) {
+                        float p = trimP, y = trimY, r = trimR;
+                        if (hand_rotation_step(ctx, q2, st.axis, st.amount, &p, &y, &r)) {
+                            trimP = p; trimY = y; trimR = r;
+                            bones::set_off_hand_rot_deg(h, p, y, r);
+                        } else {
+                            BVR_LOG("[hands] step REFUSED - the %s hand points straight up or down", h ? "right" : "left");
+                        }
+                    } else {
+                        const GamePose now = model_pose_from_xr(ctx, p2, q2, trimP, trimY, trimR);
+                        float g[3];
+                        bones::off_hand_cm(h, &g[0], &g[1], &g[2]);
+                        hand_position_step(ctx, now, st.axis, st.amount, g);
+                        bones::set_off_hand_cm(h, g[0], g[1], g[2]);
+                    }
+                    BVR_LOG("[hands] step: %s hand %s %s by %+.2f %s -> trim %+.1f %+.1f %+.1f cm, %+.1f %+.1f %+.1f deg",
+                            h ? "RIGHT" : "LEFT", st.rot ? "turn" : "move",
+                            st.rot ? (st.axis == 0 ? "yaw" : st.axis == 1 ? "pitch" : "roll")
+                                   : (st.axis == 0 ? "right" : st.axis == 1 ? "forward" : "up"),
+                            st.amount, st.rot ? "deg" : "cm",
+                            [&] { float a, b, c; bones::off_hand_cm(h, &a, &b, &c); return a; }(),
+                            [&] { float a, b, c; bones::off_hand_cm(h, &a, &b, &c); return b; }(),
+                            [&] { float a, b, c; bones::off_hand_cm(h, &a, &b, &c); return c; }(),
+                            trimP, trimY, trimR);
+                }
+                gps[h] = model_pose_from_xr(ctx, p2, q2, trimP, trimY, trimR);
+                raws[h] = model_pose_from_xr(ctx, p2, q2, 0.0f, 0.0f, 0.0f); // the controller as held
+                valid[h] = true;
+            }
+        }
+        bones::m4_frame(ctx, target, hand, valid, gps, raws);
         g_writes.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -1916,6 +1974,26 @@ void handle_command(const char* args) {
         g_useAimPose.store(aim, std::memory_order_relaxed);
         BVR_LOG("[hands] pose source = %s", aim ? "AIM (matches laser + bullets)"
                                                 : "GRIP (physical hand axis)");
+    } else if (strcmp(verb, "pivotprobe") == 0) {
+        // s86g: PIVOT_SIM_PROTOCOL.md - the bone-level truth for the simulator loop.
+        bones::set_pivot_probe(strncmp(rest, "on", 2) == 0);
+    } else if (strcmp(verb, "step") == 0) {
+        // s86g: "step [l|r] move|turn <axis 0..2> <amount>" - the F10 rows from the console
+        // and the simulator (axis: move 0 right 1 forward 2 up; turn 0 yaw 1 pitch 2 roll).
+        int side = 1;
+        const char* p2 = rest;
+        if ((p2[0] == 'l' || p2[0] == 'r') && (p2[1] == ' ' || p2[1] == '\t')) {
+            side = p2[0] == 'r' ? 1 : 0;
+            p2 += 2;
+        }
+        char kind[8] = {};
+        int axis = -1;
+        float amount = 0.0f;
+        if (sscanf_s(p2, "%7s %d %f", kind, static_cast<unsigned>(sizeof kind), &axis, &amount) == 3 &&
+            (strcmp(kind, "move") == 0 || strcmp(kind, "turn") == 0))
+            queue_hand_step(side, strcmp(kind, "turn") == 0, axis, amount);
+        else
+            BVR_LOG("[hands] usage: vrhands step [l|r] move|turn <axis 0..2> <amount>");
     } else if (strcmp(verb, "scale") == 0) {
         // "scale [l|r|both] <f>" - no side = both hands. Session 61: the
         // lever the s16 dead ends never tested (bones.h set_scale).
@@ -1955,6 +2033,47 @@ void handle_command(const char* args) {
         if (n > 30) n = 30;
         g_probeLeft = n;
         BVR_LOG("[hands] probe armed for %d frame(s) - listing AHands + player weapons", n);
+    } else if (strcmp(verb, "palette") == 0) {
+        // s87: "palette on|off|status|probe on|off" - the hands on the skin palette (palette.h).
+        if (strncmp(rest, "probe", 5) == 0) palette::set_probe(strstr(rest, "on") != nullptr);
+        else if (strncmp(rest, "anchor", 6) == 0) palette::set_rigid_anchor(strstr(rest, "on") != nullptr);
+        else if (strncmp(rest, "wrist", 5) == 0) palette::set_rigid_wrist(strstr(rest, "on") != nullptr);
+        else if (strncmp(rest, "headanchor", 10) == 0) bones::set_head_anchor(strstr(rest, "on") != nullptr);
+        else if (strncmp(rest, "fist", 4) == 0) bones::set_fist_anchor(strstr(rest, "on") != nullptr);
+        else if (strncmp(rest, "calib", 5) == 0) bones::set_grip_calibration(strstr(rest, "on") != nullptr);
+        else if (strncmp(rest, "arms", 4) == 0)
+            bones::set_arms_mode(strstr(rest, "game") ? 0 : strstr(rest, "hide") ? 2 : 1);
+        else if (strncmp(rest, "on", 2) == 0) palette::set_enabled(true);
+        else if (strncmp(rest, "off", 3) == 0) palette::set_enabled(false);
+        palette::log_status();
+    } else if (strcmp(verb, "handback") == 0) {
+        handback::handle_command(rest); // s88: Dishonored's hand-back (handback.h)
+    } else if (strcmp(verb, "grip") == 0) {
+        // s87: "grip [l|r] <fwd> <right> <up>" - the palm-frame grip trim (Dishonored's
+        // Trim.t, the F10 "Hand grip" rows) set directly, for the simulator loop. The
+        // first pivot sweep (PIVOT_SIM_PROTOCOL.md) read a constant 9.49 cm palm-vs-grip
+        // error that rotated with the controller: exactly the stored right-hand trim
+        // (5.4 / 3.0 / 7.2 cm), which was tuned when the anchor was the WRIST and is now
+        // applied on top of the palm-centre anchor - a 9.5 cm lever that swings the hand
+        // on every turn. This verb is how the sweep zeroes it without a menu.
+        int side = -1;
+        const char* nums = rest;
+        if ((rest[0] == 'l' || rest[0] == 'r') && (rest[1] == ' ' || rest[1] == '\t')) {
+            side = rest[0] == 'r' ? 1 : 0;
+            nums = rest + 1;
+            while (*nums == ' ' || *nums == '\t') ++nums;
+        }
+        float f = 0.0f, r = 0.0f, u = 0.0f;
+        if (sscanf_s(nums, "%f %f %f", &f, &r, &u) == 3) {
+            for (int h = 0; h < 2; ++h) {
+                if (side >= 0 && h != side) continue;
+                bones::set_off_hand_cm(h, f, r, u);
+            }
+            BVR_LOG("[hands] grip trim (%s) fwd%+.1f right%+.1f up%+.1f cm (palm frame)",
+                    side < 0 ? "both" : side == 1 ? "right" : "left", f, r, u);
+        } else {
+            BVR_LOG("[hands] usage: vrhands grip [l|r] <fwdCm> <rightCm> <upCm>");
+        }
     } else if (strcmp(verb, "hand") == 0) {
         int mode = rest[0] == 'l' ? 0 : rest[0] == 'r' ? 1 : 2;
         g_handMode.store(mode, std::memory_order_relaxed);
@@ -2430,6 +2549,18 @@ void save_offsets() {
     save_config();
 }
 
+// s86f: hands.h. The queue itself (HandStep, g_steps) sits with the other file-local state.
+void queue_hand_step(int hand, bool rot, int axis, float amount) {
+    if (hand < 0 || hand > 1 || axis < 0 || axis > 2 || !std::isfinite(amount)) return;
+    std::lock_guard<std::mutex> lock(g_stepMutex);
+    if (g_steps.size() < 256) g_steps.push_back({hand, rot, axis, amount});
+}
+bool steps_pending() {
+    std::lock_guard<std::mutex> lock(g_stepMutex);
+    return !g_steps.empty();
+}
+
+
 // F10 preference access. Called through the game-thread menu queue; no engine writes.
 float menu_read(menu::Setting id) {
     using S = menu::Setting;
@@ -2448,9 +2579,7 @@ bool menu_write(menu::Setting id, float value) {
         case S::LatePosition: g_lateWriteLoc.store(static_cast<decltype(g_lateWriteLoc.load())>(value), std::memory_order_relaxed); return true;
         case S::GripRoll: g_offsetRoll.store(static_cast<decltype(g_offsetRoll.load())>(value), std::memory_order_relaxed); return true;
         case S::ModelAimPose: g_useAimPose.store(static_cast<decltype(g_useAimPose.load())>(value), std::memory_order_relaxed); return true;
-        case S::HandMode:
-            if(value<2 || value>menu_max_mode()) return false;
-            g_pendingMode.store(static_cast<int>(value),std::memory_order_relaxed); return true;
+        case S::HandMode: return static_cast<int>(value)==4; // s86: one drive
         case S::HandEnabled: g_pendingEnable.store(value!=0?1:0,std::memory_order_relaxed); return true;
         default: return false;
     }

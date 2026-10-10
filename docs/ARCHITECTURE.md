@@ -2890,3 +2890,16 @@ interaction checks exercise the same widgets and embedded artwork. Resolution
 scaling follows Dishonored's eye-image fractions and proportional resize behavior.
 This changes BS1 through additive adapter hooks; other games keep the old UI.
 See `bioshock1/F10_MENU.md` for applicability, compatibility and unverified work.
+
+### 2026-10-09 (session 89) - the hand is pinned by its fist centre and aligned by its geometry
+
+The drawn hand is placed by the point where a handle passes through its fist - the controller
+grip pose's own origin (OpenXR /input/grip/pose) - and turned so the fist's handle axis lies on
+the grip's -Z and its palm normal on the grip's X. Both are measured from the rig
+(`tools\blender\hand_pivot.py`) and rebuilt each frame from the wrist and finger-base heads
+(`src/game/bioshock1r/hand_grip.h`). Before s89 the drive pinned the knuckle centroid and
+oriented the hand by eye-tuned trims; a pivot 3 cm off the real fist swings the drawn hand
+asymmetrically on every turn, and no trim can remove that, because a trim is a fixed offset in
+the hand's frame. This is Dishonored's grip calibration G, solved from the mesh instead of a key
+press; the per-hand trim remains as a residual nudge, zero by default. Per-weapon grips are a
+separate layer on top (the weapon's authored hand pose differs per weapon).

@@ -204,7 +204,9 @@ the parts that are actually fixed.
 | `docs/IDA_WORKFLOW.md` | **Headless IDA**: staging each game's exe, the md5 provenance check, the one-question script shape (RVAs, per-game anchors), where IDA sits in the order of work, traps |
 | `docs/MODEL_WORKFLOW.md` | **UModel + headless Blender, our BS1 rig/Havok converter, FFDec, the UnrealScript corpus**: what extracts per game, commands, workspace, traps |
 | `docs/MODDING_SDKS.md` | **The Unofficial BioShock SDK and CodeRed** (third-party, cloned to the gitignored `external\`): compiling new classes toward Remastered, CodeRed for Infinite, the open questions |
-| `docs/bioshock1/HANDS_DISHONORED.md` | **BS1 hands, wrists, arms and animation vs Dishonored**: why mode 3's actor-carrying frame rotates the shoulders, the post-evaluation port design, phases P1-P7 |
+| `docs/bioshock1/HANDS_DISHONORED.md` | **BS1 hands, wrists, arms and animation vs Dishonored**: why mode 3's actor-carrying frame rotates the shoulders, the post-evaluation port design, phases P1-P7, and the s85-s86 session notes |
+| `docs/bioshock1/DISHONORED_PIPELINE.md` | **The Dishonored VR mod's hand pipeline end to end** (split, palette, `palm_target`, grip calibration, trim editing, weapons, IK, hand-back) with BS1's twin of each stage and the overhaul order |
+| `docs/bioshock1/PIVOT_SIM_PROTOCOL.md` | **The hand-pivot test**: the PIVOTPROBE oracle, `tools\pivot-sweep.ps1`, the simulator loop, and the palette route as the 1:1 fallback |
 | `docs/bioshock1/ARM_IK.md` | BS1's arm solver (`arm_ik.h`, the Dishonored one): behaviour, the BS1 adaptation, the offline validation and the Dishonored audit |
 | `docs/bioshock1/HAVOK_AND_PACKAGES.md` | BS1's package, skeletal-mesh and Havok packfile formats, and how each was derived |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |

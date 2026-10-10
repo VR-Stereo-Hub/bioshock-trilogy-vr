@@ -261,28 +261,36 @@ void handle_command(const char* args);
 // the hands actor. A no-op while the probe is off.
 void eval_probe_tick(void* handsActor);
 
-// s83 mode 4 (Dishonored hands, docs/bioshock1/HANDS_DISHONORED.md). m4_frame, once per
-// CalcView in mode 4: publishes both hands' world targets (the held hand as mode 3's
-// actor `heldActorLoc` + `gpHeld.rot`, the free hand as mode 3's free-hand target from
-// `gpFree`), the shoulders, and sets the dirty byte so the engine evaluates. It never
-// writes the actor. The composition itself runs in the evaluator hook (m4_after_eval)
-// and again at the scene build (m4_late, from hands::late_write). m4_release hands the
-// skeleton back when leaving mode 4.
-bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const GamePose& gpHeld,
-              const float heldActorLoc[3], bool freeValid, const GamePose& gpFree);
+// THE hand drive since s86 (one mode; docs/bioshock1/HANDS_DISHONORED.md). m4_frame, once
+// per CalcView: takes both hands' wrist poses (`gp[h]`: the controller's grip pose turned by
+// that hand's rotation trim, `valid[h]` when tracked), applies each hand's placement and
+// grip offsets, publishes the shoulders, and sets the dirty byte so the engine evaluates.
+// It never writes the actor. The composition itself runs in the evaluator hook
+// (m4_after_eval) and again at the scene build (m4_late, from hands::late_write).
+// m4_release hands the skeleton back.
+bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool valid[2],
+              const GamePose gp[2], const GamePose raw[2]);
 void m4_after_eval();
 void m4_late();
 void m4_release();
-// s83b mode-4 arm settings, persisted in hands.ini. One pair of shoulders: a shared centre
-// (cm forward / right / up from the body point) and the total width between them. Linked
-// = when reach slides one shoulder, the other slides with it. m4_arm_size is ONE size for
-// the hands and the arms together: a multiplier on the hand scale both are drawn at.
+// s86g: `vrhands pivotprobe on|off` - the written palm read back from the engine's array,
+// taken to world, against the controller's grip point, 5 Hz per hand (PIVOT_SIM_PROTOCOL.md).
+void set_pivot_probe(bool on);
+bool pivot_probe();
+// Settings. One pair of shoulders: a shared centre (cm forward / right / up from the EYE)
+// and the total width between them; they stay exactly there (an arm that cannot reach
+// stretches before a shoulder moves). m4_arm_size is ONE size for both hands and both
+// arms, on the rig itself (0.83 = Dishonored's hand). m4_segment_lengths: the upper arm's
+// and the forearm's own lengths on top of that size (0.71 / 1.13 = Dishonored's fit).
+// m4_weapon_follows (default on) sizes the weapon by size / 0.8.
 void m4_shoulders(float* fwd, float* right, float* up, float* width);
 void set_m4_shoulders(float fwd, float right, float up, float width);
-bool m4_shoulders_linked();
-void set_m4_shoulders_linked(bool on);
 float m4_arm_size();
 void set_m4_arm_size(float v);
+void m4_segment_lengths(float* upper, float* fore);
+void set_m4_segment_lengths(float upper, float fore);
+bool m4_weapon_follows();
+void set_m4_weapon_follows(bool on);
 
 // True while `vrbones log on` - camera.cpp and hands.cpp contribute their
 // raw-pose lines to the same telemetry stream (each site throttles itself to
@@ -307,5 +315,12 @@ bool barrel_ref_axis(float d0[3]);
 
 // Overlay section (render thread only).
 void draw_debug_ui();
+
+// s88: the arms mode from the console/simulator (0 the game's, 1 solved, 2 hidden).
+void set_arms_mode(int mode);
+// s89: the fist pivot and the grip calibration (hand_grip.h); both default ON.
+void set_fist_anchor(bool on);
+void set_grip_calibration(bool on);
+void set_head_anchor(bool on); // s90: the hands carry the camera's head offset (default ON)
 
 } // namespace bvr::b1r::bones

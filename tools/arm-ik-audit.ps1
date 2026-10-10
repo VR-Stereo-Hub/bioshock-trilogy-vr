@@ -5,6 +5,7 @@
 #
 #   .\tools\arm-ik-audit.ps1                                  # Dishonored repo at C:\dev\Dishonored-VR
 #   .\tools\arm-ik-audit.ps1 -DishonoredRepo D:\src\Dishonored-VR -DishonoredPsk <arms.psk>
+#   .\tools\arm-ik-audit.ps1 -UpperLength 0.71 -ForearmLength 1.13   # BS1's segments at the s86 fit
 #
 # Needs: the BS1 rig from .\tools\arm-ik-sweep.ps1 (run it once), the Dishonored repo
 # (its assets\vr\dishonored_vr_arm_rig.bin and headers), and the Dishonored arm PSK the
@@ -13,7 +14,9 @@
 param(
     [string]$DishonoredRepo = "C:\dev\Dishonored-VR",
     [string]$DishonoredPsk = (Join-Path $env:USERPROFILE "Documents\Dishonored-VR-Arms\exports\tooltest-arms.psk"),
-    [string]$Mesh = "NEWPlayerHands"
+    [string]$Mesh = "NEWPlayerHands",
+    [double]$UpperLength = 1.0,
+    [double]$ForearmLength = 1.0
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -43,7 +46,7 @@ try {
     Exit-BvrMsvcEnv $msvc
 }
 $json = Join-Path $dir "audit.json"
-& $exe $rig $dhRig $json
+& $exe $rig $dhRig $json $UpperLength $ForearmLength
 $ok = $LASTEXITCODE -eq 0
 & (Join-Path $PSScriptRoot "blender-run.ps1") (Join-Path $PSScriptRoot "blender\arm_ik_audit.py") -- `
     --audit $json --bs1-glb $glb --dh-rig $dhRig --dh-psk $DishonoredPsk |

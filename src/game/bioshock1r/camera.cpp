@@ -723,6 +723,11 @@ void apply_command(const char* cmd, const char* args) {
         int count = 1;
         sscanf_s(full ? args + 4 : args, " %d", &count);
         bvr::frame_inspector::arm(full ? 2 : 1, count);
+    } else if (strcmp(cmd, "vbtap") == 0) {
+        // s87: vbtap [n] - log the next n vertex-buffer uploads with their uploader stacks
+        int n = 20;
+        sscanf_s(args, "%d", &n);
+        bvr::frame_inspector::vb_tap_log(n);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
     } else if (strcmp(cmd, "vraim") == 0) {
@@ -1425,6 +1430,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // M6: the aim ray must be built in the SAME frame as the camera, so keep
     // the pre-head-offset camera loc and the yaw the drive added.
     FVector baseLoc = loc ? *loc : FVector{};
+    float headAnchor[3] = {0.0f, 0.0f, 0.0f}; // s90: the head-offset sliders' vector (FrameContext::anchor*)
     float driveYawOffsetRad = 0.0f;
     // s74c: the head's own yaw, recenter-relative, published untouched so the
     // arm probes can tell a PHYSICAL head turn from a stick turn. Stays 0 on
@@ -1677,6 +1683,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             loc->x += cosf(vyaw) * hoFwd;
             loc->y += sinf(vyaw) * hoFwd;
             loc->z += hoUp;
+            headAnchor[0] = cosf(vyaw) * hoFwd;
+            headAnchor[1] = sinf(vyaw) * hoFwd;
+            headAnchor[2] = hoUp;
         }
 
         // AlternateEye (M4 rung 1): shift the camera half an IPD along
@@ -1814,6 +1823,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.baseX = baseLoc.x;
         fc.baseY = baseLoc.y;
         fc.baseZ = baseLoc.z;
+        fc.anchorX = headAnchor[0];
+        fc.anchorY = headAnchor[1];
+        fc.anchorZ = headAnchor[2];
         if (rot) {
             fc.camPitch = rot->pitch;
             fc.camYaw = rot->yaw;
@@ -1822,6 +1834,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.driveYawOffsetRad = driveYawOffsetRad;
         fc.headYawRad = headYawRelRad;
         fc.recenterYawRad = recenter_yaw_rad();
+        if (g_haveRecenter) fc.recenterHeadYawRad = hmd_angles(g_recenterPose).yawRad;
         fc.recenterPx = g_recenterPose.px;
         fc.recenterPy = g_recenterPose.py;
         fc.recenterPz = g_recenterPose.pz;

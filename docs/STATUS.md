@@ -2,6 +2,335 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-09 - s90 (BS1): the lens pull is zero; the hands were 9 cm below the eye
+
+**Branch `claude/bs1-hands-dishonored`, everything UNCOMMITTED** (s85-s90 in the working tree on
+top of `31bb41a`). Simulator only (11:01 save via `sim-load-save.ps1`); the sim game is closed.
+
+### Current state
+
+- **Installed:** Debug DLL from this tree (s90 build). Host 6 suites and lint pass.
+- **The foreground lens pull is FALSIFIED on the palette route.** A frame dump's cb0 floats
+  56..58 hold the eye each draw is rendered from, in that draw's local space (they equal the
+  null point of the clip rows to 0.05). The hands draw (26178 indices, scale 0.80 = DrawScale,
+  CPU-skinned 56-byte VB) reads (-1.38, +-4.00, 11.16) in the actor's component space; the new
+  `PIVOTPROBE CAM` line puts the camera at (-1.374, 0, 11.166). So the fg eye IS the camera, +-half
+  IPD, zero pull. Tangents (1.19174 / 1.23502) and rotation rows equal the world view's, and the
+  submitted layer FOV (+-50 / +-51.004 deg) equals the render frustum. The s16 +11.5 UU pull was a
+  bone-drive-era number.
+- **The real head-frame error: `CameraHeightOffset`.** The camera carries the head-offset sliders
+  (9 UU up, `headUpUu=9` in the tester's preset) on top of base + the HMD; the mode 4 hand target
+  was built from base without them. Measured: grip - camera read up -23.95 UU where the sim's grip
+  is 15 cm below its head. A world-frame offset like this can only be cancelled by palm-frame trims
+  at the orientation they were tuned at, which is the "synced forward, desynced turned" shape.
+  **Fixed:** `FrameContext::anchor*` carries the slider vector, mode 4 adds it to the hand target
+  (lever `vrhands palette headanchor on|off`, default ON). Sim: up -14.95 with it, -23.95 without.
+  BRVR places hands head-relative, so its CameraHeightOffset already applied to the hands.
+- **The tester's position trims (L 7.3/10.9/-6.0, R 7.2/10.7/5.1 cm) were partly compensating the
+  9 cm and now over-correct.** They live in `menu-settings.ini` and override the code defaults.
+
+### Next steps
+
+1. **Headset:** F10 > Hands (Advanced) > "Stored values (palm frame)": set the three position rows
+   to 0 for BOTH hands. Then hold the wrench and turn the hand 90 deg left and right. The fist
+   should stay in your hand both ways. If it sits a little off, nudge it, but expect no more than
+   a centimetre or two. `vrhands palette headanchor off` is the A/B against the old behaviour.
+2. If a turn still desyncs with position trims near zero, the remaining suspect is VDXR's grip
+   axes (`GRIPCAL` line: the geometric calibration vs the tuned rotation trims).
+3. Not changed: the aim ray and laser are still built from base (the BRVR note about the dot
+   sitting `CameraHeightOffset` above impacts applies). Step 2 (weapon on socket 43), step 3.
+
+## Session 2026-10-09 - s89c (BS1): HANDOFF - the desync survived the pivot fix; next suspect is the foreground lens pull
+
+**Branch `claude/bs1-hands-dishonored`, everything UNCOMMITTED** (the tester commits when they
+say so; s85-s89 work is all in the working tree on top of `31bb41a`).
+
+### Current state
+
+- **Installed:** Debug DLL `v0.8.3-205-g31bb41a-dirty`, built 2026-10-09 ~20:50 from this tree.
+  Headset-run (s89b build) on Virtual Desktop: hands face the right way again (calibration off).
+  **The desync is unchanged** ("it still desynced the exact same") - the fist-centre pivot did
+  not affect it, so the pivot was not the cause.
+- **The tester's tune is kept as the code defaults** (`hands.cpp`, s89c), and also lives in
+  `menu-settings.ini`: rotation L -38.3 / 29.0 / 140.0, R -64.7 / -14.8 / 17.5 deg; position
+  (palm-frame trim on the fist pivot) L 7.27 / 10.92 / -6.01, R 7.16 / 10.68 / 5.11 cm.
+- **Ruled out, with evidence:** the orientation chain (host `orient-chain`, 61,875 orientations
+  exact); the drive's skeleton math (pivot sweeps 0.00 cm, 19 orientations, both hands); the
+  pivot point (fist centre measured in Blender, `tools\blender\hand_pivot.py`; moving it changed
+  nothing in the headset).
+- **Measured, not yet explained:** the `GRIPCAL` line - the geometric grip calibration would set
+  L 68.5 / 80.9 / 92.3, R 68.5 / -80.9 / 87.7 against the tuned L -38.3 / 29.0 / 140.0,
+  R -64.7 / -14.8 / 17.5. The geometric pair is mirror-symmetric; the tuned pair is not (roll 140
+  vs 17). VDXR's grip axes are not the spec's - by how much is still open.
+
+### Next steps
+
+1. **The foreground lens pull, the leading suspect.** The hands draw in the FOREGROUND pass, whose
+   eye sits ~11.5 UU BEHIND the world camera (ENGINE_NOTES s16: "rendered depth = df + pull",
+   +11.5 UU at the matched lens; kFgEyeComp also has a -5.6 LATERAL term). Mode 2 compensated it
+   (`bones.cpp render_lock_delta`); mode 4 / the palette route never does
+   (HANDS_DISHONORED.md section 6 listed this risk). A camera pulled back along the view axis
+   leaves a hand dead ahead in place and shifts it more the further it is off-centre - "synced
+   forward, desync turned", asymmetric through the lateral term - and the tester's ~7 cm forward /
+   ~11 cm right trims look like hand-compensation of it. **Measure it in the sim first:** the
+   aim laser is an XR quad layer (true world) - `vraim laser on` + `vraim laser 40 0.02 0.8 0.5`
+   starts it at the grip; with grip trims zeroed (`vrhands grip 0 0 0`, rotation via
+   `vrhands step` or zero) the drawn fist should sit on the laser's first dot at every angle. A
+   gap that grows with the angle off the view centre is the pull; then port the compensation
+   (or move the hands' target into the foreground eye's frame) and re-tune.
+2. Then the `GRIPCAL` gap (VDXR's grip axes), step 2 (weapon on the socket bone 43), step 3
+   (per-weapon grips).
+
+### Session log 2026-10-09 (s89, s89b, s89c)
+
+- s89: orientation chain host-tested exact; fist centre measured in Blender and made the pivot;
+  a geometric grip calibration added. s89b: on VDXR the calibration flipped the hands 180 deg -
+  turned off, tuned trims restored, `GRIPCAL` log added. s89c: the tester re-tuned; desync
+  unchanged; tune kept as defaults; handoff written with the foreground-pull lead. Verified in a
+  headset: only that the hands face correctly. Everything else is sim/host only.
+
+## Session 2026-10-09 - s89 (BS1): the pivot found - the fist turns about the controller grip
+
+**Branch `claude/bs1-hands-dishonored`, everything UNCOMMITTED.** Simulator only (11:01 save).
+
+### Current state
+
+- **Installed:** the Debug DLL from this tree; the sim game closed.
+- **The pivot was the anchor and the orientation**, not the controller math: the orientation
+  chain is exact at every orientation (host `orient-chain`, 61,875 checks). The drive pinned the
+  knuckle centroid, 4.0 rig units (~3 cm drawn) behind the fist centre, and faced the hand by
+  eye-tuned trims. Measured in Blender (`tools\blender\hand_pivot.py`, renders in the model
+  workspace's `verification\hand-pivot-*.png`).
+- **Moved there** (`hand_grip.h`): the fist centre pinned to the grip origin (ON).
+- **s89b, after the headset run:** the geometric grip calibration flipped both hands 180 deg toward
+  the shoulder on Virtual Desktop (its grip axes are not the spec's). Calibration OFF; the
+  orientation is the tuned trims again (left -30/31/-206, right -39.7/-7.8/3.6); position trims
+  start at zero on the fist pivot. The `GRIPCAL` log line prints the stored trim beside what the
+  calibration would set - the next run's measurement of VDXR's grip axes. `vrhands palette fist|calib`.
+- Sim: both hands through 19 orientations incl. yaw +-90/+-120 - the wrench handle runs along the
+  controller axis every time (before: straight up), the fist holds its place. Host 6 suites, lint.
+
+### Next steps
+
+1. **Headset:** turn the hand 90 left and right with the wrench - the fist should stay in yours
+   both ways. If the whole hand sits a little off your real one, nudge it with the F10 step rows
+   (they start at zero now); do not expect to need more than a centimetre or a few degrees.
+2. Step 2: the weapon on the engine-side socket bone (43) - children (drum mag) and muzzle FX follow.
+3. Step 3: per-weapon grips with the weapon locked to the aim; then hand swap, throw and catch.
+
+## Session 2026-10-09 - s88 (BS1): the hands animate, the arms do not reach them; the hand-back; the IK on the palette
+
+**Branch `claude/bs1-hands-dishonored`, everything UNCOMMITTED** (the tester commits when they
+say so). Simulator only, every launch through `sim-load-save.ps1` on the 11:01 save.
+
+### Current state
+
+- **Installed:** the Debug DLL from this tree; the sim game closed. Verified in the sim, all on
+  the palette route (default ON): both pivot sweeps 0.00 cm; the trigger hand-back, the physical
+  swing kept tracked, combos, a second attack in the release, forced both-hands; the arm sweep
+  (seven reach poses, head turned to the out-of-view ones); hands-only, game-arms and the bone
+  fallback; a plasmid equip and cast; a 150 s soak with 0 faults. Host: 5 suites incl. the new
+  `palette-math` (10,210 checks). Lint clean.
+- **The hand animates, the arm's animation does not reach it:** the rigid anchor (VR-183, the
+  bind palm carried by the hand bone) and the rigid wrist (VR-184, the cuff vertices' forearm
+  weight moved to the hand bone in the mod's vertex copy). Levers `vrhands palette anchor|wrist`.
+- **The hand-back** (`handback.cpp`): a trigger wrench attack hands the right hand to the clip
+  (250 in / 250 release / 350 out, smootherstep, palm on the straight line, the arm lerped to the
+  game's, the wrench with it); a physical swing stays tracked; Scripted states hand both; fire /
+  reload are levers, off. `vrhands handback ...`.
+- **The IK arm on the palette:** the s81 solver to the composed wrist, each sleeve matrix set on
+  its own (no hierarchy, per-axis scale passes through). `vrhands palette arms ik|hide|game`.
+- Not done: plasmid FX / the bolt still leave from the game's hand (Dishonored `fx_follow`); a
+  real Scripted state was not raised in the sim (the force lever runs the same path).
+- Docs: HANDS_DISHONORED s88, ENGINE_NOTES s88, DISHONORED_PIPELINE "Status after s87/s88",
+  VERIFICATION 2.8b (the four sim tools).
+
+### Next steps
+
+1. **Headset, one session:** wrench out - the hand on the controller at every angle, the wrench in
+   the fist; RT a few swings (the clip plays, the hand comes back without a jump); a real swing
+   (stays with you); the arms through a reach; the EVE hypo (both hands to the game and back).
+   Then grip / rotation trims with the F10 step rows (they start at zero).
+2. Plasmid FX on the tracked hand (`fx_follow`), checked in the sim with Electro Bolt first.
+3. The game-arm shoulder re-seat during a hand-back, only if the headset shows the game's
+   shoulder out in front.
+
+## Session 2026-10-08/09 - s87 (BS1): the pivot found and gone; the hands and the held weapon on the skin palette
+
+**Branch `claude/bs1-hands-dishonored`, everything UNCOMMITTED** (the tester commits when they
+say so). Simulator only; no Steam, no headset. `src/core/` changes are additive and opt-in
+(`vbtap`, and a vertex-stream column after `stk=` in frame dumps).
+
+### Current state
+
+- **Installed:** the Debug DLL from this tree. Last run in the sim on the Aug 03 11:01:57 PM
+  save: both pivot sweeps (R and L) PASS, 0.00 cm, and the captures hold the hand and the
+  wrench at one screen point through yaw +-60, pitch +-45, roll +-90 and two diagonals.
+- **The pivot was the stored grip trims**, wrist-era numbers applied in the palm frame since
+  s86f: a 9.5 cm (R) / 8.5 cm (L) lever. Fixed in code: left default 0, `offHand*Cm` no
+  longer read from hands.ini, the menu keys renamed `HandPalmTrim*` so the old values drop.
+  New verb `vrhands grip [l|r] f r u`.
+- **The hands are on the skin palette (Dishonored 1.2-1.4), default ON.** BS1 skins on the
+  CPU; `palette.cpp` hooks the gather (`+0x3ED660`) and composes each hand's correction onto
+  a copy of its cluster's matrices; the skeleton is the game's. Hands only by default (the
+  sleeves collapsed in the palette). `vrhands palette on|off|status|probe on|off`; off is the
+  bone drive, unchanged.
+- **The held weapon attaches Dishonored's way (1.5):** the wrench is a static mesh, so the
+  hand's world correction is composed onto its draw's LocalToWorld (`UStaticMesh` slot 5,
+  `+0x3DBCF0`). A skinned weapon would take it through the gather.
+- **Not yet on the palette:** the IK arms (hidden while the palette is on, per "hands first"),
+  and engine-side attachments other than the weapon (plasmid FX follow the game's hand).
+- **Tooling:** `tools\sim-load-save.ps1` (loads a save row through the menu, never Continue),
+  `pivot-sweep.ps1` fixed (one command write; `-Point`, in view by default), `vbtap`, IDA
+  scripts `rs1`-`rs13`. ENGINE_NOTES s87, HANDS_DISHONORED s87, PIVOT_SIM_PROTOCOL "Result".
+- Host tests (4 suites) and lint pass.
+
+### Next steps
+
+1. **Headset, one question:** palette on (default), wrench out - does the hand sit on the
+   controller at every angle, and is the wrench in the fist? Then tune the grip with the F10
+   step rows (the trims start at zero now; the old ones are dropped on purpose).
+2. Plasmid FX on the palette route: Dishonored's `fx_follow` (the FX stay with the game's
+   hand until then). Check with a plasmid up in the sim first.
+3. The IK arms on the palette (Dishonored's `arm_ik_draw.inc`): solve to the composed wrist,
+   write the sleeve matrices directly - no hierarchy, so per-segment lengths are free.
+4. Then P5, the hand-back, with `D(weight)` on the palette.
+
+## Session 2026-10-08 - s85/s86 (BS1): one hand drive, both hands on the grip pose, the arm fitted to Dishonored's
+
+**Branch `claude/bs1-hands-dishonored`**, now carrying `origin/staging` (the Rapture F10
+menu) via merge commit `31bb41a`. Everything after that is UNCOMMITTED in the tree (16
+files) - William commits when he says so. `git diff origin/staging...HEAD -- src/core/`
+is empty.
+
+### Current state
+
+- **Installed:** the Debug DLL from this tree (hash `02FD29BF...`), the game closed. Not
+  yet run. The `HANDS` log line (was `MODE4`) is the readout.
+- **One drive.** Mode 4 is the only hand drive: `g_mode` defaults to 4, `hands.ini`'s
+  `mode=` is ignored, the F10 "Hand implementation" choice has one entry; modes 0-3 reach
+  only through `vrhands mode <n>`. Their code stays for the healing session.
+- **Both hands the same way:** the controller's grip pose turned by that hand's rotation
+  trim, plus its view-frame placement and palm-frame grip offset - the free-hand pipeline
+  of s71-s72 for both. The held hand no longer goes through the BRVR actor placement and
+  idle capture (that was why the right arm had less reach than the left).
+- **The fit, measured** (HANDS_DISHONORED.md s86): BS1's rig vs Dishonored's shipped rig,
+  Dishonored's drawn at its live-ini size. Size 0.83 = Dishonored's hand; at that size the
+  upper arm x0.71 and the forearm x1.13. `arm_ik.h` gained per-segment lengths. The
+  BS1-vs-Dishonored audit's elbow gap went from 0.29 arm-lengths to 0.002.
+- **Shoulders from the eye** (ctx.cam), defaults -16 / 0 / -25 / 38.1 cm - Dishonored's.
+  New preference keys `ShouldersForward/Right/Up/Width`; the old `ShoulderBar*` values are
+  ignored. `Show arms` toggle (hands only). s85: shoulders stay put (an arm stretches up to
+  1.35 before its shoulder slides); `Weapon scales with the hands` (= GunScale x size/0.8).
+- Offline: host tests (arm-ik 1,448), lint, the five `bvr_f10_preview` cases (351 checks
+  each), the Blender audit (150 frames, 15 renders) all pass.
+
+- **s86b, after the first s86 run** (hands-only wrist explosions; head turns moved the
+  hands; "the Dishonored values do not feel right"): the hands actor renders at DrawScale
+  0.80, so `size` is now the drawn size (`HandAndArmSize`); the per-hand placement moved
+  from the camera frame to the controller's grip frame; the shoulder origin is the head's
+  pivot (eye - 9 cm along the head's forward); hands-only pins the arm bones at the wrist
+  (BRVR's HideBone) instead of 50 m away. **`docs/bioshock1/DISHONORED_PIPELINE.md`** is the
+  full Dishonored pipeline (split, palette, `palm_target`, grip calibration, trim editing,
+  weapons, IK, hand-back, game-arm share) with BS1's twin of each stage and the overhaul
+  order: calibration press, view-frame step buttons, then the hand-back (P5).
+
+- **s86c, after the s86b run** ("arms waaay too big", "a huge pivot on the hands when
+  turning"): the integration had pinned the WRIST bone to the controller; Dishonored (and
+  the s82 sweep) pin the PALM anchor. `m4_compose` now anchors R_grip / L_Middle1
+  (`kBoneRPalm`/`kBoneLPalm`) and scales about it. DrawScale 0.80 scales positions, not the
+  skin: positions at size/k, .s at size. Sweep re-run: palm pinned to 2e-5 UU through the
+  pistol reload. Built, installed, not run.
+
+- **s86d, after the s86c run** ("small and stretched alien hands"): DrawScale scales the
+  skin too, so the s86c split was wrong - back to uniform `size / k` (drawn = size). The
+  s86b "arms waaay too big" was `hands.ini m4Size=1.070` overriding the 0.83 default
+  (now ignored; the menu owns those). Girth measured on both meshes: BS1's arms are
+  6-12% slimmer than Dishonored's at matched hand size. The s85 stretch is gone (1:1: the
+  shoulder slides). Built, installed, not run.
+
+- **s86e, the ini audit** (HANDS_DISHONORED.md s86e): `hands.ini elbowOut=0.35` was
+  beating the default - now 0.6 (Dishonored's) and not read; the shoulder bar now follows
+  the body through Dishonored's `BodyYaw` filter instead of the recenter-time constant.
+  The rest of the files are consistent with the log echo. Built, installed, not run.
+
+- **s86f** (HANDS_DISHONORED.md s86f): the pivot was the ANCHOR - the wrist (s86), then
+  R_grip at the heel (s86c); now the palm's centre, Dishonored's form. Dishonored's step
+  rows (Fine/Normal/Coarse; move/pitch/yaw/roll in the view, converted to the stored
+  palm-frame trim at the press) replace the placement sliders; pure math in
+  `frame_context.h`, host-tested. Built, installed, not run.
+
+- **s86g, the handoff after the s86f run** ("there is still a pivot; hand forward is
+  synced, pointing in different directions causes huge desync"): no code change to the
+  drive. Added `vrhands pivotprobe on` (the written palm read back from the engine, to
+  world, against the controller grip, 5 Hz), `vrhands step` (the F10 rows from the
+  console/simulator), `tools\pivot-sweep.ps1` (unrun) and
+  **`docs/bioshock1/PIVOT_SIM_PROTOCOL.md`**: the oracle, the sweep, the loop, and the
+  palette route as the 1:1 fallback. The tester asked why BRVR and Dishonored have no pivot
+  and whether to adopt Dishonored's palette system outright: both answered there.
+
+**THE TESTER IS IN BED AND CANNOT TEST. THE SIMULATOR IS AUTHORISED for the pivot
+question (his words: "the simulator will be required for testing"). Not Steam, not the
+headset.** Rule 2's one-launch-one-question still applies per launch; the question is the
+pivot sweep.
+
+### Next steps
+
+1. **Run `tools\pivot-sweep.ps1 -Launch`** (PIVOT_SIM_PROTOCOL.md). Fix the script where
+   it breaks (written blind). Read the oracle table. Loop: one change, build, install,
+   restart the sim, sweep, until the worst palm-vs-grip error is under 1 cm at every
+   orientation AND the captures show the hand on the laser's start at every orientation.
+2. If the probe says the skeleton is right and the render disagrees after the three
+   render-side levers (DrawScale division, actor read timing, `vrfgfov off`), take the
+   palette route (PIVOT_SIM_PROTOCOL.md, last section; DISHONORED_PIPELINE.md 1.2-1.4).
+3. Then the headset question for the tester, and P5 (the hand-back).
+   Read the `HANDS` line: `reach used L x% R y%` should match for the same reach, and
+   `solved upper-arm heads` should read equal fwd/up and opposite right. Its `actor
+   DrawScale` tells whether the drawn size is 0.83 x that.
+2. Tune in F10: Hands > Hand position / rotation (per hand), Hands and arms size; IK >
+   shoulders, Upper arm / Forearm length. The right hand's rotation trim (-32/-4/-8) was
+   tuned empty; with a gun it may want a retune so the barrel meets the laser.
+3. If the gun's grip in the hand is wrong for some weapons: a per-weapon rotation trim on
+   top of the per-hand one is the next lever (deliberately not added; one trim per hand).
+4. Then P5: the hand-back for scripted hand animations; and the healing-session deletion
+   of modes 0-3.
+
+### Session log 2026-10-09 (s88)
+
+- Ported Dishonored's animation lock to the palette: the rigid anchor (VR-183) and the rigid wrist
+  (VR-184, a vertex copy swapped into the LOD for the gather). Measured the live palm's drift the
+  anchor removes (up to 4.6 cm) and the cuff region the wrist changes.
+- Built the hand-back (`handback.cpp`) on the Hands script state; fixed `hands_state` never being
+  located on mode 4. Trigger vs swing by the core swing pulse (VR-220's 80 ms window).
+- Moved the IK arm onto the palette (`palette_math::arm_affine`), lerped to the game's arm during a
+  hand-back. Added `vrhands palette arms`.
+- Pulled the math into `palette_math.h` and host-tested it (`palette-math`, with negative
+  controls). Audit: the wrist-copy lifetime (a cache, no free under a worker), the LOD/vertex
+  offsets into `patterns.h`.
+- New sim tools: `handback-test.ps1`, `arm-sweep.ps1`, `hands-soak.ps1`. Not committed.
+
+### Session log 2026-10-08/09 (s87)
+
+- Ran the s86g pivot protocol in the simulator. The first boot pressed Continue into a
+  hands-less save; the tester's rule since: always load the 11:01 save (`sim-load-save.ps1`).
+- Sweep: 9.49 cm (R) / 8.49 cm (L), constant over orientation = the stored grip trims. Zeroed
+  live: 0.00 cm, the fist fixed in the captures. Fixed the defaults, the ini read and the keys.
+- Researched the BS1 renderer for the palette route: hands = one CPU-skinned draw; the
+  gather/dispatch/skin-task chain; the per-bone row-vector palette at instance +0x170; the
+  instance's owner at +0x48; the palette shares the pose's space (probe). Built `palette.cpp`.
+- The wrench is a static mesh; its draw record carries a world LocalToWorld. Hooked
+  `UStaticMesh` slot 5 and composed the hand's world correction on it, as Dishonored does.
+- Both sweeps pass with the hands and the wrench on the new route. Not committed.
+
+### Session log 2026-10-08 (s85, s86)
+
+s85: the shoulder-control audit (linked slide overrode the sliders; ten dead controls).
+Merged staging's F10 menu in. s85b: the bar faced the room, not the player (recenter yaw);
+a body-fixed clavicle that turned out to carry no skin. s86: the Dishonored deep dive
+(its `arm_ik_draw.inc`, `arm_ik.h`, `mesh_split.cpp` MpTrimPanel/MpWorldTarget, live
+ini), both rigs measured, per-segment arm lengths, both hands on the grip pose, one
+drive, the audit re-run at the fit. No game launched.
+
 ## Session 2026-10-08 - s84 handoff (BS1): mode 4's arm settings "did nothing" - because mode 4 was not on
 
 **Branch `claude/bs1-hands-dishonored`** (off `claude/bs1-arm-ik-redo` = draft PR #88;

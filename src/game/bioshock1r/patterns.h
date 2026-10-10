@@ -462,6 +462,56 @@ inline constexpr uint32_t kSkelInstBoneCountOffset = 0x4C;  // int (AHands rig: 
 inline constexpr uint32_t kSkelInstBonesBOffset = 0x54;     // hkQsTransform* array B
 inline constexpr uint32_t kSkelInstBoneCountBOffset = 0x58;
 inline constexpr uint32_t kSkelInstDirtyOffset = 0x88;   // evaluate-if-dirty flag (byte)
+// ---- s87: THE SKIN PALETTE (CPU skinning; Dishonored's palette route) --------------------
+// BS1 skins skeletal meshes ON THE CPU. The hands are ONE draw of 26178 indices (NEWPlayerHands
+// LOD 0: 8726 triangles) from a 2 MB dynamic vertex ring at stride 56 (s87 frame dump + vbtap);
+// the draw binds a 576-byte VS b0 and no bone constants. The palette is a TArray of 4x4 floats
+// on the USkeletalMeshInstance, one per skeleton bone, ROW-VECTOR form: rows 0-2 are the images
+// of the bind-space axes, row 3 the translation (p' = x*R0 + y*R1 + z*R2 + R3).
+// Derivation (tools\ida\rs5..rs11, ENGINE_NOTES s87): FFinalSkinVertexStream (vtable 0xDF32A0)
+// slot 9 calls the GATHER below with (mesh instance, lod, out, a5); the gather copies
+// instance[+0x170][boneMap[slot]] into a per-LOD cache through the LOD's u16 bone map (LOD
+// +0x0C ptr / +0x10 count; LODs at mesh +0xC4, 288 bytes each; mesh at instance +0x44), then
+// calls the dispatch +0x5EC080, which runs VertexSkinTask (+0x5EBAB0: rigid 60-byte and skinned
+// 64-byte vertices, 4 weights / 255) inline or on a worker. The gather is the hook: thiscall,
+// 4 stack args, retn 10h, a plain frame prologue (bytes below, verified before hooking).
+inline constexpr uint32_t kSkinGatherRva = 0x3ED660;
+inline constexpr uint8_t kSkinGatherPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x8B,
+                                                  0x45, 0x08, 0x53, 0x8B, 0xD9, 0x8B, 0x4D, 0x0C};
+inline constexpr uint32_t kMeshInstPaletteOffset = 0x170;      // FMatrix* (64 bytes each)
+inline constexpr uint32_t kMeshInstPaletteCountOffset = 0x174; // int (AHands rig: must be 47)
+// The skinned instance's OWNER actor. Live-derived s87: the gather never sees actor+0x128 (that
+// pointer is another object); the instance it skins for the hands holds the hands actor at +0x48
+// (a pointer scan of the instance against the drive's actor, on the 47-bone instance the gather
+// was skinning). The match is on this field.
+inline constexpr uint32_t kMeshInstOwnerOffset = 0x48;
+// s88, the rigid wrist (Dishonored VR-184) needs the skinned vertices the gather hands the
+// skinner. tools\ida\rs10/rs11: the gather reads mesh = instance[+0x44], LODs = mesh[+0xC4]
+// (count mesh[+0xC8], 288 bytes each); in a LOD the u16 bone map at +0x0C (count +0x10) and the
+// skinned vertices at +0x40 (count +0x44), which the gather pushes to the dispatch at call time.
+// A skinned vertex is 64 bytes: four bone slots (indices into the LOD bone map) at +56 and four
+// weights (/255) at +60 - the offsets the skinner +0x5EBAB0 reads them at.
+inline constexpr uint32_t kMeshInstMeshOffset = 0x44;
+inline constexpr uint32_t kMeshLodsOffset = 0xC4;
+inline constexpr uint32_t kMeshLodCountOffset = 0xC8;
+inline constexpr uint32_t kLodStride = 288;
+inline constexpr uint32_t kLodBoneMapOffset = 0x0C;
+inline constexpr uint32_t kLodBoneMapCountOffset = 0x10;
+inline constexpr uint32_t kLodSkinnedVertsOffset = 0x40;
+inline constexpr uint32_t kLodSkinnedCountOffset = 0x44;
+inline constexpr uint32_t kSkinnedVertexStride = 64;
+inline constexpr uint32_t kSkinnedVertexBonesOffset = 56;
+inline constexpr uint32_t kSkinnedVertexWeightsOffset = 60;
+// The held WEAPON is not CPU-skinned (s87 gather census: no holdable among the skinned owners);
+// it is a UStaticMesh drawn with one transform per draw. UStaticMesh vtable (0xDF20B4) slot 5,
+// +0x3DBCF0 (tools\ida\rs12/rs13), hands the renderer a per-draw record's LocalToWorld (+160)
+// and WorldToLocal (+224), row-vector 4x4: Dishonored's per-draw component transform (1.5).
+// thiscall (mesh, record, renderer, a4), retn 0Ch, prologue verified before hooking.
+inline constexpr uint32_t kStaticMeshDrawRva = 0x3DBCF0;
+inline constexpr uint8_t kStaticMeshDrawPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24, 0x83,
+                                                      0x7D, 0x10, 0x00, 0x53, 0x56, 0x57};
+inline constexpr uint32_t kDrawRecLocalToWorldOffset = 160;
+inline constexpr uint32_t kDrawRecWorldToLocalOffset = 224;
 // s82: the EVALUATOR - the engine routine that rebuilds the bone array from the
 // animation. Derived offline (tools\ida\hd1_skelinst_update.py, ENGINE_NOTES s82): vtable
 // slot +0x9C, reached from four call sites each guarded by the dirty byte above, and
@@ -525,6 +575,20 @@ inline constexpr int kBoneLClusterFirst = 6;
 inline constexpr int kBoneLClusterLast = 21;
 inline constexpr int kBoneLWrist = 6;
 inline constexpr int kBoneLSleeve[] = {3, 4, 5, 22, 23};
+// s86c: THE PALM ANCHOR per hand - the point the hand drive pins to the controller and
+// turns about (Dishonored's rigid palm anchor, VR-183; hand_compose.h palm_of/delta). The
+// right hand's is R_grip (43, where every weapon is held), the left hand's the base of the
+// middle finger (kBone_L_Middle1, 13); both from the s82 P3 sweep, which proved the model on
+// the real clips with exactly these two. Pinning the WRIST instead (s83-s86b) put a 10 cm
+// lever on every wrist turn.
+inline constexpr int kBoneRPalm = kBoneWeaponAttach;
+inline constexpr int kBoneLPalm = 13;
+// s86f: the anchor is the PALM'S CENTRE - the mean of the hand bone and the four finger
+// bases (Index1, Middle1, Ring1, Pinky1), the bone-level twin of Dishonored's anchor patch
+// (the centroid of the kept hand mesh). R_grip (above) sits 4 rig units from the wrist,
+// at the heel of the hand, so turning about it still swung the palm ~6 cm.
+inline constexpr int kBoneRPalmBones[] = {27, 31, 34, 37, 40};
+inline constexpr int kBoneLPalmBones[] = {6, 10, 13, 16, 19};
 
 // ---- Foreground (viewmodel) scene (session 13, 2026-07-26) ------------------
 // The renderer draws the first-person rig as a separate FOREGROUND scene with

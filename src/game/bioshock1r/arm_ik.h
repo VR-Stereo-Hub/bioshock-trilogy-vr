@@ -226,6 +226,11 @@ struct Input {
     bool fresh = false;             // priorPole / priorTwist are from the last frame
     float scale = 1;                // the hand's scale; the arm is drawn at the same size
     float lengthScale = 1;          // arm length vs the rig's, separate from scale
+    // s86: each segment's own length, on top of lengthScale. BS1's rig has an upper arm
+    // 1.44x its forearm; a body that fits (Dishonored's accepted fit, measured in
+    // HANDS_DISHONORED.md) has 0.90x. One multiplier cannot make both segments right.
+    float upperLength = 1;
+    float foreLength = 1;
     float margin = 0.5f;            // the closest reach keeps this much off a folded arm
 };
 struct Output {
@@ -260,8 +265,8 @@ inline bool swing(const Ref& ref, const Input& in, Vec pole, Swing& out) {
     Vec refNormal = cross(ue, ew);
     if (!unit(refNormal)) refNormal = fallback(ue);
     const float k = in.scale * in.lengthScale;
-    if (!solve(in.shoulder, in.wrist, pole, in.outward, in.priorPole, length(ue) * k,
-               length(ew) * k, in.margin, out.joints))
+    if (!solve(in.shoulder, in.wrist, pole, in.outward, in.priorPole, length(ue) * k * in.upperLength,
+               length(ew) * k * in.foreLength, in.margin, out.joints))
         return false;
     Vec normal = cross(out.joints.pole, in.wrist - out.joints.shoulder);
     if (!unit(normal)) return false;
@@ -270,6 +275,28 @@ inline bool swing(const Ref& ref, const Input& in, Vec pole, Swing& out) {
     out.axis = in.wrist - out.joints.elbow;
     return unit(out.axis);
 }
+
+// ---- the body yaw (Dishonored arm_ik.h BodyYaw, verbatim in substance) -----------------
+// The shoulders face where the BODY faces, which is the head's yaw with a 25-degree
+// deadzone and a 1.5-second relaxation toward it: a glance moves nothing, a turn of the
+// body carries the shoulders. Radians; `update` returns the body yaw for this frame.
+struct BodyYaw {
+    float yaw = 0;
+    bool valid = false;
+    void reset() { valid = false; }
+    float update(float headYaw, float seconds) {
+        if (!valid) {
+            yaw = headYaw;
+            valid = true;
+            return yaw;
+        }
+        const float error = wrap(headYaw - yaw), limit = 25.0f * kDeg;
+        yaw += error - std::clamp(error, -limit, limit);
+        yaw += wrap(headYaw - yaw) * (1 - expf(-std::clamp(seconds, 0.0f, 0.1f) / 1.5f));
+        yaw = wrap(yaw);
+        return yaw;
+    }
+};
 
 constexpr float kTrustDirect = 110 * kDeg; // past this the reading may have wrapped
 constexpr float kTrackLimit = 250 * kDeg;  // no wrist rolls further than this
@@ -280,11 +307,13 @@ constexpr float kElbowShare = 0.7f;        // forearm roll at the elbow; 1.0 at 
 inline bool pose(const Ref& ref, const Input& in, Output& out) {
     out = Output{};
     if (!std::isfinite(in.scale) || in.scale < 0.05f || !std::isfinite(in.lengthScale) ||
-        in.lengthScale < 0.5f || in.lengthScale > 2.0f || !finite(in.wrist))
+        in.lengthScale < 0.5f || in.lengthScale > 2.0f || !finite(in.wrist) ||
+        !std::isfinite(in.upperLength) || in.upperLength < 0.25f || in.upperLength > 2.0f ||
+        !std::isfinite(in.foreLength) || in.foreLength < 0.25f || in.foreLength > 2.0f)
         return false;
     const Vec s0 = vec(ref.upper.p), e0 = vec(ref.fore.p);
     const Vec ue = e0 - s0, ew = vec(ref.wristP) - e0;
-    const float k = in.scale * in.lengthScale;
+    const float k = in.scale * in.lengthScale * in.foreLength; // the forearm's own stretch
     const Quat wristNow = normalized(quat(in.wristQ)), wristRef = normalized(quat(ref.wristQ));
 
     Swing sw0;
@@ -320,8 +349,10 @@ inline bool pose(const Ref& ref, const Input& in, Output& out) {
         const Quat q = mul(up, quat(ref.upper.q));
         for (int i = 0; i < 4; ++i) out.upper.q[i] = q.v[i];
         put(sol.shoulder, out.upper.p);
-        stretch(quat(ref.upper.q), ue, in.scale, in.lengthScale, out.upper.s);
+        stretch(quat(ref.upper.q), ue, in.scale, in.lengthScale * in.upperLength, out.upper.s);
 
+        // (BS1's NEWPlayerHands weights no vertex to the clavicles, measured s86; this
+        // is for form.)
         const Quat qc = mul(up, quat(ref.clavicle.q));
         for (int i = 0; i < 4; ++i) out.clavicle.q[i] = qc.v[i];
         put(sol.shoulder + rotate(up, (vec(ref.clavicle.p) - s0) * in.scale), out.clavicle.p);
@@ -343,7 +374,7 @@ inline bool pose(const Ref& ref, const Input& in, Output& out) {
         const Quat q = mul(turn, mul(fore, quat(r.q)));
         for (int i = 0; i < 4; ++i) o.q[i] = q.v[i];
         put(sol.elbow + rotate(fore, stretched), o.p);
-        stretch(quat(r.q), ew, in.scale, in.lengthScale, o.s);
+        stretch(quat(r.q), ew, in.scale, in.lengthScale * in.foreLength, o.s);
     };
     place(ref.fore, out.fore);
     place(ref.twist[0], out.twist[0]);

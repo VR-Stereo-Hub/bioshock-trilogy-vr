@@ -391,6 +391,23 @@ lasers-OFF station diff (localized drill-region cells moving), never from mean-a
 melee drill never traverses the fire seam on air swings - use a gun (F9 GiveAll, digit-key
 switch) for any seam-counter oracle.
 
+### 2.8b The BS1 hands on the palette (s87/s88)
+
+All four expect gameplay on the sim with the wrench out; `tools\sim-load-save.ps1 -Row 10` loads
+the Aug 03 11:01 save through the menu (NEVER Continue - it lands on a hands-less save).
+
+| Question | Command | Read |
+|---|---|---|
+| Does the hand stay on the controller at every orientation? | `.\tools\pivot-sweep.ps1 [-Hand l -Point "-0.10 1.45 -0.45"]` | worst palm-vs-grip < 1 cm; the captures hold the fist at one screen point |
+| Does an attack hand the hand to the clip and back? | `.\tools\handback-test.ps1 [-Swing] [-Force both]` | the verdict line, the weight ends, the TRACE (drawn palm vs controller vs the game's palm) |
+| Do the IK arms reach and bend right? | `.\tools\arm-sweep.ps1` | reach % per side, slide; the seven captures |
+| Is it stable? | `.\tools\hands-soak.ps1 -Seconds 150` | SOAK PASS: alive, 0 faults, composes climbing |
+
+`game-cmd` REPLACES `command.txt` and the game reads it from CalcView: send several commands in
+ONE call, and never fire presses into the intro (sim-load-save waits for each press's echo).
+The sim TELEPORTS a controller between poses; the physical-swing detector reads that as a swing,
+so sweeps fire SWING attacks (classified correctly, kept tracked) - harmless, but expected.
+
 ### 2.9 Measured baselines (BS1, 2026-08-01, in gameplay)
 
 > **SESSION-38 SCALE BREAK for pixel statistics.** The sim's capture composite

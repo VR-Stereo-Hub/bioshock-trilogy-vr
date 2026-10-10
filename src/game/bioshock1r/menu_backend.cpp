@@ -40,6 +40,7 @@ std::string g_notice;
 struct Edit { Setting id; int hand; float value; bool commit; std::string profile; };
 std::vector<Edit> g_edits;
 std::vector<Action> g_actions;
+std::atomic<bool> g_stepTouched[2]={};   // s86f: a step row changed this hand's stored trim
 
 float raw_read(Setting id,int hand) {
     hand=hand==0?0:1;
@@ -52,9 +53,16 @@ float raw_read(Setting id,int hand) {
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
-        // Current mode-4 API (hand branch f318f3d or newer).
+        // Current mode-4 API (hand branch s85 or newer).
         case S::HandsArmsSize: return bones::m4_arm_size();
-        case S::ShouldersLinked: return bones::m4_shoulders_linked();
+        case S::WeaponFollowsHands: return bones::m4_weapon_follows();
+        case S::HandPitch: case S::HandYaw: case S::HandRoll:
+            bones::off_hand_rot_deg(hand,&a,&b,&c);return id==S::HandPitch?a:id==S::HandYaw?b:c;
+        case S::HandGripForward: case S::HandGripRight: case S::HandGripUp:
+            bones::off_hand_cm(hand,&a,&b,&c);return id==S::HandGripForward?a:id==S::HandGripRight?b:c;
+        case S::UpperArmLength: case S::ForearmLength:
+            bones::m4_segment_lengths(&a,&b);return id==S::UpperArmLength?a:b;
+        case S::ShowArms: return bones::menu_read(S::ArmAppearance,hand)==1;
         case S::ShoulderBarForward: case S::ShoulderBarRight: case S::ShoulderBarUp: case S::ShoulderWidth: {
             float width; bones::m4_shoulders(&a,&b,&c,&width);
             return id==S::ShoulderBarForward?a:id==S::ShoulderBarRight?b:id==S::ShoulderBarUp?c:width;
@@ -139,7 +147,17 @@ bool raw_write(Setting id,int hand,float value) {
     switch(id) {
 #if __has_include("hand_compose.h")
         case S::HandsArmsSize: bones::set_m4_arm_size(value);break;
-        case S::ShouldersLinked: bones::set_m4_shoulders_linked(value!=0);break;
+        case S::WeaponFollowsHands: bones::set_m4_weapon_follows(value!=0);break;
+        case S::HandPitch: case S::HandYaw: case S::HandRoll:
+            bones::off_hand_rot_deg(hand,&a,&b,&c);
+            bones::set_off_hand_rot_deg(hand,id==S::HandPitch?value:a,id==S::HandYaw?value:b,id==S::HandRoll?value:c);break;
+        case S::HandGripForward: case S::HandGripRight: case S::HandGripUp:
+            bones::off_hand_cm(hand,&a,&b,&c);
+            bones::set_off_hand_cm(hand,id==S::HandGripForward?value:a,id==S::HandGripRight?value:b,id==S::HandGripUp?value:c);break;
+        case S::UpperArmLength: case S::ForearmLength:
+            bones::m4_segment_lengths(&a,&b);
+            bones::set_m4_segment_lengths(id==S::UpperArmLength?value:a,id==S::ForearmLength?value:b);break;
+        case S::ShowArms: bones::menu_write(S::ArmAppearance,hand,value!=0?1.0f:2.0f);break;
         case S::ShoulderBarForward: case S::ShoulderBarRight: case S::ShoulderBarUp: case S::ShoulderWidth: {
             float width; bones::m4_shoulders(&a,&b,&c,&width);
             bones::set_m4_shoulders(id==S::ShoulderBarForward?value:a,id==S::ShoulderBarRight?value:b,
@@ -281,6 +299,12 @@ public:
         return c;
     }
     void action(Action action) override {std::lock_guard<std::mutex> lock(g_mutex);g_actions.push_back(action);}
+    void hand_step(int hand,bool rot,int axis,float amount) override {
+        if(hand<0||hand>1) return;
+        hands::queue_hand_step(hand,rot,axis,amount);
+        g_stepTouched[hand].store(true,std::memory_order_relaxed);
+        notice("Moving the hand...");
+    }
     void diagnostics(Tab tab) override {
         if(tab==Tab::Display && theme::section("Resolution (render size)")) {
             unsigned width=0,height=0;hud::backbuffer_dims(&width,&height);
@@ -356,6 +380,15 @@ void tick() {
         if(edit.commit && is_player_setting(edit.id)) {
             const int target=spec(edit.id).scope==Scope::Global?-1:edit.hand;
             if(g_preferences.set({edit.id,target,edit.profile,edit.value})) save=true;
+        }
+    }
+    // s86f: once the game thread has converted the step rows' presses, the six stored
+    // trim values they changed are saved like any other player edit.
+    for(int h=0;h<2;++h) if(g_stepTouched[h].load(std::memory_order_relaxed) && !hands::steps_pending()) {
+        g_stepTouched[h].store(false,std::memory_order_relaxed);
+        for(auto id:{S::HandGripForward,S::HandGripRight,S::HandGripUp,S::HandPitch,S::HandYaw,S::HandRoll}) {
+            const float v=raw_read(id,h);
+            if(valid_value(spec(id),v) && g_preferences.set({id,h,"",v})) save=true;
         }
     }
     for(auto action:actions) {

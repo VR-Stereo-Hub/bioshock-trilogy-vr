@@ -261,6 +261,38 @@ int main() {
         in.lengthScale = 3;
         check(!pose(ref, in, o), "length scale out of range refused");
     }
+    {   // s86: each segment's own length. The forearm helper keeps its fraction of the
+        // forearm, and the wrist still joins.
+        Input in = make_in(ref, vec(ref.upper.p) + Vec{10, 30, -40}, refWrist);
+        in.scale = 0.83f;
+        in.upperLength = 0.71f;
+        in.foreLength = 1.13f;
+        Output o;
+        check(pose(ref, in, o), "per-segment lengths pose");
+        check(seg_err(o, A * 0.83f * 0.71f, B * 0.83f * 1.13f, in.wrist) < 0.005f,
+              "upper and forearm each at their own length", seg_err(o, A * 0.83f * 0.71f, B * 0.83f * 1.13f, in.wrist), 0);
+        check(fabsf(o.upper.s[0] - 0.83f * 0.71f) < 1e-4f && fabsf(o.fore.s[0] - 0.83f * 1.13f) < 1e-4f,
+              "each segment's stretch on its own X", o.upper.s[0], 0.83 * 0.71);
+        const float helper = length(vec(o.twist[1].p) - vec(o.fore.p));
+        check(fabsf(helper - 15.0f * 0.83f * 1.13f) < 0.01f, "helper keeps its fraction of the stretched forearm", helper,
+              15.0 * 0.83 * 1.13);
+        check(near(posed_wrist(ref, o), in.wrist, 0.01f), "forearm still meets the wrist", length(posed_wrist(ref, o) - in.wrist), 0);
+        in.upperLength = 0.1f;
+        check(!pose(ref, in, o), "segment length out of range refused");
+    }
+    {   // s86e: Dishonored's body yaw. A glance inside the 25-degree deadzone moves
+        // nothing; a turn beyond it carries the body by the excess at once, then relaxes.
+        BodyYaw by;
+        check(fabsf(by.update(0.5f, 0) - 0.5f) < 1e-6f, "body yaw starts at the head's");
+        check(fabsf(by.update(0.5f + 20 * kDeg, 0) - 0.5f) < 1e-6f, "a 20 deg glance moves nothing at once");
+        const float big = by.update(0.5f + 40 * kDeg, 0);
+        check(fabsf(big - (0.5f + 15 * kDeg)) < 1e-4f, "a 40 deg turn carries the excess 15 deg", big - 0.5f, 15 * kDeg);
+        float y = big;
+        for (int i = 0; i < 60; ++i) y = by.update(0.5f + 40 * kDeg, 0.1f);
+        check(fabsf(y - (0.5f + 40 * kDeg)) < 2 * kDeg, "held, the body relaxes onto the head within 6 s", y - 0.5f, 40 * kDeg);
+        by.reset();
+        check(fabsf(by.update(3.0f, 0.1f) - 3.0f) < 1e-6f, "reset snaps to the head");
+    }
     {   // NEGATIVE CONTROL: the length check must be able to fail. Move the solved
         // elbow by 1 UU and the same measure the sweep uses must see it.
         Output o;

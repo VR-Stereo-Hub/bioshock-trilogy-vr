@@ -73,7 +73,19 @@ remain global. A disabled control explains the requirement next to it.
 
 The hand branch at `f318f3d` introduces a shared shoulder center, shoulder width,
 linked shoulders, and one hand-and-arm size multiplier. The menu exposes these
-in mode 4 instead of the obsolete independent shoulder positions. The regular
+in mode 4 instead of the obsolete independent shoulder positions. Session 85
+on that branch removed linked shoulders (the shoulders now stay where they are
+set; HANDS_DISHONORED.md, the s85 audit) and added `WeaponFollowsHands`, on by
+default, beside `HandsArmsSize`.
+
+Session 86 made mode 4 the only drive (`HandMode` has one entry; the
+`LegacyHands`/`LegacySolver` controls never show) and added, all `ComposedHands`:
+per-hand `HandForward/Right/Up` (view frame), `HandPitch/Yaw/Roll`,
+`HandGripForward/Right/Up` (palm frame) under Hands - persisted since s87 as `HandPalmTrimForward/Right/Up`, so a grip saved for the wrist anchor (it put the palm 9.5 cm off the controller) is dropped rather than reloaded; `ShowArms` (Hands > Arms);
+`UpperArmLength` and `ForearmLength` under IK. The shoulder keys became
+`ShouldersForward/Right/Up/Width`, measured from the eye, so saved
+`ShoulderBar*` values are ignored as unknown. Defaults are the Dishonored fit
+(HANDS_DISHONORED.md s86). The regular
 staging build has no mode 4 and does not expose those controls. Compatibility
 with the hand branch requires that commit's public APIs or newer equivalents.
 

@@ -5933,3 +5933,85 @@ pose both eyes draw.
 
 Not measured: animation content. The save had nothing equipped (`HandsOffscreen`) and the
 bones did not move between evaluations, which is expected for an off-screen rig.
+
+## Session 87 (2026-10-08/09) - BS1 skins on the CPU: the skin palette, and the weapon's draw transform
+
+Static (headless IDA, `tools\ida\rs1`-`rs13`, staged exe md5 `b4db411a...`) and live in the
+simulator (`dumpframe full`, the new `vbtap`, the palette hook's own probes). The consumer is
+`src/game/bioshock1r/palette.cpp`; constants in `patterns.h` "THE SKIN PALETTE".
+
+- **The hands are one CPU-skinned draw.** `NEWPlayerHands` LOD 0 (8,726 triangles) is ONE
+  `DrawIndexed` of 26,178 indices from a 2 MB dynamic vertex ring at stride 56, bake stack
+  `+0x3EDCBF`. Its VS b0 is the 576-byte tier and no other VS constant buffer is bound: no
+  bone palette reaches the GPU. Rigid pieces (the `+0x3DBF7C` stack) draw from static
+  48-byte buffers with their transform in b0.
+- **The skinner.** `FFinalSkinVertexStream` (vtable `0xDF32A0`) slot 9 (`+0x3ED7E0`) calls
+  the **gather** `+0x3ED660` (thiscall: palette cache in ecx; mesh instance, lod, out, a5 on
+  the stack; `retn 10h`; called from that one site with `[stream+0x14]` as the instance). The
+  gather copies `instance[+0x170]` (`FMatrix*`, count `+0x174`, one per skeleton bone) into a
+  per-LOD cache through the LOD's u16 bone map (mesh `+0x44`; LODs `+0xC4`, 288 bytes; LOD
+  `+0x0C`/`+0x10` the map), then calls the dispatch `+0x5EC080` (ecx/edx = rigid vertices and
+  count, stack = skinned vertices, count, palette, scratch, dst; caller cleans), which runs
+  `VertexSkinTask` (`+0x5EBAB0`) inline or on a worker. Rigid vertices are 60 bytes with one
+  bone byte at +36; skinned 64 bytes with four bone bytes at +36 and four weights at +40 (/255);
+  output 56 bytes (position, a 3x3 basis, uv).
+- **The palette's form and space.** 4x4 floats, ROW-VECTOR: rows 0-2 the images of the
+  bind-space axes, row 3 the translation. It is in the SAME component space as the evaluated
+  pose (the space probe: `inverse(pose) * palette` at each wrist is constant while the hand
+  animates, drift 0.000 UU / 0.00 deg, scale 1.000, and mirror-symmetric between the wrists:
+  L (-71.38, -28.47, -5.74), R (-71.38, -28.47, +5.74)).
+- **Which instance.** The gather never sees `actor + 0x128` (that pointer is another object).
+  The instance it skins for the hands holds the hands actor at **`+0x48`** (pointer scan of
+  the 47-bone instance the gather was skinning). Its vtable is `USkeletalMeshInstance`'s.
+- **What else the gather skins** (Medical Pavilion): PlayerHands (47 bones), splicer bodies
+  and `DeadBodyContainer`s (73), the medical doors (3). **No holdable**: the wrench is not
+  skinned.
+- **The held weapon's draw.** A `UStaticMesh` (vtable `0xDF20B4`) drawn through slot 5,
+  `+0x3DBCF0` (thiscall: mesh; record, renderer, a4; `retn 0Ch`), which passes the per-draw
+  record's LocalToWorld (+160) and WorldToLocal (+224), row-vector 4x4, WORLD space (the
+  translation equals the owner actor's location to 0.1 UU), to the renderer's set-transform
+  virtual (+168). The record holds its owner actor at **+0**.
+- **The rest of the vertex ring** (vbtap): its NO_OVERWRITE uploads at a 12-byte stride come
+  from `+0x765C60` (position-only geometry, `+0x5CFF64` in the scene render); the DISCARD maps
+  are the frame-end ring reset (`+0x7B4350`).
+
+## Session 88 (2026-10-09) - the hands' LOD and vertex layout, the Hands state in mode 4
+
+- **The hands' skinned vertices, as the gather sees them** (tools\ida\rs10/rs11 read again for
+  the rigid wrist; `patterns.h` holds the constants): mesh = instance[+0x44]; LODs = mesh[+0xC4]
+  (count +0xC8, stride 288); in a LOD the u16 bone map +0x0C (count +0x10) and the skinned
+  vertices +0x40 (count +0x44). A skinned vertex is 64 bytes with the four bone SLOTS (indices
+  into the LOD bone map, not the skeleton) at +56 and four weights /255 at +60. NEWPlayerHands
+  LOD 0: 3,469 skinned vertices; 142 of them have at least half their weight on one hand and
+  some on that side's arm bones (the cuff ring).
+- **Swapping the LOD's vertex pointer for one gather call is honoured**: the gather pushes
+  [LOD+0x40] to the dispatch at call time, and a worker-queued skinning task keeps that pointer -
+  so the copy must outlive the call (palette.cpp keeps eight).
+- **`hands_state` was never located on mode 4.** Only mode 3's path called `locate()`. The
+  hand-back calls it itself; it locates on the first frame. The states seen in the sim:
+  WeaponIdling, WeaponFiring (~0.7 s for a wrench swing, 1.4 s for a two-press combo),
+  WeaponUnEquipping, AbilityFastEquipping, AbilityIdling, AbilityFiring,
+  FinishAbilityFiringWithEve (PostFiring).
+- **The wrench's Firing is entered ~5-15 ms after the RT press**, and the physical swing's RT
+  pulse (core swing module) is open at that moment: the VR-220 80 ms window separates the two
+  sources cleanly in every run.
+
+
+## Session 90 (2026-10-09) - every draw's cb0 carries its eye; the fg pull is zero on the palette route
+
+- **cb0 floats 56..58 = the eye the draw is rendered from, in that draw's LOCAL space** (float 59
+  is 0). Derivation: for every draw in two sim dumps, the null point of the clip rows x, y, w
+  (floats 40..43, 44..47, 52..55, `M = diag(1/tanH, 1/tanV, 1, 1) * s[R | -R*E]`) equals floats
+  56..58 to within 0.05 local units - world draws and foreground draws alike. Dynamic draws that
+  bake their own transform into the vertices carry zeros there (s in the hundreds; skip them).
+  The row-w norm `s` is the draw's local-to-world scale (0.80 for the hands = their DrawScale).
+- **The hands draw on the palette route**: 26178 indices, the 832-byte tier, a CPU-skinned
+  56-byte VB, stacks `0x3EDCBF` (main) and `0x3EDC1B` (a second pass); its local space is the
+  hands actor's component space. Its eye read (-1.38, +-4.00, 11.16) component units with the
+  camera at (-1.374, 0, 11.166) (`PIVOTPROBE CAM`, same frame): **the fg eye is the per-eye camera
+  exactly, no pull** - +-4.00 x 0.80 = +-3.2 UU, half the 64 mm IPD. Tangents 1.19174 / 1.23502 and
+  rotation rows equal the world view's; the sim's submitted layer FOV (+-50 / +-51.004 deg) is the
+  same frustum. Session 16's +11.5 UU was measured on the bone drive's rigid-section path and does
+  not apply here.
+- How to repeat: `vrhands pivotprobe on`, then `dumpframe full 2` (two present windows = both
+  eyes); decode the hands draw's floats 40..59 against the CAM line.
