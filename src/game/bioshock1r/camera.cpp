@@ -14,6 +14,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
@@ -27,12 +28,14 @@
 #include "game/bioshock1r/scripted.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/temporal.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
 #include <MinHook.h>
 
 #include <imgui.h>
+#include <intrin.h>
 
 #include <atomic>
 #include <cmath>
@@ -752,6 +755,10 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "vrpreset") == 0) {
         if (strncmp(args, "save", 4) == 0) save_vr_preset();
         else apply_vr_preset();
+    } else if (strcmp(cmd, "dlss") == 0) {
+        temporal::handle_command(cmd, args); // DLSS/DLAA and TAA
+    } else if (strcmp(cmd, "aer") == 0 || strcmp(cmd, "afw") == 0) {
+        alt_eye::handle_command(cmd, args); // alternate-eye stereo methods (AFW's tuning words pass on to temporal)
     } else if (strcmp(cmd, "vrpace") == 0) {
         bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
     } else if (strcmp(cmd, "vrmirror") == 0) {
@@ -1328,6 +1335,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             g_eyeCamLoc[1] = *loc; // fg view-sync stash, RIGHT eye
             g_eyeCamRot[1] = *rot;
             g_eyeCamStampMs[1] = GetTickCount64();
+            temporal::note_camera(g_srBaseEyed ? +1 : 0, *loc, *rot); // DLSS / AFW guides
         } else if (rot) {
             rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
         }
@@ -1339,6 +1347,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
     g_original(self, edx, viewActor, loc, rot);
     scenedraw::note_calcview();
+    int aerSignApplied = 0; // the AlternateEye offset this build renders with (temporal guides)
 
     g_playerController.store(self, std::memory_order_relaxed);
     uint32_t count = g_callCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1469,6 +1478,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // scripted cameras bypass CalcView entirely).
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
+    // Alternate-eye stereo (alt_eye.h): the eye THIS FRAME renders - the same for every
+    // CalcView call of the frame (the hands node takes its camera from the calls before
+    // the build's own), decided once per frame at the render view. Applies a pending
+    // method change here, outside the build. 0 = no alternate method / not a stereo frame.
+    const int altSign = alt_eye::frame_sign(strictGameplay && !bvr::vr::cinematic_active());
 
     // s64: the scripted-EVENT signals (BRVR's M7 window). Deliberately NOT
     // gated on strictGameplay - a scripted sequence is exactly when the view
@@ -1521,6 +1535,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // above stay ungated for flat tests.
         driveHead = true;
         liveHead = true;
+        // AER: one head sample per eye pair (BRVR's latch) - no-op for every other method.
+        alt_eye::latch_head(&hp, altSign);
     }
     if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
@@ -1684,10 +1700,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // successive game frames render alternating eyes. Suppressed under
         // SequentialReentry stereo (rung 2), which applies both eye offsets
         // itself at the end of this body.
-        int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
+        // An alt_eye method (AER, AFW) owns the alternation on the game thread - one eye
+        // per frame; otherwise core's published sign (its own AlternateEye test).
+        int eyeSign = scenedraw::stereo_active()                   ? 0
+                      : alt_eye::method() != alt_eye::kBoth ? altSign
+                                                             : bvr::vr::current_eye_sign();
+        // AER's pair lock: the right frame renders from the left frame's camera (this
+        // call site's), so both eyes of a pair are one instant - BRVR's PairLockCamera.
+        if (eyeSign != 0) alt_eye::pair_lock(_ReturnAddress(), loc, rot, eyeSign);
         // Session 22: routed through apply_eye_offset so SR and AER share ONE
         // implementation (full-rotation right axis, head-roll correct).
         if (eyeSign != 0) apply_eye_offset(loc, *rot, eyeSign);
+        aerSignApplied = eyeSign;
 
         vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
                     ? bvr::vr::suggested_hfov_deg()
@@ -2113,8 +2137,17 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_eyeCamLoc[0] = *loc; // fg view-sync stash, LEFT eye
         g_eyeCamRot[0] = *rot;
         g_eyeCamStampMs[0] = GetTickCount64();
+        // DLSS guides: the render view only (the build's own CalcView, one per frame).
+        if (scenedraw::in_gameplay_build()) temporal::note_camera(g_srBaseEyed ? -1 : 0, *loc, *rot);
     } else {
         g_srBaseValid = false;
+        // AlternateEye or mono, the render view (one per frame - the engine's other CalcView
+        // calls are movement/AI/audio consumers, not frames): the camera this frame renders
+        // with, after every offset; then the frame is tagged and the eye advances.
+        if (loc && rot && scenedraw::in_gameplay_build()) {
+            temporal::note_camera(aerSignApplied, *loc, *rot);
+            alt_eye::commit_render_view(aerSignApplied);
+        }
     }
 
     // FOV: the VR drive wins over the manual override; both share the same
@@ -2445,6 +2478,10 @@ float set_head_up_cm(float cm) {
 
 float head_up_uu() {
     return g_headOffUpUu.load(std::memory_order_relaxed);
+}
+
+float eye_half_separation_uu() {
+    return (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) * g_worldScale.load(std::memory_order_relaxed);
 }
 
 bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]) {

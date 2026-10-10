@@ -93,6 +93,20 @@ Suites so far: `ue-math` (`game/shared/ue_math.h`), `xrsim-math` (the simulator'
 matrix). The habit it asks for: keep a decision in a header with no engine reads, and test
 that header here before a headset sees it.
 
+### GPU passes on the host
+
+| Question | Tool |
+|---|---|
+| Does a production D3D11 pass (motion vectors, the AFW rebuild) reproduce a ray-traced truth, with controls? Does DLSS run through the real x64 helper? Does the BS1 temporal glue behave when driven like the game and core drive it? | `.\tools\gpu-test.ps1 [suite]` - one `tools\gpu-tests\<name>-tests.cpp`, its production sources named on its first line; shared scene and readback helpers in `gpu_test_util.h` |
+| The DLSS helper itself | `.\tools\fetch-ngx.ps1 [-From <local clone>]` (pinned NGX SDK v310.7.0, gitignored `third_party\ngx`), then `.\tools\build-dlss-host.ps1` -> `build\dlss_host\` |
+
+Suites: `temporal-gpu`, `dlss-host` (needs an NVIDIA RTX GPU), `afw-gpu`,
+`temporal-integration` (the production `bioshock1r/temporal.cpp` with core and the engine
+stubbed), `xr-seams` (the production `core/vr/openxr_runtime.cpp` on the simulated runtime,
+no game - a suite says `gpu-test-needs: xrsim` and the runner installs the sim per process in
+a scratch dir). Numbers and what each proves: `bioshock1/TEMPORAL.md`. It refuses to run
+while a BioShock is running (the GPU is shared).
+
 ### Live instrumentation and the simulator - `docs/VERIFICATION.md`
 
 | Question | Tool |

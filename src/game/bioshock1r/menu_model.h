@@ -39,6 +39,7 @@ enum class Setting {
     ScreenDistance, CutsceneDisplay, HideSceneArms, GameSceneHands,
     PinPosition, PinRotation, HideHeldArm, BoneProbes,
     HandsArmsSize, ShoulderBarForward, ShoulderBarRight, ShoulderBarUp, ShoulderWidth, ShouldersLinked,
+    Upscaler, DlssQuality, DlssModel, StereoMethod, AfwTint, TemporalAudit,
     Count
 };
 struct Spec {

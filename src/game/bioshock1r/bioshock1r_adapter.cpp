@@ -11,11 +11,13 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/scripted.h"
+#include "game/bioshock1r/temporal.h"
 #include <cstdlib>  // _wtof, for the ini's float keys
 #include <cstring>
 
@@ -44,6 +46,8 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     hands::init(image);        // M7 viewmodel; the actor is located lazily
     bones::init(image);        // M7-v2 skeleton drive; located lazily off the actor
     body::init(image);         // M7.5 body yaw transfer; default off, probe-gated
+    temporal::init();          // DLSS/DLAA and the alternate frame warp; off until asked for
+    alt_eye::init(image);      // AER/AFW stereo methods; the frame-delta hook waits for AER
     // Anchored screen placement is a CORE behaviour and this is where BS1 -
     // and only BS1 - asks for it. It is headset-verified here and nowhere
     // else; BS2 and Infinite keep the recenter-origin placement they shipped

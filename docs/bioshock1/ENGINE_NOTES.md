@@ -5864,3 +5864,19 @@ test) reads, per arm: held median 3.75 / p90 4.87 / max 20.55 UU, free median 3.
 / p90 4.87 / max 20.57 UU. The held arm's worst case fell from 32.3 to 20.6 and the
 two arms now agree, but neither is at the ~0 the fix predicts. The next run should
 be the probe's own protocol: both hands still, roll the main wrist slowly.
+
+## 2026-10-10 - the scene depth and the cameras, for DLSS and the alternate frame warp
+
+Design and offline measurements: `bioshock1/TEMPORAL.md`. The engine facts it rests on,
+with their status:
+
+| Fact | Source | Status |
+|---|---|---|
+| Scene depth = `D24_UNORM_S8_UINT` at the backbuffer size, typeless resource (an R24X8 SRV view exists) | "D3D11 frame map" above (T1 / T34) | dump-proven, 1920x1080 |
+| The world renders through `DrawIndexed` only; the scene DSV stays bound through the tonemap and the HUD | "D3D11 frame map", session 19 | dump-proven |
+| Standard D3D projection: near 10 uu, far 65536 uu in gameplay (1024 in another branch), conventional depth (0 near) | the BioShock VR DLSS/DLAA community fork (MIT), `temporal_guides.cpp` comments, IDA on `BioShockHD.exe`'s finite projection builder | **measured in game 2026-10-10 09:15** (Quest 3, 2750x2850 eyes, 460 frames): the vector audit's depth-scale sweep `0.25:0.0202 0.5:0.0142 1:0.0071 2:0.0115 4:0.0127` - scale 1 lowest; vectors 0.0071 vs rotation only 0.0136 vs no motion 0.0171 |
+| CalcView calls per frame | the 2026-10-10 log: `calcview in=130 out=398/s` with 130 builds/s; BRVR measured 4.2 per frame (one per call site: the render view plus movement/AI/audio consumers carrying different rotators) | measured. Exactly ONE call per frame runs inside the gameplay scene build (caller `kSceneBuildGameplayRetRva`): that one is the render view. Per-frame state must key on it, never on calls |
+| The foreground pass (arms, weapon) renders through the WORLD lens | session 15/16 (`vrfgfov` match, default on) | dump-proven |
+| Whether the foreground pass CLEARS depth before drawing | - | **still unknown.** The first run printed `160W 8F 115F 32F 10F 22F 3F`: six segments on the world's depth surface after the 160-draw world segment - but that build did not log clears, and called every later segment the foreground with or without one (fixed: only after a clear; `|` now marks it). The "first draws of the main pass" are the foreground (session 21, `hud_capture` notes), which would put the hands INSIDE the world segment. Record the next run's line here |
+| The frame-delta function (BRVR's DeltaClamp target): `__thiscall`, `ret 8` = (stack arg1, stack float deltaSeconds), virtual (zero static E8/E9 callers), called on two objects per frame before the scene build | lead: BRVR module+0x53D850 and its 47-byte signature (bytes 6..9 an SEH scope-table address, wildcarded). Re-derived 2026-10-10 on this exe with `disasm-rva.py`: `search` finds the signature tail (bytes 10..46) exactly once, at 0x53D85A; `dis 0x53D850` shows the prologue `55 8B EC 6A FF` and `ret 8` at 0x53E844 | static-proven; patterns `kFrameDeltaRva` + prologue + tail, byte-checked at install. Live behaviour (holding it freezes the world for one frame and the bank pays out) is BRVR's measurement, not yet this mod's |
+| CalcView's final `loc`/`rot` is the camera the frame renders with | the stereo work (SR/AER eye offsets are applied there and render as expected) | assumed exact; any later camera shake or bob would show as a vector-audit residual while still |

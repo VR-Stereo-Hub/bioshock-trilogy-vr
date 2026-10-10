@@ -2,6 +2,58 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-10: BS1 DLSS / DLAA, TAA and the alternate frame warp
+
+### Current state
+
+Branch `claude/bs1-dlss-afw` off `staging` `ba63f80`, in the worktree
+`C:\dev\bioshock-trilogy-vr-afw` (the main checkout's uncommitted `claude/bs1-weapon-attach-fx`
+work is untouched). **Uncommitted - nothing is committed or pushed.** The Dishonored VR mod's
+motion vectors, TAA, DLSS/DLAA (x64 NGX helper) and AFW, ported to BS1. Design, numbers and
+the headset questions: `bioshock1/TEMPORAL.md`. Everything defaults OFF; BS2 and Infinite
+are unchanged (every core seam is null by default; rows in `PORT-CANDIDATES.md`).
+
+**Second round (same day, after the first headset run of AFW at 09:15):** AFW flickered
+between the eyes and the game crashed in the NVIDIA driver 5 s later. The flicker's cause is
+found and fixed - the eye was flipped per CalcView CALL and BS1 makes ~4 per frame; it is now
+decided once per frame at the render view, as BRVR and Dishonored do. The crash is not
+explained (a driver worker thread, no mod frame on its stack; `TEMPORAL.md`). BRVR's AER is
+now its own F10 choice beside AFW - F10 > Advanced > Display > Stereo rendering > **Stereo
+method** (`bioshock1r/alt_eye.cpp`): pair lock, one head sample per pair, the world held on
+the right frame (the frame-delta hook, re-derived on this exe), pairs submitted together
+through core's SR pair path, and BRVR's eye-queue drift resync (core opt-in). The run also
+proved the motion vectors and the near plane in game, and exposed the foreground-pass
+classifier calling every later segment "the hands" (fixed: only after a depth clear). An
+audit against Dishonored's AFW and BRVR's AER is in `TEMPORAL.md`. The saved
+`AlternateFrameWarp=1` preference is retired with the old key, so the game does not start in
+AFW.
+
+Verified offline only: `tools\gpu-test.ps1`, 5 suites, **107 checks**, all pass on the RTX
+4070 Ti SUPER - motion vectors against a ray-traced truth (p95 under 0.02 px), DLSS through
+the real helper, TAA, the AFW rebuild, `temporal.cpp` + `alt_eye.cpp` driven with the
+engine's real four-CalcView pattern (AFW and AER sequencing, pair lock, head latch, the clamp
+arithmetic, a split world pass), and the core OpenXR seams on the simulated runtime (AER
+pairs, and a stale tag with and without the drift resync). Lint clean. **No game launch, in
+the simulator or otherwise.**
+
+**Installed** (RelWithDebInfo, SHA256 `50CF5C59...E08E`) with `<game>\bvr_dlss\`. The build
+that was installed before this branch (`v0.8.3-212-g9ccf065-dirty`, the weapon-attach work,
+installed 02:57) is backed up byte for byte in
+`C:\dev\bioshock-trilogy-vr-afw\build\install-backups\pre-dlss-afw-20261010\`.
+
+### Next steps
+
+1. Headset, one question at a time, from `bioshock1/TEMPORAL.md` "Headset questions":
+   Stereo method **Alternate eye (AER)** first, then **Alternate frame warp**; DLAA on top.
+2. Record the pass-structure line (now with `|` for depth clears) in `ENGINE_NOTES`.
+3. If AFW crashes again: RenderDoc one AFW frame, `watch-crashes.ps1 -Mode Memory`.
+4. Audit gaps worth closing (TEMPORAL.md audit table): the exact locate generation per AFW
+   image, a GPU timer on the rebuild, the controller latched per AER pair.
+5. Commit as logical commits once accepted (transport + helper; guides + DLSS/TAA glue;
+   stereo methods + AFW; docs ride with each).
+6. Not built: projection jitter for DLSS (Dishonored's `dlss_jitter`), DLSS object motion,
+   the AFW depth layer for the runtime's own spacewarp.
+
 ## Session 2026-10-08: BS1 Rapture launcher review candidate
 
 ### Current state

@@ -3,12 +3,14 @@
 #include "menu_preferences.h"
 #include "menu_theme.h"
 #include "aim.h"
+#include "alt_eye.h"
 #include "body.h"
 #include "bones.h"
 #include "camera.h"
 #include "game_ini.h"
 #include "hands.h"
 #include "scripted.h"
+#include "temporal.h"
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
 #include "core/input/swing.h"
@@ -49,6 +51,8 @@ float raw_read(Setting id,int hand) {
     value=aim::menu_read(id);if(std::isfinite(value)) return value;
     value=hands::menu_read(id);if(std::isfinite(value)) return value;
     value=bones::menu_read(id,hand);if(std::isfinite(value)) return value;
+    value=temporal::menu_read(id);if(std::isfinite(value)) return value;
+    value=alt_eye::menu_read(id);if(std::isfinite(value)) return value;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
@@ -135,6 +139,7 @@ bool raw_write(Setting id,int hand,float value) {
     if(id==S::TextSize) {g_textSize.store(value,std::memory_order_relaxed);return true;}
     if(id==S::ViewLevel) {g_level.store(static_cast<int>(value),std::memory_order_relaxed);return true;}
     if(camera::menu_write(id,value)||aim::menu_write(id,value)||hands::menu_write(id,value)||bones::menu_write(id,hand,value)) return true;
+    if(temporal::menu_write(id,value)||alt_eye::menu_write(id,value)) return true;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
@@ -287,6 +292,7 @@ public:
             ImGui::Text("Current render: %u x %u",width,height);
             theme::note("Resolution changes need a restart. In-game config writes are unavailable because the game can overwrite them when it exits.");
         }
+        if(tab==Tab::Display && theme::section("DLSS and stereo method status")) {alt_eye::draw_status();temporal::draw_status();}
         if(tab==Tab::Runtime && theme::section("Runtime status")) {
             ImGui::Text("%.1f fps  /  %.2f ms",ImGui::GetIO().Framerate,1000.f/std::max(ImGui::GetIO().Framerate,1.f));
             ImGui::Text("OpenXR session: %s",vr::session_live()?"active":"unavailable");

@@ -161,6 +161,9 @@ std::atomic<uint32_t> g_submitNested{0}; // submits seen at depth>0 (in build)
 std::atomic<uint32_t> g_secondCalls{0};
 std::atomic<uint32_t> g_activeTid{0};
 std::atomic<int>      g_activeDepth{0};
+// The thread inside a depth-0 scene build called from the GAMEPLAY site (0 = none):
+// its CalcView is the render view (alternate-eye sequencing, alt_eye.h).
+std::atomic<uint32_t> g_gameplayBuildTid{0};
 std::atomic<uint32_t> g_secondPassTid{0};
 std::atomic<uint32_t> g_calcInside{0};
 std::atomic<uint32_t> g_calcOutside{0};
@@ -789,6 +792,8 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     uint32_t n = g_buildEntries.fetch_add(1, std::memory_order_relaxed) + 1;
     uint32_t callerRva = to_rva(_ReturnAddress());
     note_caller(callerRva);
+    if (depth == 0 && callerRva == patterns::kSceneBuildGameplayRetRva)
+        g_gameplayBuildTid.store(tid, std::memory_order_relaxed);
     if (n <= 2)
         BVR_LOG("[reentry] build fired #%u (tid %u, caller 0x%X, ecx %p, a1 %p)",
                 n, tid, callerRva, ecx, a1);
@@ -837,6 +842,7 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     if (!g_drain.enabled.load(std::memory_order_relaxed) &&
         !g_flush.enabled.load(std::memory_order_relaxed))
         heartbeat(tid);
+    if (depth == 0) g_gameplayBuildTid.store(0, std::memory_order_relaxed);
     if (g_activeDepth.fetch_sub(1, std::memory_order_relaxed) == 1)
         g_activeTid.store(0, std::memory_order_relaxed);
 }
@@ -1780,6 +1786,18 @@ void handle_fgnode_command(const char* args) {
                 g_fgSyncSubs.load(std::memory_order_relaxed),
                 g_fgSyncMisses.load(std::memory_order_relaxed));
     }
+}
+
+bool build_hook_live() {
+    return g_build.enabled.load(std::memory_order_relaxed);
+}
+
+bool in_hooked_call() {
+    return g_activeTid.load(std::memory_order_relaxed) == GetCurrentThreadId();
+}
+
+bool in_gameplay_build() {
+    return g_gameplayBuildTid.load(std::memory_order_relaxed) == GetCurrentThreadId();
 }
 
 void note_calcview() {

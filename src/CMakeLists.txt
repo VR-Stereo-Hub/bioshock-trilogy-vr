@@ -21,6 +21,9 @@ add_library(bioshockvr SHARED
     core/debug/value_scan.h
     core/gfx/blit.cpp
     core/gfx/blit.h
+    core/gfx/dlss_client.cpp
+    core/gfx/dlss_client.h
+    core/gfx/dlss_ipc.h
     core/gfx/frame_inspector.cpp
     core/gfx/frame_inspector.h
     core/gfx/gfx_hud.cpp
@@ -90,6 +93,14 @@ add_library(bioshockvr SHARED
     game/bioshock1r/scenedraw.h
     game/bioshock1r/scripted.cpp
     game/bioshock1r/scripted.h
+    game/bioshock1r/afw_gpu.cpp
+    game/bioshock1r/afw_gpu.h
+    game/bioshock1r/alt_eye.cpp
+    game/bioshock1r/alt_eye.h
+    game/bioshock1r/temporal.cpp
+    game/bioshock1r/temporal.h
+    game/bioshock1r/temporal_gpu.cpp
+    game/bioshock1r/temporal_gpu.h
     game/bioshock2r/aim.cpp
     game/bioshock2r/aim.h
     game/bioshock2r/bioshock2r_adapter.cpp
@@ -214,6 +225,7 @@ target_link_libraries(bioshockvr PRIVATE
     minhook
     imgui
     d3d11
+    dxgi
     d3dcompiler
     dbghelp
 )

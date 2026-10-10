@@ -46,6 +46,11 @@ float head_up_uu();
 // no fresh stash exists (stereo off, drive idle > 200 ms, or never driven).
 bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]);
 
+// Half the eye separation in uu (the IPD slider over the world scale): the distance
+// apply_eye_offset moves each eye along the camera's right axis. The alternate frame
+// warp moves the fresh eye's camera across by twice this to place the held eye.
+float eye_half_separation_uu();
+
 // Session 22 cinematic fallback, called from scenedraw's BuildDetour (same
 // game thread): scripted cameras bypass eventPlayerCalcView, so the FOV
 // write's normal restore path cannot run during them.
