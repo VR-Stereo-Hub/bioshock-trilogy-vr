@@ -37,6 +37,8 @@ cbuffer W : register(b0) {
     float4 othDims;         // other depth w, h, stale test on, discontinuity absolute (uu)
     float4 compose;         // nearer ratio, tint, use A, use B
     float4 outDims;         // w, h
+    float4 fg;              // hand depth gain, band (uu): nearer depth is read as depth / gain;
+                            // z: the first vertex of this draw band (SV_VertexID restarts at 0)
 };
 
 Texture2D<float> srcZ : register(t0);
@@ -53,16 +55,21 @@ struct V {
     float stretched : TEXCOORD3;   // 1: this cell spans a depth discontinuity
 };
 
-float zfix(float z) { return z > 0.0f ? z : srcLocSky.w; }
+// Linear depth as the reprojection uses it: sky (0) far away, and the hand band corrected
+// by the measured gain.
+float zfix(float z) { return z > 0.0f ? (z < fg.y ? z / fg.x : z) : srcLocSky.w; }
 float zat(int2 p) {
     p = clamp(p, int2(0, 0), int2(dims.xy) - 1);
     return zfix(srcZ.Load(int3(p, 0)));
 }
 
-V vsmesh(uint vid : SV_VertexID) {
-    const int2 C[6] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 0), int2(1, 1), int2(0, 1) };
+V vsmesh(uint vid0 : SV_VertexID) {
+    uint vid = vid0 + (uint)fg.z;
     uint cell = vid / 6;
     uint k = vid - cell * 6;
+    // The cell's corner for vertex k of its two triangles, (0,0) (1,0) (0,1) / (1,0) (1,1)
+    // (0,1), from bit masks rather than an indexed constant array.
+    const int2 corner = int2((0x1Au >> k) & 1u, (0x34u >> k) & 1u);
     uint cw = (uint)dims.z;
     int2 c = int2(cell % cw, cell / cw);
     int g = (int)srcUpGrid.w;
@@ -77,7 +84,7 @@ V vsmesh(uint vid : SV_VertexID) {
     // the other source's real surface wins over it in the compose. Dropping it instead
     // leaves a hole along every silhouette that only a neighbour search can fill.
     const bool edge = zmax > zmin * (1.0f + tgtUpEdgeRel.w) + othDims.w;
-    int2 node = min(p0 + C[k] * g, int2(dims.xy) - 1);
+    int2 node = min(p0 + corner * g, int2(dims.xy) - 1);
     float z = zat(node);
     float2 uv = (float2(node) + 0.5f) / dims.xy;
     float x = uv.x * 2.0f - 1.0f, y = 1.0f - uv.y * 2.0f;
@@ -118,7 +125,7 @@ PO psmesh(V i) {
                                 0.5f - dot(q, othUpStaleAbs.xyz) / (oz * othRightTanV.w) * 0.5f);
             if (all(ouv > 0.002f) && all(ouv < 0.998f)) {
                 float4 g4 = othZ.GatherRed(pnt, ouv);
-                g4 = g4 > 0.0f ? g4 : srcLocSky.w;
+                g4 = g4 > 0.0f ? (g4 < fg.y ? g4 / fg.x : g4) : srcLocSky.w;
                 // The NEAREST of the four: a silhouette texel never condemns a point.
                 float zo = min(min(g4.x, g4.y), min(g4.z, g4.w));
                 if (zo > oz * (1.0f + othLocStaleRel.w) + othUpStaleAbs.w) discard;
@@ -182,8 +189,8 @@ float4 pscompose(float4 pos : SV_Position) : SV_Target {
         if (best <= 0.0f) cls = 3;
     }
     if (compose.y > 0.5f) {
-        const float3 T[4] = { float3(1, 1, 1), float3(0.6, 0.7, 1.4), float3(1.4, 0.5, 1.4), float3(1.5, 0.4, 0.4) };
-        c.rgb *= T[cls];
+        c.rgb *= cls == 1 ? float3(0.6, 0.7, 1.4) : cls == 2 ? float3(1.4, 0.5, 1.4) : cls == 3 ? float3(1.5, 0.4, 0.4)
+                                                                                               : float3(1, 1, 1);
     }
     c.a = 1.0f;
     return c;
@@ -195,8 +202,9 @@ struct alignas(16) CB {
     float tgtLocFar[4], tgtFwdTanH[4], tgtRightTanV[4], tgtUpEdgeRel[4];
     float othLocStaleRel[4], othFwdTanH[4], othRightTanV[4], othUpStaleAbs[4];
     float dims[4], othDims[4], compose[4], outDims[4];
+    float fg[4];   // hand depth gain, band (uu)
 };
-static_assert(sizeof(CB) == 16 * 16, "CB layout");
+static_assert(sizeof(CB) == 17 * 16, "CB layout");
 
 void set4(float* d, const float* s, float w) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = w; }
 
@@ -396,6 +404,8 @@ bool WarpGpu::mesh(ID3D11DeviceContext* ctx, const Source& src, const Source& ot
     cb.othDims[2] = (staleTest && other.valid && other.depth) ? 1.0f : 0.0f;
     cb.othDims[3] = p.edgeAbsUu;
     cb.outDims[0] = (float)p.w; cb.outDims[1] = (float)p.h;
+    cb.fg[0] = p.fgGain > 0.05f ? p.fgGain : 1.0f; cb.fg[1] = p.fgGain != 1.0f ? p.fgBandUu : 0.0f;
+    cb.fg[2] = 0.0f;
     D3D11_MAPPED_SUBRESOURCE m = {};
     if (FAILED(ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
     memcpy(m.pData, &cb, sizeof(cb));
@@ -413,7 +423,19 @@ bool WarpGpu::mesh(ID3D11DeviceContext* ctx, const Source& src, const Source& ot
     ctx->VSSetShaderResources(0, 1, vsrv);
     ctx->PSSetShaderResources(0, 3, psrv);
     ctx->PSSetSamplers(0, 2, smp);
-    ctx->Draw(cx * cy * 6, 0);
+    // In bands. SV_VertexID restarts at 0 in each draw (measured: afw-gpu-tests compares the
+    // bands against one draw), so each band's first vertex rides in the constant buffer.
+    const uint32_t total = cx * cy * 6;
+    const uint32_t band = p.maxDrawVerts >= 6 ? p.maxDrawVerts / 6 * 6 : total;
+    for (uint32_t start = 0; start < total; start += band) {
+        if (start) {
+            cb.fg[2] = (float)start;   // exact: total < 2^24
+            if (FAILED(ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
+            memcpy(m.pData, &cb, sizeof(cb));
+            ctx->Unmap(cb_, 0);
+        }
+        ctx->Draw(total - start < band ? total - start : band, 0);
+    }
     ID3D11ShaderResourceView* none[3] = {};
     ctx->VSSetShaderResources(0, 1, none);
     ctx->PSSetShaderResources(0, 3, none);

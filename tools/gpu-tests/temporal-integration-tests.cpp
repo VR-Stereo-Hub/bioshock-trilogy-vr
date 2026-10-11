@@ -558,6 +558,24 @@ int main(int argc, char** argv) {
     }
     g.splitWorld = false;
 
+    // 1c. The hand-depth probe through temporal.cpp: SR pairs of the pretend game, whose hand
+    //     depth is true, must read 1.00 for the hands.
+    tp::handle_command("dlss", "probe on");
+    for (int k = 0; k < 120 && tp::telemetry().probePairs < 4; ++k, ++frame) {
+        present_eye(g, head_at(frame), -1, true);
+        present_eye(g, head_at(frame), +1, true);
+        ctx->Flush();
+        Sleep(2);
+    }
+    {
+        const tp::Telemetry tq = tp::telemetry();
+        check(tq.probePairs >= 4 && std::fabs(tq.probeHands - 1.0) <= 0.03,
+              "the hand-depth probe runs on SR pairs and reads the true hand depth as 1.00",
+              "%llu pairs, hands %.2f, world %.2f (0 = too little world disparity at this size)",
+              (unsigned long long)tq.probePairs, tq.probeHands, tq.probeWorld);
+    }
+    tp::handle_command("dlss", "probe off");
+
     // 2. Super Resolution, Quality (1.5x per axis).
     tp::handle_command("dlss", "sr");
     tp::handle_command("dlss", "quality 1");

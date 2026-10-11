@@ -394,5 +394,55 @@ int main() {
               a.scaleErr[3] / n, a.scaleErr[4] / n);
         rel(cs); rel(ps); rel(ct); rel(pt);
     }
+    // 8. The hand-depth probe on a native stereo pair (both eyes at one instant). With true
+    //    depth both bands read 1.00; with the hand's depth 12% too far (Dishonored's measured
+    //    foreground shape) the hand band reads 1.12 and the world still 1.00. Larger images
+    //    so the world's disparity clears the probe's 6 px floor.
+    {
+        const uint32_t PW = 768, PH = 720;
+        Scene ps = make_scene();
+        ps.detail = 0.25;
+        Cam head = base_cam();
+        head.tanV = head.tanH * PH / PW;
+        Cam l = head, r = head;
+        double f[3], rt[3], u[3];
+        head.basis(f, rt, u);
+        for (int i = 0; i < 3; ++i) { l.loc[i] -= rt[i] * 3.2; r.loc[i] += rt[i] * 3.2; }
+        const Render rl = render(ps, l, PW, PH, kNear, kFar, 2), rr = render(ps, r, PW, PH, kNear, kFar, 2);
+        ID3D11Texture2D* lt = make_tex(PW, PH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, rl.rgba.data(), PW * 4);
+        ID3D11Texture2D* rtx = make_tex(PW, PH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, rr.rgba.data(), PW * 4);
+        ID3D11ShaderResourceView *ls = srv_of(lt), *rs = srv_of(rtx);
+        auto probe = [&](float handScale, double* hand, double* world, uint64_t* nh, uint64_t* nw) {
+            std::vector<float> z = rl.viewZ;
+            for (float& v : z) if (v > 0 && v < 80) v *= handScale;
+            ID3D11Texture2D* zt = make_tex(PW, PH, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_SHADER_RESOURCE, z.data(), PW * 4);
+            ID3D11ShaderResourceView* zs = srv_of(zt);
+            tg::DepthProbe pr;
+            char why[256] = "";
+            for (int i = 0; i < 8; ++i) {
+                if (!pr.run(dev, ctx, ls, zs, rs, to_tcam(l), to_tcam(r), PW, PH, 80.0f, why, sizeof(why))) {
+                    printf("    probe failed: %s\n", why);
+                    break;
+                }
+                ctx->Flush();
+                Sleep(5);
+            }
+            *hand = pr.result.median(0, nh);
+            *world = pr.result.median(1, nw);
+            pr.shutdown();
+            rel(zs); rel(zt);
+        };
+        double h1, w1, h2, w2;
+        uint64_t nh1, nw1, nh2, nw2;
+        probe(1.0f, &h1, &w1, &nh1, &nw1);
+        probe(1.12f, &h2, &w2, &nh2, &nw2);
+        check(nh1 > 20 && nw1 > 20 && std::fabs(h1 - 1.0) <= 0.02 && std::fabs(w1 - 1.0) <= 0.02,
+              "hand-depth probe: true depth reads 1.00 in both bands", "hands %.2f (%llu), world %.2f (%llu)", h1,
+              (unsigned long long)nh1, w1, (unsigned long long)nw1);
+        check(nh2 > 20 && std::fabs(h2 - 1.12) <= 0.02 && std::fabs(w2 - 1.0) <= 0.02,
+              "hand-depth probe: hands 12% too deep read 1.12, the world stays 1.00", "hands %.2f (%llu), world %.2f (%llu)",
+              h2, (unsigned long long)nh2, w2, (unsigned long long)nw2);
+        rel(ls); rel(rs); rel(lt); rel(rtx);
+    }
     return finish("temporal-gpu");
 }

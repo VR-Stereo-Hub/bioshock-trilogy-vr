@@ -68,6 +68,45 @@ capture of one AFW frame and `watch-crashes.ps1 -Mode Memory`.
   next run shows the real structure (ENGINE_NOTES session 21 says the foreground draws FIRST
   in the main pass, which would put the hands inside `W` and leave no separate mask).
 
+## The second headset run (2026-10-10, 19:28) and what changed
+
+AFW worked, with a smaller ghost of the hands (the tester: "similar to Dishonored's FOV
+mismatch"); the game crashed again ~10 s into AFW, at the same driver address.
+
+**What the run settled.** The hands have no pass of their own: `381W 8w 8w 4w 261w ... 3w |` -
+no depth clear until after everything, so they are drawn into the world's depth (ENGINE_NOTES
+2026-10-10 table). The foreground FOV field held its lens-matched 117.46 from boot through the
+crash, and the FOV watch never saw a second lens.
+
+**The ghost - measured, not yet explained, three controls shipped.** BS1 does have a separate
+foreground FOV, but in this build it is matched to the world: two frame dumps give every
+foreground draw (the hands draw included) the world's tangents AND its 10 uu near plane, so the
+hands' depth is consistent with how they are drawn - not Dishonored's foreground gain (0.911,
+guide 9.5) by the dumps. Three candidates remain, each with an F10 control:
+1. A depth/disparity mismatch on the hands the dumps cannot see: the **hand-depth probe**
+   (F10 Debug "Measure the hands' depth", Stereo method both eyes every frame) block-matches
+   the two native eyes' hand pixels against what their depth predicts and logs the ratio every
+   5 s (`[temporal] hand-depth probe`); **AFW: hand depth gain** (F10 Debug, `afw fggain`)
+   applies it to everything nearer than 80 uu in the rebuild. Offline: the probe reads 1.00 on
+   true depth and 1.12 on hands 12% too deep; gain 1.12 undoes that error exactly.
+2. Which source the ghost comes from: **AFW: tint the rebuilt eye by source** - blue = from the
+   other eye, magenta = fill, natural colour = the held eye's own last image.
+3. Dishonored's cadence beat (ENGINE_NOTES there, 2026-09-04): the headset ran at 144 Hz
+   (6.94 ms) and AFW at ~130 frames/s = 1.11 display slots per frame, the ratio Dishonored
+   measured as ghosting (1.02 clean, 1.05 visible). A/B: the same scene at 120 or 90 Hz.
+
+**The crash - narrowed.** Same address both runs (`nvwgf2um.dll+0x48153A`, a read at 0x9370, a
+driver worker thread), 5 and 11 s into AFW. A new suite, `afw-soak`, runs the rebuild at the
+tester's 2750x2850 in a 32-bit process on this machine's driver for 30 s (~1,900 rebuilds, depth
+steps, a near hand, the stale test): **no crash** - the shaders and draw sizes alone do not
+trigger it. Shipped: **AFW: rebuild the other eye** (F10 Debug, `afw rebuild off`) - off keeps
+AFW's one-eye-per-frame path and leaves the held eye to the headset, so one run tells whether
+the rebuild or core's two-swapchain AlternateEye path is involved; and two hedges with no
+change in output: the mesh is drawn in bands of at most 1M vertices (it was one 11.8M-vertex
+draw; the bands are bit-identical to one draw, tested - and `SV_VertexID` measured to restart at
+0 per draw, so each band's base rides in the constant buffer), and no dynamically indexed
+constant arrays remain in the shaders.
+
 ## How it works
 
 | Stage | Where | What |
@@ -116,9 +155,10 @@ pass and the drift resync):
 
 | Suite | Checks | Key numbers |
 |---|---|---|
-| `temporal-gpu` | 21 | Vectors vs ray-traced truth: head turn p95 0.011 px; walk + turn + roll p95 0.016 px (near object 0.03 px); the real D24 path p95 0.019 px. Controls: rotation-only under translation 11.4 px, wrong near plane 5.3 px. Audit: vectors 0.010 vs no motion 0.112, depth scale 1 the minimum. Foreground mask and depth exact. TAA 0.031 vs raw 0.073 (control: zero vectors 0.061). |
+| `temporal-gpu` | 23 | Third round: the hand-depth probe on a native pair reads 1.00 for hands and world on true depth, 1.12 / 1.00 with the hands 12% too deep (~1,500 hand, ~10,000 world samples). Vectors vs ray-traced truth: head turn p95 0.011 px; walk + turn + roll p95 0.016 px (near object 0.03 px); the real D24 path p95 0.019 px. Controls: rotation-only under translation 11.4 px, wrong near plane 5.3 px. Audit: vectors 0.010 vs no motion 0.112, depth scale 1 the minimum. Foreground mask and depth exact. TAA 0.031 vs raw 0.073 (control: zero vectors 0.061). |
 | `dlss-host` | 11 | The 32-bit client starts the x64 helper and NGX in ~1.5 s. DLAA with the production vectors 0.0255 vs raw 0.0441 (none 0.0432, negated 0.0941); jitter sign -1 confirmed; SR 512x480 -> 768x720 0.0289 vs bilinear 0.0452; reset; clean stop. DLAA ~0.5 ms/eye at 384x360, SR ~2-3 ms at 576x540 output. |
-| `afw-gpu` | 13 | Rebuilt held eye vs truth 0.0035 vs the compositor's rotation-only 0.0289; identity exact; every part beats its control (held only, fresh only, stale test off). 1.26 ms per rebuild at 2064x2208. |
+| `afw-gpu` | 15 | Rebuilt held eye vs truth 0.0035 vs the compositor's rotation-only 0.0289; identity exact; every part beats its control (held only, fresh only, stale test off). Third round: the mesh in 6006-vertex bands equals one draw exactly; a 12% hand depth error is undone by gain 1.12 (hand region 0.0325, as with true depth; 0.0361 without). ~1.3-2.3 ms per rebuild at 2064x2208. |
+| `afw-soak` | 1 | Third round: 30 s of rebuilds at 2750x2850 (~1,900), 32-bit, this machine's NVIDIA driver: no crash, no failed rebuild. |
 | `temporal-integration` | 45 | Second round: `alt_eye.cpp` too, driven with four CalcView calls per frame (three consumers, then the render view in the build): AFW and AER carry one eye per frame on every call, strictly L R L R, every AFW image named right; AER tags one eye per frame, opens every pair LEFT (also after a non-stereo frame), renders the right frame from the left's camera at all four call sites (0.0000 uu) and from one head sample; the clamp gives 0 on right frames for both receivers, pays the bank next frame, loses no time over 26 frames, and drops the banks when a load swaps the receivers; under AFW it never holds. A world pass split by a shadow pass (no clear) stays the world, the hands mask exact. First round: `temporal.cpp` itself, with core and the engine stubbed: the world pass picked over the hands pass (100W 17F), every image paired with its camera (integrated vectors 0.001 px), DLAA 0.024 vs raw 0.037, SR 0.037 vs bilinear 0.044, TAA 0.028 vs raw 0.060 with the helper stopped, every AFW image named with its own eye, held eye 0.0016 vs rotation-only 0.0092, the hand in the rebuilt eye 0.011, F10 open leaves the held eye alone, AFW + DLAA together, off restores everything and stops the helper. |
 
 | `xr-seams` | 17 | Second round: AER pairs through core's SR pair path show each eye its own image (dark left 38, bright right 217); one stale tag swaps the eyes for good with the drift resync off (the control) and they come back with it on. First round: the production `openxr_runtime.cpp` on the simulated Quest 3 runtime (no game; HUD, input and overlay stubbed), judged by the simulator's own per-eye compositor captures: SR images go through the processor eye by eye (the compositor shows each eye's processed image), an output size rebuilds the eye swapchains at 960x960 and a declined image is stretched, a size the runtime refuses (20000x20000) falls back with the session alive, AlternateEye with the eye source and held rebuild shows one fresh and one rebuilt eye every frame and opens the HUD gate. |

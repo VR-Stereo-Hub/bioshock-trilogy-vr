@@ -54,6 +54,8 @@ struct Telemetry {
     uint32_t lastFgDraws = 0;        // draws in the foreground (hands) pass it used, 0 = none
     uint64_t afwRebuilds = 0, afwWithHeld = 0, afwFallbacks = 0;
     int helperState = 0;             // 0 idle, 1 starting, 2 up, 3 failed, 4 stopping
+    uint64_t probePairs = 0;         // hand-depth probe: native pairs read back, ever
+    double probeHands = 0, probeWorld = 0;   // its lifetime medians (0 = no samples)
 };
 Telemetry telemetry();
 

@@ -40,6 +40,7 @@ enum class Setting {
     PinPosition, PinRotation, HideHeldArm, BoneProbes,
     HandsArmsSize, ShoulderBarForward, ShoulderBarRight, ShoulderBarUp, ShoulderWidth, ShouldersLinked,
     Upscaler, DlssQuality, DlssModel, StereoMethod, AfwTint, TemporalAudit,
+    AfwRebuild, AfwHandGain, HandDepthProbe,
     Count
 };
 struct Spec {

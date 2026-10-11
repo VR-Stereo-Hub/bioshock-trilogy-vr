@@ -166,4 +166,43 @@ private:
     uint32_t w_[2] = {}, h_[2] = {};
 };
 
+// The hand-depth probe (Dishonored's "measure first", AFW guide 9.5). In a NATIVE stereo pair -
+// both eyes rendered at one instant, SequentialReentry - each sampled left pixel's depth predicts
+// where it lands in the right image; a block match along that line finds where it really is. The
+// ratio measured / predicted disparity, per depth band, is what the alternate frame warp's hand
+// depth gain must be (afw::Params::fgGain): 1 = the depth is right. Bands: [0] the hands
+// (depth < nearBandUu), [1] the world (worldMin..worldMax uu), the control.
+const int kProbeBins = 61;                  // ratios kProbeMin + i * kProbeStep
+const float kProbeMin = 0.70f, kProbeStep = 0.01f;
+struct ProbeResult {
+    uint64_t pairs = 0;
+    uint64_t hist[2][kProbeBins] = {};
+    void clear() { *this = ProbeResult{}; }
+    // The median ratio of a band (0 = no samples); *n = its sample count.
+    double median(int band, uint64_t* n) const;
+};
+class DepthProbe {
+public:
+    // colour: the two eyes' images (w x h, any RGBA), lzLeft: the left eye's linear depth (uu).
+    // Queues the probe; the result lands in `result` a few calls later.
+    bool run(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* colLeft,
+             ID3D11ShaderResourceView* lzLeft, ID3D11ShaderResourceView* colRight, const Camera& left,
+             const Camera& right, uint32_t w, uint32_t h, float nearBandUu, char* why, size_t cap);
+    void shutdown();
+    ProbeResult result;     // since the caller last cleared it
+    ProbeResult lifetime;   // never cleared
+
+private:
+    void collect(ID3D11DeviceContext* ctx);
+    bool ready_ = false;
+    ID3D11ComputeShader* cs_ = nullptr;
+    ID3D11Buffer* cb_ = nullptr;
+    ID3D11SamplerState* linear_ = nullptr;
+    ID3D11Buffer* buf_ = nullptr;
+    ID3D11UnorderedAccessView* uav_ = nullptr;
+    ID3D11Buffer* stage_[3] = {};
+    bool pending_[3] = {};
+    int next_ = 0;
+};
+
 } // namespace bvr::b1r::tgpu

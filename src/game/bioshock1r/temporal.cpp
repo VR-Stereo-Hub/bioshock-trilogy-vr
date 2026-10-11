@@ -48,6 +48,15 @@ std::atomic<bool> g_afw{false};
 std::atomic<bool> g_afwTint{false};
 std::atomic<bool> g_afwStale{true};
 std::atomic<int> g_afwGrid{2};
+// Crash isolation (2026-10-10: the driver crashed 5-11 s into AFW twice; a 30 s offline soak
+// of the rebuild did not): off = AlternateEye with the held eye left to the compositor.
+std::atomic<bool> g_afwRebuild{true};
+// The hand depth gain (afw::Params::fgGain) and its band: set it to the hand-depth probe's
+// "hands" number. 1 = off.
+std::atomic<float> g_afwFgGain{1.0f};
+std::atomic<float> g_afwFgBand{80.0f};
+// The hand-depth probe: needs native pairs (Stereo method: both eyes every frame).
+std::atomic<bool> g_probeOn{false};
 // The vector audit answered its question on the first headset run (2026-10-10: vectors
 // 0.0071 vs no motion 0.0171, depth scale 1 lowest): off by default now - it copies every
 // eye image each frame. `dlss audit on` / F10 Debug brings it back.
@@ -64,7 +73,8 @@ std::atomic<bool> g_retry{false};
 std::atomic<uint32_t> g_resetEpoch{1};
 
 bool active() {
-    return g_mode.load(std::memory_order_relaxed) != kOff || g_afw.load(std::memory_order_relaxed);
+    return g_mode.load(std::memory_order_relaxed) != kOff || g_afw.load(std::memory_order_relaxed) ||
+           g_probeOn.load(std::memory_order_relaxed);
 }
 
 // ---- cameras: game thread writes, render thread reads -------------------------------------
@@ -186,6 +196,17 @@ tgpu::TaaGpu g_taa;
 afw::WarpGpu g_warp;
 bool g_freshValid = false;
 int g_freshEye = 0;
+// The hand-depth probe: the left image and depth of the pair being probed, kept until the
+// right image of the same tick arrives.
+tgpu::DepthProbe g_probe;
+ID3D11Texture2D* g_probeCol = nullptr;
+ID3D11ShaderResourceView* g_probeColSrv = nullptr;
+ID3D11Texture2D* g_probeLz = nullptr;
+ID3D11ShaderResourceView* g_probeLzSrv = nullptr;
+tgpu::Camera g_probeCam;
+uint64_t g_probeBuild = 0;
+bool g_probeArmed = false;
+uint32_t g_probeTick = 0;
 
 // DLSS client and its lifecycle.
 enum ClientState { kIdle = 0, kStarting, kUp, kFailed, kStopping };
@@ -540,6 +561,16 @@ void log_maybe(uint64_t now) {
             (unsigned long long)t.noCamera, (unsigned long long)t.resets, (unsigned long long)t.overlay,
             (unsigned long long)t.hands, g_lastPasses[0] ? g_lastPasses : "none", (unsigned long long)t.afwRebuilds,
             (unsigned long long)t.afwHeldSrc, (unsigned long long)t.afwCopies, dl);
+    if (g_probe.result.pairs) {
+        uint64_t nh = 0, nw = 0;
+        const double hm = g_probe.result.median(0, &nh), wm = g_probe.result.median(1, &nw);
+        BVR_LOG("[temporal] hand-depth probe (%llu native pairs; stereo disparity measured / predicted by depth): "
+                "hands (< %.0f uu) %.2f over %llu samples | world (150-1500 uu, the control) %.2f over %llu | 1.00 = "
+                "the depth is right; otherwise set AFW's hand depth gain to the hands number (`afw fggain %.2f`)",
+                (unsigned long long)g_probe.result.pairs, g_afwFgBand.load(), hm, (unsigned long long)nh, wm,
+                (unsigned long long)nw, hm > 0 ? hm : 1.0);
+        g_probe.result.clear();
+    }
     const tgpu::Audit& a = g_guides.audit;
     if (a.frames) {
         const double n = (double)a.samples;
@@ -660,12 +691,13 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
         }
     }
 
-    // This eye's input as a texture of our own: TAA reads it, the audit keeps it.
+    // This eye's input as a texture of our own: TAA reads it, the audit and the probe keep it.
     const int mode = g_mode.load();
-    const bool inCopied = guidesOk && (mode == kTaa || g_audit.load()) && [&] {
+    const bool inCopied = guidesOk && (mode == kTaa || g_audit.load() || g_probeOn.load()) && [&] {
         D3D11_TEXTURE2D_DESC sd = {};
         f.src->GetDesc(&sd);
         const int cur = st.inCur;
+        st.inFmt = sd.Format;
         if (!ensure_tex(&st.in[cur], &st.inSrv[cur], f.srcW, f.srcH, sd.Format)) return false;
         ctx->CopyResource(st.in[cur], f.src);
         return true;
@@ -790,6 +822,31 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
             const int cur = st.inCur;
             if (g_audit.load() && hist && st.inPrevValid && st.in[cur ^ 1])
                 g_guides.audit_frame(g_dev, ctx, st.inSrv[cur], st.inSrv[cur ^ 1], gp);
+            // The hand-depth probe: a SequentialReentry pair is two native eyes of one tick.
+            // Every 15th pair: keep the left image and depth, probe when its right arrives.
+            if (g_probeOn.load() && f.sequential) {
+                if (eye == 0) {
+                    g_probeArmed = (++g_probeTick % 15) == 0 &&
+                                   ensure_tex(&g_probeCol, &g_probeColSrv, f.srcW, f.srcH, st.inFmt) &&
+                                   ensure_tex(&g_probeLz, &g_probeLzSrv, f.srcW, f.srcH, DXGI_FORMAT_R32_FLOAT);
+                    if (g_probeArmed) {
+                        ctx->CopyResource(g_probeCol, st.in[cur]);
+                        ctx->CopyResource(g_probeLz, g_guides.linear_z());
+                        g_probeCam = tc;
+                        g_probeBuild = cam.build;
+                    }
+                } else if (g_probeArmed) {
+                    g_probeArmed = false;
+                    if (cam.build == g_probeBuild + 1) {
+                        char pwhy[256] = "";
+                        if (!g_probe.run(g_dev, ctx, g_probeColSrv, g_probeLzSrv, st.inSrv[cur], g_probeCam, tc, f.srcW,
+                                         f.srcH, g_afwFgBand.load(), pwhy, sizeof(pwhy))) {
+                            static bool logged = false;
+                            if (!logged) { logged = true; BVR_LOG("[temporal] hand-depth probe failed: %s", pwhy); }
+                        }
+                    }
+                }
+            }
             st.inCur ^= 1;
             st.inPrevValid = true;
         }
@@ -833,7 +890,8 @@ int aer_source() {
 }
 
 bool held_ready(int held) {
-    return g_afw.load() && g_freshValid && g_freshEye == (held ^ 1) && !bvr::overlay::visible();
+    return g_afw.load() && g_afwRebuild.load() && g_freshValid && g_freshEye == (held ^ 1) &&
+           !bvr::overlay::visible();
 }
 
 int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
@@ -858,6 +916,8 @@ int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
     p.grid = g_afwGrid.load();
     p.staleTest = g_afwStale.load();
     p.tint = g_afwTint.load();
+    p.fgGain = g_afwFgGain.load();
+    p.fgBandUu = g_afwFgBand.load();
     char why[256] = "";
     if (B.valid && F.ow == hf.w && F.oh == hf.h && g_warp.run(g_dev, ctx, A, B, p, why, sizeof(why))) {
         ctx->CopyResource(hf.dst, g_warp.out());
@@ -992,6 +1052,11 @@ void handle_command(const char* verb, const char* args) {
         } else if (word(args, "fgbias")) {
             g_fgBias.store(strstr(args, "on") != nullptr);
             BVR_LOG("[dlss] hands mask as the bias mask: %s", g_fgBias.load() ? "on" : "off");
+        } else if (word(args, "probe")) {
+            g_probeOn.store(strstr(args, "on") != nullptr);
+            update_seams();
+            BVR_LOG("[temporal] hand-depth probe %s (needs Stereo method: both eyes every frame)",
+                    g_probeOn.load() ? "on" : "off");
         } else {
             BVR_LOG("[dlss] mode %s, quality %s, model %s, helper: %s | audit %s near %.1f far %.0f body %.2f m "
                     "| usage: dlss on|dlaa|sr|taa|off|retry|quality <0-4>|model <0-3>|audit on|off|near <uu>|far <uu>|"
@@ -1007,11 +1072,25 @@ void handle_command(const char* verb, const char* args) {
             const int g = atoi(args + 4);
             if (g >= 1 && g <= 8) g_afwGrid.store(g);
             BVR_LOG("[afw] mesh grid %d texels", g_afwGrid.load());
+        } else if (word(args, "rebuild")) {
+            g_afwRebuild.store(strstr(args, "off") == nullptr);
+            BVR_LOG("[afw] held-eye rebuild %s", g_afwRebuild.load() ? "on" : "OFF (the compositor reprojects it)");
+        } else if (word(args, "fggain")) {
+            const float v = (float)atof(args + 6);
+            if (v >= 0.5f && v <= 2.0f) g_afwFgGain.store(v);
+            BVR_LOG("[afw] hand depth gain %.2f (depth nearer than %.0f uu read as depth / gain)", g_afwFgGain.load(),
+                    g_afwFgBand.load());
+        } else if (word(args, "fgband")) {
+            const float v = (float)atof(args + 6);
+            if (v >= 10.0f && v <= 300.0f) g_afwFgBand.store(v);
+            BVR_LOG("[afw] hand depth band %.0f uu", g_afwFgBand.load());
         } else {
-            BVR_LOG("[afw] %s, grid %d, stale test %d, tint %d, eye queue underruns %llu resyncs %llu | usage: afw "
-                    "on|off|tint on|off|stale on|off|grid <1-8>",
-                    g_afw.load() ? "ON" : "off", g_afwGrid.load(), (int)g_afwStale.load(), (int)g_afwTint.load(),
-                    (unsigned long long)g_fifoUnderruns, (unsigned long long)g_fifoResyncs);
+            BVR_LOG("[afw] %s, rebuild %s, grid %d, stale test %d, tint %d, hand depth gain %.2f under %.0f uu, eye queue "
+                    "underruns %llu resyncs %llu | usage: afw on|off|rebuild on|off|tint on|off|stale on|off|grid <1-8>|"
+                    "fggain <x>|fgband <uu>",
+                    g_afw.load() ? "ON" : "off", g_afwRebuild.load() ? "on" : "OFF", g_afwGrid.load(), (int)g_afwStale.load(),
+                    (int)g_afwTint.load(), g_afwFgGain.load(), g_afwFgBand.load(), (unsigned long long)g_fifoUnderruns,
+                    (unsigned long long)g_fifoResyncs);
         }
     }
 }
@@ -1024,6 +1103,9 @@ float menu_read(menu::Setting id) {
         case S::DlssModel: return (float)g_model.load();
         case S::AfwTint: return g_afwTint.load() ? 1.0f : 0.0f;
         case S::TemporalAudit: return g_audit.load() ? 1.0f : 0.0f;
+        case S::AfwRebuild: return g_afwRebuild.load() ? 1.0f : 0.0f;
+        case S::AfwHandGain: return g_afwFgGain.load();
+        case S::HandDepthProbe: return g_probeOn.load() ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -1039,6 +1121,12 @@ bool menu_write(menu::Setting id, float value) {
         case S::DlssModel: g_model.store(v & 3); return true;
         case S::AfwTint: g_afwTint.store(v != 0); return true;
         case S::TemporalAudit: g_audit.store(v != 0); return true;
+        case S::AfwRebuild: g_afwRebuild.store(v != 0); return true;
+        case S::AfwHandGain: if (value >= 0.5f && value <= 2.0f) g_afwFgGain.store(value); return true;
+        case S::HandDepthProbe:
+            g_probeOn.store(v != 0);
+            update_seams();
+            return true;
         default: return false;
     }
 }
@@ -1046,6 +1134,9 @@ bool menu_write(menu::Setting id, float value) {
 Telemetry telemetry() {
     Telemetry t = g_life;
     t.helperState = g_cstate.load();
+    t.probePairs = g_probe.lifetime.pairs;
+    t.probeHands = g_probe.lifetime.median(0, nullptr);
+    t.probeWorld = g_probe.lifetime.median(1, nullptr);
     return t;
 }
 

@@ -69,6 +69,15 @@ struct Params {
     bool useHeld = true;            // A as a source (off = B only, the control)
     bool useFresh = true;           // B as a source (off = A only, the control)
     bool tint = false;              // colour each pixel by its source (diagnostic)
+    // The mesh is drawn in bands of at most this many vertices (a 2750 x 2850 eye at grid 2
+    // is 11.8M): no single enormous draw reaches the driver.
+    uint32_t maxDrawVerts = 1048572;   // a multiple of 6
+    // Hand depth gain (Dishonored's AfwForegroundGain): source depth nearer than fgBandUu is
+    // read as depth / fgGain. Where the native hands' stereo disparity is g times what their
+    // depth predicts (temporal's hand-depth probe measures g), their true depth is depth / g.
+    // 1 = off.
+    float fgGain = 1.0f;
+    float fgBandUu = 80.0f;
 };
 
 struct Stats {

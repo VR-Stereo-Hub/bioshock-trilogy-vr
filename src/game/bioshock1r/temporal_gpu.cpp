@@ -257,7 +257,183 @@ struct SavedCs {
     }
 };
 
+// The hand-depth probe. One thread per sample (every 6th pixel each way): the left pixel's
+// world point, its predicted place in the right image, then a 3x3-tap (5x5 px) luminance block
+// match over ratios 0.70..1.30 of the predicted disparity. The best ratio is binned for the
+// pixel's band, unless it is at the end of the range (no minimum inside) or the left patch is
+// flat (no texture to match).
+const char* kProbe = R"(
+cbuffer P : register(b0) {
+    float4 lLocTanH;
+    float4 lFwdTanV;
+    float4 lRight;
+    float4 lUp;
+    float4 rLocTanH;
+    float4 rFwdTanV;
+    float4 rRight;
+    float4 rUp;
+    float4 dims;    // w, h, stride, hand band (uu)
+    float4 band;    // world band min, max (uu), ratio min, ratio step
+};
+Texture2D<float4> colL : register(t0);
+Texture2D<float> lzL : register(t1);
+Texture2D<float4> colR : register(t2);
+SamplerState lin : register(s0);
+RWByteAddressBuffer hist : register(u0);
+
+float lum(float3 c) { return dot(c, float3(0.299f, 0.587f, 0.114f)); }
+
+[numthreads(8, 8, 1)]
+void csprobe(uint3 id : SV_DispatchThreadID) {
+    const int s = (int)dims.z;
+    const int2 p = int2(id.xy) * s + s / 2;
+    if (p.x < 8 || p.y < 8 || p.x >= (int)dims.x - 8 || p.y >= (int)dims.y - 8) return;
+    const float z = lzL.Load(int3(p, 0));
+    const int b = (z > 0.0f && z < dims.w) ? 0 : (z > band.x && z < band.y) ? 1 : -1;
+    if (b < 0) return;
+    if (b == 1 && ((id.x + id.y) & 3) != 0) return;   // the control needs fewer samples
+    const float2 uv = (float2(p) + 0.5f) / dims.xy;
+    const float x = uv.x * 2.0f - 1.0f, y = 1.0f - uv.y * 2.0f;
+    const float3 d = lFwdTanV.xyz + lRight.xyz * (x * lLocTanH.w) + lUp.xyz * (y * lFwdTanV.w);
+    const float3 q = lLocTanH.xyz + d * z - rLocTanH.xyz;
+    const float rz = dot(q, rFwdTanV.xyz);
+    if (rz < 1.0f) return;
+    const float2 ruv = float2(dot(q, rRight.xyz) / (rz * rLocTanH.w) * 0.5f + 0.5f,
+                              0.5f - dot(q, rUp.xyz) / (rz * rFwdTanV.w) * 0.5f);
+    const float2 dpx = (ruv - uv) * dims.xy;   // the predicted disparity, pixels
+    if (abs(dpx.x) < 6.0f) return;
+    float lp[9];
+    float mean = 0.0f;
+    [unroll] for (int t = 0; t < 9; ++t) {
+        lp[t] = lum(colL.Load(int3(p + int2(t % 3 - 1, t / 3 - 1) * 2, 0)).rgb);
+        mean += lp[t];
+    }
+    mean /= 9.0f;
+    float var = 0.0f;
+    [unroll] for (int v = 0; v < 9; ++v) var += (lp[v] - mean) * (lp[v] - mean);
+    if (var < 9.0f * 0.0004f) return;   // flat: no texture to match
+    float best = 1e9f;
+    int bi = -1;
+    [loop] for (int k = 0; k < 61; ++k) {
+        const float2 c = float2(p) + 0.5f + dpx * (band.z + band.w * k);
+        float sad = 0.0f;
+        [unroll] for (int t2 = 0; t2 < 9; ++t2) {
+            const float2 o = float2(t2 % 3 - 1, t2 / 3 - 1) * 2.0f;
+            sad += abs(lum(colR.SampleLevel(lin, (c + o) / dims.xy, 0).rgb) - lp[t2]);
+        }
+        if (sad < best) { best = sad; bi = k; }
+    }
+    if (bi <= 0 || bi >= 60) return;
+    hist.InterlockedAdd((uint)(b * 61 + bi) * 4u, 1u);
+}
+)";
+
+struct alignas(16) ProbeCB {
+    float lLocTanH[4], lFwdTanV[4], lRight[4], lUp[4];
+    float rLocTanH[4], rFwdTanV[4], rRight[4], rUp[4];
+    float dims[4], band[4];
+};
+
 } // namespace
+
+double ProbeResult::median(int b, uint64_t* n) const {
+    uint64_t total = 0;
+    for (int i = 0; i < kProbeBins; ++i) total += hist[b & 1][i];
+    if (n) *n = total;
+    if (!total) return 0.0;
+    uint64_t acc = 0;
+    for (int i = 0; i < kProbeBins; ++i) {
+        acc += hist[b & 1][i];
+        if (acc * 2 >= total) return kProbeMin + kProbeStep * i;
+    }
+    return 0.0;
+}
+
+void DepthProbe::collect(ID3D11DeviceContext* ctx) {
+    for (int i = 0; i < 3; ++i) {
+        if (!pending_[i]) continue;
+        D3D11_MAPPED_SUBRESOURCE m = {};
+        if (ctx->Map(stage_[i], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m) != S_OK) continue;
+        const uint32_t* h = (const uint32_t*)m.pData;
+        for (int b = 0; b < 2; ++b)
+            for (int k = 0; k < kProbeBins; ++k) {
+                result.hist[b][k] += h[b * kProbeBins + k];
+                lifetime.hist[b][k] += h[b * kProbeBins + k];
+            }
+        ++result.pairs;
+        ++lifetime.pairs;
+        ctx->Unmap(stage_[i], 0);
+        pending_[i] = false;
+    }
+}
+
+bool DepthProbe::run(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* colLeft,
+                     ID3D11ShaderResourceView* lzLeft, ID3D11ShaderResourceView* colRight, const Camera& left,
+                     const Camera& right, uint32_t w, uint32_t h, float nearBandUu, char* why, size_t cap) {
+    if (!ready_) {
+        if (!compile(dev, kProbe, "csprobe", &cs_, why, cap, false)) return false;
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = sizeof(ProbeCB); bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        D3D11_SAMPLER_DESC sd = {};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        D3D11_BUFFER_DESC hb = {};
+        hb.ByteWidth = 2 * kProbeBins * 4; hb.Usage = D3D11_USAGE_DEFAULT;
+        hb.BindFlags = D3D11_BIND_UNORDERED_ACCESS; hb.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.Format = DXGI_FORMAT_R32_TYPELESS; ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        ud.Buffer.NumElements = 2 * kProbeBins; ud.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+        D3D11_BUFFER_DESC sb = {};
+        sb.ByteWidth = hb.ByteWidth; sb.Usage = D3D11_USAGE_STAGING; sb.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        bool ok = SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &cb_)) && SUCCEEDED(dev->CreateSamplerState(&sd, &linear_)) &&
+                  SUCCEEDED(dev->CreateBuffer(&hb, nullptr, &buf_)) && SUCCEEDED(dev->CreateUnorderedAccessView(buf_, &ud, &uav_));
+        for (auto*& s : stage_) ok = ok && SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &s));
+        if (!ok) { put(why, cap, "probe resources"); shutdown(); return false; }
+        ready_ = true;
+    }
+    collect(ctx);
+    const int slot = next_;
+    if (pending_[slot]) return true;   // all three in flight: skip this pair
+    next_ = (next_ + 1) % 3;
+    ProbeCB cb = {};
+    auto set = [](float* d, const float* s, float wv) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = wv; };
+    set(cb.lLocTanH, left.loc, left.tanH); set(cb.lFwdTanV, left.fwd, left.tanV);
+    set(cb.lRight, left.right, 0); set(cb.lUp, left.up, 0);
+    set(cb.rLocTanH, right.loc, right.tanH); set(cb.rFwdTanV, right.fwd, right.tanV);
+    set(cb.rRight, right.right, 0); set(cb.rUp, right.up, 0);
+    const uint32_t stride = 6;
+    cb.dims[0] = (float)w; cb.dims[1] = (float)h; cb.dims[2] = (float)stride; cb.dims[3] = nearBandUu;
+    cb.band[0] = 150.0f; cb.band[1] = 1500.0f; cb.band[2] = kProbeMin; cb.band[3] = kProbeStep;
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    if (FAILED(ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { put(why, cap, "probe map"); return false; }
+    memcpy(m.pData, &cb, sizeof(cb));
+    ctx->Unmap(cb_, 0);
+    {
+        SavedCs saved(ctx);
+        const UINT zero[4] = {};
+        ctx->ClearUnorderedAccessViewUint(uav_, zero);
+        ID3D11ShaderResourceView* srv[3] = {colLeft, lzLeft, colRight};
+        ctx->CSSetShader(cs_, nullptr, 0);
+        ctx->CSSetConstantBuffers(0, 1, &cb_);
+        ctx->CSSetShaderResources(0, 3, srv);
+        ctx->CSSetUnorderedAccessViews(0, 1, &uav_, nullptr);
+        ctx->CSSetSamplers(0, 1, &linear_);
+        const uint32_t sx = w / stride, sy = h / stride;
+        ctx->Dispatch((sx + 7) / 8, (sy + 7) / 8, 1);
+    }
+    ctx->CopyResource(stage_[slot], buf_);
+    pending_[slot] = true;
+    return true;
+}
+
+void DepthProbe::shutdown() {
+    rel(cs_); rel(cb_); rel(linear_); rel(uav_); rel(buf_);
+    for (auto*& s : stage_) rel(s);
+    for (bool& b : pending_) b = false;
+    ready_ = false;
+}
 
 float view_z(const Params& p, float raw) {
     if (p.depthReversed) raw = 1.0f - raw;

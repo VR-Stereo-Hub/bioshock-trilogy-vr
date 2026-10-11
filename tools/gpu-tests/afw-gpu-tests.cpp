@@ -178,6 +178,33 @@ int main() {
               "hand region %.4f vs %.4f", sf.handRegion, ss.handRegion);
         check(sf.mean <= sb.mean * 1.02, "the held eye's own image is worth keeping (control: fresh eye only)",
               "%.4f vs %.4f", sf.mean, sb.mean);
+        if (!sr) {
+            // Drawing the mesh in bands changes nothing (SV_VertexID counts from each band's start).
+            af::Params pband = p; pband.maxDrawVerts = 6006;
+            const auto banded = run(pband);
+            double maxd = banded.size() == full.size() ? 0.0 : 1.0;
+            for (size_t i = 0; i < banded.size() && i < full.size(); ++i) maxd = std::max(maxd, (double)std::fabs(banded[i] - full[i]));
+            check(maxd < 1e-6, "the mesh drawn in 6006-vertex bands equals one draw", "max difference %.2e (%u cells)",
+                  maxd, (DW - 1) / 2 * ((DH - 1) / 2));
+            // The hand depth gain: the hands' depth reads 12% too far in both sources (the
+            // Dishonored foreground-gain shape). Uncorrected the hand is rebuilt at the wrong
+            // place; with gain 1.12 on the near band it is where it was with true depth.
+            Render azg = az, bzg = bz;
+            for (float& z : azg.viewZ) if (z > 0 && z < 80) z *= 1.12f;
+            for (float& z : bzg.viewZ) if (z > 0 && z < 80) z *= 1.12f;
+            Gpu gag, gbg;
+            const af::Source Ag = source_of(gag, ac, W, H, azg, DW, DH, ad), Bg = source_of(gbg, bc, W, H, bzg, DW, DH, bd);
+            auto runG = [&](float gain) -> Score {
+                af::Params q = p; q.fgGain = gain; q.fgBandUu = 80.0f;
+                if (!warp.run(dev, ctx, Ag, Bg, q, why, sizeof(why))) return Score{1, 1, 1};
+                return score(readback(warp.out()), truth, handMask, W, H);
+            };
+            const Score g1 = runG(1.0f), g112 = runG(1.12f);
+            check(g112.handRegion <= sf.handRegion * 1.02 && g1.handRegion > g112.handRegion * 1.05,
+                  "hand depth gain: a 12% depth error on the hands is undone by gain 1.12",
+                  "hand region %.4f with the gain, %.4f without, %.4f with true depth", g112.handRegion, g1.handRegion,
+                  sf.handRegion);
+        }
         // A still frame: target = A's own camera, nothing moved -> the rebuild is A itself.
         {
             const Render za = render(before, a, W, H, kNear, kFar, 2);
