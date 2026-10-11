@@ -107,6 +107,43 @@ draw; the bands are bit-identical to one draw, tested - and `SV_VertexID` measur
 0 per draw, so each band's base rides in the constant buffer), and no dynamically indexed
 constant arrays remain in the shaders.
 
+## The third headset run (2026-10-10, 20:04) and what changed
+
+The game booted straight into AFW (the stereo method persists) and ran without a crash; each
+hand showed a second, transparent copy nearer the middle, flickering - and opening the F10
+panel made the hands normal every time. Turning on the probe (while still in AFW) was
+followed by the crash.
+
+**The panel and the ghost.** While the panel is up AFW stops rebuilding the held eye, so the
+panel's "fixed" view IS AFW without the rebuild: the rebuild draws the ghost hands. The log
+also shows the rebuild ran for 45 s from boot (~6,000 rebuilds) before the panel was ever
+opened.
+
+**The crash - a pattern across all three runs.** None came during the 45 s from boot. Every one
+came 1.7-10 s after the panel CLOSED (runs 1 and 2: AFW switched on with the panel up). The
+dumps add the other half: the crashed thread was created when the XR session started, ~100 ms
+before Virtual Desktop's OpenXR runtime thread, long after the game's device - the NVIDIA worker
+of the runtime's own D3D11 device, the one that reads our eye swapchains. With the panel up AFW
+wrote only the fresh eye's swapchain (each eye every other frame); closing it went back to both
+every frame. **Changed:** in AFW the held eye's swapchain is now written on EVERY present -
+rebuilt normally; with the panel up, the fresh eye's image (flat while the panel is open, the
+panel readable in both eyes); without a depth this frame, its own last image. Also fixed: the
+held eye's store kept its CAMERA current during the panel but not its IMAGE, so the first
+rebuilds after the panel paired an old image with a new camera. Two offline tests (a 30 s
+soak, and the same with real ImGui DX11 drawing between stretches) did not reproduce the crash
+- they have no runtime device, which is where it happens.
+
+**The ghost - the next suspect, instrumented and handled.** A viewmodel is often kept in front of
+the world by drawing it into a squeezed viewport depth range (MinDepth 0, MaxDepth 0.1, say).
+No draw matrix shows that (the near-plane check above read matrices), but the hands' stored
+depth would then decode several times too near and the rebuild would place them wrongly. Added:
+the draw tap samples every scene draw's viewport depth range every 8th frame and logs the
+census every 5 s (`[temporal] viewport depth ranges of the scene's draws`); when draws use a
+squeezed [0, hi) range beside full-range ones, that depth is re-expanded before it is
+linearised (`[temporal] draws squeezed into depth ...`; lever `dlss squeeze off`). Offline: the
+hand reads its true depth (1.7e-07) with the range, 76% wrong without, the world untouched. The
+probe now spans 0.125-2.0, so a squeezed viewmodel is measured (0.24 in the test), not dropped.
+
 ## How it works
 
 | Stage | Where | What |

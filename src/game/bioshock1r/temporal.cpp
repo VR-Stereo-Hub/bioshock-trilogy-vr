@@ -188,13 +188,15 @@ struct EyeStore {
     uint32_t w = 0, h = 0;
     uint32_t epoch = 0;
     bool histValid = false;                      // cam/size describe the previous image
-    bool afwValid = false;                       // out/lz/cam hold a rendered image
+    bool afwValid = false;                       // out/lz/cam: a rebuild source (depth, camera, no panel)
+    bool outShown = false;                       // out holds the last image this eye showed (any kind)
 };
 EyeStore g_store[2];
 tgpu::TemporalGpu g_guides;
 tgpu::TaaGpu g_taa;
 afw::WarpGpu g_warp;
-bool g_freshValid = false;
+bool g_freshValid = false;   // this present's image is a rebuild source
+bool g_freshShown = false;   // this present showed an image (the held eye can be written)
 int g_freshEye = 0;
 // The hand-depth probe: the left image and depth of the pair being probed, kept until the
 // right image of the same tick arrives.
@@ -484,8 +486,60 @@ void tap_setrt(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv) {
     if (t && qualifies(dsv, t)) g_seg.tex = t; else rel(t);
 }
 
-void tap_draw(ID3D11DeviceContext*) {
-    if (g_seg.tex) ++g_seg.draws;
+// The viewport depth ranges the scene's draws use. A first-person viewmodel is often kept in
+// front of the world by drawing it into a small slice of depth (MinDepth 0, MaxDepth 0.1,
+// say); its stored depth then reads as nearly at the near plane and every reprojection of the
+// hands is wrong by a large factor - which no draw's matrix shows (the 2026-10-09 dumps record
+// matrices, not viewports). Sampled every 8th frame; counted per 5 s window.
+struct RangeCount { float lo = 0, hi = 0; uint32_t draws = 0; };
+RangeCount g_ranges[4];
+uint32_t g_rangeOther = 0;
+std::atomic<bool> g_squeezeAuto{true};
+float g_squeezeLo = 0.0f, g_squeezeHi = 0.0f;   // the squeezed range in use (render thread)
+
+void tap_draw(ID3D11DeviceContext* ctx) {
+    if (!g_seg.tex) return;
+    ++g_seg.draws;
+    if ((bvr::d3d11_hook::present_count() & 7) != 0) return;
+    D3D11_VIEWPORT vp = {};
+    UINT n = 1;
+    ctx->RSGetViewports(&n, &vp);
+    if (!n) return;
+    for (RangeCount& r : g_ranges) {
+        if (r.draws && r.lo == vp.MinDepth && r.hi == vp.MaxDepth) { ++r.draws; return; }
+        if (!r.draws) { r.lo = vp.MinDepth; r.hi = vp.MaxDepth; r.draws = 1; return; }
+    }
+    ++g_rangeOther;
+}
+
+// Once per 5 s window: log the census and choose the squeezed range (a [0, hi) slice beside
+// the full [0, 1]) the guides re-expand.
+void squeeze_window() {
+    char line[256] = "";
+    int at = 0;
+    float lo = 0.0f, hi = 0.0f;
+    uint32_t squeezed = 0, full = 0, total = 0;
+    for (const RangeCount& r : g_ranges) {
+        if (!r.draws) continue;
+        total += r.draws;
+        at += _snprintf_s(line + at, sizeof(line) - at, _TRUNCATE, "%s[%.3f, %.3f] %u", at ? ", " : "", r.lo, r.hi, r.draws);
+        if (r.lo <= 0.0f && r.hi >= 1.0f) full += r.draws;
+        else if (r.lo < 0.001f && r.hi > 0.0001f && r.hi <= 0.5f && r.draws > squeezed) { squeezed = r.draws; lo = r.lo; hi = r.hi; }
+    }
+    if (!total) return;
+    BVR_LOG("[temporal] viewport depth ranges of the scene's draws (sampled): %s%s", line,
+            g_rangeOther ? " + more ranges" : "");
+    const bool use = g_squeezeAuto.load() && squeezed && full;
+    if (use && (lo != g_squeezeLo || hi != g_squeezeHi)) {
+        BVR_LOG("[temporal] draws squeezed into depth [%.3f, %.3f) next to full-range draws: that depth is re-expanded "
+                "before it is linearised (the hands' true distance for the guides and the warp)", lo, hi);
+        g_squeezeLo = lo; g_squeezeHi = hi;
+    } else if (!use && total > 100 && g_squeezeHi > 0.0f) {
+        BVR_LOG("[temporal] no squeezed depth range any more - re-expansion off");
+        g_squeezeLo = g_squeezeHi = 0.0f;
+    }
+    for (RangeCount& r : g_ranges) r = RangeCount{};
+    g_rangeOther = 0;
 }
 
 void tap_clear(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, unsigned flags) {
@@ -544,6 +598,7 @@ void release_store() {
 void log_maybe(uint64_t now) {
     if (now - g_lastLogMs < 5000) return;
     g_lastLogMs = now;
+    squeeze_window();
     const Tally& t = g_tally;
     char dl[160] = "";
     if (g_mode.load() == kDlaa || g_mode.load() == kSr) {
@@ -609,6 +664,7 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
         g_expectW = f.srcW; g_expectH = f.srcH;
     }
     g_freshValid = false;
+    g_freshShown = false;
 
     // 1. Depth: the interval's world pass. The present counter has already advanced for
     // THIS present (d3d11_hook counts at the detour's head), so the interval being closed
@@ -679,6 +735,8 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
     }
     gp.bodyUu = g_bodyM.load() * ws;
     gp.haveForeground = fgOk;
+    gp.squeezeLo = g_squeezeLo;
+    gp.squeezeHi = g_squeezeHi;
     gp.cur = tc;
     gp.prev = st.cam;
     bool guidesOk = false;
@@ -803,20 +861,6 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
         st.w = f.srcW; st.h = f.srcH;
         st.epoch = epoch;
         st.histValid = true;
-        if (g_afw.load() && written && !overlay) {
-            const bool okOut = ensure_tex(&st.out, &st.outSrv, f.dstW, f.dstH, DXGI_FORMAT_R8G8B8A8_UNORM);
-            const bool okLz = ensure_tex(&st.lz, &st.lzSrv, f.srcW, f.srcH, DXGI_FORMAT_R32_FLOAT);
-            if (okOut && okLz) {
-                ctx->CopyResource(st.out, f.dst);
-                ctx->CopyResource(st.lz, g_guides.linear_z());
-                st.ow = f.dstW; st.oh = f.dstH; st.lw = f.srcW; st.lh = f.srcH;
-                st.afwValid = true;
-                g_freshValid = !f.sequential;
-                g_freshEye = eye;
-            } else {
-                st.afwValid = false;
-            }
-        }
         if (inCopied) {
             // Keep this input; with history, score the vectors against the previous one.
             const int cur = st.inCur;
@@ -852,8 +896,37 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
         }
     } else {
         st.histValid = false;
-        st.afwValid = false;
         st.inPrevValid = false;
+    }
+
+    // 7. The AFW store. EVERY image this eye shows is kept, so the held eye can be written on
+    //    every present whatever happens (the F10 panel up, a frame without depth): all three
+    //    headset crashes came seconds after the held-eye swapchain went back to being written
+    //    every frame after a stretch of not being written (the panel pauses the rebuild), and
+    //    none came in 45 s of AFW from boot, where it never stopped. Only an image with its
+    //    depth and camera, and no panel in it, is a rebuild SOURCE - the store's camera is
+    //    this frame's (history above), so a source is never an old image under a new camera.
+    if (g_afw.load() && written && !f.sequential) {
+        const bool okOut = ensure_tex(&st.out, &st.outSrv, f.dstW, f.dstH, DXGI_FORMAT_R8G8B8A8_UNORM);
+        if (okOut) {
+            ctx->CopyResource(st.out, f.dst);
+            st.ow = f.dstW; st.oh = f.dstH;
+            st.outShown = true;
+            g_freshShown = true;
+            g_freshEye = eye;
+        }
+        const bool source = okOut && camOk && depthOk && guidesOk && !overlay &&
+                            ensure_tex(&st.lz, &st.lzSrv, f.srcW, f.srcH, DXGI_FORMAT_R32_FLOAT);
+        if (source) {
+            ctx->CopyResource(st.lz, g_guides.linear_z());
+            st.lw = f.srcW; st.lh = f.srcH;
+            st.afwValid = true;
+            g_freshValid = true;
+        } else {
+            st.afwValid = false;
+        }
+    } else {
+        st.afwValid = false;
     }
     log_maybe(now);
     return written;
@@ -889,14 +962,16 @@ int aer_source() {
     return c.sign;
 }
 
+// True on every AFW present that showed an image: the held eye is then written every present.
 bool held_ready(int held) {
-    return g_afw.load() && g_afwRebuild.load() && g_freshValid && g_freshEye == (held ^ 1) &&
-           !bvr::overlay::visible();
+    return g_afw.load() && g_afwRebuild.load() && g_freshShown && g_freshEye == (held ^ 1);
 }
 
 int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
     bvr::frame_inspector::ScopedSuppress suppress;
+    const bool freshSource = g_freshValid;
     g_freshValid = false;
+    g_freshShown = false;
     const EyeStore& F = g_store[hf.fresh & 1];
     const EyeStore& Hs = g_store[hf.held & 1];
     const uint64_t now = GetTickCount64();
@@ -919,7 +994,7 @@ int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
     p.fgGain = g_afwFgGain.load();
     p.fgBandUu = g_afwFgBand.load();
     char why[256] = "";
-    if (B.valid && F.ow == hf.w && F.oh == hf.h && g_warp.run(g_dev, ctx, A, B, p, why, sizeof(why))) {
+    if (freshSource && B.valid && F.ow == hf.w && F.oh == hf.h && g_warp.run(g_dev, ctx, A, B, p, why, sizeof(why))) {
         ctx->CopyResource(hf.dst, g_warp.out());
         ++g_tally.afwRebuilds;
         ++g_life.afwRebuilds;
@@ -930,7 +1005,13 @@ int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
     if (!logged && why[0]) { logged = true; BVR_LOG("[afw] rebuild failed: %s (the held eye keeps its last image)", why); }
     ++g_tally.afwCopies;
     ++g_life.afwFallbacks;
-    if (Hs.afwValid && Hs.out) bvr::blit::stretch_copy(ctx, hf.dst, Hs.out);
+    if (bvr::overlay::visible() && F.outShown && F.out) {
+        // The F10 panel is in the image: rebuilding would warp it with the world. Both eyes
+        // show the fresh image (flat while the panel is up, the panel readable in both).
+        bvr::blit::stretch_copy(ctx, hf.dst, F.out);
+        return 1;
+    }
+    if (Hs.outShown && Hs.out) bvr::blit::stretch_copy(ctx, hf.dst, Hs.out);
     else if (F.out) bvr::blit::stretch_copy(ctx, hf.dst, F.out);
     return 2;
 }
@@ -1052,6 +1133,10 @@ void handle_command(const char* verb, const char* args) {
         } else if (word(args, "fgbias")) {
             g_fgBias.store(strstr(args, "on") != nullptr);
             BVR_LOG("[dlss] hands mask as the bias mask: %s", g_fgBias.load() ? "on" : "off");
+        } else if (word(args, "squeeze")) {
+            g_squeezeAuto.store(strstr(args, "off") == nullptr);
+            BVR_LOG("[temporal] squeezed-depth re-expansion %s (in use now: [%.3f, %.3f))",
+                    g_squeezeAuto.load() ? "auto" : "OFF", g_squeezeLo, g_squeezeHi);
         } else if (word(args, "probe")) {
             g_probeOn.store(strstr(args, "on") != nullptr);
             update_seams();

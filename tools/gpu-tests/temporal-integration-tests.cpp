@@ -727,19 +727,51 @@ int main(int argc, char** argv) {
         check(nHand && eHand / nHand < 0.05, "the hand in the rebuilt eye is where the hand is now", "mean %.4f over %zu px",
               nHand ? eHand / nHand : -1.0, nHand);
     }
-    // The F10 panel up: the held eye is not rebuilt (the panel would be warped with the world).
+    // The F10 panel up: the held eye is NOT rebuilt (the panel would be warped with the world)
+    // but it is still WRITTEN every present - with the fresh eye's image - so the runtime's
+    // held-eye swapchain never stops and restarts (the three headset crashes followed exactly
+    // that restart). Then the panel closes: the first rebuild must not take the held eye's
+    // panel-time image as a source.
     {
-        stub::overlayVisible = true;
-        const Cam h = head_at(frame++);
-        const FrameViews fv = calc_views(h);
-        const Cam c = fv.render;
-        EyeImage img = make_eye(h, c);
-        g.draw_frame(img.world.raw, img.color.rgba, img.hand);
-        ++stub::presents;
-        const int named = stub::eyeSource();
-        const int eye = named < 0 ? 0 : 1;
-        stub::processor(ctx, frame_for(g, eye, named, false, c));
-        check(!stub::heldReady(eye ^ 1), "with the F10 panel up the held eye is left alone", "");
+        auto one = [&](bool panel, int* how, bool* ready, bool* same) {
+            stub::overlayVisible = panel;
+            const Cam h = head_at(frame++);
+            const FrameViews fv = calc_views(h);
+            EyeImage img = make_eye(h, fv.render);
+            g.draw_frame(img.world.raw, img.color.rgba, img.hand);
+            ++stub::presents;
+            const int named = stub::eyeSource();
+            const int eye = named < 0 ? 0 : 1;
+            bvr::vr::EyeFrame f = frame_for(g, eye, named, false, fv.render);
+            if (!stub::processor(ctx, f)) ctx->CopyResource(f.dst, f.src);
+            *ready = stub::heldReady(eye ^ 1);
+            *how = 0;
+            if (*ready) {
+                bvr::vr::HeldFrame hf;
+                hf.held = eye ^ 1; hf.fresh = eye; hf.dst = g.swap[eye ^ 1]; hf.w = f.dstW; hf.h = f.dstH;
+                hf.tanH = f.tanH; hf.tanV = f.tanV;
+                *how = stub::heldRebuild(ctx, hf);
+            }
+            const auto a = readback(g.swap[eye]), b = readback(g.swap[eye ^ 1]);
+            *same = a == b;
+        };
+        int how = 0, panelWrites = 0, panelMono = 0;
+        bool ready = false, same = false;
+        const uint64_t r0 = tp::telemetry().afwRebuilds;
+        for (int k = 0; k < 4; ++k) {
+            one(true, &how, &ready, &same);
+            if (ready && how == 1) ++panelWrites;
+            if (same) ++panelMono;
+        }
+        check(panelWrites == 4 && panelMono == 4 && tp::telemetry().afwRebuilds == r0,
+              "with the F10 panel up the held eye is written every present with the fresh image, never rebuilt",
+              "%d of 4 written, %d of 4 equal to the fresh eye, %llu rebuilds", panelWrites, panelMono,
+              (unsigned long long)(tp::telemetry().afwRebuilds - r0));
+        const uint64_t h0 = tp::telemetry().afwWithHeld;
+        one(false, &how, &ready, &same);
+        check(ready && how == 1 && tp::telemetry().afwWithHeld == h0,
+              "the first rebuild after the panel does not use the held eye's panel-time image", "how %d, with held +%llu",
+              how, (unsigned long long)(tp::telemetry().afwWithHeld - h0));
         stub::overlayVisible = false;
     }
 

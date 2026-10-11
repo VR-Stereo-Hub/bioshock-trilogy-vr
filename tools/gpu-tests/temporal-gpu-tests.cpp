@@ -439,10 +439,67 @@ int main() {
         check(nh1 > 20 && nw1 > 20 && std::fabs(h1 - 1.0) <= 0.02 && std::fabs(w1 - 1.0) <= 0.02,
               "hand-depth probe: true depth reads 1.00 in both bands", "hands %.2f (%llu), world %.2f (%llu)", h1,
               (unsigned long long)nh1, w1, (unsigned long long)nw1);
-        check(nh2 > 20 && std::fabs(h2 - 1.12) <= 0.02 && std::fabs(w2 - 1.0) <= 0.02,
+        check(nh2 > 20 && std::fabs(h2 - 1.12) <= 0.03 && std::fabs(w2 - 1.0) <= 0.03,
               "hand-depth probe: hands 12% too deep read 1.12, the world stays 1.00", "hands %.2f (%llu), world %.2f (%llu)",
               h2, (unsigned long long)nh2, w2, (unsigned long long)nw2);
+        // A viewmodel squeezed into viewport depth [0, 0.1) decodes ~4x too near: the probe must
+        // still measure it (the ratio is about 0.24 here), not discard it as out of range.
+        {
+            std::vector<float> zs = rl.viewZ;
+            size_t nsq = 0;
+            for (size_t i = 0; i < zs.size(); ++i) {
+                if (!(rl.viewZ[i] > 0 && rl.viewZ[i] < 80)) continue;
+                const double d = 1.0 - kNear / rl.viewZ[i];   // conventional depth (infinite far is close enough)
+                zs[i] = (float)(kNear / (1.0 - 0.1 * d));
+                ++nsq;
+            }
+            ID3D11Texture2D* zt = make_tex(PW, PH, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_SHADER_RESOURCE, zs.data(), PW * 4);
+            ID3D11ShaderResourceView* zsv = srv_of(zt);
+            tg::DepthProbe pr;
+            char why[256] = "";
+            for (int i = 0; i < 8; ++i) {
+                pr.run(dev, ctx, ls, zsv, rs, to_tcam(l), to_tcam(r), PW, PH, 80.0f, why, sizeof(why));
+                ctx->Flush();
+                Sleep(5);
+            }
+            uint64_t n3 = 0;
+            const double h3 = pr.result.median(0, &n3);
+            check(nsq > 100 && n3 > 20 && h3 > 0.15 && h3 < 0.4,
+                  "hand-depth probe: a viewmodel squeezed into depth [0, 0.1) is measured (about 0.24), not dropped",
+                  "hands %.2f over %llu samples", h3, (unsigned long long)n3);
+            pr.shutdown();
+            rel(zsv); rel(zt);
+        }
         rel(ls); rel(rs); rel(lt); rel(rtx);
+    }
+    // 9. The squeezed-depth re-expansion: the hand drawn into viewport depth [0, 0.1) stores
+    //    0.1x its depth. Linearised plainly it reads ~4x too near; with squeezeHi 0.1 the true
+    //    depth comes back, and the world is untouched.
+    {
+        const Render r0 = render(scene, c0, W, H, kNear, kFar, 1);
+        Render sq = r0;
+        size_t nh = 0;
+        for (size_t i = 0; i < sq.raw.size(); ++i)
+            if (r0.viewZ[i] > 0 && r0.viewZ[i] < 80) { sq.raw[i] *= 0.1f; ++nh; }
+        auto errs = [&](float hi, double* hand, double* world) {
+            tg::Params p = params(c0, c0, false);
+            p.squeezeHi = hi;
+            g.run(sq, p);
+            const auto lz = readback(g.t.linear_z());
+            double eh = 0, ew = 0; size_t ch = 0, cw = 0;
+            for (size_t i = 0; i < r0.viewZ.size(); ++i) {
+                if (!(r0.viewZ[i] > 0)) continue;
+                const double e = std::fabs(lz[i] - r0.viewZ[i]) / r0.viewZ[i];
+                if (r0.viewZ[i] < 80) { eh += e; ++ch; } else { ew += e; ++cw; }
+            }
+            *hand = ch ? eh / ch : -1; *world = cw ? ew / cw : -1;
+        };
+        double hOn, wOn, hOff, wOff;
+        errs(0.1f, &hOn, &wOn);
+        errs(0.0f, &hOff, &wOff);
+        check(nh > 100 && hOn < 1e-3 && wOn < 1e-3 && hOff > 0.5,
+              "squeezed depth [0, 0.1): re-expanded to the hand's true depth, the world untouched",
+              "hand relative error %.2e with the range, %.2f without; world %.2e (%zu hand px)", hOn, hOff, wOn, nh);
     }
     return finish("temporal-gpu");
 }

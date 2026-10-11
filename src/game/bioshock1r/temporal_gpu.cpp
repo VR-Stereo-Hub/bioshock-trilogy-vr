@@ -34,9 +34,13 @@ cbuffer P : register(b0) {
     float4 prevRightTanV;
     float4 prevUpBody;      // w: body band (uu)
     float4 sizeFlags;       // w, h, depth reversed, foreground depth bound
+    float4 depthRange;      // x, y: a viewport depth range [lo, hi) some draws were squeezed into
+                            // (hi > lo = on): device depth there is re-expanded before linearising
 };
 
 float view_z(float raw) {
+    if (depthRange.y > depthRange.x && raw >= depthRange.x && raw < depthRange.y)
+        raw = (raw - depthRange.x) / (depthRange.y - depthRange.x);
     if (sizeFlags.z > 0.5f) raw = 1.0f - raw;
     raw = saturate(raw);
     float n = max(curLocNear.w, 0.0001f), f = prevLocFar.w;
@@ -190,8 +194,9 @@ struct alignas(16) CB {
     float curLocNear[4], curFwdTanH[4], curRightTanV[4], curUpHist[4];
     float prevLocFar[4], prevFwdTanH[4], prevRightTanV[4], prevUpBody[4];
     float sizeFlags[4];
+    float depthRange[4];
 };
-static_assert(sizeof(CB) == 9 * 16, "CB layout");
+static_assert(sizeof(CB) == 10 * 16, "CB layout");
 
 void fill(CB& cb, const Params& p) {
     auto set = [](float* d, const float* s, float w) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = w; };
@@ -205,6 +210,7 @@ void fill(CB& cb, const Params& p) {
     set(cb.prevUpBody, p.prev.up, p.bodyUu);
     cb.sizeFlags[0] = (float)p.w; cb.sizeFlags[1] = (float)p.h;
     cb.sizeFlags[2] = p.depthReversed ? 1.0f : 0.0f; cb.sizeFlags[3] = p.haveForeground ? 1.0f : 0.0f;
+    cb.depthRange[0] = p.squeezeLo; cb.depthRange[1] = p.squeezeHi;
 }
 
 bool compile(ID3D11Device* dev, const char* body, const char* entry, ID3D11ComputeShader** out, char* why, size_t cap,
@@ -314,8 +320,8 @@ void csprobe(uint3 id : SV_DispatchThreadID) {
     if (var < 9.0f * 0.0004f) return;   // flat: no texture to match
     float best = 1e9f;
     int bi = -1;
-    [loop] for (int k = 0; k < 61; ++k) {
-        const float2 c = float2(p) + 0.5f + dpx * (band.z + band.w * k);
+    [loop] for (int k = 0; k < 121; ++k) {
+        const float2 c = float2(p) + 0.5f + dpx * exp(band.z + band.w * k);
         float sad = 0.0f;
         [unroll] for (int t2 = 0; t2 < 9; ++t2) {
             const float2 o = float2(t2 % 3 - 1, t2 / 3 - 1) * 2.0f;
@@ -323,8 +329,8 @@ void csprobe(uint3 id : SV_DispatchThreadID) {
         }
         if (sad < best) { best = sad; bi = k; }
     }
-    if (bi <= 0 || bi >= 60) return;
-    hist.InterlockedAdd((uint)(b * 61 + bi) * 4u, 1u);
+    if (bi <= 0 || bi >= 120) return;
+    hist.InterlockedAdd((uint)(b * 121 + bi) * 4u, 1u);
 }
 )";
 
@@ -336,6 +342,10 @@ struct alignas(16) ProbeCB {
 
 } // namespace
 
+float probe_ratio(int bin) {
+    return kProbeMin * std::pow(kProbeSpan, (float)bin / (kProbeBins - 1));
+}
+
 double ProbeResult::median(int b, uint64_t* n) const {
     uint64_t total = 0;
     for (int i = 0; i < kProbeBins; ++i) total += hist[b & 1][i];
@@ -344,7 +354,7 @@ double ProbeResult::median(int b, uint64_t* n) const {
     uint64_t acc = 0;
     for (int i = 0; i < kProbeBins; ++i) {
         acc += hist[b & 1][i];
-        if (acc * 2 >= total) return kProbeMin + kProbeStep * i;
+        if (acc * 2 >= total) return probe_ratio(i);
     }
     return 0.0;
 }
@@ -405,7 +415,8 @@ bool DepthProbe::run(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11ShaderRe
     set(cb.rRight, right.right, 0); set(cb.rUp, right.up, 0);
     const uint32_t stride = 6;
     cb.dims[0] = (float)w; cb.dims[1] = (float)h; cb.dims[2] = (float)stride; cb.dims[3] = nearBandUu;
-    cb.band[0] = 150.0f; cb.band[1] = 1500.0f; cb.band[2] = kProbeMin; cb.band[3] = kProbeStep;
+    cb.band[0] = 150.0f; cb.band[1] = 1500.0f;
+    cb.band[2] = std::log(kProbeMin); cb.band[3] = std::log(kProbeSpan) / (kProbeBins - 1);
     D3D11_MAPPED_SUBRESOURCE m = {};
     if (FAILED(ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { put(why, cap, "probe map"); return false; }
     memcpy(m.pData, &cb, sizeof(cb));
@@ -436,6 +447,8 @@ void DepthProbe::shutdown() {
 }
 
 float view_z(const Params& p, float raw) {
+    if (p.squeezeHi > p.squeezeLo && raw >= p.squeezeLo && raw < p.squeezeHi)
+        raw = (raw - p.squeezeLo) / (p.squeezeHi - p.squeezeLo);
     if (p.depthReversed) raw = 1.0f - raw;
     raw = raw < 0 ? 0 : raw > 1 ? 1 : raw;
     const double n = p.nearUu > 0.0001f ? p.nearUu : 0.0001, f = p.farUu;

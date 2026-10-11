@@ -63,6 +63,11 @@ struct Params {
     bool historyValid = false;    // false: motion is zero
     float bodyUu = 0.0f;          // nearer than this: rotation-only vectors (0 = off)
     bool haveForeground = false;  // run()'s fgDepth holds the foreground pass's depth
+    // A viewport depth range [lo, hi) some draws were squeezed into (a first-person viewmodel
+    // kept in front of the world by drawing it into depth 0..0.1, say): device depth inside it
+    // is re-expanded to 0..1 before it is linearised. hi <= lo = off. The world cannot land
+    // there below hi = 1 - near/z, i.e. nothing of it nearer than near / (1 - hi).
+    float squeezeLo = 0.0f, squeezeHi = 0.0f;
     Camera cur, prev;
 };
 
@@ -172,8 +177,12 @@ private:
 // ratio measured / predicted disparity, per depth band, is what the alternate frame warp's hand
 // depth gain must be (afw::Params::fgGain): 1 = the depth is right. Bands: [0] the hands
 // (depth < nearBandUu), [1] the world (worldMin..worldMax uu), the control.
-const int kProbeBins = 61;                  // ratios kProbeMin + i * kProbeStep
-const float kProbeMin = 0.70f, kProbeStep = 0.01f;
+// Ratios kProbeMin * kProbeSpan^(i / (kProbeBins - 1)): 0.125 .. 2.0 in 2.3% steps (bin 90 is
+// exactly 1) - wide enough for a viewmodel squeezed into a slice of depth, whose depth then
+// reads several times too near.
+const int kProbeBins = 121;
+const float kProbeMin = 0.125f, kProbeSpan = 16.0f;
+float probe_ratio(int bin);
 struct ProbeResult {
     uint64_t pairs = 0;
     uint64_t hist[2][kProbeBins] = {};

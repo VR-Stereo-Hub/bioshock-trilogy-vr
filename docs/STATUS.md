@@ -39,7 +39,16 @@ cadence beat is the third ghost candidate. A 30 s headset-size soak of the rebui
 crash this machine's driver. Hedges: the mesh draw in <=1M-vertex bands (bit-identical, tested),
 no indexed constant arrays in the shaders. Details: `TEMPORAL.md` "The second headset run".
 
-Verified offline only: `tools\gpu-test.ps1`, 6 suites, **114 checks**, all pass on the RTX
+**Fourth round (after the third run, 20:04):** AFW from boot ran 45 s without a crash; the ghost
+(a transparent second copy of each hand) vanished whenever the F10 panel was up, which is AFW
+without the rebuild - so the rebuild draws it. Every crash in all three runs came 1.7-10 s
+after the panel closed, and the dumps put the crash on the XR runtime's own device's driver
+thread. Changed: the held eye's swapchain is written on every AFW present (panel up: the fresh
+image, flat), and the stale held image after the panel is no longer a rebuild source. Ghost
+suspect instrumented and handled: a viewmodel squeezed into a viewport depth range - logged
+every 5 s, re-expanded automatically when present. Details: `TEMPORAL.md` "The third headset run".
+
+Verified offline only: `tools\gpu-test.ps1`, 7 suites, **119 checks**, all pass on the RTX
 4070 Ti SUPER - motion vectors against a ray-traced truth (p95 under 0.02 px), DLSS through
 the real helper, TAA, the AFW rebuild, `temporal.cpp` + `alt_eye.cpp` driven with the
 engine's real four-CalcView pattern (AFW and AER sequencing, pair lock, head latch, the clamp
@@ -55,15 +64,15 @@ installed 02:57) is backed up byte for byte in
 
 ### Next steps
 
-1. Headset: the hand-depth probe line (both eyes every frame), then AFW with the source tint
-   and the hand depth gain set to the probe's number; AER; AFW at 120 or 90 Hz (cadence A/B);
-   AFW with "rebuild the other eye" off (crash isolation).
-2. If AFW still crashes with the rebuild off: core's AlternateEye two-swapchain path; with it on
-   only: RenderDoc one AFW frame in game.
+1. Headset: AFW, open and close the F10 panel a few times (the crash pattern); read the
+   `viewport depth ranges` and `draws squeezed` lines; is the ghost gone? Then the probe with
+   Stereo method both eyes every frame (switch method FIRST), the source tint, AER, 120/90 Hz.
+2. If AFW still crashes after the panel closes: try Steam Link / SteamVR instead of Virtual
+   Desktop (the crashed thread is the runtime's device).
 3. Audit gaps worth closing (TEMPORAL.md audit table): the exact locate generation per AFW
    image, a GPU timer on the rebuild, the controller latched per AER pair.
-4. PR `claude/bs1-dlss-afw` to `staging` once accepted (two commits plus this round's).
-6. Not built: projection jitter for DLSS (Dishonored's `dlss_jitter`), DLSS object motion,
+4. PR `claude/bs1-dlss-afw` to `staging` once accepted.
+5. Not built: projection jitter for DLSS (Dishonored's `dlss_jitter`), DLSS object motion,
    the AFW depth layer for the runtime's own spacewarp.
 
 ## Session 2026-10-08: BS1 Rapture launcher review candidate
