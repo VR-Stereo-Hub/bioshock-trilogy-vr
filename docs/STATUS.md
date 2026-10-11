@@ -48,6 +48,13 @@ image, flat), and the stale held image after the panel is no longer a rebuild so
 suspect instrumented and handled: a viewmodel squeezed into a viewport depth range - logged
 every 5 s, re-expanded automatically when present. Details: `TEMPORAL.md` "The third headset run".
 
+**Fourth run (20:48), the handoff point:** the viewmodel is drawn into viewport depth [0, 0.010]
+(confirmed by the census; re-expansion on) and the ghost when standing still is gone; no crash
+with the panel toggled five times. Open: the hands lag a frame and ghost while moving with the
+sticks; the panel-up held eye flickers; DLSS SR upscales beyond native (2750 -> 4300 at
+Balanced) instead of rendering below it, so AFW + DLSS Balanced ran ~85 fps. **The next
+session starts at `bioshock1/HANDOFF-afw-dlss-next.md`.**
+
 Verified offline only: `tools\gpu-test.ps1`, 7 suites, **119 checks**, all pass on the RTX
 4070 Ti SUPER - motion vectors against a ray-traced truth (p95 under 0.02 px), DLSS through
 the real helper, TAA, the AFW rebuild, `temporal.cpp` + `alt_eye.cpp` driven with the
@@ -64,10 +71,10 @@ installed 02:57) is backed up byte for byte in
 
 ### Next steps
 
-1. Headset: AFW, open and close the F10 panel a few times (the crash pattern); read the
-   `viewport depth ranges` and `draws squeezed` lines; is the ghost gone? Then the probe with
-   Stereo method both eyes every frame (switch method FIRST), the source tint, AER, 120/90 Hz.
-2. If AFW still crashes after the panel closes: try Steam Link / SteamVR instead of Virtual
+1. `bioshock1/HANDOFF-afw-dlss-next.md`, problems 1-4: the hands from the fresh eye through a
+   viewmodel mask (raw depth < 0.010); the panel-up held eye; DLSS SR rendering BELOW native
+   (Dishonored's live-resize design); the DLSS round trip.
+2. If AFW crashes again after the panel closes: try Steam Link / SteamVR instead of Virtual
    Desktop (the crashed thread is the runtime's device).
 3. Audit gaps worth closing (TEMPORAL.md audit table): the exact locate generation per AFW
    image, a GPU timer on the rebuild, the controller latched per AER pair.
