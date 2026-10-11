@@ -56,6 +56,7 @@ XrFrameState g_frameState{XR_TYPE_FRAME_STATE};
 XrSwapchain g_swapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 std::vector<XrSwapchainImageD3D11KHR> g_images[2];
 uint32_t g_swapW = 0, g_swapH = 0;
+uint32_t g_bbW = 0, g_bbH = 0; // the backbuffer size they were built for (= swap size unless an output size is set)
 uint32_t g_backbufferFmt = 0; // DXGI format the live swapchains were built for
 // Set by on_resize (which runs inside the game's ResizeBuffersDetour, at an
 // arbitrary point in the frame) and consumed by the frame loop at a point where
@@ -324,6 +325,14 @@ int g_currentEye = 0;                    // eye slot the next captured frame bel
 XrPosef g_eyePose[2] = {};               // pose claimed for each eye's held image
 bool g_eyeValid[2] = {false, false};     // eye slot holds a released image + pose
 
+// Temporal seams (header: "Temporal seams"). Null / zero = the plain capture path.
+std::atomic<EyeProcessorFn> g_eyeProcessor{nullptr};
+std::atomic<uint32_t> g_outputW{0}, g_outputH{0};   // requested eye swapchain size, 0 = backbuffer
+std::atomic<AerEyeSourceFn> g_aerEyeSource{nullptr};
+std::atomic<HeldReadyFn> g_heldReady{nullptr};
+std::atomic<HeldRebuildFn> g_heldRebuild{nullptr};
+uint64_t g_heldRebuilds = 0, g_heldCopies = 0, g_aerUnknownEyes = 0; // render thread
+
 // s50 (Infinite): rendered-pose eye tags - see the header comment. Default
 // OFF; only an adapter arms it (additive, BS1/BS2 untouched). The ipd mirror
 // tracks the arming adapter's slider so the tag reconstructs the SAME offset
@@ -382,6 +391,10 @@ std::atomic<int8_t> g_srRing[kSrRingSize] = {};
 std::atomic<uint32_t> g_srPushed{0}, g_srPopped{0}, g_srDropped{0},
     g_srCleared{0};
 std::atomic<bool> g_loggedFirstSr{false};
+// BRVR's drift resync (set_sr_drift_resync): opt-in, off by default.
+std::atomic<bool> g_srDriftResync{false};
+std::atomic<uint32_t> g_srDriftResyncs{0};
+uint32_t g_srDeepRun = 0; // render thread: consecutive pops that found more than one tag
 // Session 28: a live-lens claim substitution must announce itself once. An
 // unexplained src=live is what let the yaw warp hide for a session.
 std::atomic<bool> g_loggedLiveClaim{false};
@@ -971,6 +984,15 @@ int sr_pop_eye() {
     // that finds a FULL PAIR queued means push/present phase slipped by one -
     // the offset the depth>2 self-heal above can never see. Counted always,
     // transition-logged when the edge witness is armed. Present thread only.
+    g_srDeepRun = head - tail > 1 ? g_srDeepRun + 1 : 0;
+    if (g_srDeepRun >= 8 && g_srDriftResync.load(std::memory_order_relaxed)) {
+        BVR_LOG("xr: sr tag ring drift resync - %u pops in a row found a stale tag queued; "
+                "dropped %u, taking the newest", g_srDeepRun, head - tail - 1);
+        tail = head - 1;
+        g_srTail.store(tail, std::memory_order_relaxed);
+        g_srDeepRun = 0;
+        g_srDriftResyncs.fetch_add(1, std::memory_order_relaxed);
+    }
     static bool s_wasDeep = false;
     if (head - tail == 2) {
         g_pmPopDeep.fetch_add(1, std::memory_order_relaxed);
@@ -1944,6 +1966,7 @@ void destroy_swapchains() {
     destroy_laser();
     destroy_hud_swapchain();
     g_swapW = g_swapH = 0;
+    g_bbW = g_bbH = 0;
     g_backbufferFmt = 0;
     // Whatever a queued rebuild was for, it has just happened.
     g_resizePending.store(false, std::memory_order_relaxed);
@@ -2180,12 +2203,34 @@ bool create_swapchains(IDXGISwapChain* swapchain) {
     sci.sampleCount = 1;
     sci.width = desc.BufferDesc.Width;
     sci.height = desc.BufferDesc.Height;
+    // Super resolution: the eye swapchains at the reconstruction's output size (the
+    // temporal seam); every capture into them is then stretched when it is not processed.
+    const uint32_t outW = g_outputW.load(std::memory_order_relaxed);
+    const uint32_t outH = g_outputH.load(std::memory_order_relaxed);
+    if (outW && outH) {
+        sci.width = outW;
+        sci.height = outH;
+        BVR_LOG("xr: eye swapchains at the requested output size %ux%u (backbuffer %ux%u)", outW, outH,
+                desc.BufferDesc.Width, desc.BufferDesc.Height);
+    }
     sci.faceCount = 1;
     sci.arraySize = 1;
     sci.mipCount = 1;
     uint32_t imageCount = 0;
     for (int i = 0; i < 2; ++i) {
         XrResult r = xrCreateSwapchain(g_session, &sci, &g_swapchains[i]);
+        if (XR_FAILED(r) && i == 0 && (outW || outH)) {
+            // The runtime refused the super-resolution size: drop the request and build at
+            // the backbuffer size, rather than fail every frame with no VR at all.
+            BVR_LOG("xr: xrCreateSwapchain at the requested output size %ux%u failed (%s) - "
+                    "the request is dropped, eye swapchains at the backbuffer size",
+                    sci.width, sci.height, res_str(r));
+            g_outputW.store(0, std::memory_order_relaxed);
+            g_outputH.store(0, std::memory_order_relaxed);
+            sci.width = desc.BufferDesc.Width;
+            sci.height = desc.BufferDesc.Height;
+            r = xrCreateSwapchain(g_session, &sci, &g_swapchains[i]);
+        }
         if (XR_FAILED(r)) {
             BVR_LOG("xr: xrCreateSwapchain failed: %s", res_str(r));
             g_swapchains[i] = XR_NULL_HANDLE;
@@ -2204,8 +2249,10 @@ bool create_swapchains(IDXGISwapChain* swapchain) {
         }
     }
 
-    g_swapW = desc.BufferDesc.Width;
-    g_swapH = desc.BufferDesc.Height;
+    g_swapW = sci.width;
+    g_swapH = sci.height;
+    g_bbW = desc.BufferDesc.Width;
+    g_bbH = desc.BufferDesc.Height;
     g_swapFormat = pick; // the HUD quad swapchain creates lazily with this
     g_backbufferFmt = desc.BufferDesc.Format; // for the same-size resize guard
     BVR_LOG("xr: swapchain pair %ux%u format %lld (%u images each)", g_swapW, g_swapH,
@@ -3499,7 +3546,13 @@ float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
 // with a disproven rationale is a hazard, not an option. The fix is not to
 // issue the draw - see hud_capture's DrawVerdict::Skip and `vrcine bars`.
 void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
-    g_context->CopyResource(dst, backbuffer);
+    // A super-resolution output size (the temporal seam) makes the eye swapchains larger
+    // than the backbuffer; whatever the processor does not reconstruct is stretched whole
+    // (never a band - see above).
+    if (g_swapW == g_bbW && g_swapH == g_bbH)
+        g_context->CopyResource(dst, backbuffer);
+    else
+        bvr::blit::stretch_copy(g_context, dst, backbuffer);
 }
 
 void on_present_end(IDXGISwapChain* swapchain) {
@@ -3670,7 +3723,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
     bool srFrame = projectionMode && srSign != 0;
     // HUD capture gate (session 19): the gameswf redirect runs only while
     // stereo gameplay frames flow (menus stop the eye tags -> gate drops).
-    bvr::hud::set_gate(srFrame);
+    // Temporal seam: AlternateEye frames whose eye the adapter names (the
+    // alternate frame warp) are stereo gameplay too - a HUD drawn into them
+    // would be warped with the world behind it.
+    const bool aerSeamFrame = projectionMode && g_aerEnabled.load(std::memory_order_relaxed) &&
+                              g_aerEyeSource.load(std::memory_order_relaxed) != nullptr;
+    bvr::hud::set_gate(srFrame || aerSeamFrame);
 
     // Mirror, left half: snapshot the LEFT eye before anything else runs
     // (read-only - the XR eye capture below is unaffected). The right half
@@ -3776,6 +3834,28 @@ void on_present_end(IDXGISwapChain* swapchain) {
     int eyeFlip = g_aerSwapEyes.load(std::memory_order_relaxed) ? -1 : 1;
     int currentEyeSign = (g_currentEye == 0 ? -1 : 1) * eyeFlip;
     bool eyeCaptured = false;
+    // Temporal seam: an adapter-named eye for this AlternateEye image (the sign it was
+    // rendered with). Unknown = not an eye image (a menu, a load, a scripted camera): it
+    // flows through index 0 like any un-offset frame, and the layer is still submitted
+    // (an empty frame would show black). Guessing an eye here would put a frame rendered
+    // for one eye into the other's swapchain.
+    if (aerActive) {
+        AerEyeSourceFn source = g_aerEyeSource.load(std::memory_order_relaxed);
+        if (source) {
+            const int named = source();
+            if (named == 0) {
+                ++g_aerUnknownEyes;
+                imageSign = 0;
+            } else {
+                g_currentEye = named < 0 ? 0 : 1;
+                imageSign = currentEyeSign = named;
+            }
+        }
+    }
+    // The tangents the projection layer will claim (computed again below, identically),
+    // for the temporal seams that need them before the capture.
+    const float seamTanH = tanf(hfovDeg * 0.5f / 57.29578f);
+    const float seamTanV = g_swapW ? seamTanH * static_cast<float>(g_swapH) / static_cast<float>(g_swapW) : seamTanH;
 
     if (g_frameState.shouldRender && g_swapchains[0] != XR_NULL_HANDLE) {
         ID3D11Texture2D* backbuffer = nullptr;
@@ -3830,7 +3910,25 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // included. Under an engine letterbox the copy becomes an
                     // unsqueeze blit instead (session 22, capture_frame).
                     int64_t tCap = phase_now();
-                    capture_frame(g_images[target][index].texture, backbuffer);
+                    // Temporal seam: a stereo eye image goes through the adapter's
+                    // processor (DLSS/DLAA) when one is set; it falls back here.
+                    bool processed = false;
+                    const bool stereoEye = srFrame || (aerActive && target == g_currentEye &&
+                                                       imageSign == currentEyeSign);
+                    EyeProcessorFn proc = g_eyeProcessor.load(std::memory_order_relaxed);
+                    if (proc && projectionMode && stereoEye) {
+                        EyeFrame ef;
+                        ef.eye = target;
+                        ef.imageSign = srFrame ? srSign : imageSign;
+                        ef.sequential = srFrame;
+                        ef.src = backbuffer;
+                        ef.srcW = g_bbW; ef.srcH = g_bbH;
+                        ef.dst = g_images[target][index].texture;
+                        ef.dstW = g_swapW; ef.dstH = g_swapH;
+                        ef.tanH = seamTanH; ef.tanV = seamTanV;
+                        processed = proc(g_context, ef);
+                    }
+                    if (!processed) capture_frame(g_images[target][index].texture, backbuffer);
                     phase_record(kPhCapture, tCap);
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -3877,6 +3975,47 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         g_eyePose[g_currentEye] = g_viewsContent[g_currentEye].pose;
                     g_eyeValid[g_currentEye] = true;
                     eyeCaptured = true;
+
+                    // Temporal seam (AFW): rebuild the held eye at this instant
+                    // rather than leave it to rotation-only reprojection. ready()
+                    // promises the rebuild will write the image, so an acquired
+                    // image is never released unwritten.
+                    HeldReadyFn ready = g_heldReady.load(std::memory_order_relaxed);
+                    HeldRebuildFn rebuild = g_heldRebuild.load(std::memory_order_relaxed);
+                    const int held = g_currentEye ^ 1;
+                    if (ready && rebuild && ready(held)) {
+                        uint32_t hidx = 0;
+                        XrSwapchainImageAcquireInfo hai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                        if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[held], &hai, &hidx))) {
+                            XrSwapchainImageWaitInfo hwi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                            hwi.timeout = XR_INFINITE_DURATION;
+                            int how = 0;
+                            if (XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[held], &hwi))) {
+                                HeldFrame hf;
+                                hf.held = held; hf.fresh = g_currentEye;
+                                hf.dst = g_images[held][hidx].texture;
+                                hf.w = g_swapW; hf.h = g_swapH;
+                                hf.tanH = seamTanH; hf.tanV = seamTanV;
+                                how = rebuild(g_context, hf);
+                            }
+                            XrSwapchainImageReleaseInfo hri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                            xrReleaseSwapchainImage(g_swapchains[held], &hri);
+                            if (how == 1) {
+                                // Rebuilt at the fresh image's instant: claim the
+                                // same locate generation the fresh eye claims.
+                                if (g_eyeTagRendered.load(std::memory_order_relaxed))
+                                    g_eyePose[held] = parallel_eye_tag(
+                                        g_viewsContent[0].pose, g_viewsContent[1].pose, held,
+                                        g_eyeTagIpdMm.load(std::memory_order_relaxed));
+                                else
+                                    g_eyePose[held] = g_viewsContent[held].pose;
+                                g_eyeValid[held] = true;
+                                ++g_heldRebuilds;
+                            } else {
+                                ++g_heldCopies;
+                            }
+                        }
+                    }
                 }
 
                 if (pairHold) {
@@ -4316,9 +4455,9 @@ void on_resize(unsigned width, unsigned height, unsigned format) {
     // the geometry they were built for is unchanged. Width/height/format of 0
     // mean "unchanged" in DXGI's own convention; anything unknown falls through
     // to the old destroy-and-recreate path.
-    const bool sameSize = g_swapchains[0] != XR_NULL_HANDLE && g_swapW && g_swapH &&
-                          (width == 0 || width == g_swapW) &&
-                          (height == 0 || height == g_swapH) &&
+    const bool sameSize = g_swapchains[0] != XR_NULL_HANDLE && g_bbW && g_bbH &&
+                          (width == 0 || width == g_bbW) &&
+                          (height == 0 || height == g_bbH) &&
                           (format == 0 /*DXGI_FORMAT_UNKNOWN*/ || format == g_backbufferFmt);
     if (sameSize) {
         BVR_LOG("xr: same-size ResizeBuffers (%ux%u fmt %u) - XR swapchains kept",
@@ -4533,6 +4672,11 @@ void draw_debug_ui() {
             bool swap = g_aerSwapEyes.load(std::memory_order_relaxed);
             if (ImGui::Checkbox("Swap eyes (inverted-depth test)", &swap))
                 g_aerSwapEyes.store(swap, std::memory_order_relaxed);
+            if (g_heldRebuild.load(std::memory_order_relaxed))
+                ImGui::Text("Held eye: %llu rebuilt, %llu re-shown as is; %llu presents of unknown eye",
+                            static_cast<unsigned long long>(g_heldRebuilds),
+                            static_cast<unsigned long long>(g_heldCopies),
+                            static_cast<unsigned long long>(g_aerUnknownEyes));
         }
         bool manualFov = g_claimFovManual.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Manual claimed FOV (distortion calibration)", &manualFov)) {
@@ -4722,6 +4866,35 @@ void set_alternate_eye(bool on) {
             "compositor reprojects the stale eye - judders, but never re-enters "
             "the game's draw)",
             on ? "ON" : "off");
+}
+
+void set_eye_processor(EyeProcessorFn fn) {
+    g_eyeProcessor.store(fn, std::memory_order_relaxed);
+}
+
+void set_eye_output_size(uint32_t w, uint32_t h) {
+    if (!w || !h) w = h = 0;
+    const uint32_t ow = g_outputW.exchange(w, std::memory_order_relaxed);
+    const uint32_t oh = g_outputH.exchange(h, std::memory_order_relaxed);
+    if (ow == w && oh == h) return;
+    // Rebuilt at the frame loop's safe point (the same queue a real resize uses).
+    if (g_swapchains[0] != XR_NULL_HANDLE) g_resizePending.store(true, std::memory_order_release);
+    BVR_LOG("xr: eye output size %ux%u requested (%s)", w, h,
+            w ? "super resolution: swapchains rebuilt at that size" : "back to the backbuffer size");
+}
+
+void eye_output_size(uint32_t* w, uint32_t* h) {
+    if (w) *w = g_swapW;
+    if (h) *h = g_swapH;
+}
+
+void set_aer_eye_source(AerEyeSourceFn fn) {
+    g_aerEyeSource.store(fn, std::memory_order_relaxed);
+}
+
+void set_held_rebuild(HeldReadyFn ready, HeldRebuildFn rebuild) {
+    g_heldRebuild.store(rebuild, std::memory_order_relaxed);
+    g_heldReady.store(ready, std::memory_order_relaxed);
 }
 
 void set_eye_tag_rendered(bool on) {
@@ -5461,6 +5634,12 @@ void sr_push_eye(int eyeSign) {
     g_srPushed.fetch_add(1, std::memory_order_relaxed);
 }
 
+void set_sr_drift_resync(bool on) {
+    if (g_srDriftResync.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("xr: sr tag ring drift resync %s (resyncs so far %u)", on ? "ON" : "off",
+                g_srDriftResyncs.load(std::memory_order_relaxed));
+}
+
 void pair_probe(PairProbe* out) {
     if (!out) return;
     out->pairs = g_srPairs.load(std::memory_order_relaxed);
@@ -5524,6 +5703,14 @@ int64_t display_period_ns() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 void set_alternate_eye(bool) {}
+void set_eye_processor(EyeProcessorFn) {}
+void set_eye_output_size(uint32_t, uint32_t) {}
+void eye_output_size(uint32_t* w, uint32_t* h) {
+    if (w) *w = 0;
+    if (h) *h = 0;
+}
+void set_aer_eye_source(AerEyeSourceFn) {}
+void set_held_rebuild(HeldReadyFn, HeldRebuildFn) {}
 void set_eye_tag_rendered(bool) {}
 bool eye_tag_rendered() { return false; }
 void set_eye_tag_ipd_mm(float) {}
@@ -5587,6 +5774,7 @@ const char* cine_drive_name(CineDrive) { return "authored"; }
 float rendered_hfov_deg() { return 0.0f; }
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
+void set_sr_drift_resync(bool) {}
 void set_pair_edge_log(bool) {}
 bool pair_edge_log() { return false; }
 int sr_last_pop_sign() { return 0; }

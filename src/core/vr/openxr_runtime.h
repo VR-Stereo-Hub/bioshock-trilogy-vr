@@ -424,6 +424,59 @@ float rendered_hfov_deg();
 // last image + pose is held for the compositor to reproject on its off frame.
 int current_eye_sign();
 
+// --- Temporal seams: DLSS/DLAA and the alternate frame warp (BS1) -------------
+// All null / zero by default, so a game that never sets them runs exactly the capture
+// path it always did. Only the BS1 adapter (game/bioshock1r/temporal.cpp) sets them.
+//
+// The eye processor: called on the present thread for every stereo eye image (an SR
+// tagged present, or an AlternateEye offset frame) in projection mode, INSTEAD of the
+// plain backbuffer copy. It writes `dst` (that eye's acquired swapchain image) and
+// returns true, or returns false having written nothing and the plain copy runs.
+struct EyeFrame {
+    int eye = 0;                       // 0 left, 1 right
+    int imageSign = 0;                 // the eye sign this image was rendered with
+    bool sequential = false;           // SR pair (true) or AlternateEye (false)
+    ID3D11Texture2D* src = nullptr;    // the game's backbuffer (render size)
+    uint32_t srcW = 0, srcH = 0;
+    ID3D11Texture2D* dst = nullptr;    // the swapchain image (output size)
+    uint32_t dstW = 0, dstH = 0;
+    float tanH = 0, tanV = 0;          // the symmetric tangents this layer claims
+};
+using EyeProcessorFn = bool (*)(ID3D11DeviceContext* ctx, const EyeFrame& frame);
+void set_eye_processor(EyeProcessorFn fn);
+
+// Eye swapchain size for super resolution: the processor reconstructs a backbuffer-size
+// image to this size. 0 x 0 (default) = the backbuffer size. A change rebuilds the eye
+// swapchains at the next safe present; every other capture into them (menus, the quad,
+// a refused processor) is stretched to fit.
+void set_eye_output_size(uint32_t w, uint32_t h);
+// The live eye swapchain size (0 x 0 before the first session).
+void eye_output_size(uint32_t* w, uint32_t* h);
+
+// AlternateEye: where the presented image's eye comes from. Null (default) = core's own
+// alternation (the sign published after each submit). Set, the adapter names the eye
+// sign each presented image was RENDERED with (-1 / +1; 0 = unknown, and the present
+// captures nothing), which stays right when the game thread runs a frame ahead of the
+// render thread - core's alternation then crosses the eyes.
+using AerEyeSourceFn = int (*)();
+void set_aer_eye_source(AerEyeSourceFn fn);
+
+// AlternateEye: rebuild the OTHER (held) eye every present instead of leaving it to the
+// compositor's rotation-only reprojection (the alternate frame warp, AFW). After the
+// fresh eye's capture, if ready(held) is true core acquires the held eye's swapchain
+// image and calls rebuild, which MUST write dst and returns 1 (rebuilt at the fresh
+// eye's instant: submitted with the fresh locate generation's pose) or 2 (its previous
+// image re-written as it was: the held pose is kept).
+struct HeldFrame {
+    int held = 0, fresh = 0;
+    ID3D11Texture2D* dst = nullptr;
+    uint32_t w = 0, h = 0;
+    float tanH = 0, tanV = 0;
+};
+using HeldReadyFn = bool (*)(int held);
+using HeldRebuildFn = int (*)(ID3D11DeviceContext* ctx, const HeldFrame& frame);
+void set_held_rebuild(HeldReadyFn ready, HeldRebuildFn rebuild);
+
 // --- M4 rung 2: SequentialReentry stereo ------------------------------------
 // The game adapter double-calls the engine's scene build, rendering two
 // frames per game tick (left eye then right - DR-5). Because every submitted
@@ -435,6 +488,14 @@ int current_eye_sign();
 // path unchanged. If the ring depth ever exceeds one pair the render thread
 // clears it and logs (self-heal after a mode-boundary skew).
 void sr_push_eye(int eyeSign); // game thread, at submit; -1 left, +1 right
+
+// BRVR's eye-queue drift resync (CameraHook_NextEye), opt-in - only BS1's alternate-eye
+// stereo (game/bioshock1r/alt_eye.h) sets it. Depth at each pop is exactly 1 in a healthy
+// loop; when 8 pops in a row find more than one tag queued (a tag whose present never
+// came - BRVR measured it during streaming hitches), every image is being named with the
+// eye before it, which swaps the eyes until something else resets the ring. The pop then
+// drops the stale tags and takes the newest. Off (default) = the historical behaviour.
+void set_sr_drift_resync(bool on);
 
 // --- s62: the [pair] probe (issue #31, BS2 left-eye double image) -----------
 // Cumulative counters over the per-eye present pairing layer - the quantity

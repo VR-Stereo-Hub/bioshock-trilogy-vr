@@ -181,6 +181,9 @@ OMSetRenderTargetsFn g_origOMSetRenderTargets = nullptr;
 ClearRtvFn g_origClearRtv = nullptr;
 ClearDsvFn g_origClearDsv = nullptr;
 
+// Temporal seam (header): null unless an adapter registered one.
+std::atomic<const DrawTap*> g_drawTap{nullptr};
+
 using MapFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT,
                                           D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
 using UnmapFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT);
@@ -568,6 +571,10 @@ void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCou
                                          UINT startIndex, INT baseVertex) {
     g_callCensus[CxDrawIndexed].fetch_add(1, std::memory_order_relaxed);
     if (t_suppress == 0) bvr::hud::on_draw_indexed(ctx);
+    if (t_suppress == 0) {
+        const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
+        if (tap && tap->on_draw_indexed) tap->on_draw_indexed(ctx);
+    }
     // Session 34: adapter mesh veto. Checked BEFORE recording on purpose - a
     // dropped draw did not happen, and a dump that lists it would be describing
     // a frame the GPU never saw. Null unless a game registered one.
@@ -709,6 +716,14 @@ void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT n
         --t_suppress;
     }
     g_origOMSetRenderTargets(ctx, numViews, rtvs, dsv);
+    if (t_suppress == 0) {
+        const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
+        if (tap && tap->on_setrt) {
+            ++t_suppress; // the tap's own state changes must not report back into it
+            tap->on_setrt(ctx, dsv);
+            --t_suppress;
+        }
+    }
 }
 
 void STDMETHODCALLTYPE ClearRtvDetour(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv,
@@ -733,6 +748,14 @@ void STDMETHODCALLTYPE ClearDsvDetour(ID3D11DeviceContext* ctx, ID3D11DepthStenc
         ev.dsv = register_resource(dsv);
         ev.a = flags;
         --t_suppress;
+    }
+    if (t_suppress == 0) {
+        const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
+        if (tap && tap->on_clear_dsv) {
+            ++t_suppress;
+            tap->on_clear_dsv(ctx, dsv, flags);
+            --t_suppress;
+        }
     }
     g_origClearDsv(ctx, dsv, flags, depth, stencil);
 }
@@ -1126,6 +1149,11 @@ void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
     g_watchArmed.store(true, std::memory_order_release);
     BVR_LOG("[gfx] cb watch armed: %u pattern floats @ f%u -> capture f%u..f%u (bytes=%u)",
             patCount, patFirst, capFirst, capFirst + capCount - 1, requiredBytes);
+}
+
+void set_draw_tap(const DrawTap* tap) {
+    g_drawTap.store(tap, std::memory_order_release);
+    BVR_LOG("[gfx] draw tap %s", tap ? "set (adapter scene-depth capture)" : "cleared");
 }
 
 uint32_t cb_watch_hits() {

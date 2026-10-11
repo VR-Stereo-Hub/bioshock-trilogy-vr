@@ -37,6 +37,18 @@ bool second_pass_for_current_thread(float* yawDegOut);
 // hooked call on this thread. Cheap (two relaxed atomics).
 void note_calcview();
 
+// True when the calling thread is inside a depth-0 scene build made from the GAMEPLAY
+// call site (kSceneBuildGameplayRetRva): a CalcView there is the RENDER VIEW of this
+// frame - exactly one per build. The engine calls CalcView ~3 more times per frame from
+// other sites (movement, AI, audio; BRVR measured 4.2 calls per frame), and those must
+// not each count as a frame. Needs the build hook (the VR stereo preset installs it).
+bool in_gameplay_build();
+// The scene-build hook alone (pass-through unless stereo doubling is on).
+bool build_hook_live();
+// True inside ANY hooked engine call on this thread (any build, gameplay or not): hooks and
+// mode switches must wait until it is false.
+bool in_hooked_call();
+
 // True while any reentry hook is created AND enabled.
 bool hook_live();
 

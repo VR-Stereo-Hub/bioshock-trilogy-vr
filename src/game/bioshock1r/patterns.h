@@ -152,6 +152,23 @@ inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
                                                    0xEC, 0x08, 0x83, 0xE4,
                                                    0xF0};
 
+// FRAME DELTA (ENGINE_NOTES "Frame delta: one world advance per AER eye pair",
+// 2026-10-10). The per-frame advance a virtual __thiscall receives as
+// (ecx this, stack arg1, stack float deltaSeconds): `ret 8`, reached only through its
+// vtable (zero static E8/E9 callers). The game thread calls it on TWO objects per
+// frame, before the scene build. Lead from BRVR's DeltaClamp (module+0x53D850 and its
+// 47-byte signature, bytes 6..9 = an SEH scope-table address, wildcarded);
+// re-derived on this exe with disasm-rva: the signature tail (bytes 10..46) occurs
+// exactly once in .text, at 0x53D85A, and the prologue + `ret 8` are as below.
+inline constexpr uint32_t kFrameDeltaRva = 0x53D850;
+inline constexpr uint8_t kFrameDeltaPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+// Bytes 10..46 (after the wildcarded scope-table push): checked at install as well.
+inline constexpr uint32_t kFrameDeltaTailOffset = 10;
+inline constexpr uint8_t kFrameDeltaTail[37] = {
+    0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89, 0x25, 0x00, 0x00, 0x00,
+    0x00, 0x83, 0xEC, 0x44, 0x53, 0x56, 0x8B, 0xF1, 0xC7, 0x45, 0xE4, 0x00, 0x00,
+    0x00, 0x00, 0x57, 0x89, 0x75, 0xDC, 0x8B, 0x46, 0x44, 0x8B, 0x38};
+
 // Submitted-frame id pair (.data globals, block at [0x13AF7E8..] - see the
 // submit row in ENGINE_NOTES). Two slots (double-buffered frames): dword at
 // +0 and dword at +0x10, each holding a frame id whose HIGH BIT is the

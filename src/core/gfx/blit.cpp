@@ -253,7 +253,85 @@ bool stretch_band(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
     return draw_internal(ctx, dst, src, dstW, dstH, g_ps, nullptr, g_vsStretch);
 }
 
+namespace {
+// stretch_copy's intermediates: a sampleable copy of the source and an R8G8B8A8_UNORM
+// target at the destination size, both reused while the sizes and formats hold.
+ID3D11Texture2D* g_scSrc = nullptr;
+ID3D11ShaderResourceView* g_scSrcSrv = nullptr;
+ID3D11Texture2D* g_scDst = nullptr;
+ID3D11RenderTargetView* g_scDstRtv = nullptr;
+
+DXGI_FORMAT typed_of(DXGI_FORMAT f) {
+    switch (f) {
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS: return DXGI_FORMAT_R10G10B10A2_UNORM;
+        default: return f;
+    }
+}
+
+void release_stretch() {
+    if (g_scSrcSrv) { g_scSrcSrv->Release(); g_scSrcSrv = nullptr; }
+    if (g_scSrc) { g_scSrc->Release(); g_scSrc = nullptr; }
+    if (g_scDstRtv) { g_scDstRtv->Release(); g_scDstRtv = nullptr; }
+    if (g_scDst) { g_scDst->Release(); g_scDst = nullptr; }
+}
+} // namespace
+
+bool stretch_copy(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* src) {
+    if (!ctx || !dst || !src) return false;
+    D3D11_TEXTURE2D_DESC sd{}, dd{};
+    src->GetDesc(&sd);
+    dst->GetDesc(&dd);
+    if (sd.Width == dd.Width && sd.Height == dd.Height) {
+        ctx->CopyResource(dst, src);
+        return true;
+    }
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return false;
+    bool ok = true;
+    if (g_scSrc) {
+        D3D11_TEXTURE2D_DESC have{};
+        g_scSrc->GetDesc(&have);
+        if (have.Width != sd.Width || have.Height != sd.Height || have.Format != sd.Format) release_stretch();
+    }
+    if (g_scDst) {
+        D3D11_TEXTURE2D_DESC have{};
+        g_scDst->GetDesc(&have);
+        if (have.Width != dd.Width || have.Height != dd.Height) release_stretch();
+    }
+    if (!g_scSrc) {
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = sd.Width; d.Height = sd.Height; d.MipLevels = 1; d.ArraySize = 1;
+        d.Format = sd.Format; d.SampleDesc.Count = 1; d.Usage = D3D11_USAGE_DEFAULT;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SHADER_RESOURCE_VIEW_DESC v{};
+        v.Format = typed_of(sd.Format); v.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels = 1;
+        ok = SUCCEEDED(dev->CreateTexture2D(&d, nullptr, &g_scSrc)) &&
+             SUCCEEDED(dev->CreateShaderResourceView(g_scSrc, &v, &g_scSrcSrv));
+        d.Width = dd.Width; d.Height = dd.Height; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.BindFlags = D3D11_BIND_RENDER_TARGET;
+        ok = ok && SUCCEEDED(dev->CreateTexture2D(&d, nullptr, &g_scDst)) &&
+             SUCCEEDED(dev->CreateRenderTargetView(g_scDst, nullptr, &g_scDstRtv));
+        if (!ok) {
+            release_stretch();
+            BVR_LOG("[blit] stretch intermediates %ux%u fmt %d -> %ux%u FAILED", sd.Width, sd.Height,
+                    static_cast<int>(sd.Format), dd.Width, dd.Height);
+        }
+    }
+    dev->Release();
+    if (!ok) return false;
+    ctx->CopyResource(g_scSrc, src);
+    if (!stretch_band(ctx, g_scDstRtv, g_scSrcSrv, dd.Width, dd.Height, 0.0f, 1.0f)) return false;
+    // Same R8G8B8A8 family as the eye swapchains: a raw copy, so a typed-sRGB image keeps
+    // the encoded bytes exactly as a same-size CopyResource would.
+    ctx->CopyResource(dst, g_scDst);
+    return true;
+}
+
 void release() {
+    release_stretch();
     if (g_vs) { g_vs->Release(); g_vs = nullptr; }
     if (g_vsStretch) { g_vsStretch->Release(); g_vsStretch = nullptr; }
     if (g_stretchCb) { g_stretchCb->Release(); g_stretchCb = nullptr; }

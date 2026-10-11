@@ -47,3 +47,6 @@ desktop.ini
 # Python bytecode from the offline tools (tools\bsmesh, tools\blender).
 __pycache__/
 *.pyc
+
+# The NVIDIA DLSS (NGX) SDK, fetched by tools\fetch-ngx.ps1 under NVIDIA's licence; never committed.
+/third_party/ngx/
