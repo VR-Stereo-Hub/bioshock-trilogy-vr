@@ -9,8 +9,10 @@ struct Hit {
     ImVec2 min, max;
     ImGuiID id;
     bool disabled;
+    std::string window; // offline interaction harness: scroll the owning region into view
 };
 struct ViewState {
+    float pixelPercent = 0;
     Tab tab = Tab::Controls;
     Tab renderedTab = Tab::Controls;
     bool tabsInitialized = false;

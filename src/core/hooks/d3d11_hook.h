@@ -15,6 +15,9 @@ bool install();
 // Lifetime Present count (telemetry: presents-per-frame-root ratios etc.).
 uint64_t present_count();
 
+// The game's swapchain window (an HWND), known from the first Present; null before.
+void* game_window();
+
 // Thread id observed on the most recent Present (telemetry: single- vs
 // multi-threaded render attribution - session 26, BS2 substrate work).
 uint32_t last_present_tid();

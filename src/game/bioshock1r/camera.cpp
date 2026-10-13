@@ -9,11 +9,14 @@
 #include "core/debug/value_scan.h"
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
+#include "core/hooks/d3d11_debug.h"
+#include "game/bioshock1r/resize.h"
 #include "core/ui/overlay.h"
 #include "core/input/swing.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
@@ -27,12 +30,15 @@
 #include "game/bioshock1r/scripted.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/native_proof.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
 #include <MinHook.h>
 
 #include <imgui.h>
+#include <intrin.h>
 
 #include <atomic>
 #include <cmath>
@@ -471,11 +477,14 @@ void apply_command(const char* cmd, const char* args) {
         patterns::handle_buildgate_command(args);
     } else if (strcmp(cmd, "vrres") == 0) {
         // The eye render IS the game's backbuffer, so the game's resolution is
-        // the VR resolution. `SETRES` faults (ENGINE_NOTES session 27), so the
-        // game's own ini is the only working lever and a change lands on the
-        // next launch. Deliberately explicit rather than automatic.
+        // the VR resolution. `SETRES` faults (ENGINE_NOTES session 27); the
+        // game's own ini changes the next launch, and `vrres live WxH` resizes
+        // the game window, which the engine answers with its own SetRes
+        // (resize.h). Deliberately explicit rather than automatic.
         unsigned rw = 0, rh = 0;
-        if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
+        if (strncmp(args, "live", 4) == 0) {
+            resize::handle_command(args + 4 + (args[4] == ' '));
+        } else if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
             game_ini::write_viewport(rw, rh);
         } else if (sscanf_s(args, "%u %u", &rw, &rh) == 2 && rw && rh) {
             game_ini::write_viewport(rw, rh);
@@ -723,6 +732,11 @@ void apply_command(const char* cmd, const char* args) {
         int count = 1;
         sscanf_s(full ? args + 4 : args, " %d", &count);
         bvr::frame_inspector::arm(full ? 2 : 1, count);
+    } else if (strcmp(cmd, "vbtap") == 0) {
+        // s87: vbtap [n] - log the next n vertex-buffer uploads with their uploader stacks
+        int n = 20;
+        sscanf_s(args, "%d", &n);
+        bvr::frame_inspector::vb_tap_log(n);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
     } else if (strcmp(cmd, "vraim") == 0) {
@@ -752,6 +766,13 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "vrpreset") == 0) {
         if (strncmp(args, "save", 4) == 0) save_vr_preset();
         else apply_vr_preset();
+    } else if (strcmp(cmd, "d3ddebug") == 0) {
+        // The D3D11 debug layer for the NEXT launch: `d3ddebug on|break|off`.
+        bvr::d3d11_debug::arm(strncmp(args, "break", 5) == 0 ? 2 : strncmp(args, "on", 2) == 0 ? 1 : 0);
+    } else if (strcmp(cmd, "dlss") == 0) {
+        temporal::handle_command(cmd, args); // DLSS/DLAA and TAA
+    } else if (strcmp(cmd, "aer") == 0 || strcmp(cmd, "afw") == 0) {
+        alt_eye::handle_command(cmd, args); // alternate-eye stereo methods (AFW's tuning words pass on to temporal)
     } else if (strcmp(cmd, "vrpace") == 0) {
         bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
     } else if (strcmp(cmd, "vrmirror") == 0) {
@@ -1328,6 +1349,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             g_eyeCamLoc[1] = *loc; // fg view-sync stash, RIGHT eye
             g_eyeCamRot[1] = *rot;
             g_eyeCamStampMs[1] = GetTickCount64();
+            temporal::note_camera(g_srBaseEyed ? +1 : 0, *loc, *rot); // DLSS / AFW guides
+            const float proofWorldEye[3] = {loc->x,loc->y,loc->z};
+            native_proof::note_eye(g_srBaseEyed ? +1 : 0, 2*eye_half_separation_uu(), proofWorldEye);
         } else if (rot) {
             rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
         }
@@ -1339,6 +1363,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
     g_original(self, edx, viewActor, loc, rot);
     scenedraw::note_calcview();
+    int aerSignApplied = 0; // the AlternateEye offset this build renders with (temporal guides)
+    FVector aerEyeTranslation{}; // render-only offset; never move the head/shoulders with it
 
     g_playerController.store(self, std::memory_order_relaxed);
     uint32_t count = g_callCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1395,6 +1421,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
                                  static_cast<uint32_t>(req & 0xFFFFFFFFu));
     }
+    temporal::tick_resolution(); // latest mode/output intent, after any prior resize completes
+    resize::tick(); // the engine's SetRes runs on this game thread
     // M5: pump the engine's own pad pipeline against the synthetic gamepad
     // (self-throttles to once per present; no-op while vrinput is off).
     input_drive::on_frame(now);
@@ -1425,6 +1453,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // M6: the aim ray must be built in the SAME frame as the camera, so keep
     // the pre-head-offset camera loc and the yaw the drive added.
     FVector baseLoc = loc ? *loc : FVector{};
+    float headAnchor[3] = {0.0f, 0.0f, 0.0f}; // s90: the head-offset sliders' vector (FrameContext::anchor*)
     float driveYawOffsetRad = 0.0f;
     // s74c: the head's own yaw, recenter-relative, published untouched so the
     // arm probes can tell a PHYSICAL head turn from a stick turn. Stays 0 on
@@ -1469,6 +1498,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // scripted cameras bypass CalcView entirely).
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
+    // Alternate-eye stereo (alt_eye.h): the eye THIS FRAME renders - the same for every
+    // CalcView call of the frame (the hands node takes its camera from the calls before
+    // the build's own), decided once per frame at the render view. Applies a pending
+    // method change here, outside the build. 0 = no alternate method / not a stereo frame.
+    const int altSign = alt_eye::frame_sign(strictGameplay && !bvr::vr::cinematic_active());
 
     // s64: the scripted-EVENT signals (BRVR's M7 window). Deliberately NOT
     // gated on strictGameplay - a scripted sequence is exactly when the view
@@ -1521,6 +1555,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // above stay ungated for flat tests.
         driveHead = true;
         liveHead = true;
+        // AER: one head sample per eye pair (BRVR's latch) - no-op for every other method.
+        alt_eye::latch_head(&hp, altSign);
     }
     if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
@@ -1677,6 +1713,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             loc->x += cosf(vyaw) * hoFwd;
             loc->y += sinf(vyaw) * hoFwd;
             loc->z += hoUp;
+            headAnchor[0] = cosf(vyaw) * hoFwd;
+            headAnchor[1] = sinf(vyaw) * hoFwd;
+            headAnchor[2] = hoUp;
         }
 
         // AlternateEye (M4 rung 1): shift the camera half an IPD along
@@ -1684,10 +1723,31 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // successive game frames render alternating eyes. Suppressed under
         // SequentialReentry stereo (rung 2), which applies both eye offsets
         // itself at the end of this body.
-        int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
+        // An alt_eye method (AER, AFW) owns the alternation on the game thread - one eye
+        // per frame; otherwise core's published sign (its own AlternateEye test).
+        int eyeSign = scenedraw::stereo_active()                   ? 0
+                      : alt_eye::method() != alt_eye::kBoth ? altSign
+                                                             : bvr::vr::current_eye_sign();
+        // AER's pair lock: the right frame renders from the left frame's camera (this
+        // call site's), so both eyes of a pair are one instant - BRVR's PairLockCamera.
+        if (eyeSign != 0) alt_eye::pair_lock(_ReturnAddress(), loc, rot, eyeSign);
         // Session 22: routed through apply_eye_offset so SR and AER share ONE
         // implementation (full-rotation right axis, head-roll correct).
-        if (eyeSign != 0) apply_eye_offset(loc, *rot, eyeSign);
+        if (eyeSign != 0) {
+            const FVector head = *loc;
+            apply_eye_offset(loc, *rot, eyeSign);
+            aerEyeTranslation = {loc->x - head.x, loc->y - head.y, loc->z - head.z};
+        }
+        aerSignApplied = eyeSign;
+        if (eyeSign != 0 && loc && rot) {
+            // The player-scene constructor runs AFTER this build's CalcView. Keep the
+            // driven camera before commit_render_view advances the next eye; the ctor
+            // selects this build's committed sign (ENGINE_NOTES tenth-run correction).
+            const int e = eyeSign > 0 ? 1 : 0;
+            g_eyeCamLoc[e] = *loc;
+            g_eyeCamRot[e] = *rot;
+            g_eyeCamStampMs[e] = GetTickCount64();
+        }
 
         vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
                     ? bvr::vr::suggested_hfov_deg()
@@ -1803,17 +1863,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // M6/M7: publish the frame the camera just produced so the aim ray and the
     // hand viewmodel both land in exactly this frame (pre eye-offset - the eye
     // shift belongs to the render, not to where the player is standing).
+    FrameContext temporalFrame{};
     {
         FrameContext fc{};
         fc.vrDriving = vrDrove;
-        if (loc) {
-            fc.camX = loc->x;
-            fc.camY = loc->y;
-            fc.camZ = loc->z;
-        }
+        // AFW/AER already applied their render-eye shift above. Publishing that
+        // eye as the head moved IK shoulders left/right each frame while wrists
+        // stayed on the controllers (run eleven's sleeve flicker).
+        if (loc) set_frame_head_position(fc, *loc, aerEyeTranslation);
         fc.baseX = baseLoc.x;
         fc.baseY = baseLoc.y;
         fc.baseZ = baseLoc.z;
+        fc.anchorX = headAnchor[0];
+        fc.anchorY = headAnchor[1];
+        fc.anchorZ = headAnchor[2];
         if (rot) {
             fc.camPitch = rot->pitch;
             fc.camYaw = rot->yaw;
@@ -1822,6 +1885,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.driveYawOffsetRad = driveYawOffsetRad;
         fc.headYawRad = headYawRelRad;
         fc.recenterYawRad = recenter_yaw_rad();
+        if (g_haveRecenter) fc.recenterHeadYawRad = hmd_angles(g_recenterPose).yawRad;
         fc.recenterPx = g_recenterPose.px;
         fc.recenterPy = g_recenterPose.py;
         fc.recenterPz = g_recenterPose.pz;
@@ -1990,6 +2054,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         probe_bob::on_calcview_pre(fc);
         hands::on_calcview(fc);
         probe_bob::on_calcview_post(fc);
+        temporalFrame = fc;
     }
 
     // Foreground lens match: post-tick, pre-render, every frame - nothing
@@ -2113,8 +2178,23 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_eyeCamLoc[0] = *loc; // fg view-sync stash, LEFT eye
         g_eyeCamRot[0] = *rot;
         g_eyeCamStampMs[0] = GetTickCount64();
+        // DLSS guides: the render view only (the build's own CalcView, one per frame).
+        if (scenedraw::in_gameplay_build()) {
+            temporal::note_camera(g_srBaseEyed ? -1 : 0, *loc, *rot, &temporalFrame);
+            const float proofWorldEye[3] = {loc->x,loc->y,loc->z};
+            native_proof::note_eye(g_srBaseEyed ? -1 : 0, 2*eye_half_separation_uu(), proofWorldEye);
+        }
     } else {
         g_srBaseValid = false;
+        // AlternateEye or mono, the render view (one per frame - the engine's other CalcView
+        // calls are movement/AI/audio consumers, not frames): the camera this frame renders
+        // with, after every offset; then the frame is tagged and the eye advances.
+        if (loc && rot && scenedraw::in_gameplay_build()) {
+            temporal::note_camera(aerSignApplied, *loc, *rot, &temporalFrame);
+            const float proofWorldEye[3] = {loc->x,loc->y,loc->z};
+            native_proof::note_eye(aerSignApplied, 2*eye_half_separation_uu(), proofWorldEye);
+            alt_eye::commit_render_view(aerSignApplied);
+        }
     }
 
     // FOV: the VR drive wins over the manual override; both share the same
@@ -2447,6 +2527,22 @@ float head_up_uu() {
     return g_headOffUpUu.load(std::memory_order_relaxed);
 }
 
+float eye_half_separation_uu() {
+    return (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) * g_worldScale.load(std::memory_order_relaxed);
+}
+
+float foreground_lens_gain() {
+    if (!g_fgFovMatch.load(std::memory_order_relaxed)) return 1.0f;
+    if (!(g_fgFovWritten.load(std::memory_order_relaxed) > 0.0f)) return 1.0f;
+    const float k = g_fgFovK.load(std::memory_order_relaxed);
+    return k > 0.1f ? k : 1.0f;
+}
+
+void request_game_resolution(uint32_t w, uint32_t h) {
+    if (w < 1024 || h < 1024 || w > 8192 || h > 8192) return;
+    g_resWritePending.store((static_cast<uint64_t>(w) << 32) | h, std::memory_order_relaxed);
+}
+
 bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]) {
     if (eye < 0 || eye > 1) return false;
     if (GetTickCount64() - g_eyeCamStampMs[eye] > 200) return false; // stale/idle
@@ -2727,11 +2823,14 @@ void draw_debug_ui() {
                 }
                 ImGui::Text("selected: %d x %d, %.1f MPx per eye", s_w, s_h,
                             static_cast<double>(s_w) * s_h / 1.0e6);
+                if (ImGui::Button("Apply now (live)")) resize::request((uint32_t)s_w, (uint32_t)s_h, "F10 render resolution");
+                ImGui::SameLine();
                 if (ImGui::Button("Write to Bioshock.ini")) {
                     g_resWritePending.store((static_cast<uint64_t>(s_w) << 32) |
                                                 static_cast<uint32_t>(s_h),
                                             std::memory_order_relaxed);
                 }
+                ImGui::Text("live resize: %s", resize::status());
                 ImGui::TextWrapped(
                     "Restart the game for it to take effect. The game rewrites "
                     "Bioshock.ini from its own settings at exit, which can undo "

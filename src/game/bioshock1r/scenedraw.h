@@ -37,6 +37,18 @@ bool second_pass_for_current_thread(float* yawDegOut);
 // hooked call on this thread. Cheap (two relaxed atomics).
 void note_calcview();
 
+// True when the calling thread is inside a depth-0 scene build made from the GAMEPLAY
+// call site (kSceneBuildGameplayRetRva): a CalcView there is the RENDER VIEW of this
+// frame - exactly one per build. The engine calls CalcView ~3 more times per frame from
+// other sites (movement, AI, audio; BRVR measured 4.2 calls per frame), and those must
+// not each count as a frame. Needs the build hook (the VR stereo preset installs it).
+bool in_gameplay_build();
+// The scene-build hook alone (pass-through unless stereo doubling is on).
+bool build_hook_live();
+// True inside ANY hooked engine call on this thread (any build, gameplay or not): hooks and
+// mode switches must wait until it is false.
+bool in_hooked_call();
+
 // True while any reentry hook is created AND enabled.
 bool hook_live();
 
@@ -66,8 +78,19 @@ bool doubling_on();
 // SCENE NODE"); dump logs the parent-view/node snapshots taken at ctor tail
 // and at frame submit. Game thread only.
 void handle_fgnode_command(const char* args);
+// Game thread, outside a hooked call: enable the byte-checked ctor hook before syncing.
+bool set_fg_sync(bool on);
+bool fg_sync_on();
+void fg_sync_counts(uint32_t* subs, uint32_t* misses);
 
 // Read-only telemetry section for the overlay (control is commands-only).
 void draw_debug_ui();
+
+// s82: frame position for the skeleton-evaluation hook. build_depth 0 = the game tick
+// (outside the hooked scene build), 1+ = inside a build; in_second_build = the current
+// thread is running the second (right-eye) build of a stereo pair. Only meaningful while
+// the build hook is live (it is whenever stereo is on).
+int build_depth();
+bool in_second_build();
 
 } // namespace bvr::b1r::scenedraw

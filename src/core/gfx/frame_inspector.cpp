@@ -103,6 +103,8 @@ struct Event {
     uint16_t vpW = 0, vpH = 0;
     uint32_t cbBytes[3] = {0, 0, 0}; // VS b0..b2 ByteWidth
     const void* cb0Object = nullptr; // identity of VS b0 (for change tracking)
+    uint32_t vb0Bytes = 0, vb0Stride = 0; // s87: vertex stream 0 (printed after stk=)
+    const void* vb0Object = nullptr;
     bool cb0Captured = false;        // this event carries cb0 contents
     float cb0Data[kCbFloats] = {};
     uint32_t retRva = 0;             // _ReturnAddress mapped into the exe (0 if foreign)
@@ -180,6 +182,55 @@ DrawInstancedFn g_origDrawInstanced = nullptr;
 OMSetRenderTargetsFn g_origOMSetRenderTargets = nullptr;
 ClearRtvFn g_origClearRtv = nullptr;
 ClearDsvFn g_origClearDsv = nullptr;
+
+// Temporal seam (header): null unless an adapter registered one.
+std::atomic<const DrawTap*> g_drawTap{nullptr};
+std::atomic<const DrawObserver*> g_observer{nullptr};
+std::atomic<const DrawReplayProbe*> g_replayProbe{nullptr};
+std::atomic<const ResourceObserver*> g_resourceObserver{nullptr};
+template<class Fn> void resource_event(Fn&& fn) {
+    if (t_suppress) return;
+    const auto* observer = g_resourceObserver.load(std::memory_order_acquire);
+    if (observer) { ScopedSuppress suppress; fn(*observer); }
+}
+
+using QueryFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Asynchronous*);
+QueryFn g_origBegin = nullptr, g_origEnd = nullptr;
+ID3D11Asynchronous* g_activeQueries[64] = {}; // owning refs, never recycled identity
+bool g_queryHooks = false, g_queryOverflow = false;
+
+
+// The game's immediate context (header: the vtable is process-wide). A detour
+// seeing any other context - the OpenXR runtime's, on its own threads - must do
+// nothing but call the original: the HUD classifiers, the draw tap and the
+// recorder all keep unsynchronized state and some of them issue commands with
+// OUR device's resources, which on a foreign device's context is a driver fault.
+ID3D11DeviceContext* g_gameCtx = nullptr;
+ID3D11Device* g_gameDev = nullptr;
+// Other contexts seen, sorted by device once (GetDevice is an AddRef/Release pair:
+// not per draw). The game's own deferred contexts count as the game's.
+std::atomic<ID3D11DeviceContext*> g_knownCtx[8] = {};
+std::atomic<ID3D11DeviceContext*> g_alienCtx[8] = {};
+bool classify(ID3D11DeviceContext* ctx) {
+    ID3D11Device* d = nullptr;
+    ctx->GetDevice(&d);
+    const bool ours = d && d == g_gameDev;
+    if (d) d->Release();
+    auto& list = ours ? g_knownCtx : g_alienCtx;
+    for (auto& s : list) {
+        ID3D11DeviceContext* e = nullptr;
+        if (s.compare_exchange_strong(e, ctx) || e == ctx) break;
+    }
+    BVR_LOG("[gfx] frame inspector: context %p is %s (device %p) - detours %s it", static_cast<void*>(ctx),
+            ours ? "the game's" : "another device's", static_cast<void*>(d), ours ? "act on" : "pass through");
+    return !ours;
+}
+inline bool foreign(ID3D11DeviceContext* ctx) {
+    if (!g_gameCtx || ctx == g_gameCtx) return false;
+    for (auto& k : g_knownCtx) if (k.load(std::memory_order_relaxed) == ctx) return false;
+    for (auto& a : g_alienCtx) if (a.load(std::memory_order_relaxed) == ctx) return true;
+    return classify(ctx);
+}
 
 using MapFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT,
                                           D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
@@ -278,6 +329,19 @@ void tap_maybe_capture(ID3D11Resource* dst, const D3D11_BOX* box, const void* da
 thread_local ID3D11Resource* t_mappedRes = nullptr;
 thread_local void* t_mappedPtr = nullptr;
 thread_local uint32_t t_mappedBytes = 0;
+
+// ---- s87: vertex-buffer upload tap (opt-in, BS1's palette route) -----------
+// BioShock 1's hand draws bind a 576-byte VS b0 and nothing else, so there is
+// no bone palette for a shader to skin with: the engine skins on the CPU and
+// uploads vertices. This tap names the uploads. Armed with n > 0, the next n
+// Unmaps of a WRITE-mapped buffer carrying D3D11_BIND_VERTEX_BUFFER log its
+// ByteWidth, the map type and the Unmap-time callstack (exe RVAs), which is
+// the uploader - the one function a vertex-level hand placement must sit on.
+// Disarmed cost: one relaxed load per Map. No game arms it by default.
+std::atomic<int> g_vbTapShots{0};
+thread_local ID3D11Resource* t_vbRes = nullptr;
+thread_local uint32_t t_vbBytes = 0;
+thread_local uint32_t t_vbMapType = 0;
 
 size_t collect_stack(void* espHint, uint32_t* out, size_t maxOut); // fwd
 
@@ -455,6 +519,20 @@ void capture_draw_state(ID3D11DeviceContext* ctx, Event& ev) {
         ev.cbBytes[i] = bd.ByteWidth;
     }
     ev.cb0Object = cbs[0];
+    {   // s87: the draw's vertex stream 0 - ByteWidth and stride, for a vertex-level
+        // mesh identification (BS1 skins on the CPU; the hands are a known vertex count).
+        ID3D11Buffer* vb = nullptr;
+        UINT stride = 0, off = 0;
+        ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &off);
+        if (vb) {
+            D3D11_BUFFER_DESC bd{};
+            vb->GetDesc(&bd);
+            ev.vb0Bytes = bd.ByteWidth;
+            ev.vb0Stride = stride;
+            ev.vb0Object = vb;
+            vb->Release();
+        }
+    }
 
     // Mode 3 only: record WHICH buffers this draw reads, so the upload table
     // can be joined to the draws that consumed it. On a deferred renderer the
@@ -520,6 +598,25 @@ HRESULT STDMETHODCALLTYPE MapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* re
                                     UINT sub, D3D11_MAP mapType, UINT flags,
                                     D3D11_MAPPED_SUBRESOURCE* mapped) {
     HRESULT hr = g_origMap(ctx, res, sub, mapType, flags, mapped);
+    if (foreign(ctx)) return hr;
+    if (g_vbTapShots.load(std::memory_order_relaxed) > 0 && SUCCEEDED(hr) && sub == 0 &&
+        (mapType == D3D11_MAP_WRITE_DISCARD || mapType == D3D11_MAP_WRITE ||
+         mapType == D3D11_MAP_WRITE_NO_OVERWRITE)) {
+        ID3D11Buffer* buf = nullptr;
+        if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Buffer),
+                                                 reinterpret_cast<void**>(&buf)))) {
+            D3D11_BUFFER_DESC bd{};
+            buf->GetDesc(&bd);
+            buf->Release();
+            if (bd.BindFlags & D3D11_BIND_VERTEX_BUFFER) {
+                t_vbRes = res;
+                t_vbBytes = bd.ByteWidth;
+                t_vbMapType = static_cast<uint32_t>(mapType);
+            }
+        }
+    }
+    if (SUCCEEDED(hr) && mapped && mapped->pData)
+        resource_event([&](const ResourceObserver& o) { if (o.on_map) o.on_map(ctx,res,sub,mapType,mapped->pData); });
     if (g_watchArmed.load(std::memory_order_relaxed) && SUCCEEDED(hr) && mapped &&
         mapped->pData && sub == 0 &&
         (mapType == D3D11_MAP_WRITE_DISCARD || mapType == D3D11_MAP_WRITE ||
@@ -539,6 +636,24 @@ HRESULT STDMETHODCALLTYPE MapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* re
 }
 
 void STDMETHODCALLTYPE UnmapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* res, UINT sub) {
+    if (foreign(ctx)) { g_origUnmap(ctx, res, sub); return; }
+    if (sub == 0 && res == t_vbRes) {
+        t_vbRes = nullptr;
+        int shots = g_vbTapShots.load(std::memory_order_relaxed);
+        if (shots > 0 &&
+            g_vbTapShots.compare_exchange_strong(shots, shots - 1, std::memory_order_relaxed)) {
+            uint32_t rvas[10] = {};
+            size_t n = collect_stack(&sub, rvas, 10);
+            char line[256];
+            int len = _snprintf_s(line, sizeof line, _TRUNCATE,
+                                  "[gfx] vbtap: vertex buffer %u B unmapped (map %u) stack:",
+                                  t_vbBytes, t_vbMapType);
+            for (size_t i = 0; i < n && len > 0 && len < 230; ++i)
+                len += _snprintf_s(line + len, sizeof line - len, _TRUNCATE, " 0x%X", rvas[i]);
+            BVR_LOG("%s", line);
+        }
+    }
+    resource_event([&](const ResourceObserver& o) { if (o.on_unmap) o.on_unmap(ctx,res,sub); });
     if (sub == 0 && res == t_mappedRes) {
         watch_inspect(res, &sub);
         t_mappedRes = nullptr;
@@ -562,12 +677,68 @@ Event& push_event(EventKind kind, const void* retAddr, void* espHint) {
     return ev;
 }
 
+void observe_draw(ID3D11DeviceContext* ctx, const DrawArgs& args) {
+    if (t_suppress) return;
+    const DrawObserver* observer = g_observer.load(std::memory_order_acquire);
+    if (observer && observer->on_draw) {
+        ScopedSuppress suppress;
+        observer->on_draw(ctx, args);
+    }
+}
+void observe_other(ID3D11DeviceContext* ctx, const char* kind) {
+    if (t_suppress) return;
+    resource_event([&](const ResourceObserver& o) { if (o.on_unknown) o.on_unknown(ctx,kind); });
+    const DrawObserver* observer = g_observer.load(std::memory_order_acquire);
+    if (observer && observer->on_other) {
+        ScopedSuppress suppress;
+        observer->on_other(ctx, kind);
+    }
+}
+
+const DrawReplayProbe* prepare_replay_probe(ID3D11DeviceContext* ctx, const DrawArgs& args) {
+    if (t_suppress) return nullptr;
+    const DrawReplayProbe* probe = g_replayProbe.load(std::memory_order_acquire);
+    if (!probe || !probe->before_draw || !probe->after_draw) return nullptr;
+    ScopedSuppress suppress;
+    return probe->before_draw(ctx, args) ? probe : nullptr;
+}
+void finish_replay_probe(const DrawReplayProbe* probe, ID3D11DeviceContext* ctx, const DrawArgs& args) {
+    if (!probe) return;
+    ScopedSuppress suppress;
+    probe->after_draw(ctx, args);
+}
+
+void STDMETHODCALLTYPE BeginDetour(ID3D11DeviceContext* ctx, ID3D11Asynchronous* query) {
+    if (foreign(ctx)) { g_origBegin(ctx, query); return; }
+    if (!t_suppress && query) {
+        bool stored = false;
+        for (auto*& q : g_activeQueries) {
+            if (q == query) { g_queryOverflow = true; stored = true; break; }
+            if (!q) { query->AddRef(); q = query; stored = true; break; }
+        }
+        if (!stored) g_queryOverflow = true;
+    }
+    g_origBegin(ctx, query);
+}
+void STDMETHODCALLTYPE EndDetour(ID3D11DeviceContext* ctx, ID3D11Asynchronous* query) {
+    if (foreign(ctx)) { g_origEnd(ctx, query); return; }
+    g_origEnd(ctx, query);
+    if (!t_suppress && query) for (auto*& q : g_activeQueries) {
+        if (q == query) { q->Release(); q = nullptr; break; }
+    }
+}
+
 // ---- detours ------------------------------------------------------------
 
 void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCount,
                                          UINT startIndex, INT baseVertex) {
+    if (foreign(ctx)) { g_origDrawIndexed(ctx, indexCount, startIndex, baseVertex); return; }
     g_callCensus[CxDrawIndexed].fetch_add(1, std::memory_order_relaxed);
     if (t_suppress == 0) bvr::hud::on_draw_indexed(ctx);
+    if (t_suppress == 0) {
+        const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
+        if (tap && tap->on_draw_indexed) tap->on_draw_indexed(ctx);
+    }
     // Session 34: adapter mesh veto. Checked BEFORE recording on purpose - a
     // dropped draw did not happen, and a dump that lists it would be describing
     // a frame the GPU never saw. Null unless a game registered one.
@@ -603,10 +774,15 @@ void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCou
             --t_suppress;
         }
     }
+    const DrawArgs args{DrawKind::Indexed, indexCount, startIndex, baseVertex};
+    observe_draw(ctx, args);
+    const DrawReplayProbe* probe = prepare_replay_probe(ctx, args);
     g_origDrawIndexed(ctx, indexCount, startIndex, baseVertex);
+    finish_replay_probe(probe, ctx, args);
 }
 
 void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UINT startVertex) {
+    if (foreign(ctx)) { g_origDraw(ctx, vertexCount, startVertex); return; }
     g_callCensus[CxDraw].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -659,12 +835,17 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
             --t_suppress;
         }
     }
+    const DrawArgs args{DrawKind::Direct, vertexCount, startVertex, 0};
+    observe_draw(ctx, args);
+    const DrawReplayProbe* probe = prepare_replay_probe(ctx, args);
     g_origDraw(ctx, vertexCount, startVertex);
+    finish_replay_probe(probe, ctx, args);
 }
 
 void STDMETHODCALLTYPE DrawIndexedInstancedDetour(ID3D11DeviceContext* ctx, UINT indexCount,
                                                   UINT instances, UINT startIndex, INT baseVertex,
                                                   UINT startInstance) {
+    if (foreign(ctx)) { g_origDrawIndexedInstanced(ctx, indexCount, instances, startIndex, baseVertex, startInstance); return; }
     g_callCensus[CxDrawIdxInst].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -675,11 +856,16 @@ void STDMETHODCALLTYPE DrawIndexedInstancedDetour(ID3D11DeviceContext* ctx, UINT
         capture_draw_state(ctx, ev);
         --t_suppress;
     }
+    const DrawArgs args{DrawKind::IndexedInstanced, indexCount, startIndex, baseVertex, instances, startInstance};
+    observe_draw(ctx, args);
+    const DrawReplayProbe* probe = prepare_replay_probe(ctx, args);
     g_origDrawIndexedInstanced(ctx, indexCount, instances, startIndex, baseVertex, startInstance);
+    finish_replay_probe(probe, ctx, args);
 }
 
 void STDMETHODCALLTYPE DrawInstancedDetour(ID3D11DeviceContext* ctx, UINT vertexCount,
                                            UINT instances, UINT startVertex, UINT startInstance) {
+    if (foreign(ctx)) { g_origDrawInstanced(ctx, vertexCount, instances, startVertex, startInstance); return; }
     g_callCensus[CxDrawInst].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -690,12 +876,17 @@ void STDMETHODCALLTYPE DrawInstancedDetour(ID3D11DeviceContext* ctx, UINT vertex
         capture_draw_state(ctx, ev);
         --t_suppress;
     }
+    const DrawArgs args{DrawKind::Instanced, vertexCount, startVertex, 0, instances, startInstance};
+    observe_draw(ctx, args);
+    const DrawReplayProbe* probe = prepare_replay_probe(ctx, args);
     g_origDrawInstanced(ctx, vertexCount, instances, startVertex, startInstance);
+    finish_replay_probe(probe, ctx, args);
 }
 
 void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT numViews,
                                                 ID3D11RenderTargetView* const* rtvs,
                                                 ID3D11DepthStencilView* dsv) {
+    if (foreign(ctx)) { g_origOMSetRenderTargets(ctx, numViews, rtvs, dsv); return; }
     g_callCensus[CxSetRT].fetch_add(1, std::memory_order_relaxed);
     if (t_suppress == 0) bvr::hud::on_setrt(numViews, rtvs, dsv);
     if (t_suppress == 0) bvr::gfx_hud::on_setrt(numViews, rtvs, dsv);
@@ -709,10 +900,19 @@ void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT n
         --t_suppress;
     }
     g_origOMSetRenderTargets(ctx, numViews, rtvs, dsv);
+    if (t_suppress == 0) {
+        const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
+        if (tap && tap->on_setrt) {
+            ++t_suppress; // the tap's own state changes must not report back into it
+            tap->on_setrt(ctx, dsv);
+            --t_suppress;
+        }
+    }
 }
 
 void STDMETHODCALLTYPE ClearRtvDetour(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv,
                                       const FLOAT color[4]) {
+    if (foreign(ctx)) { g_origClearRtv(ctx, rtv, color); return; }
     g_callCensus[CxClearRtv].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -721,11 +921,13 @@ void STDMETHODCALLTYPE ClearRtvDetour(ID3D11DeviceContext* ctx, ID3D11RenderTarg
         if (color) memcpy(ev.clearColor, color, sizeof(ev.clearColor));
         --t_suppress;
     }
+    resource_event([&](const ResourceObserver& o) { if (o.on_clear_rtv) o.on_clear_rtv(ctx,rtv,color); });
     g_origClearRtv(ctx, rtv, color);
 }
 
 void STDMETHODCALLTYPE ClearDsvDetour(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv,
                                       UINT flags, FLOAT depth, UINT8 stencil) {
+    if (foreign(ctx)) { g_origClearDsv(ctx, dsv, flags, depth, stencil); return; }
     g_callCensus[CxClearDsv].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -734,10 +936,20 @@ void STDMETHODCALLTYPE ClearDsvDetour(ID3D11DeviceContext* ctx, ID3D11DepthStenc
         ev.a = flags;
         --t_suppress;
     }
+    if (t_suppress == 0) {
+        const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
+        if (tap && tap->on_clear_dsv) {
+            ++t_suppress;
+            tap->on_clear_dsv(ctx, dsv, flags);
+            --t_suppress;
+        }
+    }
+    resource_event([&](const ResourceObserver& o) { if (o.on_clear_dsv) o.on_clear_dsv(ctx,dsv,flags,depth,stencil); });
     g_origClearDsv(ctx, dsv, flags, depth, stencil);
 }
 
 void STDMETHODCALLTYPE DrawAutoDetour(ID3D11DeviceContext* ctx) {
+    if (foreign(ctx)) { g_origDrawAuto(ctx); return; }
     g_callCensus[CxDrawAuto].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -745,10 +957,12 @@ void STDMETHODCALLTYPE DrawAutoDetour(ID3D11DeviceContext* ctx) {
         capture_draw_state(ctx, ev);
         --t_suppress;
     }
+    observe_other(ctx, "DrawAuto");
     g_origDrawAuto(ctx);
 }
 
 void STDMETHODCALLTYPE DispatchDetour(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
+    if (foreign(ctx)) { g_origDispatch(ctx, x, y, z); return; }
     g_callCensus[CxDispatch].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -757,6 +971,7 @@ void STDMETHODCALLTYPE DispatchDetour(ID3D11DeviceContext* ctx, UINT x, UINT y, 
         ev.b = y;
         --t_suppress;
     }
+    observe_other(ctx, "Dispatch");
     g_origDispatch(ctx, x, y, z);
 }
 
@@ -764,6 +979,7 @@ void STDMETHODCALLTYPE CopySubResDetour(ID3D11DeviceContext* ctx, ID3D11Resource
                                         UINT dstSub, UINT dstX, UINT dstY, UINT dstZ,
                                         ID3D11Resource* src, UINT srcSub,
                                         const D3D11_BOX* box) {
+    if (foreign(ctx)) { g_origCopySubRes(ctx, dst, dstSub, dstX, dstY, dstZ, src, srcSub, box); return; }
     g_callCensus[CxCopySubRes].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -775,11 +991,13 @@ void STDMETHODCALLTYPE CopySubResDetour(ID3D11DeviceContext* ctx, ID3D11Resource
         ev.b = dstY;
         --t_suppress;
     }
+    resource_event([&](const ResourceObserver& o) { if (o.on_copy) o.on_copy(ctx,dst,dstSub,dstX,dstY,dstZ,src,srcSub,box,false); });
     g_origCopySubRes(ctx, dst, dstSub, dstX, dstY, dstZ, src, srcSub, box);
 }
 
 void STDMETHODCALLTYPE CopyResDetour(ID3D11DeviceContext* ctx, ID3D11Resource* dst,
                                      ID3D11Resource* src) {
+    if (foreign(ctx)) { g_origCopyRes(ctx, dst, src); return; }
     g_callCensus[CxCopyRes].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -788,12 +1006,14 @@ void STDMETHODCALLTYPE CopyResDetour(ID3D11DeviceContext* ctx, ID3D11Resource* d
         ev.srv0 = register_resource_raw(src);
         --t_suppress;
     }
+    resource_event([&](const ResourceObserver& o) { if (o.on_copy) o.on_copy(ctx,dst,0,0,0,0,src,0,nullptr,true); });
     g_origCopyRes(ctx, dst, src);
 }
 
 void STDMETHODCALLTYPE UpdateSubResDetour(ID3D11DeviceContext* ctx, ID3D11Resource* dst,
                                           UINT dstSub, const D3D11_BOX* box, const void* data,
                                           UINT rowPitch, UINT depthPitch) {
+    if (foreign(ctx)) { g_origUpdateSubRes(ctx, dst, dstSub, box, data, rowPitch, depthPitch); return; }
     g_callCensus[CxUpdateSubRes].fetch_add(1, std::memory_order_relaxed);
     // Session-41 opt-in tap: one relaxed load when disarmed (the load is
     // inside tap_maybe_capture's first line). t_suppress keeps our own
@@ -845,11 +1065,13 @@ void STDMETHODCALLTYPE UpdateSubResDetour(ID3D11DeviceContext* ctx, ID3D11Resour
         }
         --t_suppress;
     }
+    resource_event([&](const ResourceObserver& o) { if (o.on_update) o.on_update(ctx,dst,dstSub,box,data,rowPitch,depthPitch); });
     g_origUpdateSubRes(ctx, dst, dstSub, box, data, rowPitch, depthPitch);
 }
 
 void STDMETHODCALLTYPE ExecCmdListDetour(ID3D11DeviceContext* ctx, ID3D11CommandList* list,
                                          BOOL restore) {
+    if (foreign(ctx)) { g_origExecCmdList(ctx, list, restore); return; }
     g_callCensus[CxExecCmdList].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
@@ -858,6 +1080,7 @@ void STDMETHODCALLTYPE ExecCmdListDetour(ID3D11DeviceContext* ctx, ID3D11Command
         ev.a = restore ? 1 : 0;
         --t_suppress;
     }
+    observe_other(ctx, "ExecuteCommandList");
     g_origExecCmdList(ctx, list, restore);
 }
 
@@ -960,6 +1183,8 @@ void write_dump() {
         // anything added after that point is invisible to it, while anything
         // inserted before it would break every BioShock 1 and 2 dump parse. The
         // existing ClearRtv `color=` tail already relies on this.
+        if (ev.vb0Bytes) // s87: vertex stream 0, after stk= for the same reason
+            fprintf(f, " vb0=%u/%u@%p", ev.vb0Bytes, ev.vb0Stride, ev.vb0Object);
         if (g_mode == 3) {
             fprintf(f, " vscb=T%d,T%d,T%d pscb=T%d,T%d,T%d,T%d pscbb=%u/%u/%u/%u", ev.vsCbId[0],
                     ev.vsCbId[1], ev.vsCbId[2], ev.psCbId[0], ev.psCbId[1], ev.psCbId[2],
@@ -1053,9 +1278,31 @@ void write_dump() {
 
 // ---- public api -----------------------------------------------------------
 
-bool install(void** ctxVtable) {
+bool install(void** ctxVtable, ID3D11DeviceContext* gameContext) {
     if (!ctxVtable) return false;
     capture_exe_range();
+    if (gameContext && !g_gameCtx) {
+        gameContext->AddRef();
+        gameContext->GetDevice(&g_gameDev);   // held
+        g_gameCtx = gameContext;
+        BVR_LOG("[gfx] frame inspector: detours act on the game's immediate context %p only; every other "
+                "context (the OpenXR runtime's) passes straight through", static_cast<void*>(gameContext));
+    }
+
+    // Only the opt-in scratch probe needs query-range tracking. These slots
+    // are never hooked for an adapter/session that did not request the probe.
+    if (g_replayProbe.load(std::memory_order_acquire)) {
+        const auto hookQuery = [&](unsigned slot, void* detour, void** original) {
+            const MH_STATUS created = MH_CreateHook(ctxVtable[slot], detour, original);
+            if (created != MH_OK && created != MH_ERROR_ALREADY_CREATED) return false;
+            const MH_STATUS enabled = MH_EnableHook(ctxVtable[slot]);
+            return enabled == MH_OK || enabled == MH_ERROR_ENABLED;
+        };
+        const bool begin = hookQuery(27, reinterpret_cast<void*>(&BeginDetour), reinterpret_cast<void**>(&g_origBegin));
+        const bool end = hookQuery(28, reinterpret_cast<void*>(&EndDetour), reinterpret_cast<void**>(&g_origEnd));
+        g_queryHooks = begin && end && g_origBegin && g_origEnd;
+        BVR_LOG("[gfx] scratch replay query guards %s", g_queryHooks ? "ready" : "unavailable (replay refused)");
+    }
 
     struct Slot {
         int index;
@@ -1126,6 +1373,61 @@ void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
     g_watchArmed.store(true, std::memory_order_release);
     BVR_LOG("[gfx] cb watch armed: %u pattern floats @ f%u -> capture f%u..f%u (bytes=%u)",
             patCount, patFirst, capFirst, capFirst + capCount - 1, requiredBytes);
+}
+
+void set_resource_observer(const ResourceObserver* observer) {
+    g_resourceObserver.store(observer,std::memory_order_release);
+}
+void on_resource_reset(ID3D11DeviceContext* ctx) {
+    if (!ctx || foreign(ctx)) return;
+    // Resize can be requested from a suppressed Present callback too.
+    const auto* observer = g_resourceObserver.load(std::memory_order_acquire);
+    if (observer && observer->on_reset) { ScopedSuppress suppress; observer->on_reset(ctx); }
+}
+bool resource_observer_hooks_ready() {
+    return g_origMap && g_origUnmap && g_origUpdateSubRes && g_origCopyRes && g_origCopySubRes &&
+           g_origClearRtv && g_origClearDsv && g_origDrawAuto && g_origDispatch && g_origExecCmdList;
+}
+void set_draw_replay_probe(const DrawReplayProbe* probe) {
+    g_replayProbe.store(probe, std::memory_order_release);
+}
+bool replay_queries_idle(ID3D11DeviceContext* ctx) {
+    if (!ctx || ctx != g_gameCtx || !g_queryHooks || g_queryOverflow) return false;
+    for (const auto* query : g_activeQueries) if (query) return false;
+    return true;
+}
+bool replay_draw(ID3D11DeviceContext* ctx, const DrawArgs& a) {
+    if (!ctx || ctx != g_gameCtx || !t_suppress) return false;
+    switch (a.kind) {
+    case DrawKind::Direct:
+        if (!g_origDraw) return false;
+        g_origDraw(ctx, a.count, a.start); break;
+    case DrawKind::Indexed:
+        if (!g_origDrawIndexed) return false;
+        g_origDrawIndexed(ctx, a.count, a.start, a.baseVertex); break;
+    case DrawKind::Instanced:
+        if (!g_origDrawInstanced) return false;
+        g_origDrawInstanced(ctx, a.count, a.instances, a.start, a.startInstance); break;
+    case DrawKind::IndexedInstanced:
+        if (!g_origDrawIndexedInstanced) return false;
+        g_origDrawIndexedInstanced(ctx, a.count, a.instances, a.start, a.baseVertex, a.startInstance); break;
+    default: return false;
+    }
+    return true;
+}
+
+void set_draw_observer(const DrawObserver* observer) {
+    g_observer.store(observer, std::memory_order_release);
+}
+
+void set_draw_tap(const DrawTap* tap) {
+    g_drawTap.store(tap, std::memory_order_release);
+    BVR_LOG("[gfx] draw tap %s", tap ? "set (adapter scene-depth capture)" : "cleared");
+}
+
+void vb_tap_log(int n) {
+    g_vbTapShots.store(n < 0 ? 0 : n, std::memory_order_relaxed);
+    BVR_LOG("[gfx] vbtap: logging the next %d vertex-buffer unmaps (ByteWidth + uploader stack)", n);
 }
 
 uint32_t cb_watch_hits() {
@@ -1216,6 +1518,16 @@ void arm(int mode, int count) {
 }
 
 void on_present(IDXGISwapChain*) {
+    const DrawReplayProbe* probe = g_replayProbe.load(std::memory_order_acquire);
+    if (probe && probe->on_present && g_gameCtx) {
+        ScopedSuppress suppress;
+        probe->on_present(g_gameCtx);
+    }
+    const DrawObserver* observer = g_observer.load(std::memory_order_acquire);
+    if (observer && observer->on_present && g_gameCtx) {
+        ScopedSuppress suppress;
+        observer->on_present(g_gameCtx);
+    }
     if (g_recording.load(std::memory_order_relaxed)) {
         g_recording.store(false, std::memory_order_relaxed);
         write_dump();

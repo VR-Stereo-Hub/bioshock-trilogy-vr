@@ -162,7 +162,56 @@ class Gltf:
 FLOAT, U16, U8, U32 = 5126, 5123, 5121, 5125
 
 
-def convert(pkg, mesh_export, classes, out, lod_index=0, anim_filter=None, scale=1.0, log=print):
+def write_rig(path, bones, parents, ref):
+    """The reference skeleton composed into the rig's own (Unreal, component) space, one
+    bone per line: index name parent  px py pz  qx qy qz qw  sx sy sz. Read by
+    tools\\arm-ik-sweep.cpp. Game-derived: local only, like the .glb."""
+    world = [None] * len(bones)
+    for i in range(len(bones)):
+        loc = (tuple(ref[i]["t"]), tuple(ref[i]["q"]), tuple(ref[i]["s"]))
+        world[i] = loc if parents[i] < 0 else compose(world[parents[i]], loc)
+    with open(path, "w") as f:
+        f.write("# bvr-rig 1: index name parent p[3] q[4] s[3], Unreal component space\n")
+        for i, b in enumerate(bones):
+            t, q, s = world[i]
+            f.write("%d %s %d %s\n" % (i, b, parents[i], " ".join("%.7g" % x for x in (*t, *q, *s))))
+
+
+def write_clip_poses(path, root, bones, parents, ref, pattern, log=print):
+    """Every frame of every clip whose group/name matches `pattern`, composed into the rig's
+    component space - the pose the engine's SkeletonInstance would hold. One line per frame:
+    47 bones x (p[3] q[4] s[3]). Read by tools\\hand-compose-sweep.cpp. Game-derived: local."""
+    rx = re.compile(pattern, re.I)
+    clips = 0
+    with open(path, "w") as f:
+        f.write("# bvr-clips 1: per frame, per bone p[3] q[4] s[3], component space\n")
+        f.write("bones %d\n" % len(bones))
+        for a in root["m_animations"]:
+            label = "%s__%s" % (a["m_groupName"], a["m_name"])
+            if not rx.search(label):
+                continue
+            binding = a["m_binding"].get()
+            anim = binding["animation"].get()
+            if anim["__class__"] != "hkaSplineCompressedAnimation":
+                continue
+            frames = hkspline.decode(anim)
+            track_bones = binding["transformTrackToBoneIndices"] or list(range(len(frames[0])))
+            fd = anim["frameDuration"] or (anim["duration"] / max(1, len(frames) - 1))
+            f.write("clip %s %d %.6g\n" % (label, len(frames), 1.0 / fd if fd else 30.0))
+            for fr in frames:
+                local = [(tuple(ref[i]["t"]), tuple(ref[i]["q"]), tuple(ref[i]["s"])) for i in range(len(bones))]
+                for ti, bi in enumerate(track_bones):
+                    local[bi] = (tuple(fr[ti][0]), tuple(fr[ti][1]), tuple(fr[ti][2]))
+                world = [None] * len(bones)
+                for i in range(len(bones)):
+                    world[i] = local[i] if parents[i] < 0 else compose(world[parents[i]], local[i])
+                f.write(" ".join("%.6g" % x for t, q, s in world for x in (*t, *q, *s)) + "\n")
+            clips += 1
+    log("wrote %d clip(s) as component-space poses to %s" % (clips, path))
+
+
+def convert(pkg, mesh_export, classes, out, lod_index=0, anim_filter=None, scale=1.0, log=print,
+            rig_out=None, clip_poses=None):
     mesh = skelmesh.parse(pkg, mesh_export)
     if not 0 <= lod_index < len(mesh["lods"]):
         raise SystemExit("*** %s has %d LOD(s), not %d" % (mesh["name"], len(mesh["lods"]), lod_index))
@@ -183,6 +232,11 @@ def convert(pkg, mesh_export, classes, out, lod_index=0, anim_filter=None, scale
     bones = [b["name"] for b in sk["bones"]]
     parents = sk["parentIndices"]
     ref = sk["referencePose"]
+    if rig_out:
+        write_rig(rig_out, bones, parents, ref)
+        log("wrote the reference skeleton to %s" % rig_out)
+    if clip_poses:
+        write_clip_poses(clip_poses[1], root, bones, parents, ref, clip_poses[0], log)
     log("mesh %s: LOD %d of %d, %d vertices (%d skinned), %d triangles, %d sockets; skeleton %r, %d bones; %d clips"
         % (mesh["name"], lod_index, len(mesh["lods"]), len(lod["vertices"]), lod["num_skinned"],
            len(lod["indices"]) // 3, len(mesh["sockets"]), sk["name"], len(bones), len(root["m_animations"])))
@@ -323,6 +377,9 @@ def main():
     ap.add_argument("--anims", default=None, help="regex over group/clip, or 'none'")
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--rig-out", help="also write the reference skeleton (tools\\arm-ik-sweep.cpp's input)")
+    ap.add_argument("--clip-poses", nargs=2, metavar=("REGEX", "OUT"),
+                    help="also write matching clips as component-space poses (tools\\hand-compose-sweep.cpp's input)")
     a = ap.parse_args()
     pkg = Package(a.bsm)
     if a.list:
@@ -333,7 +390,8 @@ def main():
     found = pkg.find(a.mesh, "SkeletalMesh")
     if not found:
         raise SystemExit("*** no SkeletalMesh %r in %s (try --list)" % (a.mesh, a.bsm))
-    convert(pkg, found[0], hkread.load_classes(a.classes), a.out, a.lod, a.anims, a.scale)
+    convert(pkg, found[0], hkread.load_classes(a.classes), a.out, a.lod, a.anims, a.scale,
+            rig_out=a.rig_out, clip_poses=a.clip_poses)
     return 0
 
 

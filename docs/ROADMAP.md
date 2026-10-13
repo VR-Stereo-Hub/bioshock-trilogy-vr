@@ -4,6 +4,13 @@ Milestones ordered so something new is visible in the headset as early and often
 Each has a "done when" acceptance test. Effort in sessions (one focused working session each).
 Tick boxes as work lands; move surprises into STATUS.md.
 
+## BS1 rendering update - 2026-10-12
+
+- [x] Accept mesh AFW reconstruction with DLSS on or off as the final baseline
+  for this development cycle (v307 headset acceptance; native foreground replay off).
+- [ ] Future hand/weapon silhouette cleanup remains separate work; edge artifacts
+  are a known limitation of the accepted baseline. See [TEMPORAL.md](bioshock1/TEMPORAL.md).
+
 ## M0 - Skeleton: inject, log, overlay (~2 sessions)
 
 Goal: our code runs inside BioshockHD.exe with logging and an in-game overlay; repo on GitHub.
@@ -16,17 +23,17 @@ Goal: our code runs inside BioshockHD.exe with logging and an in-game overlay; r
 - [x] ImGui overlay on hotkey (F10; was Insert - changed, user's keyboard lacks the key)
 - [x] Tools: build/install/uninstall/tail-log/check-laa scripts
 - [x] GitHub repo pushed
-- [x] **Done when:** launch game → `bioshockvr.log` shows init + device info, ImGui overlay
+- [x] **Done when:** launch game Ã¢â€ â€™ `bioshockvr.log` shows init + device info, ImGui overlay
       toggles in-game, game plays normally otherwise.
       *2026-07-23: fully verified in-game - user confirmed the overlay visually (screenshot:
       500 fps at the main menu, windowed mode). Log showed full init chain + D3D11 device info.*
 
-## M1 - De-risk battery (~1–2 sessions)
+## M1 - De-risk battery (~1Ã¢â‚¬â€œ2 sessions)
 
-Goal: retire the project-level risks before building on them. Findings → ENGINE_NOTES.md.
+Goal: retire the project-level risks before building on them. Findings Ã¢â€ â€™ ENGINE_NOTES.md.
 
 - [x] **DR-1 (critical):** standalone 32-bit OpenXR hello-world (`src/tools/xr_hello32`) under both
-      VDXR (Virtual Desktop) and SteamVR. Fallbacks: SteamVR-only → 64-bit companion compositor.
+      VDXR (Virtual Desktop) and SteamVR. Fallbacks: SteamVR-only Ã¢â€ â€™ 64-bit companion compositor.
       *2026-07-23: RISK RETIRED - FULL PASS on VDXR. VDXR ships a 32-bit runtime
       (virtualdesktop-openxr-32.dll, WOW6432Node ActiveRuntime). xr_hello32 with the Quest 3
       connected: system "Meta Quest 3" found, D3D11 requirements min FL 11_0, adapter LUID
@@ -49,7 +56,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       frame (heartbeat: 400-7800 calls/s; fires at main menu too), offsets/wobble/FOV override
       wired with ImGui controls. USER-VERIFIED in-game same day: wobble, offsets, yaw and FOV
       all visibly work; no stutter, crash, or input weirdness. DR-4 fully retired.*
-- [x] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability;
+- [x] DR-5: call the scene-draw entry twice per frame with a 2Ã‚Â° yaw delta; check stability;
       10-min play test
       *2026-07-24 groundwork: the renderer is a command queue (executor 0x61C8E0, drain
       0x61CAE0, frame root 0x61D0F0 - ENGINE_NOTES).*
@@ -74,7 +81,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       gameswf menus read?
 - [ ] DR-7: borderless-window mode stability (vs exclusive fullscreen) for overlay + capture
 
-## M2 - Headset bring-up: mono big screen (~1–2 sessions)
+## M2 - Headset bring-up: mono big screen (~1Ã¢â‚¬â€œ2 sessions)
 
 - [x] OpenXR session on the game's ID3D11Device (XR_KHR_D3D11_enable), frame pacing in Present hook
       *2026-07-23: USER-VERIFIED in-headset - session comes up mid-game via the 5 s retry,
@@ -88,7 +95,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       *2026-07-23: Virtual Desktop path DONE. Remaining: the Steam Link/SteamVR cross-check
       (any session; switch the active OpenXR runtime to SteamVR and repeat the checklist).*
 
-## M3 - 6DOF head camera (~1–2 sessions)
+## M3 - 6DOF head camera (~1Ã¢â‚¬â€œ2 sessions)
 
 - [x] CalcView hook drives camera from predicted HMD pose (position + full FRotator incl. roll)
       *2026-07-23: USER-VERIFIED in-headset - rotation, leaning, turning, recenter all work.*
@@ -108,9 +115,9 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       *2026-07-23/24: verified across sessions 2-3 - 6DOF drive solid, geometry solid after
       the fov fix ("everything is very good").*
 
-## M4 - Stereo (~3–5 sessions - the risk milestone)
+## M4 - Stereo (~3Ã¢â‚¬â€œ5 sessions - the risk milestone)
 
-- [x] AlternateEye policy: camera alternates ±IPD/2 per game frame → proves geometric stereo
+- [x] AlternateEye policy: camera alternates Ã‚Â±IPD/2 per game frame Ã¢â€ â€™ proves geometric stereo
       (IPD scale, convergence, culling) cheaply
       *2026-07-24: USER-VERIFIED - "parallax and other stuff are very nice" with the game FOV
       option at 130 + manual claimed fov 130 (the fov-mismatch distortion that blocked the
@@ -152,7 +159,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M5 - Motion controllers + menu interaction (~2 sessions)
 
-- [x] OpenXR action sets; synthetic-XInput lane (motion controllers as gamepad → full playability)
+- [x] OpenXR action sets; synthetic-XInput lane (motion controllers as gamepad Ã¢â€ â€™ full playability)
       *2026-07-25 (session 9): FLAT-VERIFIED end to end with NO physical pad - synthetic dpad
       moved the menu highlight, synthetic A activated CONTINUE (loaded the save), right-stick
       yawed and left-stick moved the live in-game camera, and `vrinput off` restored
@@ -170,21 +177,21 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       Groundwork this session: a console-command seam (exec/execc/exece) that calls the
       engine's own Exec dispatchers directly - reaches native engine commands; the script
       command path is parked M6 material (RVAs in ENGINE_NOTES).*
-- [ ] Menu mode: whole frame on a quad when paused/in menu; controller laser → virtual mouse
+- [ ] Menu mode: whole frame on a quad when paused/in menu; controller laser Ã¢â€ â€™ virtual mouse
       (path chosen by DR-6); trigger = click
 - [ ] **Done when:** from the headset only - boot to main menu, start New Game, play through the
       plane crash intro entirely with motion controllers.
 
-## M6 - Decoupled aim (~2–3 sessions)
+## M6 - Decoupled aim (~2Ã¢â‚¬â€œ3 sessions)
 
-- [x] Decompile ShockGame.u (UE Explorer) → fire-flow + class findings into ENGINE_NOTES.md
+- [x] Decompile ShockGame.u (UE Explorer) Ã¢â€ â€™ fire-flow + class findings into ENGINE_NOTES.md
       (summaries only, never code)
       *2026-07-25 (session 10): headless UELib via `tools/uscript/dump.ps1` (loads the package in
-      <1 s, lists classes/functions/states, decompiles by name). Mapped the whole chain: trigger →
-      `Weapon.BeginFiring` → `Firing` state → anim notify → `AttackAbility.UseAbility` → native
-      `InitiateDamage` → `GetPerfectFireStart` → damage factory. Attacks are ABILITIES, plasmids
+      <1 s, lists classes/functions/states, decompiles by name). Mapped the whole chain: trigger Ã¢â€ â€™
+      `Weapon.BeginFiring` Ã¢â€ â€™ `Firing` state Ã¢â€ â€™ anim notify Ã¢â€ â€™ `AttackAbility.UseAbility` Ã¢â€ â€™ native
+      `InitiateDamage` Ã¢â€ â€™ `GetPerfectFireStart` Ã¢â€ â€™ damage factory. Attacks are ABILITIES, plasmids
       included; the wrench damages through a Havok collision phantom and never traces. Also found
-      the engine's own native-function symbol table (registration string → .data entry → impl
+      the engine's own native-function symbol table (registration string Ã¢â€ â€™ .data entry Ã¢â€ â€™ impl
       pointer), which is now the standard way this project resolves natives.*
 - [x] Aim-substitution hook at the fire-start seam (seed: itsloopyo decouple)
       *2026-07-25 (session 10): SHIPPED and command-gated (`vraim`), hooking the two C++
@@ -226,7 +233,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       rotator out-param reads all-zero, so the hand-origin substitution may be doing the visible
       work; verify across a trace plasmid (Electro Bolt) and a projectile one (Incinerate).*
 
-## M7 - Visible hands + weapons (~2–3 sessions)
+## M7 - Visible hands + weapons (~2Ã¢â‚¬â€œ3 sessions)
 
 > **M7 REPLANNED 2026-07-26 after two in-headset runs.** Actor pinning (below) is retired:
 > it works mechanically but cannot reach the goal. The rebuild drives the viewmodel at the
@@ -386,7 +393,7 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       the body does not steer, so a glance leaves the viewmodel world-locked; beyond it the
       body trails the head by exactly the band width). M7.5 DONE.
 
-## M8 - Release quick phase + HUD usability (~1–2 sessions)
+## M8 - Release quick phase + HUD usability (~1Ã¢â‚¬â€œ2 sessions)
 
 > **Session 28 (2026-07-30) closed both of session 27's open bugs, in-headset accepted.**
 > - [x] **Yaw warping on head turn at non-16:9 resolutions (RELEASE BLOCKER)** - the live
@@ -487,7 +494,7 @@ fixed or the release waits:**
       alpha coverage, A/B swap, click-held ammo select, wheel pitch guard, zoom
       removed) - every fix flat-verified then headset-confirmed.
 
-## M9 - Comfort + UI/config + release polish (~2–3 sessions)
+## M9 - Comfort + UI/config + release polish (~2Ã¢â‚¬â€œ3 sessions)
 
 **Scripted-event comfort track (BS1, s64 2026-08-22):**
 - [x] **Scripted-event signals confirmed on this build** (`scripted.cpp`): the three
@@ -496,7 +503,7 @@ fixed or the release waits:**
       run covering the opening bathysphere, a Little Sister rescue and the plasmid
       balcony, with the bathysphere oracle reading `HOLDS`, the rescue leaving the
       animation signal SILENT, and no anchor/shape failures. Derivations and the exact
-      log expectations: `docs/bioshock1/ENGINE_NOTES.md` § Session 64.
+      log expectations: `docs/bioshock1/ENGINE_NOTES.md` Ã‚Â§ Session 64.
       **CONFIRMED in a headset run 2026-08-22**: anchor 4/4 with correct meanings,
       bathysphere oracle held on both edges, and the held window bridged a real
       16 ms gap on the first run.
@@ -528,7 +535,7 @@ fixed or the release waits:**
       freezing the bone array the way `DrawScale3D` did. **CONFIRMED 2026-08-23** on a
       93 s Big Daddy scene: one engage at +5 s, one release at scene end, no flapping
       and no one-way door. The scripted-window diagnostics are stripped as of this
-      session; the two ways they misled are in `ENGINE_NOTES.md` § Session 64 part 3.
+      session; the two ways they misled are in `ENGINE_NOTES.md` Ã‚Â§ Session 64 part 3.
 
 **Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work -
 which SHIPPED 2026-07-28 on branch s20-aim-sync: one trim algebra (28.21 -> 0.03 deg),
@@ -737,13 +744,13 @@ kill. Both prerequisites below are now MET.):**
 - [ ] **Done when:** a non-developer installs from the current release zip and plays with
       full HUD and no developer knowledge.
 
-## M10 - BioShock 2 Remastered adapter (~2–4 sessions)
+## M10 - BioShock 2 Remastered adapter (~2Ã¢â‚¬â€œ4 sessions)
 
 - [x] `src/game/bioshock2r/` adapter: new patterns.cpp; expectation is near-total core reuse
       (landed session 24 - patterns + camera + adapter; the CalcView seam is ProcessEvent-based
       because BS2 inlined the event dispatch, see docs/bioshock2/ENGINE_NOTES.md)
 - [x] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within
-      the milestone. Every core/adapter seam leak found → ARCHITECTURE decision log.
+      the milestone. Every core/adapter seam leak found Ã¢â€ â€™ ARCHITECTURE decision log.
       (M3-level: session 24, one session as budgeted - flat 6DOF integer-exact, in-headset
       PASSED (fisheye/world-drag = the expected FOV-claim gap); seam-leak inventory in the
       decision log. FOV readback/write: session 25, COMPLETE - HorizontalFOV derived fresh

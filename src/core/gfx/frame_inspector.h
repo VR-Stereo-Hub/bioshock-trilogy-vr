@@ -10,12 +10,23 @@
 #include <cstdint>
 
 struct IDXGISwapChain;
+struct ID3D11DeviceContext;
+struct ID3D11DepthStencilView;
+struct ID3D11RenderTargetView;
+struct ID3D11Resource;
+struct D3D11_BOX;
 
 namespace bvr::frame_inspector {
 
 // Hook the immediate-context vtable slots (fail-soft per slot). `ctxVtable`
-// is the vtable pointer harvested from the throwaway device's context.
-bool install(void** ctxVtable);
+// is the vtable pointer harvested from the game's context; `gameContext` is
+// the game's immediate context itself. THE VTABLE IS SHARED BY EVERY D3D11
+// CONTEXT IN THE PROCESS - the OpenXR runtime's own device's contexts included
+// (Virtual Desktop's compositor threads were found inside our Unmap detour,
+// 2026-10-10, six driver crashes) - so every detour does its work only for
+// `gameContext` and passes any other context straight through. Null = no
+// filter (the pre-fix behaviour; only for tests).
+bool install(void** ctxVtable, ID3D11DeviceContext* gameContext);
 
 // Arm a one-shot dump of the NEXT full Present-to-Present frame.
 //   mode 1 = lite  - events and resources only, no constant-buffer readback
@@ -55,6 +66,82 @@ using MeshSkipFn = bool (*)(unsigned indexCount);
 void set_mesh_skip(MeshSkipFn fn);
 unsigned mesh_skips();
 
+// ---- Temporal seam: a draw tap for the scene depth ---------------------------
+// The adapter's DLSS/DLAA and alternate-frame-warp passes need the game's scene depth,
+// which only the draw stream can identify (the depth surface the world's DrawIndexed
+// calls are made against). Null by default - a game that never sets one runs exactly the
+// detours it ran before. Only the game's own calls are reported (never the mod's, which
+// run under ScopedSuppress or through the original functions). Render thread; keep the
+// callbacks cheap.
+struct DrawTap {
+    // AFTER the game's OMSetRenderTargets (the new depth binding is live).
+    void (*on_setrt)(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv) = nullptr;
+    // BEFORE each game DrawIndexed (the world renders through DrawIndexed only).
+    void (*on_draw_indexed)(ID3D11DeviceContext* ctx) = nullptr;
+    // BEFORE the game's ClearDepthStencilView: the last chance to keep what it clears.
+    void (*on_clear_dsv)(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, unsigned flags) = nullptr;
+};
+void set_draw_tap(const DrawTap* tap);
+
+// Independent read-only diagnostic observer. All callbacks run under suppression,
+// on the game's exact immediate context only. Default null for every adapter.
+// Kept separate from DrawTap so an audit cannot replace the temporal depth tap.
+enum class DrawKind { Direct, Indexed, Instanced, IndexedInstanced };
+struct DrawArgs {
+    DrawKind kind;
+    unsigned count, start;
+    int baseVertex;
+    unsigned instances = 1, startInstance = 0;
+};
+struct DrawObserver {
+    void (*on_draw)(ID3D11DeviceContext*, const DrawArgs&) = nullptr;
+    void (*on_present)(ID3D11DeviceContext*) = nullptr;
+    void (*on_other)(ID3D11DeviceContext*, const char*) = nullptr;
+};
+void set_draw_observer(const DrawObserver* observer);
+
+// Opt-in resource events for an adapter-owned immediate replay stream. Null by
+// default. Callbacks run suppressed on the exact game context; Map is reported
+// after success, Unmap before its pointer expires, other writes before execution.
+// Callback lifetime is static. No callback may throw or change game bindings.
+struct ResourceObserver {
+    void (*on_map)(ID3D11DeviceContext*, ID3D11Resource*, unsigned sub, unsigned mapType, void* data) = nullptr;
+    void (*on_unmap)(ID3D11DeviceContext*, ID3D11Resource*, unsigned sub) = nullptr;
+    void (*on_update)(ID3D11DeviceContext*, ID3D11Resource*, unsigned sub, const D3D11_BOX*,
+                      const void* data, unsigned rowPitch, unsigned depthPitch) = nullptr;
+    void (*on_copy)(ID3D11DeviceContext*, ID3D11Resource* dst, unsigned dstSub, unsigned x, unsigned y, unsigned z,
+                    ID3D11Resource* src, unsigned srcSub, const D3D11_BOX*, bool whole) = nullptr;
+    void (*on_clear_rtv)(ID3D11DeviceContext*, ID3D11RenderTargetView*, const float[4]) = nullptr;
+    void (*on_clear_dsv)(ID3D11DeviceContext*, ID3D11DepthStencilView*, unsigned, float, unsigned char) = nullptr;
+    void (*on_unknown)(ID3D11DeviceContext*, const char*) = nullptr;
+    void (*on_reset)(ID3D11DeviceContext*) = nullptr;
+};
+void set_resource_observer(const ResourceObserver* observer);
+bool resource_observer_hooks_ready();
+// Release adapter-owned references before ResizeBuffers. Exact-context filter.
+void on_resource_reset(ID3D11DeviceContext* ctx);
+
+
+// Independent opt-in scratch-render diagnostic. Static callback lifetime is
+// required: a successful before_draw is paired with that SAME object's after_draw,
+// even if registration changes during the original game draw. Both run suppressed
+// on the exact game context, after HUD redirects/vetoes. Default null.
+// Callbacks must restore any bindings they change and must not throw.
+struct DrawReplayProbe {
+    bool (*before_draw)(ID3D11DeviceContext*, const DrawArgs&) = nullptr;
+    void (*after_draw)(ID3D11DeviceContext*, const DrawArgs&) = nullptr;
+    void (*on_present)(ID3D11DeviceContext*) = nullptr;
+};
+void set_draw_replay_probe(const DrawReplayProbe* probe);
+// Issue through the originals, without re-entering the HUD, tap, census or probe.
+// Accepted only inside a suppressed callback on the installed game context.
+bool replay_draw(ID3D11DeviceContext* ctx, const DrawArgs& args);
+// Query ranges observed since hook installation: replay would otherwise change
+// an engine occlusion/statistics query. False if optional query hooks failed.
+bool replay_queries_idle(ID3D11DeviceContext* ctx);
+
+
+
 // Suppress capture of our own rendering (ImGui, VR copies) on this thread
 // for the current scope. Used by the Present detour after on_present().
 struct ScopedSuppress {
@@ -81,6 +168,12 @@ bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs);
 
 // Lifetime accepted-capture count (diagnostic: is the watch firing at all?).
 uint32_t cb_watch_hits();
+
+// s87: log the next n WRITE-mapped VERTEX-buffer unmaps (ByteWidth, map type,
+// Unmap callstack as exe RVAs). Opt-in, off by default; a game that never
+// calls it is on exactly the code path it was on before. BioShock 1 uses it
+// to find its CPU skinner's upload (the hands draws bind no bone palette).
+void vb_tap_log(int n);
 
 // Log the Unmap-time callstack (game-exe RVAs) for the next n fingerprint
 // matches - the discovery instrument for whoever BUILDS the watched values.

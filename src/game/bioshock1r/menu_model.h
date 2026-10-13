@@ -3,6 +3,7 @@
 // The BS1 menu's presentation contract. No engine pointers, hooks or file I/O.
 // The offscreen renderer compiles this same catalogue and view as the DLL.
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace bvr::b1r::menu {
@@ -38,7 +39,13 @@ enum class Setting {
     EffectsInFrame, EffectVertexLimit, EffectRtOnly,
     ScreenDistance, CutsceneDisplay, HideSceneArms, GameSceneHands,
     PinPosition, PinRotation, HideHeldArm, BoneProbes,
-    HandsArmsSize, ShoulderBarForward, ShoulderBarRight, ShoulderBarUp, ShoulderWidth, ShouldersLinked,
+    HandsArmsSize, ShoulderBarForward, ShoulderBarRight, ShoulderBarUp, ShoulderWidth, WeaponFollowsHands,
+    HandPitch, HandYaw, HandRoll, HandGripForward, HandGripRight, HandGripUp,
+    UpperArmLength, ForearmLength, ShowArms,
+    Upscaler, DlssQuality, DlssModel, StereoMethod, AfwTint, TemporalAudit,
+    PlasmidFxAlong, PlasmidFxAcross, PlasmidFxOut,
+    AfwRebuild, AfwHandGain, AfwHandsMask, HandDepthProbe,
+    OutputWidth, OutputHeight, TemporalTaa,
     Count
 };
 struct Spec {
@@ -57,8 +64,8 @@ struct Spec {
     const char* help = nullptr;
 };
 struct Context {
-    int handMode = 3;
-    int maxHandMode = 3;
+    int handMode = 4;
+    int maxHandMode = 4;
     bool solverV2 = false;
     bool hasSolverChoice = false;
     bool tracking = false;
@@ -69,6 +76,12 @@ struct Context {
     std::string notice;
 };
 enum class Action { Recenter, RecenterScreen, SaveDebugDefaults, RetrySave, ResetMenuOverrides };
+struct ResolutionState {
+    uint32_t referenceW = 0, referenceH = 0;
+    uint32_t renderW = 0, renderH = 0, outputW = 0, outputH = 0;
+    bool busy = false;
+    std::string status;
+};
 struct Backend {
     virtual ~Backend() = default;
     virtual float read(Setting id, int hand) const = 0;
@@ -77,6 +90,11 @@ struct Backend {
     virtual Context context() const = 0;
     virtual void action(Action action) = 0;
     virtual void diagnostics(Tab tab) = 0;
+    // s86f: the hand step rows (Dishonored's MpTrimViewStep). hand 0/1; rot false = move
+    // (axis 0 right, 1 forward, 2 up; cm), true = turn (0 yaw, 1 pitch, 2 roll; degrees).
+    virtual void hand_step(int, bool, int, float) {}
+    virtual ResolutionState resolution() const { return {}; }
+    virtual void temporal_status() {}
 };
 const Spec* specs(std::size_t& count);
 const Spec& spec(Setting id);

@@ -1,4 +1,5 @@
 #include "log.h"
+#include "core/gfx/frame_pacing.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -54,6 +55,7 @@ const wchar_t* data_dir() {
 }
 
 void write(const char* fmt, ...) {
+    frame_pacing::Scope timing(frame_pacing::PresentLog);
     char message[2048];
     va_list args;
     va_start(args, fmt);

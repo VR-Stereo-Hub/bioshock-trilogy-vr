@@ -2855,6 +2855,28 @@ building a measurement, check that the thing being measured actually occurs.**
 which is only possible if the probe had been suppressing the real variance. That
 inversion located the answer faster than any of the fixes that preceded it.
 
+### 2026-10-08 (session 81) - the arm solver is Dishonored's, written as bones, not palette
+
+The s70i-s77 arm solve grew one fix per headset report (frames, twist accumulator,
+humerus split, clamps) until no single change could be judged on its own. Meanwhile the
+Dishonored VR mod shipped a full-arm IK that was accepted in a headset. Its algorithm was
+already two-thirds BioShock: it took the left-hand fork's reach, pole and twist design,
+plus this repo's lessons on frames and history. So the arm is now that solver
+(`bioshock1r/arm_ik.h`), pure and host-tested, behind `armIkV2` with the old one as the
+A/B.
+
+**Kept from BS1:** writing the evaluated skeleton rather than Dishonored's draw-time
+palette. Dishonored needed a mesh copy because it cannot write its engine's bones. BS1
+can, its arm bones carry no attachments, and the replay-per-pass cache already makes the
+eyes agree. The s74d shoulder frame is kept as well: it was signed off in the headset, and
+it is the frame the hands are placed in.
+
+**The evidence it rests on** is the offline triple: host suite, real-rig sweep skinned
+through the original weights, and an audit that runs Dishonored's own header on
+Dishonored's rig with the same poses. The audit shows the elbow direction within
+0.03 degrees and the shoulder and roll decisions identical. That is the claim "it is
+Dishonored's solver" made measurable. See `docs/bioshock1/ARM_IK.md`.
+
 ### 2026-10-08: isolate BS1 player preferences from experimental defaults
 
 The reorganized BS1 F10 menu owns a stable settings catalogue and a separate
@@ -2868,3 +2890,88 @@ interaction checks exercise the same widgets and embedded artwork. Resolution
 scaling follows Dishonored's eye-image fractions and proportional resize behavior.
 This changes BS1 through additive adapter hooks; other games keep the old UI.
 See `bioshock1/F10_MENU.md` for applicability, compatibility and unverified work.
+
+### 2026-10-10: DLSS/DLAA and the alternate frame warp - transport in core, policy in the adapter
+
+The Dishonored VR mod's process, ported to BS1 (`bioshock1/TEMPORAL.md`). The split follows
+the decoupling rule: what is genuinely game-agnostic AND new went to core, every default off -
+
+- `core/gfx/dlss_client` + `dlss_ipc.h` and `src/tools/dlss_host`: the 32-to-64 NGX
+  transport. NGX is x64-only and all three games are x86, so any of them would need exactly
+  this; it does nothing until an adapter starts it.
+- Four seams, each null by default so BS2 and Infinite run the old path byte for byte:
+  `frame_inspector::set_draw_tap` (the game's depth binding), `vr::set_eye_processor`
+  (replaces the backbuffer copy for stereo eye images), `vr::set_eye_output_size` (larger
+  eye swapchains for super resolution), and the AlternateEye pair `set_aer_eye_source` /
+  `set_held_rebuild` (an adapter-named eye per image, and a held-eye rebuild every present).
+  `blit::stretch_copy` backs the output size. Rows in `PORT-CANDIDATES.md`.
+
+Everything that knows BioShock - which depth surface is the world, the cameras, the hands
+pass, when history is valid, the F10 controls - is in `bioshock1r/temporal*.cpp` and
+`afw_gpu.cpp`. Two choices worth recording: the guides use the GAME'S camera from CalcView
+(not the XR pose model), so walking and stick turning are exact; and the Dishonored body band
+is off for BS1, because BS1's world depth does not contain the arms - they come from the
+foreground pass, which becomes DLSS's bias mask and the warp's hand depth instead.
+### 2026-10-10 (second round): stereo methods as one BS1 choice; the eye is a property of the FRAME
+
+The first headset run of the alternate frame warp flickered between the eyes: the eye was
+flipped per CalcView CALL, and BS1 makes about four calls per frame (`bioshock1/TEMPORAL.md`).
+The rule now: the eye belongs to the frame, decided once at the render view (the CalcView
+inside the gameplay scene build) and carried by every call of that frame - what BRVR's leader
+site and Dishonored's per-draw tag both do.
+
+AER (BRVR's method) and AFW (Dishonored's) became one F10 choice, "Stereo method", owned by
+`bioshock1r/alt_eye.cpp`; SequentialReentry stays the default. AER reuses core's existing
+SequentialReentry pair path instead of a new submit mode: a pair of alternate-eye frames,
+tagged L then R through `vr::sr_push_eye`, IS what that path already pairs into one XR frame
+with one locate's pose - so the BRVR behaviour needed no new compositor code. What makes the
+two frames one instant lives in the adapter: the right frame takes the left frame's head
+sample and per-call-site cameras, and the engine's frame delta is held on the right frame
+(BRVR's DeltaClamp; re-derived in `patterns.h`). The one core addition is opt-in and off by
+default: `vr::set_sr_drift_resync`, BRVR's eye-queue drift resync, which only BS1's AER
+switches on (a row in `PORT-CANDIDATES.md`).
+
+### 2026-10-09 (session 89) - the hand is pinned by its fist centre and aligned by its geometry
+
+The drawn hand is placed by the point where a handle passes through its fist - the controller
+grip pose's own origin (OpenXR /input/grip/pose) - and turned so the fist's handle axis lies on
+the grip's -Z and its palm normal on the grip's X. Both are measured from the rig
+(`tools\blender\hand_pivot.py`) and rebuilt each frame from the wrist and finger-base heads
+(`src/game/bioshock1r/hand_grip.h`). Before s89 the drive pinned the knuckle centroid and
+oriented the hand by eye-tuned trims; a pivot 3 cm off the real fist swings the drawn hand
+asymmetrically on every turn, and no trim can remove that, because a trim is a fixed offset in
+the hand's frame. This is Dishonored's grip calibration G, solved from the mesh instead of a key
+press; the per-hand trim remains as a residual nudge, zero by default. Per-weapon grips are a
+separate layer on top (the weapon's authored hand pose differs per weapon).
+### 2026-10-10 (third round): the frame inspector acts on the game's contexts only
+
+The frame inspector hooks the immediate context's VTABLE slots, and a vtable is shared by
+every `ID3D11DeviceContext` of that implementation in the process - including the OpenXR
+runtime's own device's contexts, which it drives from its own threads. Seven driver crashes
+under BS1's alternate frame warp (`nvwgf2um.dll+0x48153A`, a null object read on a driver
+worker) ended with a dump that put our Unmap detour on Virtual Desktop's compositor thread:
+the HUD and GFx classifiers, the AFW depth tap and the recorder had been running on the
+runtime's contexts with our device's resources and unsynchronized state. `install` now takes
+the game's immediate context, and every detour passes a context of another device straight
+to the original (the immediate context by pointer; any other context classified once by
+`GetDevice` and remembered). The game's own deferred contexts still count as the game's.
+Behaviour for BS2 and Infinite changes only in that the runtime's contexts no longer reach
+the classifiers - which they never should have. Details: `bioshock1/TEMPORAL.md`, "The sixth
+headset run".
+
+
+### 2026-10-11: BS1 opts into a separate native F10 composition layer
+
+`overlay::set_separate_layer(true)` is additive and off by default; only BS1 enables it.
+The ImGui canvas uses OpenXR's recommended eye dimensions independently of the game render
+and temporal output. `layer_texture()` supplies its premultiplied-alpha texture to an
+independent head-locked XR quad, submitted last at the HUD depth. Its extent follows the
+headset FOV. The controller origin and direction intersect that same finite-depth plane
+in head coordinates, then map into canvas pixels. A later `draw_mirror()` draws the same
+ImGui data at backbuffer scale after every eye consumer and the desktop HUD composition.
+Both native and mirror draws preserve all OM targets; game resize drops only backbuffer
+references and the native canvas is reusable. Session/swapchain teardown releases the XR
+overlay swapchain. Existing adapters keep their prior path. BS1 temporal processing no
+longer reads panel visibility: DLSS, TAA, source validity and AFW history continue normally.
+The layer does not join the background pace-feed snapshot, which already retains only
+the base game layer while the headset is unfocused.

@@ -16,8 +16,10 @@
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/fg_sync.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -161,6 +163,9 @@ std::atomic<uint32_t> g_submitNested{0}; // submits seen at depth>0 (in build)
 std::atomic<uint32_t> g_secondCalls{0};
 std::atomic<uint32_t> g_activeTid{0};
 std::atomic<int>      g_activeDepth{0};
+// The thread inside a depth-0 scene build called from the GAMEPLAY site (0 = none):
+// its CalcView is the render view (alternate-eye sequencing, alt_eye.h).
+std::atomic<uint32_t> g_gameplayBuildTid{0};
 std::atomic<uint32_t> g_secondPassTid{0};
 std::atomic<uint32_t> g_calcInside{0};
 std::atomic<uint32_t> g_calcOutside{0};
@@ -785,10 +790,15 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
                             void* a4) {
     uint32_t tid = GetCurrentThreadId();
     int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
-    if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
+    if (depth == 0) {
+        g_activeTid.store(tid, std::memory_order_relaxed);
+        alt_eye::begin_render_build();
+    }
     uint32_t n = g_buildEntries.fetch_add(1, std::memory_order_relaxed) + 1;
     uint32_t callerRva = to_rva(_ReturnAddress());
     note_caller(callerRva);
+    if (depth == 0 && callerRva == patterns::kSceneBuildGameplayRetRva)
+        g_gameplayBuildTid.store(tid, std::memory_order_relaxed);
     if (n <= 2)
         BVR_LOG("[reentry] build fired #%u (tid %u, caller 0x%X, ecx %p, a1 %p)",
                 n, tid, callerRva, ecx, a1);
@@ -837,6 +847,7 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     if (!g_drain.enabled.load(std::memory_order_relaxed) &&
         !g_flush.enabled.load(std::memory_order_relaxed))
         heartbeat(tid);
+    if (depth == 0) g_gameplayBuildTid.store(0, std::memory_order_relaxed);
     if (g_activeDepth.fetch_sub(1, std::memory_order_relaxed) == 1)
         g_activeTid.store(0, std::memory_order_relaxed);
 }
@@ -857,7 +868,7 @@ using FgCtorFn = void*(__fastcall*)(void* self, void* edx, void* scene, void* pa
 std::atomic<bool> g_fgWatch{false};
 std::atomic<uint32_t> g_fgCtorCalls{0};
 // fg view-sync (the crossed-eye fix): substitute the ctor's camera args with
-// the CORRECT eye's driven camera from camera.cpp's stash. Default OFF.
+// the CORRECT eye's driven camera from camera.cpp's stash. Alternate methods enable it.
 std::atomic<bool> g_fgSync{false};
 std::atomic<uint32_t> g_fgSyncSubs{0};
 std::atomic<uint32_t> g_fgSyncMisses{0};
@@ -898,23 +909,24 @@ bool snap_mem(void* dst, const void* src, size_t n) {
 void* __fastcall FgCtorDetour(void* self, void* edx, void* scene, void* parentView, void* a3,
                               float ofsX, float ofsY, float ofsZ, int32_t rotA, int32_t rotB,
                               int32_t rotC, float fovA, float fovB) {
-    // fg view-sync: the engine hands this ctor the camera one BUILD stale,
-    // which under SR stereo is the OTHER eye's camera (crossed eyes,
-    // full-IPD lateral error + inverted rig disparity - flat-measured,
-    // ENGINE_NOTES session 21). Substitute the CORRECT eye's driven camera
-    // from the previous pair: both eyes then come from one consistent pose
-    // sample, correct-eye, one pair stale (same order of lag as stock).
-    if (g_fgSync.load(std::memory_order_relaxed) && g_stereo.load(std::memory_order_relaxed)) {
-        int eye = g_secondPassTid.load(std::memory_order_relaxed) == GetCurrentThreadId() ? 1 : 0;
-        float sl[3];
-        int32_t sr[3];
-        if (camera::driven_eye_cam(eye, sl, sr)) {
-            ofsX = sl[0]; ofsY = sl[1]; ofsZ = sl[2];
-            rotA = sr[0]; rotB = sr[1]; rotC = sr[2];
-            g_fgSyncSubs.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            g_fgSyncMisses.fetch_add(1, std::memory_order_relaxed);
-        }
+    // This is the PLAYER scene camera (legacy Fg name), not a hands-only camera.
+    // BS1 calls CalcView first. It commits the rendered eye and advances the next eye
+    // BEFORE this ctor runs. Use that build's committed sign; using frame_sign/nextSign
+    // here crosses the entire scene while temporal's camera tag stays on the old eye.
+    // Build entry clears the latch, so a scripted build without CalcView is untouched.
+    const int altSign = g_stereo.load(std::memory_order_relaxed) ? 0 : alt_eye::current_sign();
+    float syncLoc[3] = {ofsX, ofsY, ofsZ};
+    int32_t syncRot[3] = {rotA, rotB, rotC};
+    const int synced = fg_sync::substitute(g_fgSync.load(std::memory_order_relaxed),
+        g_stereo.load(std::memory_order_relaxed), altSign,
+        g_secondPassTid.load(std::memory_order_relaxed) == GetCurrentThreadId(),
+        syncLoc, syncRot, camera::driven_eye_cam);
+    if (synced > 0) {
+        ofsX = syncLoc[0]; ofsY = syncLoc[1]; ofsZ = syncLoc[2];
+        rotA = syncRot[0]; rotB = syncRot[1]; rotC = syncRot[2];
+        g_fgSyncSubs.fetch_add(1, std::memory_order_relaxed);
+    } else if (synced < 0) {
+        g_fgSyncMisses.fetch_add(1, std::memory_order_relaxed);
     }
     float fovAOv = g_fgFovAOverride.load(std::memory_order_relaxed);
     if (fovAOv != 0.0f) fovA = fovAOv < 0.0f ? fovB : fovAOv; // -1 = "match fovB"
@@ -1319,6 +1331,23 @@ void apply_stereo_only(bool on) {
 
 } // namespace
 
+
+bool set_fg_sync(bool on) {
+    if (on && !g_fgctor.enabled.load(std::memory_order_relaxed) &&
+        !install_slot(g_fgctor, patterns::kFgSceneNodeCtorRva,
+                      reinterpret_cast<void*>(&FgCtorDetour),
+                      patterns::kFgSceneNodeCtorPrologue, sizeof patterns::kFgSceneNodeCtorPrologue))
+        return false;
+    g_fgSync.store(on, std::memory_order_relaxed);
+    return true;
+}
+
+bool fg_sync_on() { return g_fgSync.load(std::memory_order_relaxed); }
+void fg_sync_counts(uint32_t* subs, uint32_t* misses) {
+    *subs = g_fgSyncSubs.load(std::memory_order_relaxed);
+    *misses = g_fgSyncMisses.load(std::memory_order_relaxed);
+}
+
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     g_imageSize = image.size;
@@ -1680,13 +1709,7 @@ void handle_fgnode_command(const char* args) {
                 v);
     } else if (strncmp(args, "sync", 4) == 0) {
         bool on = strstr(args + 4, "off") == nullptr;
-        if (on && !g_fgctor.enabled.load(std::memory_order_relaxed) &&
-            !install_slot(g_fgctor, patterns::kFgSceneNodeCtorRva,
-                          reinterpret_cast<void*>(&FgCtorDetour),
-                          patterns::kFgSceneNodeCtorPrologue,
-                          sizeof patterns::kFgSceneNodeCtorPrologue))
-            return;
-        g_fgSync.store(on, std::memory_order_relaxed);
+        if (!set_fg_sync(on)) return;
         BVR_LOG("[fgnode] view-sync %s (subs %u misses %u) - fg scene gets the CORRECT "
                 "eye's driven camera%s",
                 on ? "ON" : "off", g_fgSyncSubs.load(std::memory_order_relaxed),
@@ -1782,6 +1805,18 @@ void handle_fgnode_command(const char* args) {
     }
 }
 
+bool build_hook_live() {
+    return g_build.enabled.load(std::memory_order_relaxed);
+}
+
+bool in_hooked_call() {
+    return g_activeTid.load(std::memory_order_relaxed) == GetCurrentThreadId();
+}
+
+bool in_gameplay_build() {
+    return g_gameplayBuildTid.load(std::memory_order_relaxed) == GetCurrentThreadId();
+}
+
 void note_calcview() {
     uint32_t tid = GetCurrentThreadId();
     g_lastCalcTid.store(tid, std::memory_order_relaxed);
@@ -1870,6 +1905,13 @@ void draw_debug_ui() {
                 g_secondPassHits.load(std::memory_order_relaxed));
     ImGui::TextDisabled(
         "control via seam: reentry hook|unhook|on|off|pulse|yaw|dump|arg3|kick");
+}
+
+// s82: where in the frame the caller is, for the skeleton-evaluation hook (bones.cpp).
+int build_depth() { return g_activeDepth.load(std::memory_order_relaxed); }
+bool in_second_build() {
+    const uint32_t t = g_secondPassTid.load(std::memory_order_relaxed);
+    return t != 0 && t == GetCurrentThreadId();
 }
 
 } // namespace bvr::b1r::scenedraw

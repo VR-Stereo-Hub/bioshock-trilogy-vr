@@ -21,12 +21,24 @@ add_library(bioshockvr SHARED
     core/debug/value_scan.h
     core/gfx/blit.cpp
     core/gfx/blit.h
+    core/gfx/dlss_client.cpp
+    core/gfx/dlss_client.h
+    core/gfx/dlss_ipc.h
+    core/gfx/desktop_present.cpp
+    core/gfx/desktop_present.h
+    core/gfx/frame_pacing.cpp
+    core/gfx/frame_pacing.h
+    core/gfx/frame_pacing_queue.h
     core/gfx/frame_inspector.cpp
     core/gfx/frame_inspector.h
+    core/gfx/shader_bytecode.cpp
+    core/gfx/shader_bytecode.h
     core/gfx/gfx_hud.cpp
     core/gfx/gfx_hud.h
     core/gfx/hud_capture.cpp
     core/gfx/hud_capture.h
+    core/hooks/d3d11_debug.cpp
+    core/hooks/d3d11_debug.h
     core/hooks/d3d11_hook.cpp
     core/hooks/d3d11_hook.h
     core/hooks/heap_scan.cpp
@@ -77,6 +89,9 @@ add_library(bioshockvr SHARED
     game/bioshock1r/console_exec.h
     game/bioshock1r/frame_context.h
     game/bioshock1r/hands.cpp
+    game/bioshock1r/palette.cpp
+    game/bioshock1r/handback.cpp
+    game/bioshock1r/attach_census.cpp
     game/bioshock1r/hands_state.cpp
     game/bioshock1r/hands_state.h
     game/bioshock1r/hands.h
@@ -90,6 +105,27 @@ add_library(bioshockvr SHARED
     game/bioshock1r/scenedraw.h
     game/bioshock1r/scripted.cpp
     game/bioshock1r/scripted.h
+    game/bioshock1r/afw_gpu.cpp
+    game/bioshock1r/afw_gpu.h
+    game/bioshock1r/alt_eye.cpp
+    game/bioshock1r/alt_eye.h
+    game/bioshock1r/resize.cpp
+    game/bioshock1r/resize.h
+    game/bioshock1r/native_proof_mask.cpp
+    game/bioshock1r/native_proof_mask.h
+    game/bioshock1r/native_proof_eye.cpp
+    game/bioshock1r/native_proof_eye.h
+    game/bioshock1r/native_proof_eye_math.h
+    game/bioshock1r/native_proof.cpp
+    game/bioshock1r/native_repair.cpp
+    game/bioshock1r/native_proof.h
+    game/bioshock1r/native_audit.cpp
+    game/bioshock1r/native_audit.h
+    game/bioshock1r/native_audit_com.h
+    game/bioshock1r/temporal.cpp
+    game/bioshock1r/temporal.h
+    game/bioshock1r/temporal_gpu.cpp
+    game/bioshock1r/temporal_gpu.h
     game/bioshock2r/aim.cpp
     game/bioshock2r/aim.h
     game/bioshock2r/bioshock2r_adapter.cpp
@@ -214,6 +250,7 @@ target_link_libraries(bioshockvr PRIVATE
     minhook
     imgui
     d3d11
+    dxgi
     d3dcompiler
     dbghelp
 )

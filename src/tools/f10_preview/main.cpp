@@ -2,6 +2,7 @@
 #include "game/bioshock1r/menu_view.h"
 #include "game/bioshock1r/menu_theme.h"
 #include "game/bioshock1r/menu_preferences.h"
+#include "game/bioshock1r/display_modes.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -38,13 +39,17 @@ struct PreviewBackend final : Backend {
             check(all[i].id==static_cast<Setting>(i),"catalogue indices match stable ids");
             values[i].fill(all[i].kind==Kind::Slider?(all[i].min+all[i].max)*.5f:all[i].min);
         }
+        set(Setting::OutputWidth,2750);set(Setting::OutputHeight,2850);
         set(Setting::TextSize,1);set(Setting::ViewLevel,0);set(Setting::Height,9);
         set(Setting::SnapTurn,1);set(Setting::SnapAngle,45);set(Setting::TurnSpeed,1);
         set(Setting::AmmoModifier,1);set(Setting::AmmoStick,1);set(Setting::Swing,1);
         set(Setting::HandSize,1);set(Setting::WeaponSize,1);set(Setting::ArmLength,1);
-        set(Setting::HandsArmsSize,1);set(Setting::ShoulderBarForward,3.8f);
-        set(Setting::ShoulderBarRight,0);set(Setting::ShoulderBarUp,-19.8f);
-        set(Setting::ShoulderWidth,52);set(Setting::ShouldersLinked,1);
+        set(Setting::HandsArmsSize,.83f);set(Setting::ShoulderBarForward,-16);
+        set(Setting::ShoulderBarRight,0);set(Setting::ShoulderBarUp,-25);
+        set(Setting::ShoulderWidth,38.1f);set(Setting::WeaponFollowsHands,1);
+        set(Setting::UpperArmLength,.71f);set(Setting::ForearmLength,1.13f);set(Setting::ShowArms,1);
+        for(auto id:{Setting::HandPitch,Setting::HandYaw,Setting::HandRoll,Setting::HandGripForward,
+                     Setting::HandGripRight,Setting::HandGripUp}) set(id,0);
         set(Setting::ElbowOut,.35f);set(Setting::BodyFollow,1);set(Setting::WorldScale,1);
         set(Setting::HudPanel,1);set(Setting::Reticle,1);set(Setting::Laser,1);
         set(Setting::HandMode,4);set(Setting::ArmSolver,1);
@@ -64,11 +69,18 @@ struct PreviewBackend final : Backend {
     }
     Context context() const override {return ctx;}
     void action(Action) override {}
+    ResolutionState resolution() const override {
+        const float ratio[]={1.3f,1.5f,1.72f,2.f,3.f};
+        const float scale=read(Setting::Upscaler,-1)==2?ratio[(int)read(Setting::DlssQuality,-1)]:1.f;
+        const uint32_t w=(uint32_t)read(Setting::OutputWidth,-1),h=(uint32_t)read(Setting::OutputHeight,-1);
+        return {2750,2850,((uint32_t)(w/scale+.5f))&~1u,((uint32_t)(h/scale+.5f))&~1u,w,h,false,"Applied live (preview fixture)"};
+    }
+    void temporal_status() override {
+        const auto r=resolution();
+        const int mode=bvr::b1r::display::mode_index((int)read(Setting::Upscaler,-1),(int)read(Setting::DlssQuality,-1));
+        ImGui::Text("render %ux%u -> output %ux%u (%s)",r.renderW,r.renderH,r.outputW,r.outputH,bvr::b1r::display::kModeNames[mode]);
+    }
     void diagnostics(Tab tab) override {
-        if(tab==Tab::Display && theme::section("Resolution (render size)")) {
-            ImGui::TextUnformatted("Current render: 2750 x 2850");
-            theme::note("Resolution changes need a restart. In-game config writes are unavailable because the game can overwrite them when it exits.");
-        }
         if(tab==Tab::Runtime && theme::section("Runtime status"))
             ImGui::TextUnformatted("Preview fixture / no game connected");
     }
@@ -158,7 +170,12 @@ int main(int argc,char** argv) {
         return {"",{0,0},{0,0},0,true};
     };
     auto click=[&](const std::string& name) {
-        const auto hit=find(name);check(!hit.name.empty(),("hit exists: "+name).c_str());
+        auto hit=find(name);check(!hit.name.empty(),("hit exists: "+name).c_str());
+        if(hit.name.empty()) return;
+        if(auto* window=ImGui::FindWindowByName(hit.window.c_str()); window && window->ScrollMax.y>0) {
+            ImGui::ScrollToRect(window,ImRect(hit.min,hit.max),ImGuiScrollFlags_KeepVisibleCenterY);
+            frame();frame();hit=find(name);
+        }
         const ImVec2 point((hit.min.x+hit.max.x)*.5f,(hit.min.y+hit.max.y)*.5f);
         frame(point,false);frame(point,true);frame(point,false);frame();
     };
@@ -221,6 +238,28 @@ int main(int argc,char** argv) {
     check(state.tab==Tab::Diagnostics,"overflow picker reaches Diagnostics with keyboard");
     check(find("section:Legacy arm solver").name.empty(),"mode 4 legacy sections absent from actual UI");
     choose_level("Basic");check(state.tab==Tab::Controls,"leaving Debug returns from hidden tab");
+    // Exercise the actual Display controls, including the ordering and Basic/Debug split.
+    options.expandSections=true;
+    choose_tab(Tab::Display);frame();frame();
+    const auto method=find("section:Rendering method: Stereo or AFW");
+    const auto resolution=find("section:Resolution (render size)");
+    const auto dlss=find("section:Upscaling and anti-aliasing (DLSS)");
+    check(!method.name.empty() && method.min.y<resolution.min.y && resolution.min.y<dlss.min.y,
+          "Display starts with method, resolution, then DLSS");
+    check(!find("StereoMethod:0").name.empty() && !find("StereoMethod:2").name.empty() &&
+          find("StereoMethod:1").name.empty(),"Basic exposes Stereo/AFW and hides AER");
+    check(find("DlssQuality").name.empty(),"mode is hidden while DLSS is off");
+    click("Upscaler");check(backend.read(Setting::Upscaler,-1)==1,"DLSS checkbox starts in DLAA");
+    check(!find("DlssQuality").name.empty() && find("DlssModel").name.empty(),"Basic exposes mode and hides model");
+    click("DlssQuality");click("DlssMode:3");
+    check(backend.read(Setting::Upscaler,-1)==2 && backend.read(Setting::DlssQuality,-1)==3,
+          "Mode Performance sends SR plus its existing saved quality value");
+    click("SetResolution");
+    check(backend.read(Setting::OutputWidth,-1)==2750 && backend.read(Setting::OutputHeight,-1)==2850,
+          "Set resolution submits the preview's two output dimensions");
+    click("StereoMethod:2");check(backend.read(Setting::StereoMethod,-1)==2,"AFW radio selects AFW live");
+    choose_level("Advanced");check(!find("DlssModel").name.empty(),"Advanced exposes model");
+    choose_level("Debug");check(!find("StereoMethod:1").name.empty(),"Debug exposes AER");
     // Render every player page through the exact view linked into bioshockvr.dll.
     options.expandSections=true;
     for(int tier=0;tier<3;++tier) {

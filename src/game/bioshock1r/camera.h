@@ -36,15 +36,28 @@ void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float w
 float set_head_up_cm(float cm);
 float head_up_uu();
 
-// Session 21 fg view-sync: the FINAL per-eye camera of the most recent
-// SequentialReentry pair (0 = left, 1 = right), stashed after each pass's
-// eye offset. The engine's fg scene node ctor runs BEFORE CalcView inside
-// each build and so receives the camera one BUILD stale - the OTHER eye's
-// camera under SR (the crossed-eye defect, ENGINE_NOTES session 21).
-// scenedraw's ctor detour substitutes these instead: correct eye, one PAIR
-// stale, both eyes from the same pair (consistent disparity). False when
-// no fresh stash exists (stereo off, drive idle > 200 ms, or never driven).
+// Per-eye driven camera (0 left, 1 right), stashed after the eye offset. The
+// player-scene constructor runs AFTER the build's CalcView, so it can use the
+// current build's stash. Alternate methods must select the COMMITTED eye, not
+// the next eye that CalcView has already advanced to (ENGINE_NOTES run ten).
+// False when the stash is older than 200 ms or has never been driven.
 bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]);
+
+// Half the eye separation in uu (the IPD slider over the world scale): the distance
+// apply_eye_offset moves each eye along the camera's right axis. The alternate frame
+// warp moves the fresh eye's camera across by twice this to place the held eye.
+float eye_half_separation_uu();
+
+// The hands' lens over the world's: the tangent ratio k the foreground lens match writes
+// (tan(fgFov/2) = k * tan(worldFov/2); (4/3) * (h/w) of the backbuffer, 1.38 at 2750x2850),
+// or 1 while the match is off or has not written. The alternate frame warp places hand
+// texels with it (afw::Params::fgTanGain).
+float foreground_lens_gain();
+
+// Ask for the game's own render resolution (Bioshock.ini's viewport keys) to be written to
+// w x h on the game thread; it applies on the next launch (SETRES faults, ENGINE_NOTES
+// session 27). The same path as the F10 "Render resolution" control. Any thread.
+void request_game_resolution(uint32_t w, uint32_t h);
 
 // Session 22 cinematic fallback, called from scenedraw's BuildDetour (same
 // game thread): scripted cameras bypass eventPlayerCalcView, so the FOV

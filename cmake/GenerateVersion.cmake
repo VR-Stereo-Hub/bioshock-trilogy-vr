@@ -9,8 +9,9 @@ set(BVR_BUILD_ID "nogit")
 
 find_package(Git QUIET)
 if(Git_FOUND)
+    # Rollback/acceptance tags are not release names for descendant test builds.
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" describe --tags --always --dirty
+        COMMAND "${GIT_EXECUTABLE}" describe --tags --match "v[0-9]*" --always --dirty
         WORKING_DIRECTORY "${BVR_SRC}"
         OUTPUT_VARIABLE _describe
         OUTPUT_STRIP_TRAILING_WHITESPACE

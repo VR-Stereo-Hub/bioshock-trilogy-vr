@@ -27,6 +27,24 @@ inline constexpr uint32_t kHostTimeDateStamp = 0x6256F776;
 inline constexpr uint32_t kHostSizeOfImage = 0x01677000;
 inline constexpr uint64_t kHostFileBytes = 21214720;
 
+// ---- offline native-constant derivation (2026-10-11, local only) -------------
+// Read by tools/ida/nr1_stereo_constants.py, never used to hook/call engine code.
+// Derived from named shader-parameter string xrefs, material vtables and calls;
+// ENGINE_NOTES "Native eye-constant derivation" records each routine's role.
+inline constexpr char kNativeConstantResearchMd5[] = "b4db411ab3e5994b6cd39f8dd91fd990";
+inline constexpr uint32_t kNativeConstantAnchorRva = 0x375140; // ProcessEvent
+inline constexpr char kNativeConstantAnchorBytes[] = "558BEC8B81F8000000";
+inline constexpr uint32_t kNativeConstantResearchRvas[] = {
+    0x7727C0, 0x772880, 0x7BDFE0, 0x7BE8E0, 0x7BECB0,
+    0x7BE210, 0x7BE500, 0x76F950, 0x770680
+};
+inline constexpr uint32_t kNativeConstantAssemblyRvas[] = {0x772880, 0x76F950, 0x770680};
+// Per-pixel lights: exact "lights" string -> registration vtable slots 3/6 ->
+// shared payload builder -> local-vector/radius helpers. Offline analysis only.
+inline constexpr uint32_t kNativeConstantResearchLightRvas[] = {
+    0x7C57B0, 0x7C5850, 0x7C5B10, 0x7C5B50, 0x772DD0, 0x772F20
+};
+
 // False when the running exe is not the build the addresses came from. Features
 // that depend on a raw RVA must stand down; anything pattern-derived (the
 // CalcView seam, the FName chain) is build-independent and keeps working.
@@ -151,6 +169,23 @@ inline constexpr uint32_t kSceneBuildGameplayRetRva = 0x850EF0;
 inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
                                                    0xEC, 0x08, 0x83, 0xE4,
                                                    0xF0};
+
+// FRAME DELTA (ENGINE_NOTES "Frame delta: one world advance per AER eye pair",
+// 2026-10-10). The per-frame advance a virtual __thiscall receives as
+// (ecx this, stack arg1, stack float deltaSeconds): `ret 8`, reached only through its
+// vtable (zero static E8/E9 callers). The game thread calls it on TWO objects per
+// frame, before the scene build. Lead from BRVR's DeltaClamp (module+0x53D850 and its
+// 47-byte signature, bytes 6..9 = an SEH scope-table address, wildcarded);
+// re-derived on this exe with disasm-rva: the signature tail (bytes 10..46) occurs
+// exactly once in .text, at 0x53D85A, and the prologue + `ret 8` are as below.
+inline constexpr uint32_t kFrameDeltaRva = 0x53D850;
+inline constexpr uint8_t kFrameDeltaPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+// Bytes 10..46 (after the wildcarded scope-table push): checked at install as well.
+inline constexpr uint32_t kFrameDeltaTailOffset = 10;
+inline constexpr uint8_t kFrameDeltaTail[37] = {
+    0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89, 0x25, 0x00, 0x00, 0x00,
+    0x00, 0x83, 0xEC, 0x44, 0x53, 0x56, 0x8B, 0xF1, 0xC7, 0x45, 0xE4, 0x00, 0x00,
+    0x00, 0x00, 0x57, 0x89, 0x75, 0xDC, 0x8B, 0x46, 0x44, 0x8B, 0x38};
 
 // Submitted-frame id pair (.data globals, block at [0x13AF7E8..] - see the
 // submit row in ENGINE_NOTES). Two slots (double-buffered frames): dword at
@@ -320,6 +355,17 @@ inline constexpr uint32_t kPadConnectedFlagRva = 0x11B7A10; // written by Update
 // pads still work). Ord-3 (SetState/vibration) is untouched until M7 haptics.
 inline constexpr uint32_t kXInputGetStateIatRva = 0xBCF8E0;
 inline constexpr uint32_t kXInputSetStateIatRva = 0xBCF8DC;
+// Render-device SetRes: slot and viewport fields derived in vp2/vp3 (2026-10-11).
+// Vtable, entry and first bytes observed on every confirmed resize in headset run 9,
+// build v0.8.3-239-g720c9f7. See ENGINE_NOTES 2026-10-11, "Pin the SetRes door".
+inline constexpr uint32_t kViewportDeviceOffset = 0xA4;
+inline constexpr uint32_t kViewportReentryOffset = 0x208;
+inline constexpr uint32_t kViewportFlagsOffset = 0x20C;
+inline constexpr uint32_t kViewportAltFullscreenOffset = 0xFC;
+inline constexpr uint32_t kDeviceSetResSlot = 61;
+inline constexpr uint32_t kRenderDeviceVtableRva = 0xE38E7C;
+inline constexpr uint32_t kRenderDeviceSetResRva = 0x75F940;
+inline constexpr uint8_t kRenderDeviceSetResPrologue[] = {0x55, 0x8B, 0xEC, 0x6A};
 // Exec chain entries (UBOOL __thiscall Exec(const wchar_t* cmd,
 // FOutputDevice& ar), ret 8; found via ParseCommand string clusters + RTTI):
 // UWindowsViewport::Exec handles SETRES/TOGGLEFULLSCREEN/SETMOUSE/...;
@@ -462,6 +508,65 @@ inline constexpr uint32_t kSkelInstBoneCountOffset = 0x4C;  // int (AHands rig: 
 inline constexpr uint32_t kSkelInstBonesBOffset = 0x54;     // hkQsTransform* array B
 inline constexpr uint32_t kSkelInstBoneCountBOffset = 0x58;
 inline constexpr uint32_t kSkelInstDirtyOffset = 0x88;   // evaluate-if-dirty flag (byte)
+// ---- s87: THE SKIN PALETTE (CPU skinning; Dishonored's palette route) --------------------
+// BS1 skins skeletal meshes ON THE CPU. The hands are ONE draw of 26178 indices (NEWPlayerHands
+// LOD 0: 8726 triangles) from a 2 MB dynamic vertex ring at stride 56 (s87 frame dump + vbtap);
+// the draw binds a 576-byte VS b0 and no bone constants. The palette is a TArray of 4x4 floats
+// on the USkeletalMeshInstance, one per skeleton bone, ROW-VECTOR form: rows 0-2 are the images
+// of the bind-space axes, row 3 the translation (p' = x*R0 + y*R1 + z*R2 + R3).
+// Derivation (tools\ida\rs5..rs11, ENGINE_NOTES s87): FFinalSkinVertexStream (vtable 0xDF32A0)
+// slot 9 calls the GATHER below with (mesh instance, lod, out, a5); the gather copies
+// instance[+0x170][boneMap[slot]] into a per-LOD cache through the LOD's u16 bone map (LOD
+// +0x0C ptr / +0x10 count; LODs at mesh +0xC4, 288 bytes each; mesh at instance +0x44), then
+// calls the dispatch +0x5EC080, which runs VertexSkinTask (+0x5EBAB0: rigid 60-byte and skinned
+// 64-byte vertices, 4 weights / 255) inline or on a worker. The gather is the hook: thiscall,
+// 4 stack args, retn 10h, a plain frame prologue (bytes below, verified before hooking).
+inline constexpr uint32_t kSkinGatherRva = 0x3ED660;
+inline constexpr uint8_t kSkinGatherPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x8B,
+                                                  0x45, 0x08, 0x53, 0x8B, 0xD9, 0x8B, 0x4D, 0x0C};
+inline constexpr uint32_t kMeshInstPaletteOffset = 0x170;      // FMatrix* (64 bytes each)
+inline constexpr uint32_t kMeshInstPaletteCountOffset = 0x174; // int (AHands rig: must be 47)
+// The skinned instance's OWNER actor. Live-derived s87: the gather never sees actor+0x128 (that
+// pointer is another object); the instance it skins for the hands holds the hands actor at +0x48
+// (a pointer scan of the instance against the drive's actor, on the 47-bone instance the gather
+// was skinning). The match is on this field.
+inline constexpr uint32_t kMeshInstOwnerOffset = 0x48;
+// s88, the rigid wrist (Dishonored VR-184) needs the skinned vertices the gather hands the
+// skinner. tools\ida\rs10/rs11: the gather reads mesh = instance[+0x44], LODs = mesh[+0xC4]
+// (count mesh[+0xC8], 288 bytes each); in a LOD the u16 bone map at +0x0C (count +0x10) and the
+// skinned vertices at +0x40 (count +0x44), which the gather pushes to the dispatch at call time.
+// A skinned vertex is 64 bytes: four bone slots (indices into the LOD bone map) at +56 and four
+// weights (/255) at +60 - the offsets the skinner +0x5EBAB0 reads them at.
+inline constexpr uint32_t kMeshInstMeshOffset = 0x44;
+inline constexpr uint32_t kMeshLodsOffset = 0xC4;
+inline constexpr uint32_t kMeshLodCountOffset = 0xC8;
+inline constexpr uint32_t kLodStride = 288;
+inline constexpr uint32_t kLodBoneMapOffset = 0x0C;
+inline constexpr uint32_t kLodBoneMapCountOffset = 0x10;
+inline constexpr uint32_t kLodSkinnedVertsOffset = 0x40;
+inline constexpr uint32_t kLodSkinnedCountOffset = 0x44;
+inline constexpr uint32_t kSkinnedVertexStride = 64;
+inline constexpr uint32_t kSkinnedVertexBonesOffset = 56;
+inline constexpr uint32_t kSkinnedVertexWeightsOffset = 60;
+// The held WEAPON is not CPU-skinned (s87 gather census: no holdable among the skinned owners);
+// it is a UStaticMesh drawn with one transform per draw. UStaticMesh vtable (0xDF20B4) slot 5,
+// +0x3DBCF0 (tools\ida\rs12/rs13), hands the renderer a per-draw record's LocalToWorld (+160)
+// and WorldToLocal (+224), row-vector 4x4: Dishonored's per-draw component transform (1.5).
+// thiscall (mesh, record, renderer, a4), retn 0Ch, prologue verified before hooking.
+inline constexpr uint32_t kStaticMeshDrawRva = 0x3DBCF0;
+inline constexpr uint8_t kStaticMeshDrawPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24, 0x83,
+                                                      0x7D, 0x10, 0x00, 0x53, 0x56, 0x57};
+inline constexpr uint32_t kDrawRecLocalToWorldOffset = 160;
+inline constexpr uint32_t kDrawRecWorldToLocalOffset = 224;
+// s82: the EVALUATOR - the engine routine that rebuilds the bone array from the
+// animation. Derived offline (tools\ida\hd1_skelinst_update.py, ENGINE_NOTES s82): vtable
+// slot +0x9C, reached from four call sites each guarded by the dirty byte above, and
+// skipped outright while freeze (+0x20) is set and the last-evaluate time (+0x80) is
+// positive. The slot's target is read from the vtable at runtime and must equal the RVA
+// below, or the hook refuses. BS1's twin of BS2's wfix target (BS2 s74).
+inline constexpr uint32_t kSkelInstEvaluateSlot = 0x9C;
+inline constexpr uint32_t kSkelInstEvaluateRva = 0x597CF0;
+inline constexpr uint32_t kSkelInstLastEvalTimeOffset = 0x80; // float
 // Session 20: bone NAMES. SkeletonInstance +0x08 -> SharedSkeletonData, whose
 // +0xAC map is FName -> bone index (lookup fn 0x5F6500, disassembled): a
 // standard UE hash map - +0x00 pairs base (16-byte pairs: +0 chain next,
@@ -516,6 +621,20 @@ inline constexpr int kBoneLClusterFirst = 6;
 inline constexpr int kBoneLClusterLast = 21;
 inline constexpr int kBoneLWrist = 6;
 inline constexpr int kBoneLSleeve[] = {3, 4, 5, 22, 23};
+// s86c: THE PALM ANCHOR per hand - the point the hand drive pins to the controller and
+// turns about (Dishonored's rigid palm anchor, VR-183; hand_compose.h palm_of/delta). The
+// right hand's is R_grip (43, where every weapon is held), the left hand's the base of the
+// middle finger (kBone_L_Middle1, 13); both from the s82 P3 sweep, which proved the model on
+// the real clips with exactly these two. Pinning the WRIST instead (s83-s86b) put a 10 cm
+// lever on every wrist turn.
+inline constexpr int kBoneRPalm = kBoneWeaponAttach;
+inline constexpr int kBoneLPalm = 13;
+// s86f: the anchor is the PALM'S CENTRE - the mean of the hand bone and the four finger
+// bases (Index1, Middle1, Ring1, Pinky1), the bone-level twin of Dishonored's anchor patch
+// (the centroid of the kept hand mesh). R_grip (above) sits 4 rig units from the wrist,
+// at the heel of the hand, so turning about it still swung the palm ~6 cm.
+inline constexpr int kBoneRPalmBones[] = {27, 31, 34, 37, 40};
+inline constexpr int kBoneLPalmBones[] = {6, 10, 13, 16, 19};
 
 // ---- Foreground (viewmodel) scene (session 13, 2026-07-26) ------------------
 // The renderer draws the first-person rig as a separate FOREGROUND scene with
@@ -617,30 +736,23 @@ inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
 inline constexpr float kFgViewYawBiasDeg = 1.7f;
 inline constexpr float kFgViewPitchBiasDeg = 1.1f;
 
-// ---- The FOREGROUND SCENE NODE (session 21) --------------------------------
-// The fg pass is a SECOND SCENE NODE, pure data through shared render
-// machinery (dump stack-diff: fg and world draws share the whole skeletal
-// draw layer; they differ only in which recorded scene command iterates the
-// mesh and which section-transform provider bakes it). The scene build
-// (kSceneBuildRva 0x4CCE70) allocates a 0x400-byte fg node per frame from
-// the frame pool and constructs it at the RVA below with
-// (parentScene, &parentScene.view@+0x118, x, vec3 PC+0x65C, triple PC+0x668,
-// float PC+0x45C, float PC+0x460), then stores it at parentScene+0x1B0.
-// Derivation: static capstone disasm of the build's [PC+0x460] float read
-// (the only fg-fov consumer in the build region; found by disp-0x460 code
-// search) at build+0xD71, and of the ctor + its finisher (0x56DD90 - view
-// offset/rotation compose into node+0x150). The ctor's base-class call
-// receives THE PARENT VIEW POINTER - the fg node's view starts as a copy of
-// the world view; the fg divergence (actor orientation, eye pull) enters
-// downstream. The vec3 at PC+0x65C and triple at PC+0x668 read zero live at
-// rest (auxiliary offsets; 75/75/60 fov floats sit just before them at
-// PC+0x648..0x650).
+// ---- The PLAYER SCENE NODE (legacy Fg names, session 21) ------------------
+// Tenth-run correction, 2026-10-11: this is FCameraSceneNode -> FPlayerSceneNode,
+// the submitted player scene, not an independent hands-only camera. The build
+// (kSceneBuildRva) calls eventPlayerCalcView at RVA 0x4CCF5D, THEN this ctor at
+// RVA 0x4CDC31, THEN submits at RVA 0x4CDCD2. Earlier notes had the order reversed.
+// Derivation: headless IDA xrefs/disassembly on md5 b4db411ab3e5994b6cd39f8dd91fd990;
+// ENGINE_NOTES tenth-run call-order correction. The ctor stores absolute loc at
+// +0x310 and rot at +0x3E4, and its finisher 0x56DD90 builds view +0x150/inverse
+// +0x190. The build writes FPlayerSceneNode's vtable and viewport+0x1B0.
+// The live override must use the build's COMMITTED eye, since CalcView has already
+// advanced the next eye. Keep the existing symbol names to avoid a broad rename.
 inline constexpr uint32_t kFgSceneNodeCtorRva = 0x56DC30;
 inline constexpr uint8_t kFgSceneNodeCtorPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 inline constexpr uint32_t kFgSceneNodeVtableRva = 0xE1846C; // written by the build after ctor
-inline constexpr uint32_t kSceneViewOffset = 0x118;   // parent scene's view block
-inline constexpr uint32_t kSceneFgNodeOffset = 0x1B0; // parentScene -> fg node (per frame)
-inline constexpr uint32_t kScenePcOffset = 0x48;      // parentScene -> PlayerController
+inline constexpr uint32_t kSceneViewOffset = 0x118;   // viewport-supplied view argument
+inline constexpr uint32_t kSceneFgNodeOffset = 0x1B0; // viewport -> player scene node (per frame)
+inline constexpr uint32_t kScenePcOffset = 0x48;      // viewport -> PlayerController
 inline constexpr uint32_t kFgSceneNodeViewOffset = 0x150; // view matrix the finisher composes
 inline constexpr uint32_t kFgSceneNodeFovAOffset = 0x3F0; // from PC+0x45C (default 75.0)
 inline constexpr uint32_t kFgSceneNodeFovBOffset = 0x3F4; // from PC+0x460 (the vrfgfov field)

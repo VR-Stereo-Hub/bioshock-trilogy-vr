@@ -1,16 +1,21 @@
 #include "menu_backend.h"
 #include "menu_bindings.h"
 #include "menu_preferences.h"
+#include "display_modes.h"
 #include "menu_theme.h"
 #include "aim.h"
+#include "alt_eye.h"
 #include "body.h"
 #include "bones.h"
 #include "camera.h"
 #include "game_ini.h"
 #include "hands.h"
+#include "resize.h"
 #include "scripted.h"
+#include "temporal.h"
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
+#include "core/hooks/d3d11_debug.h"
 #include "core/input/swing.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
@@ -40,6 +45,7 @@ std::string g_notice;
 struct Edit { Setting id; int hand; float value; bool commit; std::string profile; };
 std::vector<Edit> g_edits;
 std::vector<Action> g_actions;
+std::atomic<bool> g_stepTouched[2]={};   // s86f: a step row changed this hand's stored trim
 
 float raw_read(Setting id,int hand) {
     hand=hand==0?0:1;
@@ -49,12 +55,23 @@ float raw_read(Setting id,int hand) {
     value=aim::menu_read(id);if(std::isfinite(value)) return value;
     value=hands::menu_read(id);if(std::isfinite(value)) return value;
     value=bones::menu_read(id,hand);if(std::isfinite(value)) return value;
+    value=temporal::menu_read(id);if(std::isfinite(value)) return value;
+    value=alt_eye::menu_read(id);if(std::isfinite(value)) return value;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
-        // Current mode-4 API (hand branch f318f3d or newer).
+        // Current mode-4 API (hand branch s85 or newer).
         case S::HandsArmsSize: return bones::m4_arm_size();
-        case S::ShouldersLinked: return bones::m4_shoulders_linked();
+        case S::WeaponFollowsHands: return bones::m4_weapon_follows();
+        case S::HandPitch: case S::HandYaw: case S::HandRoll:
+            bones::off_hand_rot_deg(hand,&a,&b,&c);return id==S::HandPitch?a:id==S::HandYaw?b:c;
+        case S::HandGripForward: case S::HandGripRight: case S::HandGripUp:
+            bones::off_hand_cm(hand,&a,&b,&c);return id==S::HandGripForward?a:id==S::HandGripRight?b:c;
+        case S::UpperArmLength: case S::ForearmLength:
+            bones::m4_segment_lengths(&a,&b);return id==S::UpperArmLength?a:b;
+        case S::ShowArms: return bones::menu_read(S::ArmAppearance,hand)==1;
+        case S::PlasmidFxAlong: case S::PlasmidFxAcross: case S::PlasmidFxOut:
+            bones::plasmid_fx_cm(&a,&b,&c);return id==S::PlasmidFxAlong?a:id==S::PlasmidFxAcross?b:c;
         case S::ShoulderBarForward: case S::ShoulderBarRight: case S::ShoulderBarUp: case S::ShoulderWidth: {
             float width; bones::m4_shoulders(&a,&b,&c,&width);
             return id==S::ShoulderBarForward?a:id==S::ShoulderBarRight?b:id==S::ShoulderBarUp?c:width;
@@ -135,11 +152,25 @@ bool raw_write(Setting id,int hand,float value) {
     if(id==S::TextSize) {g_textSize.store(value,std::memory_order_relaxed);return true;}
     if(id==S::ViewLevel) {g_level.store(static_cast<int>(value),std::memory_order_relaxed);return true;}
     if(camera::menu_write(id,value)||aim::menu_write(id,value)||hands::menu_write(id,value)||bones::menu_write(id,hand,value)) return true;
+    if(temporal::menu_write(id,value)||alt_eye::menu_write(id,value)) return true;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
         case S::HandsArmsSize: bones::set_m4_arm_size(value);break;
-        case S::ShouldersLinked: bones::set_m4_shoulders_linked(value!=0);break;
+        case S::WeaponFollowsHands: bones::set_m4_weapon_follows(value!=0);break;
+        case S::HandPitch: case S::HandYaw: case S::HandRoll:
+            bones::off_hand_rot_deg(hand,&a,&b,&c);
+            bones::set_off_hand_rot_deg(hand,id==S::HandPitch?value:a,id==S::HandYaw?value:b,id==S::HandRoll?value:c);break;
+        case S::HandGripForward: case S::HandGripRight: case S::HandGripUp:
+            bones::off_hand_cm(hand,&a,&b,&c);
+            bones::set_off_hand_cm(hand,id==S::HandGripForward?value:a,id==S::HandGripRight?value:b,id==S::HandGripUp?value:c);break;
+        case S::UpperArmLength: case S::ForearmLength:
+            bones::m4_segment_lengths(&a,&b);
+            bones::set_m4_segment_lengths(id==S::UpperArmLength?value:a,id==S::ForearmLength?value:b);break;
+        case S::ShowArms: bones::menu_write(S::ArmAppearance,hand,value!=0?1.0f:2.0f);break;
+        case S::PlasmidFxAlong: case S::PlasmidFxAcross: case S::PlasmidFxOut:
+            bones::plasmid_fx_cm(&a,&b,&c);
+            bones::set_plasmid_fx_cm(id==S::PlasmidFxAlong?value:a,id==S::PlasmidFxAcross?value:b,id==S::PlasmidFxOut?value:c);break;
         case S::ShoulderBarForward: case S::ShoulderBarRight: case S::ShoulderBarUp: case S::ShoulderWidth: {
             float width; bones::m4_shoulders(&a,&b,&c,&width);
             bones::set_m4_shoulders(id==S::ShoulderBarForward?value:a,id==S::ShoulderBarRight?value:b,
@@ -281,12 +312,22 @@ public:
         return c;
     }
     void action(Action action) override {std::lock_guard<std::mutex> lock(g_mutex);g_actions.push_back(action);}
+    void hand_step(int hand,bool rot,int axis,float amount) override {
+        if(hand<0||hand>1) return;
+        hands::queue_hand_step(hand,rot,axis,amount);
+        g_stepTouched[hand].store(true,std::memory_order_relaxed);
+        notice("Moving the hand...");
+    }
+    ResolutionState resolution() const override {
+        ResolutionState r;
+        r.referenceW=display::kReferenceW;r.referenceH=display::kReferenceH;
+        hud::backbuffer_dims(&r.renderW,&r.renderH);
+        if(temporal::menu_read(S::Upscaler)==2) vr::eye_output_size(&r.outputW,&r.outputH);
+        if(!r.outputW || !r.outputH) {r.outputW=r.renderW;r.outputH=r.renderH;}
+        r.busy=resize::busy();r.status=resize::status();return r;
+    }
+    void temporal_status() override {temporal::draw_status();}
     void diagnostics(Tab tab) override {
-        if(tab==Tab::Display && theme::section("Resolution (render size)")) {
-            unsigned width=0,height=0;hud::backbuffer_dims(&width,&height);
-            ImGui::Text("Current render: %u x %u",width,height);
-            theme::note("Resolution changes need a restart. In-game config writes are unavailable because the game can overwrite them when it exits.");
-        }
         if(tab==Tab::Runtime && theme::section("Runtime status")) {
             ImGui::Text("%.1f fps  /  %.2f ms",ImGui::GetIO().Framerate,1000.f/std::max(ImGui::GetIO().Framerate,1.f));
             ImGui::Text("OpenXR session: %s",vr::session_live()?"active":"unavailable");
@@ -297,6 +338,21 @@ public:
             if(theme::button("Capture frame")) frame_inspector::arm(1);
             ImGui::SameLine();if(theme::button("Capture with buffers")) frame_inspector::arm(2);
             theme::note("Captures are written beside the mod log.");
+        }
+        if(tab==Tab::Diagnostics && theme::section("AFW capture")) {
+            ImGui::Text("%s",temporal::dump_status());
+            if(theme::button("Capture 6 presents in 5 s")) temporal::request_dump(6,5000);
+            ImGui::SameLine();if(theme::button("Capture 24")) temporal::request_dump(24,5000);
+            theme::note("Needs Stereo method: alternate frame warp. The panel is a separate layer and is excluded from captures. Writes both eyes' images, depth, hands masks and the rebuilt eye for each present to the mod's data folder (dumps\\afw-...); tools\\afw-replay.ps1 turns it into pictures and re-runs the rebuild offline. Each captured frame stalls for its readback.");
+        }
+        if(tab==Tab::Diagnostics && theme::section("D3D11 debug layer (crash diagnosis)")) {
+            const int armed=d3d11_debug::armed_for_next_launch();
+            ImGui::Text("This run: %s",d3d11_debug::status());
+            ImGui::Text("Next launch: %s",armed==2?"armed, log + break on errors":armed==1?"armed, log":"off");
+            if(theme::button("Arm: log")) d3d11_debug::arm(1);
+            ImGui::SameLine();if(theme::button("Arm: log + break on errors")) d3d11_debug::arm(2);
+            ImGui::SameLine();if(theme::button("Disarm")) d3d11_debug::arm(0);
+            theme::note("For one diagnostic run after a driver crash: restart the game with it armed, play the way that crashed, then send the log. Every invalid D3D11 call is named in the log before the driver sees it; 'break' also turns an error into a crash dump at the call. Frame rates drop while it is on.");
         }
         if((tab==Tab::Runtime||tab==Tab::Diagnostics) && theme::section("Settings storage")) {
             if(theme::button("Retry saving")) action(Action::RetrySave);
@@ -356,6 +412,15 @@ void tick() {
         if(edit.commit && is_player_setting(edit.id)) {
             const int target=spec(edit.id).scope==Scope::Global?-1:edit.hand;
             if(g_preferences.set({edit.id,target,edit.profile,edit.value})) save=true;
+        }
+    }
+    // s86f: once the game thread has converted the step rows' presses, the six stored
+    // trim values they changed are saved like any other player edit.
+    for(int h=0;h<2;++h) if(g_stepTouched[h].load(std::memory_order_relaxed) && !hands::steps_pending()) {
+        g_stepTouched[h].store(false,std::memory_order_relaxed);
+        for(auto id:{S::HandGripForward,S::HandGripRight,S::HandGripUp,S::HandPitch,S::HandYaw,S::HandRoll}) {
+            const float v=raw_read(id,h);
+            if(valid_value(spec(id),v) && g_preferences.set({id,h,"",v})) save=true;
         }
     }
     for(auto action:actions) {

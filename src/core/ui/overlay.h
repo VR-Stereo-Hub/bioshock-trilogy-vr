@@ -1,6 +1,7 @@
 #pragma once
 
 struct IDXGISwapChain;
+struct ID3D11Texture2D;
 
 namespace bvr::overlay {
 
@@ -9,6 +10,12 @@ namespace bvr::overlay {
 // device and window are known).
 void on_present(IDXGISwapChain* swapchain);
 void on_resize(); // drop backbuffer references before ResizeBuffers
+
+// Additive, adapter opt-in (BS1): native-resolution quad, then a desktop-only
+// pass after eye capture. Returned texture is borrowed on the present thread.
+void set_separate_layer(bool on);
+ID3D11Texture2D* layer_texture();
+void draw_mirror();
 
 // Session 22: programmatic visibility (any thread; applied on the next
 // present). The `vroverlay on|off` seam command - the harness cannot press

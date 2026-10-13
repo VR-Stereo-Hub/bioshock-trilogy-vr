@@ -5,4 +5,4 @@
 // made every external crash report unattributable.
 
 #define BVR_VERSION  "@BVR_VERSION@"   // from project(... VERSION) in CMakeLists.txt
-#define BVR_BUILD_ID "@BVR_BUILD_ID@"  // git describe --tags --always --dirty
+#define BVR_BUILD_ID "@BVR_BUILD_ID@"  // git describe --tags --match v[0-9]* --always --dirty
