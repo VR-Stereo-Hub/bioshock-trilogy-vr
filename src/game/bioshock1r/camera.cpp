@@ -1446,7 +1446,13 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         }
         fc.baseX = baseLoc.x;
         fc.baseY = baseLoc.y;
-        fc.baseZ = baseLoc.z;
+        // Hands follow head height: add the user's head-up offset (headUpUu) to
+        // the hand/aim anchor so headUpUu lifts the camera AND the controllers
+        // together (world-up). Without this, raising headUpUu leaves the hands,
+        // laser and shots behind at the unraised eye height. No-op at headUpUu=0
+        // and whenever the head is not driving the camera (cutscenes), matching
+        // where the camera itself applies the offset.
+        fc.baseZ = baseLoc.z + (vrDrove ? g_headOffUpUu.load(std::memory_order_relaxed) : 0.0f);
         if (rot) {
             fc.camPitch = rot->pitch;
             fc.camYaw = rot->yaw;
