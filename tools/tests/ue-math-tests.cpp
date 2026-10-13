@@ -12,6 +12,7 @@
 //   - a NEGATIVE control: the conjugate quaternion must FAIL the basis check, so
 //     a passing basis check is evidence and not a tautology
 #include "game/shared/ue_math.h"
+#include "game/bioshock1r/frame_context.h"
 
 #include <cmath>
 #include <cstdio>
@@ -88,6 +89,88 @@ int main() {
             }
         }
     check(worstRt < 1e-3f, "dir -> rot -> dir round trip", worstRt, 0.0);
+
+    // ---- s86f: the hand step rows' math (frame_context.h) ------------------------------
+    {
+        using namespace bvr::b1r;
+        // xr_local_trim_quat <-> xr_local_trim_angles round trip.
+        float worstTrim = 0.0f;
+        for (int p = -80; p <= 80; p += 20)
+            for (int y = -170; y <= 170; y += 34)
+                for (int r = -170; r <= 170; r += 34) {
+                    float q[4], p2, y2, r2;
+                    xr_local_trim_quat(p / kRadToDeg, y / kRadToDeg, r / kRadToDeg, q);
+                    xr_local_trim_angles(q, &p2, &y2, &r2);
+                    float q2[4];
+                    xr_local_trim_quat(p2, y2, r2, q2);
+                    float dot = 0;
+                    for (int i = 0; i < 4; ++i) dot += q[i] * q2[i];
+                    worstTrim = fmaxf(worstTrim, 1.0f - fabsf(dot));
+                }
+        check(worstTrim < 1e-5f, "trim quat -> angles -> quat round trip", worstTrim, 0.0);
+        // ue_angles_from_xr_quat <-> xr_quat_from_ue_angles round trip.
+        float worstXr = 0.0f;
+        for (int p = -80; p <= 80; p += 20)
+            for (int y = -170; y <= 170; y += 34)
+                for (int r = -170; r <= 170; r += 34) {
+                    UeAngles a{};
+                    a.pitchRad = p / kRadToDeg; a.yawRad = y / kRadToDeg; a.rollRad = r / kRadToDeg;
+                    float q[4];
+                    xr_quat_from_ue_angles(a, q);
+                    const UeAngles b = ue_angles_from_xr_quat(q[0], q[1], q[2], q[3]);
+                    worstXr = fmaxf(worstXr, fabsf(bvr::ue::wrap_rot(static_cast<int32_t>((b.yawRad - a.yawRad) * kRotUnitsPerRadian)) / kRotUnitsPerRadian));
+                    worstXr = fmaxf(worstXr, fabsf(b.pitchRad - a.pitchRad));
+                    worstXr = fmaxf(worstXr, fabsf(bvr::ue::wrap_rot(static_cast<int32_t>((b.rollRad - a.rollRad) * kRotUnitsPerRadian)) / kRotUnitsPerRadian));
+                }
+        check(worstXr < 2e-3f, "ue angles -> xr quat -> ue angles round trip", worstXr, 0.0);
+        // A zero step changes nothing; a yaw step turns the hand by exactly that yaw; a pitch
+        // step on a hand pointing along the view lifts it by exactly that pitch.
+        FrameContext ctx{};
+        ctx.camYaw = 12000; ctx.driveYawOffsetRad = 0.1f; ctx.recenterYawRad = 0.7f; ctx.worldScale = 100;
+        float ctrl[4];
+        xr_local_trim_quat(0.3f, -0.8f, 0.4f, ctrl);
+        float p = -32, y = -4, r = -8;
+        const float pos[3] = {0, 0, 0};
+        const GamePose before = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+        check(hand_rotation_step(ctx, ctrl, 0, 0.0f, &p, &y, &r), "zero step accepted", 1, 1);
+        const GamePose same = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+        check(abs(bvr::ue::wrap_rot(same.rot.yaw - before.rot.yaw)) < 40 && abs(same.rot.pitch - before.rot.pitch) < 40 &&
+              abs(bvr::ue::wrap_rot(same.rot.roll - before.rot.roll)) < 40, "zero step leaves the hand", same.rot.yaw, before.rot.yaw);
+        check(hand_rotation_step(ctx, ctrl, 0, 10.0f, &p, &y, &r), "yaw step accepted", 1, 1);
+        const GamePose yawed = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+        const float dyaw = bvr::ue::wrap_rot(yawed.rot.yaw - before.rot.yaw) / kRotUnitsPerDegree;
+        check(fabsf(dyaw - 10.0f) < 0.2f && abs(yawed.rot.pitch - before.rot.pitch) < 60, "yaw right 10 turns the hand 10 right", dyaw, 10);
+        // Pitch: put the hand along the view first (yaw = camYaw, level), then pitch up 10.
+        {
+            // Find a trim that makes the hand level along the view: step yaw by the difference.
+            float dy = -bvr::ue::wrap_rot(yawed.rot.yaw - ctx.camYaw) / kRotUnitsPerDegree;
+            hand_rotation_step(ctx, ctrl, 0, dy, &p, &y, &r);
+            const GamePose level0 = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+            hand_rotation_step(ctx, ctrl, 1, -level0.rot.pitch / kRotUnitsPerDegree, &p, &y, &r);
+            const GamePose level = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+            hand_rotation_step(ctx, ctrl, 1, 10.0f, &p, &y, &r);
+            const GamePose up = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+            const float dp = (up.rot.pitch - level.rot.pitch) / kRotUnitsPerDegree;
+            check(fabsf(dp - 10.0f) < 0.3f, "pitch up 10 lifts a view-aligned hand 10", dp, 10);
+            // Roll right 10 on that hand: roll changes by +10, pitch and yaw stay.
+            hand_rotation_step(ctx, ctrl, 2, 10.0f, &p, &y, &r);
+            const GamePose rolled = model_pose_from_xr(ctx, pos, ctrl, p, y, r);
+            const float dr = bvr::ue::wrap_rot(rolled.rot.roll - up.rot.roll) / kRotUnitsPerDegree;
+            check(fabsf(dr - 10.0f) < 0.3f && abs(rolled.rot.pitch - up.rot.pitch) < 60, "roll right 10 rolls a view-aligned hand 10", dr, 10);
+        }
+        // Position: a step "forward" in the view, on a hand turned 90 deg right of the view,
+        // lands as "left" in the hand's own frame.
+        {
+            GamePose hand{};
+            hand.rot = FRotator{0, ctx.camYaw + 16384, 0};
+            float g[3] = {0, 0, 0};
+            hand_position_step(ctx, hand, 1, 2.0f, g);
+            check(fabsf(g[1] + 2.0f) < 1e-3f && fabsf(g[0]) < 1e-3f && fabsf(g[2]) < 1e-3f,
+                  "view-forward step on a right-turned hand is hand-left", g[1], -2);
+            hand_position_step(ctx, hand, 2, 1.0f, g);
+            check(fabsf(g[2] - 1.0f) < 1e-3f, "view-up step is hand-up on a level hand", g[2], 1);
+        }
+    }
 
     printf("ue-math: %d checks over %d rotators, %d failed (worst axis err %.2e, conjugate %.3f)\n",
            g_checks, cases, g_fails, worst, worstConj);

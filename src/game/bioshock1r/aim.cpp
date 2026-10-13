@@ -154,7 +154,7 @@ bool g_presetBaselineValid = false;
 // M7 laser: the visible form of this same ray, published to core every frame.
 // It lives here rather than with the hands so it cannot drift from the trim
 // above - a laser that disagrees with the bullet is worse than no laser.
-std::atomic<bool> g_laser{false};
+std::atomic<bool> g_laser{true}; // s90: on by default (the tester's choice; a saved preset still wins)
 std::atomic<int> g_laserDots{6};
 std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 // Session 29 aim dot: ONE lever, default OFF. Unlike the laser it is not a
@@ -1495,6 +1495,19 @@ void load_weapon_profiles() {
 }
 
 } // namespace
+
+// s91: the aim ray the fire seams substitute, for the bones' effect follow (the bolt's beam points
+// along it, as the damage trace does).
+bool hand_ray(int hand, float origin[3], float dir[3]) {
+    FVector o{};
+    FRotator r{};
+    if (!ray_for(hand ? Hand::Right : Hand::Left, &o, &r)) return false;
+    origin[0] = o.x;
+    origin[1] = o.y;
+    origin[2] = o.z;
+    ue_rot_to_dir(r, dir);
+    return true;
+}
 
 void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols& symbols) {
     g_imageBase = image.base;

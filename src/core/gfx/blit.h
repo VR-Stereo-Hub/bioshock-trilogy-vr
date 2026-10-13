@@ -41,6 +41,12 @@ bool stretch_band(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
                   ID3D11ShaderResourceView* src, UINT dstW, UINT dstH,
                   float topFrac, float heightFrac);
 
+// Texture to texture: a plain CopyResource when the sizes match, else a bilinear
+// stretch (through sampleable / renderable intermediates, so neither texture needs a
+// view of its own). For the eye swapchains when a super-resolution output size makes
+// them larger than the backbuffer; dst must be in the R8G8B8A8 family.
+bool stretch_copy(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* src);
+
 // Release device objects (device loss / shutdown; recreated lazily).
 void release();
 

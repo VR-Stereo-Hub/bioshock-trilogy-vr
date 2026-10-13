@@ -47,6 +47,7 @@ this repo's own toolkit (`disasm-rva.py`, `pe-xref.ps1` and `read-dump.py` start
 | A decompile, whole-image xrefs, which class owns a virtual, who writes a field | `.\tools\ida-run.ps1 -Game <g> tools\ida\<series><n>_<what>.py` | headless IDA, one question per script; `docs/IDA_WORKFLOW.md` |
 | **Infinite:** a native function NAME to its exec thunk; a vtable's slots | `py tools\ue3-natives.py <BioShockInfinite.exe> natives --grep <name>` / `vtable <rva>` | verifies a published pair first and refuses otherwise. Not yet run against Infinite (written on a machine without it) |
 | A crash dump: faulting module, offset, a stack | `py tools\read-dump.py <dmp>` | then hand the RVA to IDA |
+| How does the engine resize its viewport, who calls it, does a window resize reach it? (BS1) | `tools\ida\vp1_viewport_resize.py`, `vp2_viewport_resize_path.py`, `vp3_setres_device.py` | answered 2026-10-11: the window procedure's WM_SIZE calls the device's SetRes - ENGINE_NOTES |
 | The symbols for a dump from a past build | `.\tools\archive-symbols.ps1` at release time | keyed by the DLL's SHA-256 |
 
 **Order of work:** search what is already known (the game's ENGINE_NOTES, `patterns.h`, the
@@ -90,8 +91,33 @@ script come out through the other rows.
 | Does this math / state machine / detector do what it claims, over a sweep, with a negative control? | `.\tools\host-test.ps1 [suite]` - one `tools\tests\<name>-tests.cpp` per production header |
 
 Suites so far: `ue-math` (`game/shared/ue_math.h`), `xrsim-math` (the simulator's view
-matrix). The habit it asks for: keep a decision in a header with no engine reads, and test
+matrix), `arm-ik` (`game/bioshock1r/arm_ik.h`, the arm solver), `hand-compose`
+(`game/bioshock1r/hand_compose.h`, the Dishonored hand placement).
+
+| Question | Tool |
+|---|---|
+| Does the arm solver hold up on BS1's REAL arm: lengths, wrist join, roll continuity, forearm shape through the original skin weights? | `.\tools\arm-ik-sweep.ps1 [-LengthScale 1.2] [-NoRender]` - sweep + Blender bake + key-pose renders |
+| Do BS1's and Dishonored's arm solvers put the arm in the same place for the same pose? | `.\tools\arm-ik-audit.ps1` - both production headers, each game's rig, side-by-side renders |
+| Does the Dishonored hand model hold the wrist on the controller through BS1's REAL clips (reload, swing, cast) with the fingers still animating? | `.\tools\hand-compose-sweep.ps1 [-Clips <regex>]` - game pose vs composed, Blender renders of both |
+
+`docs/bioshock1/ARM_IK.md` has the numbers they produced. The habit it asks for: keep a decision in a header with no engine reads, and test
 that header here before a headset sees it.
+
+### GPU passes on the host
+
+| Question | Tool |
+|---|---|
+| Does a production D3D11 pass (motion vectors, the AFW rebuild) reproduce a ray-traced truth, with controls? Does DLSS run through the real x64 helper? Does the BS1 temporal glue behave when driven like the game and core drive it? | `.\tools\gpu-test.ps1 [suite]` - one `tools\gpu-tests\<name>-tests.cpp`, its production sources named on its first line; shared scene and readback helpers in `gpu_test_util.h` |
+| The DLSS helper itself | `.\tools\fetch-ngx.ps1 [-From <local clone>]` (pinned NGX SDK v310.7.0, gitignored `third_party\ngx`), then `.\tools\build-dlss-host.ps1` -> `build\dlss_host\` |
+| What did the AFW rebuild actually see in the headset - both eyes' images, depths, hands masks, the cameras - and what does it do with a lever changed? | In the game: F10 > Diagnostics > **AFW capture** (or `afw dump [n]`) writes N consecutive rebuilt presents to `%LOCALAPPDATA%\BioshockVR\dumps\afw-<stamp>\`. Then `.\tools\afw-replay.ps1 -Capture <that folder> [-Mask 0] [-Gain x] [-Stale 0] [-Grid n] [-Tint] [-NoHeld] [-NoFresh]`: re-runs the production `afw_gpu.cpp` on it, writes BMPs of every input and output (`-Tint` paints each pixel's source), prints the hands' depth from the masks and the cameras, block-matches each present against the next (the other eye, a near-native pair when still) and prints the hands' measured/predicted disparity (the hand depth gain to set; the world is the control), and scores each rebuild against the next native frame of that eye. `-FgTan` carries hand texels on their own lens. The Dishonored mod's tool, ported. Game output: local only. BMP -> PNG for viewing: `System.Drawing` in PowerShell |
+
+Suites: `temporal-gpu`, `dlss-host` (needs an NVIDIA RTX GPU), `afw-gpu`, `afw-soak` and `afw-soak-imgui` (30 s of
+headset-size rebuilds on this machine's driver; `BVR_SOAK_SECONDS` sets the length),
+`temporal-integration` (the production `bioshock1r/temporal.cpp` with core and the engine
+stubbed), `xr-seams` (the production `core/vr/openxr_runtime.cpp` on the simulated runtime,
+no game - a suite says `gpu-test-needs: xrsim` and the runner installs the sim per process in
+a scratch dir). Numbers and what each proves: `bioshock1/TEMPORAL.md`. It refuses to run
+while a BioShock is running (the GPU is shared).
 
 ### Live instrumentation and the simulator - `docs/VERIFICATION.md`
 
@@ -110,6 +136,8 @@ that header here before a headset sees it.
 | Which thread is the frame bound on? | `.\tools\thread-cpu-profile.ps1 -Game <g> -Seconds 20` |
 | Where is that thread spending its time? | `.\tools\thread-ip-profile.ps1 -Game <g> -ThreadIds <ids>` (64-bit PowerShell) |
 | A crash the mod's handler cannot record, a hang, a memory climb toward 4 GB | `.\tools\watch-crashes.ps1 -Game <g> [-Mode Memory]` (ProcDump, Microsoft-signed) |
+| A crash INSIDE the driver (nvwgf2um.dll on a worker thread, no mod frame on it): which D3D11 call was invalid? | F10 > Diagnostics > **D3D11 debug layer** (or `d3ddebug on|break|off`) arms the SDK layer on the GAME's device for the NEXT launch (a marker file in the data dir; `core/hooks/d3d11_debug.cpp` hooks device creation). Every invalid call is named in the log before the driver sees it; "break" turns an error into a crash dump at the calling site. Frame rates drop; one diagnostic run. Needs the SDK layers (`SysWOW64\d3d11sdklayers.dll`, present with the Graphics Tools feature) |
+| Which module and thread a dump faults on, and what every thread's stack holds | `py tools\read-dump.py <dmp>` (the faulting thread); a mod RVA on a stack can be a DATA pointer (a string), not a return address - resolve it against the build's `.pdb` before reading anything into it |
 | Is a periodic hitch on a streamed headset the Wi-Fi or the PC? | `.\tools\net-ping-watch.ps1 -FromStreamer -Minutes 5`, lined up against the log's `[HH:MM:SS.mmm]` |
 | A 32-bit OpenXR client (armcap, xr_hello32) fails at instance creation | `tools\lib\xr-layers.ps1` - the same unloadable-layer opt-out the mod does for itself |
 

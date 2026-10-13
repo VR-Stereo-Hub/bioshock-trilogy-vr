@@ -4,6 +4,9 @@
 #include "game/bioshock1r/menu_view.h"
 
 #include "core/gfx/hud_capture.h"
+#include "core/gfx/frame_pacing.h"
+#include "core/gfx/desktop_present.h"
+#include "bvr_version.h"
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -11,11 +14,17 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/resize.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/scripted.h"
+#include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/native_audit.h"
+#include "game/bioshock1r/native_proof.h"
+#include "game/bioshock1r/native_repair.h"
 #include <cstdlib>  // _wtof, for the ini's float keys
 #include <cstring>
 
@@ -44,6 +53,34 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     hands::init(image);        // M7 viewmodel; the actor is located lazily
     bones::init(image);        // M7-v2 skeleton drive; located lazily off the actor
     body::init(image);         // M7.5 body yaw transfer; default off, probe-gated
+    native_audit::init(image); // bounded read-only draw diagnostic, installed INI opt-in
+    native_proof::init(image); // opt-in same-eye scratch replay; never writes game targets
+    native_repair::init(image); // private native foreground + HDR post, installed opt-in
+    // Both pacing options are BS1 opt-ins; the installed INI is beside this DLL.
+    {
+        HMODULE self = nullptr; wchar_t ini[MAX_PATH]{};
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&bvr::frame_pacing::start), &self) && GetModuleFileNameW(self, ini, MAX_PATH)) {
+            wchar_t* slash = wcsrchr(ini, L'\\');
+            if (slash && !wcscpy_s(slash + 1, _countof(ini) - static_cast<size_t>(slash + 1 - ini), L"BioshockVR.ini")) {
+                const bool nonblocking = GetPrivateProfileIntW(L"Bioshock1R", L"NonBlockingDesktopPresent", 0, ini) == 1;
+                desktop_present::configure(nonblocking);
+                BVR_LOG("[pacing] NonBlockingDesktopPresent=%d (focused projection frames only)", nonblocking ? 1 : 0);
+                if (GetPrivateProfileIntW(L"Bioshock1R", L"FramePacingTrace", 0, ini) == 1) {
+                    SYSTEMTIME st; GetLocalTime(&st); wchar_t path[MAX_PATH]{};
+                    if (swprintf_s(path, L"%s\\frame-pacing-%04u%02u%02u-%02u%02u%02u-%lu.csv", bvr::log::data_dir(),
+                            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, GetCurrentProcessId()) > 0) {
+                        const bool started = bvr::frame_pacing::start(path, BVR_BUILD_ID);
+                        BVR_LOG("[pacing] CPU frame trace %s: %ls (bounded queue, background IO; no rendering changes)",
+                                started ? "armed" : "FAILED", path);
+                    }
+                }
+            }
+        }
+    }
+    temporal::init();          // DLSS/DLAA and the alternate frame warp; off until asked for
+    resize::init(image);
+    alt_eye::init(image);      // AER/AFW stereo methods; the frame-delta hook waits for AER
     // Anchored screen placement is a CORE behaviour and this is where BS1 -
     // and only BS1 - asks for it. It is headset-verified here and nowhere
     // else; BS2 and Infinite keep the recenter-origin placement they shipped
@@ -90,6 +127,7 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     bvr::input::set_menu_modifier_context_help(true); // modifier + menu -> BACK, held
     bvr::input::set_chord_tap_opens_panel(true);    // both-sticks TAP opens F10
     bvr::input::set_flick_press_threshold(0.5f);    // was 0.65 with no dominance test
+    bvr::overlay::set_separate_layer(true);         // F10 stays native; eye processors never see it
     bvr::overlay::set_pad_drive(true);              // ray as cursor, RT as click
 
     // Walking into a wall must not look like the pause menu (s65). The world

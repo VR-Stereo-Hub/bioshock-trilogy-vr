@@ -1,5 +1,6 @@
 #include "menu_view.h"
 #include "menu_theme.h"
+#include "display_modes.h"
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cmath>
@@ -15,7 +16,7 @@ void record(const char* name, bool disabled = false) {
     if(g_options && g_options->hits) {
         const auto* ctx=ImGui::GetCurrentContext();
         g_options->hits->push_back({name,ImGui::GetItemRectMin(),ImGui::GetItemRectMax(),
-            ctx->LastItemData.ID,disabled});
+            ctx->LastItemData.ID,disabled,ctx->CurrentWindow->Name});
     }
 }
 void label(const char* text,bool slider=false,const char* key=nullptr) {
@@ -46,6 +47,8 @@ void send(Backend& backend,const Spec& s,int hand,float value,bool commit) {
     } else backend.edit(s.id,hand,value,commit);
 }
 void control(Backend& backend,const Spec& s,int hand) {
+    const int upscaler = static_cast<int>(backend.read(Setting::Upscaler,-1));
+    if((s.id==Setting::DlssQuality || s.id==Setting::DlssModel) && upscaler!=1 && upscaler!=2) return;
     if(s.condition==Condition::Snap && !backend.read(Setting::SnapTurn,0)) return;
     if(s.condition==Condition::Smooth && backend.read(Setting::SnapTurn,0)) return;
     const int readHand=s.scope==Scope::Global?-1:(hand<0?1:hand);
@@ -55,7 +58,25 @@ void control(Backend& backend,const Spec& s,int hand) {
     label(s.label,s.kind==Kind::Slider,s.key);
     ImGui::BeginDisabled(reason!=nullptr);
     bool changed=false,commit=false;
-    if(s.kind==Kind::Toggle) {
+    if(s.id==Setting::Upscaler) {
+        bool on=upscaler==1 || upscaler==2;
+        changed=ImGui::Checkbox("##value",&on);value=on?1.f:0.f;commit=changed;
+        record(s.key,reason!=nullptr);
+    } else if(s.id==Setting::DlssQuality) {
+        const int current=display::mode_index(upscaler,static_cast<int>(value));
+        if(ImGui::BeginCombo("##value",display::kModeNames[current])) {
+            for(int i=0;i<6;++i) {
+                if(ImGui::Selectable(display::kModeNames[i],i==current)) {
+                    if(i) send(backend,s,hand,static_cast<float>(display::kQualityOrder[i]),true);
+                    send(backend,spec(Setting::Upscaler),hand,i?2.f:1.f,true);
+                }
+                record((std::string("DlssMode:")+std::to_string(i)).c_str());
+                if(ImGui::IsItemHovered()) ImGui::SetTooltip("%s",display::kModeTips[i]);
+            }
+            ImGui::EndCombo();
+        }
+        record(s.key,reason!=nullptr);
+    } else if(s.kind==Kind::Toggle) {
         bool on=value!=0;
         changed=ImGui::Checkbox("##value",&on);value=on?1.f:0.f;commit=changed;
         record(s.key,reason!=nullptr);
@@ -70,7 +91,6 @@ void control(Backend& backend,const Spec& s,int hand) {
     } else {
         int current=static_cast<int>(value-s.min);
         int count=static_cast<int>(s.max-s.min)+1;
-        if(s.id==Setting::HandMode) count=backend.context().maxHandMode-1;
         std::vector<const char*> names;
         for(const char* p=s.choices;*p;p+=std::strlen(p)+1) names.push_back(p);
         count=std::min(count,static_cast<int>(names.size()));
@@ -114,10 +134,43 @@ void hand_selector(ViewState& state,const Context& context) {
         theme::note(profile.c_str());
     }
 }
+void rendering_method(Backend& backend,Level level) {
+    const int selected=static_cast<int>(backend.read(Setting::StereoMethod,-1));
+    const char* names[]={"Stereo","Alternate eyes (AER)","Alternate frame warping (AFW) (experimental)"};
+    const char* tips[]={"Both eyes are drawn every game frame.",
+        "One eye per game frame; a pair makes one headset frame.",
+        "One eye per game frame; the other is rebuilt. Each frame goes to the headset."};
+    for(int i=0;i<3;++i) {
+        if(i==1 && level!=Level::Debug) continue;
+        if(ImGui::RadioButton(names[i],selected==i)) backend.edit(Setting::StereoMethod,-1,static_cast<float>(i),true);
+        record((std::string("StereoMethod:")+std::to_string(i)).c_str());
+        if(ImGui::IsItemHovered()) ImGui::SetTooltip("%s",tips[i]);
+    }
+}
+void resolution_controls(Backend& backend,ViewState& state) {
+    const auto r=backend.resolution();
+    if(state.pixelPercent<=0 && r.referenceW && r.referenceH)
+        state.pixelPercent=r.outputW && r.outputH ? 100.f*(static_cast<float>(r.outputW)/r.referenceW)*
+            (static_cast<float>(r.outputH)/r.referenceH):100.f;
+    ImGui::TextUnformatted("Total pixels (%)");ImGui::SetNextItemWidth(-1);
+    theme::slider("##RenderPixels",&state.pixelPercent,25.f,400.f,"%.0f%%");record("RenderPixels");
+    if(ImGui::IsItemHovered()) ImGui::SetTooltip("100%% is 2750 x 2850. Both axes scale together. Press Set resolution to apply.");
+    uint32_t w=0,h=0;display::pixel_size(r.referenceW,r.referenceH,state.pixelPercent,&w,&h);
+    ImGui::Text("Preview: %ux%u | now %ux%u",w,h,r.outputW,r.outputH);
+    const bool disabled=r.busy || w<640 || h<480 || w>8192 || h>8192;
+    ImGui::BeginDisabled(disabled);
+    if(theme::button("Set resolution")) {
+        backend.edit(Setting::OutputWidth,-1,static_cast<float>(w),true);
+        backend.edit(Setting::OutputHeight,-1,static_cast<float>(h),true);
+    }
+    record("SetResolution",disabled);ImGui::EndDisabled();
+    theme::note(r.status.c_str());
+}
 void draw_page(Backend& backend,ViewState& state,Level level,const Context& context) {
     if(state.tab==Tab::Hands || (state.tab==Tab::IK && context.handMode<4) || state.tab==Tab::Aim) hand_selector(state,context);
     std::size_t count=0;const Spec* all=specs(count);
     std::vector<std::string> sections;
+    if(state.tab==Tab::Display) sections={"Rendering method: Stereo or AFW","Resolution (render size)","Upscaling and anti-aliasing (DLSS)"};
     for(std::size_t i=0;i<count;++i) if(all[i].tab==state.tab && *all[i].section && visible(all[i],level,context)) {
         if(std::find(sections.begin(),sections.end(),all[i].section)==sections.end()) sections.emplace_back(all[i].section);
     }
@@ -125,16 +178,54 @@ void draw_page(Backend& backend,ViewState& state,Level level,const Context& cont
         const auto shoulder=std::find(sections.begin(),sections.end(),"Shoulder position");
         if(shoulder!=sections.end()) std::rotate(sections.begin(),shoulder,shoulder+1);
     }
+    // s86f: Dishonored's hand rows (its MpTrimPanel): move or turn the selected hand the way
+    // the player sees it, a fixed step per press, held to repeat; the backend converts each
+    // press into the hand's stored trim at that instant.
+    auto hand_rows=[&]{
+        if(!(state.tab==Tab::Hands && context.handMode>=4 && section("Move the hand (as you see it)"))) return;
+        static int stepIx=1;
+        static const float kStepCm[3]={.2f,.5f,2.f},kStepDeg[3]={.5f,2.f,5.f};
+        static const char* kStepName[3]={"Fine","Normal","Coarse"};
+        const float w=(ImGui::GetContentRegionAvail().x-2*ImGui::GetStyle().ItemSpacing.x)/3;
+        for(int i=0;i<3;++i) {
+            if(i) ImGui::SameLine();
+            if(theme::button(kStepName[i],ImVec2(w,0),stepIx==i)) stepIx=i;
+        }
+        theme::note(stepIx==0?"0.2 cm or 0.5 degrees per press.":stepIx==1?"0.5 cm or 2 degrees per press.":"2 cm or 5 degrees per press.");
+        struct Row { const char* neg; const char* pos; bool rot; int axis; };
+        static const Row kRows[6]={{"Move left","Move right",false,0},{"Move down","Move up",false,2},{"Move back","Move forward",false,1},
+                                   {"Pitch down","Pitch up",true,1},{"Yaw left","Yaw right",true,0},{"Roll left","Roll right",true,2}};
+        ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat,true);
+        for(int r=0;r<6;++r) {
+            ImGui::PushID(r);
+            for(int sgn=0;sgn<2;++sgn) {
+                if(sgn) ImGui::SameLine();
+                const float bw=(ImGui::GetContentRegionAvail().x-(sgn?0:ImGui::GetStyle().ItemSpacing.x))/(sgn?1:2);
+                if(theme::button(sgn?kRows[r].pos:kRows[r].neg,ImVec2(bw,0))) {
+                    const float amt=(sgn?1.f:-1.f)*(kRows[r].rot?kStepDeg[stepIx]:kStepCm[stepIx]);
+                    if(state.hand==-1) {backend.hand_step(0,kRows[r].rot,kRows[r].axis,amt);backend.hand_step(1,kRows[r].rot,kRows[r].axis,amt);}
+                    else backend.hand_step(state.hand,kRows[r].rot,kRows[r].axis,amt);
+                }
+                record((std::string("step:")+(sgn?kRows[r].pos:kRows[r].neg)).c_str());
+            }
+            ImGui::PopID();
+        }
+        ImGui::PopItemFlag();
+        theme::note("Hold a button to repeat. Saved at once. Anything held moves with the hand.");
+    };
     for(const auto& name:sections) {
         if(!section(name.c_str())) continue;
         ImGui::PushID(name.c_str());
+        if(name=="Rendering method: Stereo or AFW") rendering_method(backend,level);
+        if(name=="Resolution (render size)") resolution_controls(backend,state);
         if(ImGui::BeginTable("settings",2,ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("label",0,.44f);ImGui::TableSetupColumn("value",0,.56f);
             for(std::size_t i=0;i<count;++i)
-                if(all[i].tab==state.tab && name==all[i].section && visible(all[i],level,context))
+                if(all[i].id!=Setting::StereoMethod && all[i].tab==state.tab && name==all[i].section && visible(all[i],level,context))
                     control(backend,all[i],state.hand);
             ImGui::EndTable();
         }
+        if(name=="Upscaling and anti-aliasing (DLSS)") backend.temporal_status();
         if(name=="Turning") theme::note(backend.read(Setting::SnapTurn,0)?
             "One stick push turns you by a fixed angle.":"Hold the stick to turn continuously.");
         if(name=="Controller shortcuts") {
@@ -144,15 +235,14 @@ void draw_page(Backend& backend,ViewState& state,Level level,const Context& cont
                 theme::note("Choose the opposite stick: one thumb cannot use its thumbrest and stick together.");
         }
         if(name=="Grip pivot") theme::note("Changes where the model pivots. Hand position changes where it sits.");
+        if(name=="Hand and weapon size") hand_rows();
         if(name=="Flat screen for menus and loading") {
             if(theme::button("Recenter screen")) backend.action(Action::RecenterScreen);
             record("RecenterScreen");
         }
         ImGui::PopID();
     }
-    // Resolution requires an engine-safe next-launch path; the live backend owns
-    // the honest state and explicit action, while preview substitutes test data.
-    if(state.tab==Tab::Display || state.tab==Tab::Runtime || state.tab==Tab::Diagnostics)
+    if(state.tab==Tab::Runtime || state.tab==Tab::Diagnostics)
         backend.diagnostics(state.tab);
     if(level==Level::Debug && state.tab==Tab::Diagnostics) {
         theme::note("Debug changes last for this session unless explicitly saved.");

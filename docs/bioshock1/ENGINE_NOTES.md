@@ -14,7 +14,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   **LAA flag: YES** (Characteristics 0x0122 - verified 2026-07-23 via `tools/check-laa.ps1`).
   4 GB address space available for stereo render targets.
 - **D3D11 renderer confirmed live at runtime** (2026-07-23, first Present hook log):
-  feature level 0xB000 (11_0), backbuffer DXGI format 28 (R8G8B8A8_UNORM), 2560×1440,
+  feature level 0xB000 (11_0), backbuffer DXGI format 28 (R8G8B8A8_UNORM), 2560Ãƒâ€”1440,
   `windowed=0` - the game defaults to **exclusive fullscreen** (relevant to DR-7: borderless
   test still pending). D3D9 fallback path exists in the binary but is not the default.
 - Renderer single-threaded by default (`UseMultithreadedRendering=False` in Default.ini).
@@ -29,7 +29,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 | Name | Pattern / method | Module | Build | Found by | Status | Date |
 |---|---|---|---|---|---|---|
-| `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` → its FName-init xref → `89 0D` (`MOV [imm32], ECX`) store of the FName index → walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT); C++ port: `core/hooks/pattern_scan.cpp` used by `game/bioshock1r/patterns.cpp` | **RESOLVED live: RVA 0x1BE7A0** (scan: 1 wide-string match, 1 string xref, FName global +3 xrefs, exactly 1 candidate past the init-site filter). Exe loads rebased (ASLR observed, base 0x0FB20000) - RVA is the stable identifier; the live-memory scan is relocation-transparent. | 2026-07-23 |
+| `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` Ã¢â€ â€™ its FName-init xref Ã¢â€ â€™ `89 0D` (`MOV [imm32], ECX`) store of the FName index Ã¢â€ â€™ walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT); C++ port: `core/hooks/pattern_scan.cpp` used by `game/bioshock1r/patterns.cpp` | **RESOLVED live: RVA 0x1BE7A0** (scan: 1 wide-string match, 1 string xref, FName global +3 xrefs, exactly 1 candidate past the init-site filter). Exe loads rebased (ASLR observed, base 0x0FB20000) - RVA is the stable identifier; the live-memory scan is relocation-transparent. | 2026-07-23 |
 | PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | **readable, but NOT consumed by the renderer.** Reads 100.0 by default. 2026-07-24 automated flat A/B (command-file seam + window screenshots): writes of 60/137/140 leave the rendered frame pixel-identical, in real gameplay AND the menu attract scene, under BOTH `HorizontalFOVLock` states. The earlier "override widens view" (DR-4) was observed only through the VR projection layer, where the fov CLAIM follows the written value - a claim-side artifact, retracted. The field also does not mirror the video-option FOV (option applied while field kept reading 100). In-headset swim calibration measured the true render at ~100 = the settings value. Treat this field as telemetry-only; the real control is the video option (see Config/ini facts). | 2026-07-24 |
 | `UShockUserSettings*` global | static pointer at **RVA 0x136AFA0** (`.data`); the object's **`+0x8C` = HorizontalFOV (int32, degrees)** | BioshockHD.exe | 2022-04-13 | runtime value-scan narrowing via the command seam (`memscani 130` -> user changed the video option to 100 then 117 through the in-game UI -> `memrescani` collapsed 662 candidates to 4 stable copies -> per-copy poke + screenshot img-diff found the consumed one -> `memptr` found the static root -> RTTI walk `vtable -> COL -> TypeDescriptor` read `.?AVUShockUserSettings@@`) | **RESOLVED + CONSUMED PER FRAME.** The renderer reads this field live: poking it mid-game changes the render immediately, no options APPLY needed. **NO code clamp past the UI cap: 145 renders wider than 130** (monotonic img-diff 117->130->145). Integrity check for resolution: the object's vtable == exe base + **0xDA3878**. NOTE the field is an **int32** - an ini float would serialize as `130.000000`, the bare `130` gave the type away; float scans cannot see it. `UD3DRenderDevice11` (vtable RVA 0xE38E7C) keeps a passive copy at `+0x74` - poking that changes nothing; two further copies (one heap-rooted, one at `[0x136A370]+0xCC`) are also passive. | 2026-07-24 |
 
@@ -37,9 +37,9 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 ## Known structures & conventions
 
-- **FRotator** = 3×i32 `{Pitch, Yaw, Roll}`, 65536 units per full turn. Roll is
+- **FRotator** = 3Ãƒâ€”i32 `{Pitch, Yaw, Roll}`, 65536 units per full turn. Roll is
   clockwise-positive. UE convention: forward = +X, right = +Y, up = +Z.
-- **FVector** = 3×float, Unreal units. World scale unknown - assume ~50 UU/m until calibrated
+- **FVector** = 3Ãƒâ€”float, Unreal units. World scale unknown - assume ~50 UU/m until calibrated
   in M3 (config `worldScale`).
 - `eventPlayerCalcView` hook signature (thiscall):
   `(APlayerController* this, AActor** view_actor, FVector* camera_location, FRotator* camera_rotation)`
@@ -1739,31 +1739,22 @@ re-homing experiment.
 
 ### The foreground pass decoded: a second scene node, and the fovA zoom-pull lever (session 21)
 
-**Architecture (dump stack-diff + capstone, all constants in patterns.h
-"FOREGROUND SCENE NODE"):** the fg pass is a SECOND SCENE NODE flowing
-through the SAME render machinery as the world (fg and world skeletal draws
-share the whole draw layer; a per-section transform-provider virtual at
-vtbl+0x20 does the bake). The scene build (0x4CCE70) allocates a 0x400-byte
-fg node from the frame pool every build and constructs it at 0x56DC30 with
-MEASURED argument semantics: (parentScene, &scene.view@+0x118, x,
-vec3 cameraLoc, rotator cameraRot, float fovA <- PC+0x45C, float fovB <-
-PC+0x460), storing it at scene+0x1B0 (vtable 0xE1846C). The finisher
-(0x56DD90) builds the node's view matrix at +0x150 (+ inverse at +0x190,
-world-projection diag at +0x1D0) FROM THE LOC/ROT ARGS; the fovs land at
-+0x3F0/+0x3F4. The ctor runs BEFORE CalcView inside each build (call sites
-build+0xD59 vs +0xF1A).
+**Architecture (corrected after run ten, 2026-10-11):** the historical "foreground
+scene node" name is misleading. The build at 0x4CCE70 calls PlayerCalcView at
+0x4CCF5D, then constructs FCameraSceneNode at 0x56DC30 (call site 0x4CDC31),
+assigns FPlayerSceneNode's vtable 0xE1846C and submits that player scene. It is
+not an independent hands-only camera. The constructor stores absolute location
+at +0x310 and rotation at +0x3E4; its finisher 0x56DD90 builds view +0x150 and
+inverse +0x190. FOVs land at +0x3F0/+0x3F4. The old claim that this constructor
+ran BEFORE CalcView was false; the later call at 0x4CDD85 is not PlayerCalcView.
+See the tenth-run derivation below for binary provenance and the resulting fix.
 
-**The fg camera inputs are ALREADY world-synced per eye** (pass-labeled
-ctor-arg capture, `vrfgnode on` + `dump`): pass 1's node receives the LEFT
-eye camera, pass 2's the RIGHT (values match apply_eye_offset's +-3.17 UU
-at the live yaw exactly), rotation = the DRIVEN camera rotator. Two raised
-hypotheses measured and KILLED the same night: (a) "fg view = stale
-pre-drive camera" - simhead sweep showed the DRIVEN yaw/pitch in the args;
-(b) "crossed eyes under SR" (each pass getting the sibling's camera - would
-have inverted rig disparity) - the pass-labeled capture shows correct-eye
-delivery. The `vrfgnode sync on` substitution (feeds the ctor camera.cpp's
-per-eye stash) is therefore a measured flat-static NO-OP; kept default-OFF
-as an in-headset latency A/B only.
+The session-21 pass-labeled capture already reported correct per-eye camera
+arguments: left on pass 1, right on pass 2, driven rotation. Its reported flat
+`vrfgnode sync on` NO-OP did not prove a stale-camera defect. The eighth/ninth-run
+interpretation that the arms were necessarily rendered with the other eye was
+therefore unsupported. The fovA experiment below remains the historical measured
+result; do not infer a hands-only node from the old instrument's name.
 
 **THE LEVER - the fovA/fovB pair IS the fg zoom-pull.** fovA (from
 PC+0x45C, engine-restamped to 75.0 every frame - unpokeable as data; the
@@ -5864,3 +5855,390 @@ test) reads, per arm: held median 3.75 / p90 4.87 / max 20.55 UU, free median 3.
 / p90 4.87 / max 20.57 UU. The held arm's worst case fell from 32.3 to 20.6 and the
 two arms now agree, but neither is at the ~0 the fix predicts. The next run should
 be the probe's own protocol: both hands still, roll the main wrist slowly.
+
+## 2026-10-10 - the scene depth and the cameras, for DLSS and the alternate frame warp
+
+Design and offline measurements: `bioshock1/TEMPORAL.md`. The engine facts it rests on,
+with their status:
+
+| Fact | Source | Status |
+|---|---|---|
+| Scene depth = `D24_UNORM_S8_UINT` at the backbuffer size, typeless resource (an R24X8 SRV view exists) | "D3D11 frame map" above (T1 / T34) | dump-proven, 1920x1080 |
+| The world renders through `DrawIndexed` only; the scene DSV stays bound through the tonemap and the HUD | "D3D11 frame map", session 19 | dump-proven |
+| Standard D3D projection: near 10 uu, far 65536 uu in gameplay (1024 in another branch), conventional depth (0 near) | the BioShock VR DLSS/DLAA community fork (MIT), `temporal_guides.cpp` comments, IDA on `BioShockHD.exe`'s finite projection builder | **measured in game 2026-10-10 09:15** (Quest 3, 2750x2850 eyes, 460 frames): the vector audit's depth-scale sweep `0.25:0.0202 0.5:0.0142 1:0.0071 2:0.0115 4:0.0127` - scale 1 lowest; vectors 0.0071 vs rotation only 0.0136 vs no motion 0.0171 |
+| CalcView calls per frame | the 2026-10-10 log: `calcview in=130 out=398/s` with 130 builds/s; BRVR measured 4.2 per frame (one per call site: the render view plus movement/AI/audio consumers carrying different rotators) | measured. Exactly ONE call per frame runs inside the gameplay scene build (caller `kSceneBuildGameplayRetRva`): that one is the render view. Per-frame state must key on it, never on calls |
+| The foreground pass (arms, weapon) renders through the WORLD lens | session 15/16 (`vrfgfov` match, default on) | dump-proven |
+| Whether the foreground pass CLEARS depth before drawing | the 2026-10-10 19:28 run (clears logged as `\|`): `381W 8w 8w 4w 261w 10w 75w 32w 42w 3w \|` and `91W 55w 17w 11w 3w \|` - no clear until after every pass | **answered: NO.** The foreground (hands, weapon) draws into the world's own depth, first in the main pass (session 21), so there is no separate hands pass and no hands mask (`with a hands pass 0`); the later segments are more of the world after other surfaces were bound |
+| The foreground draws' projection vs the world's | two frame dumps (2026-10-09 20:55, `framedump_20554*`), each draw's local-to-clip matrix in cb0 floats 40..55: the z row is A x the w row (+ B in the translation), near = -B/A | **identical**: 37 foreground draws (bake stacks 0x3DBF7C / 0x3EDCBF, the hands draw 26178 indices) and ~570 world draws all give near = 10 uu (+-1%, the local scale), the tangents match (s90). The MATRICES are consistent - but see the next row: the viewport is not |
+| The viewport depth range of the foreground draws | the draw tap's census (RSGetViewports on sampled DrawIndexed calls), headset run 2026-10-10 20:48 | **measured: the viewmodel draws into viewport depth [0, 0.010]**, the world [0, 1] (and the sky [0.990, 1.000]). So the stored depth of the hands and weapon is 1% of their true device depth: decoded plainly it reads at the near plane (~4x too near for a hand at 45 uu). Any pixel with raw depth below 0.010 is viewmodel - world geometry only lands there within near / 0.99 = 10.1 uu of the eye. `temporal.cpp` re-expands that range automatically (`dlss squeeze off` to compare) |
+| The frame-delta function (BRVR's DeltaClamp target): `__thiscall`, `ret 8` = (stack arg1, stack float deltaSeconds), virtual (zero static E8/E9 callers), called on two objects per frame before the scene build | lead: BRVR module+0x53D850 and its 47-byte signature (bytes 6..9 an SEH scope-table address, wildcarded). Re-derived 2026-10-10 on this exe with `disasm-rva.py`: `search` finds the signature tail (bytes 10..46) exactly once, at 0x53D85A; `dis 0x53D850` shows the prologue `55 8B EC 6A FF` and `ret 8` at 0x53E844 | static-proven; patterns `kFrameDeltaRva` + prologue + tail, byte-checked at install. Live behaviour (holding it freezes the world for one frame and the bank pays out) is BRVR's measurement, not yet this mod's |
+| CalcView's final `loc`/`rot` is the camera the frame renders with | the stereo work (SR/AER eye offsets are applied there and render as expected) | assumed exact; any later camera shake or bob would show as a vector-audit residual while still |
+
+## Session 81 (2026-10-08) - the arm on the Dishonored solver, and what the rig weights say
+
+Offline, from the Havok reference skeleton and skin weights that `tools\bsmesh-export.ps1`
+reads out of `0-Lighthouse` (docs/bioshock1/HAVOK_AND_PACKAGES.md). No game was launched.
+
+- **The arm chain is Biped:** `Clavicle -> UpperArm (43.3 UU) -> Forearm (30.0 UU) -> Hand`.
+  Every limb bone has +X along the limb. `ForeTwist` hangs off `UpperArm` at the elbow;
+  `ForeTwist1` is its child, halfway down the forearm (15.0 UU). The runtime sleeve
+  indices `{3,4,5,22,23}` / `{24,25,26,45,46}` are these bones in the same order: the
+  engine's bone array is the Havok skeleton's order (47 bones, `R_grip` 43,
+  `IKbindLhandDummy` 44, as measured live).
+- **What carries skin** (summed weight per arm): `ForeTwist1` 371, `Hand` 306, `Forearm`
+  238, `UpperArm` 188, **`Clavicle` 0, `ForeTwist` 0**. Whatever is written to the clavicle
+  or the elbow helper is invisible. The forearm's shape is the blend of `Forearm` and
+  `ForeTwist1`: that pair is where a twist gap pinches.
+- **The Havok reference pose has the arms reaching forward** along -Z, with the spine
+  along +X and the right arm on +Y (forward -Z, right +Y, up +X: Unreal's handedness).
+- **New capture:** the settle bank now also keeps the reference wrist's ROTATION
+  (`g_freeArmW0Q`), which the v2 solver measures the forearm roll against.
+
+The solver, its integration and its validation are in `docs/bioshock1/ARM_IK.md`.
+
+## Session 82 (2026-10-08) - BS1's skeleton evaluator, for a post-evaluation hand drive
+
+Offline, `tools\ida\hd1_skelinst_update.py` against the staged `BioshockHD.exe` (md5
+`b4db411a...`). The BS1 twin of BS2's `wfix` target (BS2 session 74). Not consumed by code
+yet. The design that will consume it is `docs/bioshock1/HANDS_DISHONORED.md`.
+
+- **The evaluator is `SkeletonInstance` vtable slot `+0x9C`** (vtable RVA `0xE19ACC`),
+  target **RVA `+0x597CF0`**, 808 bytes, thiscall with no stack arguments. Hex-Rays reads
+  it as `(int *a1@<ecx>, int a2@<ebp>)`. The `@<ebp>` is probably its SEH frame, so copy
+  BS2's convention-agnostic naked ret-stub rather than trusting a C++ detour.
+- **The gate around it** (decompiled at `+0x598020`, slot `+0xA0`, and inlined at each
+  caller): `if (freeze[+0x20] && lastEvalTime[+0x80] > 0) { dirty[+0x88] = 0; skip }`
+  `else if (dirty) { evaluate(); dirty = 0; }`. So freezing suppresses evaluation
+  entirely, and the dirty byte `+0x88` is the only other switch. That is why the mode-3
+  drive, which clears the dirty byte every frame, sees an evaluation only ~1 frame in 19
+  (ARCHITECTURE s68d).
+- **Four dirty-guarded call sites:**
+
+  | Site | In function | Note |
+  |---|---|---|
+  | `+0x319F55` | `+0x319F00` | Gets the actor's SkeletonInstance (`+0x3FC`), evaluates it, then calls the mesh instance's virtuals `+0x12C` and `+0x128` with a 64-byte matrix: the per-draw skin path, BS2's pass-1 update shape |
+  | `+0x434B28` | `+0x434A70` | |
+  | `+0x598050` | the `+0xA0` gate | |
+  | `+0x6429AE` | `+0x6423F0` | |
+
+  Hooking the slot function catches all four.
+
+### Session 82b - the evaluator measured live (simulator, one run)
+
+`vrbones evalprobe on` in `vrhands mode gun`, so the drive writes nothing, and the probe
+sets the dirty byte every CalcView. BS1, Welcome to Rapture, stereo on, 138 s, no crash.
+
+| Measured | Value |
+|---|---|
+| Evaluations | 64-71 a second against ~140-150 CalcViews: **once per game tick** (one per stereo pair) |
+| Where | **all in the game tick**, caller `0x598056` (the `+0xA0` gate); **0 in render pass 1, 0 in pass 2** |
+| Thread | 0 on another thread, 0 nested |
+| The hooked copy against the live array at the next CalcView | **0 mismatches in ~19,000 checks** |
+| Freeze / last-eval | freeze 0; last-eval time advancing 1.0 s per second |
+
+So with the dirty byte set and no freeze, the engine rebuilds the hands once per tick, in
+the tick. Nothing re-evaluates between the passes, so a pose composed in the hook is the
+pose both eyes draw.
+
+Not measured: animation content. The save had nothing equipped (`HandsOffscreen`) and the
+bones did not move between evaluations, which is expected for an off-screen rig.
+
+## Session 87 (2026-10-08/09) - BS1 skins on the CPU: the skin palette, and the weapon's draw transform
+
+Static (headless IDA, `tools\ida\rs1`-`rs13`, staged exe md5 `b4db411a...`) and live in the
+simulator (`dumpframe full`, the new `vbtap`, the palette hook's own probes). The consumer is
+`src/game/bioshock1r/palette.cpp`; constants in `patterns.h` "THE SKIN PALETTE".
+
+- **The hands are one CPU-skinned draw.** `NEWPlayerHands` LOD 0 (8,726 triangles) is ONE
+  `DrawIndexed` of 26,178 indices from a 2 MB dynamic vertex ring at stride 56, bake stack
+  `+0x3EDCBF`. Its VS b0 is the 576-byte tier and no other VS constant buffer is bound: no
+  bone palette reaches the GPU. Rigid pieces (the `+0x3DBF7C` stack) draw from static
+  48-byte buffers with their transform in b0.
+- **The skinner.** `FFinalSkinVertexStream` (vtable `0xDF32A0`) slot 9 (`+0x3ED7E0`) calls
+  the **gather** `+0x3ED660` (thiscall: palette cache in ecx; mesh instance, lod, out, a5 on
+  the stack; `retn 10h`; called from that one site with `[stream+0x14]` as the instance). The
+  gather copies `instance[+0x170]` (`FMatrix*`, count `+0x174`, one per skeleton bone) into a
+  per-LOD cache through the LOD's u16 bone map (mesh `+0x44`; LODs `+0xC4`, 288 bytes; LOD
+  `+0x0C`/`+0x10` the map), then calls the dispatch `+0x5EC080` (ecx/edx = rigid vertices and
+  count, stack = skinned vertices, count, palette, scratch, dst; caller cleans), which runs
+  `VertexSkinTask` (`+0x5EBAB0`) inline or on a worker. Rigid vertices are 60 bytes with one
+  bone byte at +36; skinned 64 bytes with four bone bytes at +36 and four weights at +40 (/255);
+  output 56 bytes (position, a 3x3 basis, uv).
+- **The palette's form and space.** 4x4 floats, ROW-VECTOR: rows 0-2 the images of the
+  bind-space axes, row 3 the translation. It is in the SAME component space as the evaluated
+  pose (the space probe: `inverse(pose) * palette` at each wrist is constant while the hand
+  animates, drift 0.000 UU / 0.00 deg, scale 1.000, and mirror-symmetric between the wrists:
+  L (-71.38, -28.47, -5.74), R (-71.38, -28.47, +5.74)).
+- **Which instance.** The gather never sees `actor + 0x128` (that pointer is another object).
+  The instance it skins for the hands holds the hands actor at **`+0x48`** (pointer scan of
+  the 47-bone instance the gather was skinning). Its vtable is `USkeletalMeshInstance`'s.
+- **What else the gather skins** (Medical Pavilion): PlayerHands (47 bones), splicer bodies
+  and `DeadBodyContainer`s (73), the medical doors (3). **No holdable**: the wrench is not
+  skinned.
+- **The held weapon's draw.** A `UStaticMesh` (vtable `0xDF20B4`) drawn through slot 5,
+  `+0x3DBCF0` (thiscall: mesh; record, renderer, a4; `retn 0Ch`), which passes the per-draw
+  record's LocalToWorld (+160) and WorldToLocal (+224), row-vector 4x4, WORLD space (the
+  translation equals the owner actor's location to 0.1 UU), to the renderer's set-transform
+  virtual (+168). The record holds its owner actor at **+0**.
+- **The rest of the vertex ring** (vbtap): its NO_OVERWRITE uploads at a 12-byte stride come
+  from `+0x765C60` (position-only geometry, `+0x5CFF64` in the scene render); the DISCARD maps
+  are the frame-end ring reset (`+0x7B4350`).
+
+## Session 88 (2026-10-09) - the hands' LOD and vertex layout, the Hands state in mode 4
+
+- **The hands' skinned vertices, as the gather sees them** (tools\ida\rs10/rs11 read again for
+  the rigid wrist; `patterns.h` holds the constants): mesh = instance[+0x44]; LODs = mesh[+0xC4]
+  (count +0xC8, stride 288); in a LOD the u16 bone map +0x0C (count +0x10) and the skinned
+  vertices +0x40 (count +0x44). A skinned vertex is 64 bytes with the four bone SLOTS (indices
+  into the LOD bone map, not the skeleton) at +56 and four weights /255 at +60. NEWPlayerHands
+  LOD 0: 3,469 skinned vertices; 142 of them have at least half their weight on one hand and
+  some on that side's arm bones (the cuff ring).
+- **Swapping the LOD's vertex pointer for one gather call is honoured**: the gather pushes
+  [LOD+0x40] to the dispatch at call time, and a worker-queued skinning task keeps that pointer -
+  so the copy must outlive the call (palette.cpp keeps eight).
+- **`hands_state` was never located on mode 4.** Only mode 3's path called `locate()`. The
+  hand-back calls it itself; it locates on the first frame. The states seen in the sim:
+  WeaponIdling, WeaponFiring (~0.7 s for a wrench swing, 1.4 s for a two-press combo),
+  WeaponUnEquipping, AbilityFastEquipping, AbilityIdling, AbilityFiring,
+  FinishAbilityFiringWithEve (PostFiring).
+- **The wrench's Firing is entered ~5-15 ms after the RT press**, and the physical swing's RT
+  pulse (core swing module) is open at that moment: the VR-220 80 ms window separates the two
+  sources cleanly in every run.
+
+
+## Session 90 (2026-10-09) - every draw's cb0 carries its eye; the fg pull is zero on the palette route
+
+- **cb0 floats 56..58 = the eye the draw is rendered from, in that draw's LOCAL space** (float 59
+  is 0). Derivation: for every draw in two sim dumps, the null point of the clip rows x, y, w
+  (floats 40..43, 44..47, 52..55, `M = diag(1/tanH, 1/tanV, 1, 1) * s[R | -R*E]`) equals floats
+  56..58 to within 0.05 local units - world draws and foreground draws alike. Dynamic draws that
+  bake their own transform into the vertices carry zeros there (s in the hundreds; skip them).
+  The row-w norm `s` is the draw's local-to-world scale (0.80 for the hands = their DrawScale).
+- **The hands draw on the palette route**: 26178 indices, the 832-byte tier, a CPU-skinned
+  56-byte VB, stacks `0x3EDCBF` (main) and `0x3EDC1B` (a second pass); its local space is the
+  hands actor's component space. Its eye read (-1.38, +-4.00, 11.16) component units with the
+  camera at (-1.374, 0, 11.166) (`PIVOTPROBE CAM`, same frame): **the fg eye is the per-eye camera
+  exactly, no pull** - +-4.00 x 0.80 = +-3.2 UU, half the 64 mm IPD. Tangents 1.19174 / 1.23502 and
+  rotation rows equal the world view's; the sim's submitted layer FOV (+-50 / +-51.004 deg) is the
+  same frustum. Session 16's +11.5 UU was measured on the bone drive's rigid-section path and does
+  not apply here.
+- How to repeat: `vrhands pivotprobe on`, then `dumpframe full 2` (two present windows = both
+  eyes); decode the hands draw's floats 40..59 against the CAM line.
+
+## Session 91 (2026-10-10) - what the engine attaches to the hands, and the two levers that move it
+
+Measured in the simulator with `vrhands attach` (census, `attach_census.cpp`) on the 11:01 save.
+
+- **The Hands mesh instance (`actor+0x128`) holds a SOCKET TABLE** (`+0x3FA1E0`, tools\ida\rs14):
+  `+0xE8/+0xEC` socket FNames (8 bytes each), `+0xF4` the bone each aliases (8 bytes), `+0x100` a
+  48-byte offset per socket in that bone's frame (the first 12 bytes the origin, world units).
+  19 entries on PlayerHands: every weapon socket (Wrench, Pistol, TommyGun, Launcher, Crossbow,
+  Chem, IrritantBall, PlayerGathererGun) aliases `R_Grip` = bone 43 with no offset; the plasmid
+  sockets (FirePlasmid, IceShards, ParasiteSocket, PustuleBirth) alias `Bip01_L_Hand` = bone 6 with
+  small offsets; **`FireballSocket` aliases the HEAD bone (`bip01_head`, 2) at (10, -65, -3)** - the
+  Electro Bolt cast particle sits there. Bone 44 is `IKbindLhandDummy`, the off-hand grip of
+  two-handed guns (not a muzzle).
+- **Skin weights** (the palette gather's LOD): bones 43 and 44 carry none; bone 6 carries 436
+  vertices (the left hand), 27 carries 436 (the right).
+- **The weapon's children are engine-attached to the weapon**: the Tommy Gun (`MachineGun`) carries
+  `VisibleAmmoModel` (the drum magazine, `AmmoDummySocket`), `TG_upgradeA/B`, three
+  `MachineGun_*MuzzleFX` with `DynamicLight_MuzzleMG`, and `MG_ShellEject`, linked at +0xAC/+0xB0.
+  Electro Bolt puts `ElectroBoltHandLight` and `ElectricBoltSmoke` on `Bip01_L_Hand` and
+  `ElectricBoltParticle` on `FireballSocket`.
+- **Lever 1, the bone write (weapons):** writing bone 43/44 in the engine's array after each
+  evaluation carries the weapon AND everything attached to it (the drum mag sat on the drawn gun
+  in the sim; with the render-side weapon correction alone it floated beside it).
+- **Writing a SKINNED bone is not usable:** bone 6 written the same way bent the left hand back at
+  the wrist during a cast, though the palette's own bone-6 entry did not change (the palette probe
+  read the same inverse bind with and without) and a restore before each evaluation did not help.
+- **Lever 2, the socket offset (effects):** the engine honours the table's offsets - poking
+  FireballSocket's y from -65 to 0 moved the cast particle ~65 UU. Rewriting each hand socket's
+  origin per frame (`bone^-1 x S x bone x offset0`) moved the particle 30 UU onto the drawn hand with
+  the hand intact.
+- Not attached, not yet found: the Electro Bolt BEAMS (white lines that start away from the hand).
+  `vrhands attach find <class text>` lists actors by class for the next run.
+- **The socket offset's convention (sim, pokes of FireballSocket's record):** the record is an
+  FCoords - origin, then X/Y/Z axes (identity for FireballSocket, a rotation for IceShards and the
+  weapon sockets). The origin is in the bone's frame in COMPONENT units: 100 along each axis moved
+  the attached particle exactly 80 UU (DrawScale 0.8) on three orthogonal right-handed axes that
+  match bone array A's orientation. The POSITION, though, sits a constant (15, -30, 30) component
+  units in the head bone's frame away from `A[bone] x offset`, at three head/hand poses: the attach
+  routine builds its origin from the SkeletonInstance's slot +0x10 (actor Location plus the instance's
+  +0x14 vector) and the mesh instance's +0x80/+0x8C (tools\ida\rs16; slot +0xB8 returns A itself).
+  The hands actor's PrePivot (+0x2BC) is zero. Whether the gap is one vector for every bone is open:
+  `vrhands attach` prints it for effects attached straight to a hand bone.
+- **THE PER-FRAME RELATIVE (sim, s91): an attached actor holds its relative at +0x230** (FVector,
+  component units, the bone's frame). The engine places the actor at bone x relative EVERY frame
+  and copies the socket record into it only AT ATTACH. Evidence: ElectricBoltSmoke on
+  `Bip01_L_Hand` holds (0, 2, -2) there and sits exactly that far off bone 6; poking the hand
+  light's +0x230 x to 20 moved it 16.0 UU on the next frame with no re-attach. Pointing an effect's
+  attach name at FireballSocket moved it to that socket's BONE (the head) with its old zero relative,
+  which is how this was found. A hand-bone attachment sits exactly on bone array A (gap 0.00); the
+  (15, -30, 30) gap is the head bone's only.
+## 2026-10-11 - the live resolution change: the engine resizes itself on WM_SIZE
+
+`SETRES` through the viewport Exec seam faults (session 27, above), and the fault site is now
+read: `+0x4C2340` is an Exec dispatcher that dereferences `this+4` first (`sub_10DC2340`: the
+engine pointer of the object it was called on) - the seam handed it the wrong `this`, not a
+bug in SETRES itself. It no longer matters, because the engine has a cheaper door.
+
+Static (headless IDA, `tools\ida\vp1_viewport_resize.py`, `vp2_viewport_resize_path.py`,
+`vp3_setres_device.py`, 2026-10-11, md5 `b4db411a...` == deployed):
+
+| Fact | Where | RVA |
+|---|---|---|
+| `UWindowsViewport::Exec` SETRES branch parses `WxH[xBits][w\|f]` and calls the render device's **SetRes**: `device->vtable[+0xF4](device, viewport, W, H, fullscreen, colorBytes, 0, 1)`; on failure it calls the EndFullscreen helper `+0x857340`. Exec's `this` is the viewport's FExec subobject at viewport+0x44 | `vp2` lines 155-237 | Exec `+0x8525C0`, call at `+0x852B29` |
+| The render device pointer | viewport **+0xA4** (`*(this+96)` from the FExec `this`) | - |
+| The viewport's current size as GETCURRENTRES prints it | viewport **+0xC8 / +0xCC** | - |
+| The fullscreen flag word | viewport **+0x20C**, bit 0 = fullscreen; bits 0x90 = a device is live | - |
+| **The window procedure handles WM_SIZE (case 5)**: windowed (bit 0 of +0x20C clear), a device bound, `wParam != SIZE_MINIMIZED`, and `+0x857C90(viewport, w, h)` true - which is "not fullscreen AND (w, h) differs from the client's stored viewport size at client+0x88/+0x8C" - then it calls the SAME `device->SetRes(viewport, w, h, fullscreen, 0, 0, 1)` | `vp2` window procedure lines 1094-1200, `vp3` | WndProc `+0x858620`; check `+0x857C90`; SetRes call at `+0x8553FF`+ |
+| TEMPSETRES, ENDFULLSCREEN, TOGGLEFULLSCREEN words exist beside SETRES | `vp2` | `+0x857340`, `+0x857470` |
+
+So in windowed mode a change of the game window's CLIENT size is a resolution change the
+engine performs itself (its SetRes, then the swapchain's `ResizeBuffers`, which core already
+answers with an XR swapchain rebuild). `bioshock1r/resize.cpp` does exactly that:
+`SetWindowPos` on the game thread (the window's thread; WM_SIZE is delivered synchronously
+inside the call), then it waits for the HUD capture's backbuffer size to become the asked one
+and reports CONFIRMED / NOT TAKEN. No engine address is called. Caveat read in the WndProc,
+not yet measured: a window larger than the desktop may be clamped by Windows (the engine then
+follows the clamped size; the mod logs both). The Dishonored mod reaches the same result by
+calling its engine's viewport Resize directly (ABI-checked); BS1 did not need that.
+
+**Not run in the game yet.** The proof is the log line `[resize] CONFIRMED: the backbuffer is
+WxH`, followed by core's `xr: real ResizeBuffers` and the eye swapchain rebuild.
+
+**Measured 2026-10-11 (the eighth run): the window route does NOT work on this machine.** The
+client area was already 2750x1415 under a 2750x2850 render (Windows had clamped the window's
+height to the desktop at creation), SetWindowPos to 3072x3072 gave a 3072x1415 client, and the
+engine did nothing: no SetRes, no ResizeBuffers (the WM_SIZE branch's conditions were not met,
+or the message never reached it). `resize.cpp` now calls the render device's SetRes directly
+(viewport +0xA4 -> device, vtable slot 61 (+0xF4), args (viewport, w, h, fullscreen as the
+viewport has it, 0, 0, 1), the viewport's +0x208 reentry counter held, SEH), logging the
+device's vtable and SetRes RVAs and the function's first bytes on every call so the next run
+can pin them. Unverified in the game.
+
+### 2026-10-11 - the foreground scene node under the alternate-eye methods
+
+The original entry inferred that this ctor consumed a one-build-stale camera and
+that enabling sync would fix the arms. Run ten disproved that account. CalcView
+runs first, and the ctor is the submitted player scene. Reading `current_sign()`
+while it returned the already-advanced next eye introduced a whole-scene crossed-eye
+regression. See the corrected call-order derivation below. A hand-disparity ratio
+of 0.55-0.65 alone does not establish this camera hypothesis or a depth gain.
+
+### 2026-10-11 - Pin the SetRes door (polish item 2)
+
+Run 9's banner is v0.8.3-239-g720c9f7. Every confirmed call reports render-device
+vtable RVA 0xE38E7C, slot 61 entry RVA 0x75F940, first bytes 55 8B EC 6A.
+The slot and argument/viewport layout came from `tools/ida/vp2_viewport_resize_path.py`
+and `vp3_setres_device.py`, as above. `patterns.h` now owns both RVAs, the byte signature,
+and the viewport fields previously local to resize.cpp. Live requests refuse before
+changing the reentry counter unless the newly resolved device matches all three.
+`BioshockVR.ini` [Bioshock1R] `RenderDeviceVtableRva` and `RenderDeviceSetResRva` accept
+decimal or 0x-prefixed overrides for a separately derived build; invalid values refuse,
+and overrides still require the same prologue. Mismatches log both actual/expected RVAs.
+
+SaveConfig already persists the active mode: the final ninth-run CONFIRMED at 11:34:21.973
+is 1834x1900, and the post-run [WinDrv.WindowsClient] WindowedViewportX/Y are 1834/1900,
+with StartupFullscreen=False. The inactive fullscreen pair remains 2750/2850. No redundant
+`game_ini::write_viewport` is added; the engine's active-mode save is the persistence path.
+
+
+### 2026-10-11 - Tenth-run correction: committed player-scene eye vs next eye
+
+**Observed:** installed banner v0.8.3-248-g419b304, run 13:02:39-13:03:51. The tester
+reported massive whole-scene back-and-forth flicker. During stable gameplay the log
+still had continuous DLAA/AFW, no missing depth/cameras or fallbacks, and successful
+sync substitutions. Those counters proved execution, not correct eye identity.
+
+**Static derivation:** `build/fg1_camera_order.py` and `fg2_camera_calls.py`, using
+`tools/ida/template.py` / `ida-run.ps1`, on staged/deployed BS1 executable MD5
+`b4db411ab3e5994b6cd39f8dd91fd990`; ProcessEvent anchor verified. Xrefs and disassembly
+show the only direct PlayerCalcView call in scene build at **0x4CCF5D**, before the
+camera ctor call at **0x4CDC31** and frame submit at **0x4CDCD2**. RTTI identifies the
+constructed node as FCameraSceneNode then FPlayerSceneNode, stored at viewport+0x1B0.
+The later **0x4CDD85 -> 0x585AC0** call was wrongly treated as CalcView in old notes.
+No engine RVA or byte signature changes are needed; patterns.h's derivation comments
+now state the correct order and scope. Research output remains untracked.
+
+`CalcViewDetour` stores this build's eye camera, records its temporal tag and invokes
+`commit_render_view`, which advances `g_nextSign`. The subsequent ctor used that NEXT
+sign to select the other eye's old camera while depth/reconstruction metadata still
+named the committed eye. This alters the entire scene, explaining the world flicker.
+The fix separates `g_renderSign` from `g_nextSign`: commit latches the former before
+advancing the latter, and the ctor reads the latch. Root build entry clears it; a
+scripted/menu build that never commits a view preserves the original ctor arguments.
+
+**Offline reproduction:** correcting the pretend game's order BEFORE changing the
+production code yielded 59 passes / 3 failures: ctor-camera error 7.89934 uu, rebuilt
+world error 0.04077 vs rotation-only 0.04145, rebuilt hand error 0.1505. The fixture now
+uses the ctor camera for the whole scene and maintains both per-eye stashes. This is
+a regression test against the old behavior, not an assertion of the old assumed order.
+The repaired run and headset outcome are recorded in TEMPORAL.md.
+
+
+### 2026-10-11 - Run eleven: alternating render-eye origin moved the IK shoulders
+
+Banner v0.8.3-251-g66a102f, 13:29:05 boot. The tester accepts the whole-scene
+stability fix and reports flickering arms with stable hands, plus white pistol edges.
+The two six-present captures are afw-20261011-133304 and afw-20261011-133320.
+Steady log intervals have continuous DLSS/AFW and zero depth/camera/sync misses.
+
+Code tracing finds a separate body-placement error: CalcView applies the AFW/AER
+eye translation before publishing FrameContext.camXYZ. The merged arm IK uses that
+field as the head/shoulder origin; the tracked wrist uses the controller mapping
+based on baseXYZ and the anchor. Thus stationary wrists were attached to shoulders
+that moved by one IPD on alternate frames. SequentialReentry applies its eye shift
+after this publication and did not have that error. No engine field/address changes.
+
+The camera now remembers the actual translation applied by apply_eye_offset and
+subtracts only that translation from the published body origin. Render metadata and
+the scene camera remain at their intended eye. Later common camera edits remain.
+The production helper test covers 600 position/yaw/pitch/roll combinations, including
+large world coordinates: 3600 checks, body disagreement 0.000001 uu, wrist disagreement
+zero; the negative control moves the old shoulders by at least 6.397 uu.
+
+Capture disparity fits also oppose a single foreground gain: the world and far hand
+features favor unity, while nearer sleeve bands prefer different ratios (roughly
+0.45 at 10-15 uu, 0.55 at 15-20 uu, unity at 45-80 uu in the first capture). These
+are moving/deforming surfaces, not an independent lens/depth calibration. Diagnostic
+wording now says so; unity remains the default. Headset confirmation of the arm fix
+is pending. The user's new target is native stereo quality, so this is a checkpoint,
+not completion of the remaining AFW work.
+
+
+### 2026-10-11 - Run twelve: foreground history needs the tracking-frame transform
+
+The 14:12:03 banner confirms v0.8.3-255-g81def2d. The tester accepts the large
+arm-stability improvement and reports gaps in motion plus background-dependent
+edge colour. In the nearly stationary first pair, foreground disparity is 1.000
+and world 1.001, supporting the body-origin correction. The walking capture
+shows broad fallback strips along the palm where the fresh eye cannot see its
+far side. Old foreground had been reprojected as stationary world geometry,
+although locomotion translated both the player and their tracked hands.
+
+A capture-only translation experiment removes the broad strip; it is not a safe
+general solution because render-camera motion also contains physical head motion.
+The implemented solution records the existing room-to-game affine transform from
+FrameContext beside each render camera in the build ring. The origin is the
+existing xr_pose_to_game mapping of XR zero, the yaw is game yaw minus recenter
+yaw, and the scale is the current world scale. Transporting the held camera
+through old and current tracking frames carries only masked foreground through
+locomotion. World samples still use the original source camera. Missing tracking
+frames or a scale change refuse transport. This adds no engine memory writes or
+addresses and retains no engine-object identity.
+
+A transported foreground hint is required as well as the mesh seed: old-world
+triangles can otherwise cover the moved foreground's silhouette seed during a
+turn. The hint uses the transported foreground camera, then the same depth solve
+and current-eye visibility validation. Current foreground keeps priority; the
+old image is still rejected when the controller moves the object away. Capture
+metadata now records the optional transported camera and the replay honours it.
+Old captures lack the tracking transform and therefore keep their original semantics.
+
+Host checks cover 725 transform cases, including physical head motion and invalid
+frames: worst agreement with the existing controller map is 0.003974 uu at large
+world coordinates, versus 17.937 uu for the world-fixed control. The curved GPU
+fixture leaves 2 holes during walking/turning versus 353/360 without transport,
+with zero ghosts after independent object motion and byte-identical world-only
+output. These are reconstruction improvements, not a native second-eye draw.

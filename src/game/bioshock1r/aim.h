@@ -95,6 +95,10 @@ void draw_debug_ui();
 // True while any seam hook is installed and enabled.
 bool hook_live();
 
+// s91: the hand's aim ray (world origin and unit direction) as the fire seams use it; false when
+// aim is off, outside gameplay, or the ray is stale. hand 0 = left (plasmid), 1 = right.
+bool hand_ray(int hand, float origin[3], float dir[3]);
+
 // The weapon object the trigger-keyed hand map currently attributes to the
 // RIGHT hand - i.e. the equipped gun, once it has fired at least once. Null
 // until then, and cleared on world change. Game thread only. The M7 viewmodel

@@ -51,6 +51,17 @@ so it is parked; the instrument stays.
 
 ## Cross-game (core)
 
+
+### Context-vtable detours ran on the OpenXR runtime's threads - FIXED 2026-10-10 (unverified in the headset)
+
+The frame inspector's D3D11 context detours (draw, clear, set-RT, map/unmap, copy) fire for
+every context in the process because the vtable is shared; Virtual Desktop's compositor
+threads were found inside them. Any adapter seam on those detours (BS1's AFW depth tap, the
+HUD and GFx classifiers) then ran on the runtime's device with our resources: seven identical
+driver crashes under BS1's alternate frame warp. Fixed in `core/gfx/frame_inspector.cpp` (the
+detours act on the game's device's contexts only). If a driver crash on a worker thread
+recurs under any game, scan every thread of the dump for mod frames before reading anything
+into the faulting one (`docs/TOOLS.md`, the dump row).
 ### F10 panel swallow of the right trigger and stick - FIXED in s74 for BS2
 
 The s63 controller-driven panel zeroed RT and the right stick for the game while

@@ -1,5 +1,6 @@
 #include "framework.h"
 
+#include "core/hooks/d3d11_debug.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
@@ -138,6 +139,10 @@ void init() {
     // whose only caller is that detour: the session then ran with whatever
     // exception filter had displaced ours (CSERHelper) and produced no dumps at
     // all. This way a hanging runtime costs VR and nothing else.
+    // The D3D11 debug layer, only when the tester armed it for this launch (a marker in the
+    // data dir): the device-creation hooks must be in before the game creates its device.
+    d3d11_debug::install();
+
     if (diag::skip("d3d11")) {
         BVR_LOG("BVR_SKIP: D3D11 swapchain hooks NOT installed");
     } else if (!d3d11_hook::install()) {

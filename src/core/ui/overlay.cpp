@@ -1,4 +1,6 @@
 #include "overlay.h"
+#include "overlay_canvas.h"
+#include "overlay_geometry.h"
 
 #include "core/framework/framework.h"
 #include "core/gfx/frame_inspector.h"
@@ -26,6 +28,9 @@ namespace bvr::overlay {
 namespace {
 
 bool g_initialized = false;
+std::atomic<bool> g_separateLayer{false}; // BS1 opts in; existing adapters keep their path.
+Canvas g_canvas;
+bool g_layerReady=false, g_drawReady=false;
 // Text size, independent of the window size (the two were reported wrong in
 // opposite directions - window right, text too big). <= 0 means "not chosen
 // yet"; DrawUi seeds it from the backbuffer once and the slider owns it after.
@@ -107,21 +112,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 // ---- controller pointer (2026-08-22) --------------------------------------
-// The panel is drawn flat into the backbuffer, which IS the eye image, so a
-// controller ray can be turned into a cursor with nothing more than the angle
-// between the ray and the head's forward. No world position is involved:
-// rotate the aim direction into the HEAD's frame, divide out the forward
-// component, and scale by the eye's tangents.
-//
-// KNOWN APPROXIMATION, first thing to check if the cursor sits off the ray:
-// the backbuffer holds the game's render at the GAME's fov while the
-// compositor presents it through the CLAIMED fov. Those agree today (the
-// session-15 lens match writes the world-equivalent spec), but if they ever
-// diverge the cursor picks up a constant scale error - which is a factor to
-// find, not a redesign.
-//
-// Both eyes get the panel at the same backbuffer pixel under SequentialReentry,
-// so it reads as head-locked at infinite depth. Accepted for now.
+// Separate-layer adapters intersect the controller origin + direction with
+// the head-locked quad at HUD depth. Legacy adapters retain the angular cursor.
+// The shared quad geometry also constructs the OpenXR composition layer.
 
 // Rotate v by the CONJUGATE of q (world -> local).
 void rotate_by_conj(const float q[4], const float v[3], float out[3]) {
@@ -192,6 +185,12 @@ void InjectControllerPointer() {
         float tanH = 0.0f, tanV = 0.0f;
         unsigned w = 0, h = 0;
         bvr::vr::fov_audit(&tanH, &tanV, nullptr, &w, &h);
+        if(g_separateLayer.load(std::memory_order_relaxed)) {
+            float halfH=0,halfV=0;
+            if(bvr::vr::headset_half_fov_deg(&halfH,&halfV)) {
+                tanH=tanf(halfH/57.29578f);tanV=tanf(halfV/57.29578f);
+            }
+        }
         if (!w || !h) bvr::hud::backbuffer_dims(&w, &h);
         // The current menu target owns pixel coordinates. XR swapchain sizes
         // may still describe the previous frame during a resolution change.
@@ -199,11 +198,18 @@ void InjectControllerPointer() {
             w=static_cast<unsigned>(io.DisplaySize.x);h=static_cast<unsigned>(io.DisplaySize.y);
         }
         if (fwd > 0.05f && tanH > 0.0f && tanV > 0.0f && w && h) {
-            const float ndcX = (d[0] / fwd) / tanH; // -1 left .. +1 right
-            const float ndcY = (d[1] / fwd) / tanV; // -1 down .. +1 up
-            px = (ndcX * 0.5f + 0.5f) * static_cast<float>(w);
-            py = (0.5f - ndcY * 0.5f) * static_cast<float>(h);
-            haveRay = true;
+            if(g_separateLayer.load(std::memory_order_relaxed)) {
+                const float delta[3]={aim.px-head.px,aim.py-head.py,aim.pz-head.pz};
+                float origin[3];rotate_by_conj(&head.qx,delta,origin);
+                float depth=0;bvr::vr::get_hud_quad(&depth,nullptr,nullptr);
+                haveRay=quad_pixel(origin,d,quad_geometry(depth,tanH,tanV),w,h,&px,&py);
+            } else {
+                const float ndcX = (d[0] / fwd) / tanH;
+                const float ndcY = (d[1] / fwd) / tanV;
+                px = (ndcX * 0.5f + 0.5f) * static_cast<float>(w);
+                py = (0.5f - ndcY * 0.5f) * static_cast<float>(h);
+                haveRay = true;
+            }
         }
     }
 
@@ -504,6 +510,7 @@ void DrawUi() {
 } // namespace
 
 void on_present(IDXGISwapChain* swapchain) {
+    g_drawReady=g_layerReady=false;
     if (!g_initialized) {
         g_initialized = Init(swapchain);
         if (!g_initialized) return;
@@ -552,23 +559,17 @@ void on_present(IDXGISwapChain* swapchain) {
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
-    // THE HALF-SCREEN CUTOFF (headset screenshot, 2026-08-22). The Win32
-    // backend sets io.DisplaySize from the WINDOW CLIENT RECT
-    // (imgui_impl_win32.cpp: GetClientRect), and the DX11 backend then sets the
-    // D3D VIEWPORT to exactly that (imgui_impl_dx11.cpp: vp.Width/Height =
-    // DisplaySize). But we draw into the BACKBUFFER, and in VR the backbuffer
-    // is square (~2560x2560) while the game's window client area is far
-    // shorter - so everything below the client height fell outside the viewport
-    // and was never rasterised. The panel was not too tall; it was being
-    // guillotined a little over halfway down.
-    //
-    // Point ImGui at the surface we actually render to. This also makes the
-    // whole eye image addressable, which is what the centring maths and the
-    // controller pointer below both already assumed.
+    // Use the actual drawing surface for layout and mouse coordinates. The
+    // quad canvas follows XR's recommendation, independently of game/SR sizes.
     {
         ImGuiIO& io = ImGui::GetIO();
         unsigned bw = 0, bh = 0;
-        if (bvr::hud::backbuffer_dims(&bw, &bh) && bw && bh) {
+        bvr::hud::backbuffer_dims(&bw,&bh);
+        if(g_separateLayer.load(std::memory_order_relaxed)) {
+            unsigned nw=0,nh=0;
+            if(bvr::vr::recommended_eye_size(&nw,&nh) && nw && nh) {bw=nw;bh=nh;}
+        }
+        if (bw && bh) {
             const ImVec2 client = io.DisplaySize; // what the Win32 backend set
             g_clientRect = client;
             // Rescale the REAL cursor into backbuffer space, or the desktop
@@ -596,11 +597,33 @@ void on_present(IDXGISwapChain* swapchain) {
     ImGui::NewFrame();
     DrawUi();
     ImGui::Render();
-    g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    g_drawReady=true;
+    if(g_separateLayer.load(std::memory_order_relaxed)) {
+        const auto size=ImGui::GetIO().DisplaySize;
+        if(g_canvas.ensure(g_device,static_cast<unsigned>(size.x),static_cast<unsigned>(size.y))) {
+            g_canvas.render(g_context,ImGui::GetDrawData());
+            g_layerReady=true;
+        }
+    } else {
+        g_context->OMSetRenderTargets(1,&g_rtv,nullptr);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    }
+}
+
+void set_separate_layer(bool on) {g_separateLayer.store(on,std::memory_order_relaxed);}
+ID3D11Texture2D* layer_texture() {
+    return g_separateLayer.load(std::memory_order_relaxed) && g_visible && g_layerReady ? g_canvas.texture() : nullptr;
+}
+void draw_mirror() {
+    if(!g_separateLayer.load(std::memory_order_relaxed) || !g_drawReady || !g_visible || !g_rtv) return;
+    auto* data=ImGui::GetDrawData();
+    if(data->DisplaySize.x<=0 || data->DisplaySize.y<=0) return;
+    draw_target(g_context,g_rtv,data,ImVec2(g_renderTargetSize.x/data->DisplaySize.x,
+                                          g_renderTargetSize.y/data->DisplaySize.y));
 }
 
 void on_resize() {
+    g_drawReady=g_layerReady=false;
     if (g_rtv) {
         g_rtv->Release();
         g_rtv = nullptr;
