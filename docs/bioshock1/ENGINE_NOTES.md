@@ -859,6 +859,31 @@ so the engine restores itself. Freeze (+0x20) is kept as a diagnostic lever,
 not used by the drive - it also stops the rig's own animations, and whether it
 starves the anim notifies that drive firing is UNTESTED.
 
+### Wrench swing and idle pose suppression (2026-10-12) — Codex
+
+The wrench's hand animation is resolved through `PlayerWeapon.HandsAnimationHandle`
+at `+0x8F0` and the active `SkeletonInstance` animation map. For physical swings,
+`Swing_A_Wrench` / `Swing_B_Wrench` identifies the engine animation after the
+synthetic swing-trigger pulse; the VR hand cluster (bones 27–44) is pinned to its
+captured ready pose through the animation blend-out. The engine animation itself
+continues. The game's wrench updater samples its separate
+`PlayerCamera_WrenchSwingACollision` pose for the hit phantom, so the hand-pose
+override does not replace that collision sample or the normal attack notification
+path.
+
+The wrench also plays `FidgetWrench` and `FidgetSlapWrench` while resting. Those
+clips are detected through the firing animation handle or a bounded scan (256
+entries) of the active animation map. During either clip, the VR hand driver
+keeps the equipped reference pose instead of adopting the evaluated resting pose;
+the animation channel and timing remain live. Lookup and memory reads fail open
+when the required engine objects or names are unavailable. This only affects the
+BioShock 1 Remastered adapter.
+
+The user reported that swing suppression appeared to work in a headset test and
+later that the wrench idle animation appeared fixed. The latest report did not
+separately confirm hit registration, so this records user feedback without
+claiming an independent collision test. — Codex
+
 ## Foreground scene FOV (session 13, 2026-07-26 - the camera-coupled rig term)
 
 **The renderer draws the first-person rig as a separate FOREGROUND scene with a

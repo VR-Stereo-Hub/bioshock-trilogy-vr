@@ -453,6 +453,18 @@ inline constexpr uint32_t kHandsVtableRva = 0xD8A28C;         // .?AVAHands@@ (M
 // attachment follows the array). Two arrays: A (+0x48/+0x4C) feeds the by-index
 // path and the renderer; B (+0x54/+0x58) is the lazily-filled by-name path.
 inline constexpr uint32_t kSkeletonInstanceVtableRva = 0xE19ACC; // .?AVSkeletonInstance@@
+inline constexpr uint32_t kSharedSkeletonAnimationVtableRva = 0xE1FD7C; // .?AVSharedSkeletonAnimation@@
+inline constexpr uint32_t kWrenchHandsAnimationHandleOffset = 0x8F0; // PlayerWeapon hands animation handle
+inline constexpr uint32_t kAnimationInstanceResourceOffset = 0xAC; // SharedSkeletonAnimation*
+inline constexpr uint32_t kSharedSkeletonAnimationNameOffset = 0x04; // FName index
+// SkeletonInstance animation-handle lookup layout (derived from native getter
+// 0x5955F0 and checked against the Wrench collision updater at 0x22D900).
+inline constexpr uint32_t kSkelInstAnimationMapOffset = 0x24; // pairs pointer
+inline constexpr uint32_t kSkelInstAnimationBucketsOffset = 0x30;
+inline constexpr uint32_t kSkelInstAnimationBucketCountOffset = 0x34;
+inline constexpr uint32_t kAnimationMapPairStride = 12; // next, handle, channel pointer
+inline constexpr uint32_t kAnimationChannelSamplesOffset = 0x00;
+inline constexpr uint32_t kAnimationChannelSampleIndexOffset = 0x10;
 inline constexpr uint32_t kActorMeshInstOffset = 0x128;  // AActor -> USkeletalMeshInstance*
 inline constexpr uint32_t kActorSkelInstOffset = 0x3FC;  // AActor -> SkeletonInstance*
 inline constexpr uint32_t kSkelInstActorOffset = 0x04;   // backref to the actor

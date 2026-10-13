@@ -19,6 +19,7 @@
 
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h" // backbuffer_dims: the lens laws are aspect-parameterised
+#include "core/input/swing.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h" // cine_drive/name for the vrbones status residue line
 #include "game/bioshock1r/camera.h"
@@ -33,6 +34,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 namespace bvr::b1r::bones {
 namespace {
@@ -61,6 +63,18 @@ bool g_refValid = false;
 Qts g_lastWrittenAnchor[2]; // per hand
 bool g_hasWritten[2] = {false, false};
 
+// A gesture-triggered wrench attack still runs through the engine's normal
+// animation and collision path. Pin only the rendered right-hand reference to
+// the ready pose while that specific hands animation is active. The actor and
+// controller transform continue to move normally.
+Qts g_wrenchReadyPose[kMaxBones];
+void* g_wrenchReadySkel = nullptr;
+void* g_wrenchReadyWeapon = nullptr;
+bool g_wrenchReadyValid = false;
+bool g_wrenchPending = false; // pulse sent; waiting for the named hands clip
+bool g_wrenchPosePinned = false;
+int g_wrenchSettledFrames = 0;
+
 // Everything the last drive() wrote, for reapply() (the stereo second pass).
 struct CachedBone {
     int idx;
@@ -87,6 +101,7 @@ int g_cacheSleeveCount = 0;
 // direction, sub-UU positions) stays out. Acts only on the DRIVEN rig; the
 // weapon's own skeleton (pump, cylinder) animates untouched.
 std::atomic<bool> g_swayKill{true};
+std::atomic<bool> g_wrenchPosePinEnabled{true};
 // 2x the MEASURED idle envelope vs a frozen snapshot (session 20, 1 Hz sway
 // telemetry: dpos peaks 3.01 UU, dang peaks 4.6 deg) - real animations move
 // the anchors tens of UU / tens of degrees, so the gap is wide on both sides.
@@ -372,11 +387,178 @@ bool locate(void* handsActor) {
                 sk.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
         g_refValid = false; // new array = new reference
         g_hasWritten[0] = g_hasWritten[1] = false;
+        g_wrenchReadySkel = nullptr;
+        g_wrenchReadyWeapon = nullptr;
+        g_wrenchReadyValid = false;
+        g_wrenchPending = false;
+        g_wrenchPosePinned = false;
+        g_wrenchSettledFrames = 0;
     }
     g_skelInst = sk.inst;
     g_bones = sk.bones;
     g_boneCount = sk.count;
     return true;
+}
+
+void clear_wrench_pose_pin(const char* why) {
+    if (g_wrenchPosePinned)
+        BVR_LOG("[bones] physical wrench pose pin OFF (%s)", why ? why : "?");
+    g_wrenchReadySkel = nullptr;
+    g_wrenchReadyWeapon = nullptr;
+    g_wrenchReadyValid = false;
+    g_wrenchPending = false;
+    g_wrenchPosePinned = false;
+    g_wrenchSettledFrames = 0;
+}
+
+struct AnimationMapEntry {
+    int32_t next;
+    int32_t handle;
+    void* channel;
+};
+
+const wchar_t* animation_name_for_channel(void* channelPtr) {
+    if (!channelPtr || !g_imageBase) return nullptr;
+    const uint8_t* channel = static_cast<const uint8_t*>(channelPtr);
+    const void* const* samples = nullptr;
+    uint32_t sampleIndex = 0;
+    if (!read_n(channel + patterns::kAnimationChannelSamplesOffset, &samples, sizeof samples) ||
+        !read_n(channel + patterns::kAnimationChannelSampleIndexOffset, &sampleIndex,
+                sizeof sampleIndex) ||
+        !samples || sampleIndex > 4096 ||
+        !bvr::pattern_scan::is_memory_valid(
+            samples, (static_cast<size_t>(sampleIndex) + 1) * sizeof(void*)))
+        return nullptr;
+    void* instance = nullptr;
+    if (!read_n(samples + sampleIndex, &instance, sizeof instance) || !instance) return nullptr;
+    void* animation = nullptr;
+    if (!read_n(static_cast<uint8_t*>(instance) + patterns::kAnimationInstanceResourceOffset,
+                &animation, sizeof animation) ||
+        !animation)
+        return nullptr;
+    void* vtable = nullptr;
+    int32_t nameIndex = -1;
+    if (!read_n(animation, &vtable, sizeof vtable) ||
+        to_rva(vtable) != patterns::kSharedSkeletonAnimationVtableRva ||
+        !read_n(static_cast<uint8_t*>(animation) + patterns::kSharedSkeletonAnimationNameOffset,
+                &nameIndex, sizeof nameIndex))
+        return nullptr;
+    return patterns::fname_text(nameIndex);
+}
+
+// Resolve the currently sampled animation for PlayerWeapon.HandsAnimationHandle.
+// Layout derivation is recorded in docs/bioshock1/ENGINE_NOTES.md. Every read is
+// guarded because these engine-owned maps can be replaced during rig changes.
+const wchar_t* wrench_hands_animation_name(void* skeleton, void* wrench) {
+    if (!skeleton || !wrench) return nullptr;
+    int32_t handle = 0;
+    if (!read_n(static_cast<uint8_t*>(wrench) + patterns::kWrenchHandsAnimationHandleOffset,
+                &handle, sizeof handle) || handle <= 0)
+        return nullptr;
+
+    const uint8_t* si = static_cast<const uint8_t*>(skeleton);
+    const uint8_t* pairs = nullptr;
+    const int32_t* buckets = nullptr;
+    int32_t bucketCount = 0;
+    if (!read_n(si + patterns::kSkelInstAnimationMapOffset, &pairs, sizeof pairs) ||
+        !read_n(si + patterns::kSkelInstAnimationBucketsOffset, &buckets, sizeof buckets) ||
+        !read_n(si + patterns::kSkelInstAnimationBucketCountOffset, &bucketCount,
+                sizeof bucketCount) ||
+        !pairs || !buckets || bucketCount <= 0 || bucketCount > 65536 ||
+        (bucketCount & (bucketCount - 1)) != 0)
+        return nullptr;
+
+    int32_t entry = -1;
+    const int32_t bucket = (bucketCount - 1) & handle;
+    if (!read_n(buckets + bucket, &entry, sizeof entry)) return nullptr;
+    for (int32_t walked = 0; entry >= 0 && walked < bucketCount; ++walked) {
+        AnimationMapEntry mapEntry{};
+        if (!read_n(pairs + static_cast<size_t>(entry) * patterns::kAnimationMapPairStride,
+                    &mapEntry, sizeof mapEntry))
+            return nullptr;
+        if (mapEntry.handle == handle) return animation_name_for_channel(mapEntry.channel);
+        entry = mapEntry.next;
+    }
+    return nullptr;
+}
+
+bool is_wrench_swing_animation(const wchar_t* name) {
+    return name && (wcscmp(name, L"Swing_A_Wrench") == 0 ||
+                    wcscmp(name, L"Swing_B_Wrench") == 0);
+}
+
+bool is_wrench_idle_animation(const wchar_t* name) {
+    return name && (wcscmp(name, L"FidgetWrench") == 0 ||
+                    wcscmp(name, L"FidgetSlapWrench") == 0);
+}
+
+// PlayerWeapon::PlayIdleAnimations starts its hand idle outside the weapon's
+// firing HandsAnimationHandle. Find either known wrench idle clip through the
+// active SkeletonInstance animation-channel map instead.
+const wchar_t* wrench_idle_animation_in_skeleton(void* skeleton) {
+    if (!skeleton || !g_imageBase) return nullptr;
+    const uint8_t* si = static_cast<const uint8_t*>(skeleton);
+    const uint8_t* pairs = nullptr;
+    const int32_t* buckets = nullptr;
+    int32_t bucketCount = 0;
+    if (!read_n(si + patterns::kSkelInstAnimationMapOffset, &pairs, sizeof pairs) ||
+        !read_n(si + patterns::kSkelInstAnimationBucketsOffset, &buckets, sizeof buckets) ||
+        !read_n(si + patterns::kSkelInstAnimationBucketCountOffset, &bucketCount,
+                sizeof bucketCount) ||
+        !pairs || !buckets || bucketCount <= 0 || bucketCount > 65536 ||
+        (bucketCount & (bucketCount - 1)) != 0)
+        return nullptr;
+
+    size_t walkedTotal = 0;
+    constexpr size_t kMaxAnimationEntries = 256;
+    for (int32_t bucket = 0; bucket < bucketCount && walkedTotal < kMaxAnimationEntries;
+         ++bucket) {
+        int32_t entry = -1;
+        if (!read_n(buckets + bucket, &entry, sizeof entry)) return nullptr;
+        for (size_t walkedBucket = 0;
+             entry >= 0 && walkedBucket < kMaxAnimationEntries &&
+             walkedTotal < kMaxAnimationEntries;
+             ++walkedBucket, ++walkedTotal) {
+            AnimationMapEntry mapEntry{};
+            if (!read_n(pairs + static_cast<size_t>(entry) * patterns::kAnimationMapPairStride,
+                        &mapEntry, sizeof mapEntry))
+                break;
+            const wchar_t* name = animation_name_for_channel(mapEntry.channel);
+            if (is_wrench_idle_animation(name)) return name;
+            entry = mapEntry.next;
+        }
+    }
+    return nullptr;
+}
+
+bool wrench_ready_pose_settled(const Qts* pose) {
+    if (!pose || g_boneCount <= patterns::kBoneWeaponAttach ||
+        g_boneCount <= patterns::kBoneRClusterFirst)
+        return false;
+    const int probes[] = {patterns::kBoneRClusterFirst, patterns::kBoneWeaponAttach};
+    for (int bone : probes) {
+        float dp[3] = {pose[bone].p[0] - g_wrenchReadyPose[bone].p[0],
+                       pose[bone].p[1] - g_wrenchReadyPose[bone].p[1],
+                       pose[bone].p[2] - g_wrenchReadyPose[bone].p[2]};
+        const float posUu = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+        float dot = pose[bone].q[0] * g_wrenchReadyPose[bone].q[0] +
+                    pose[bone].q[1] * g_wrenchReadyPose[bone].q[1] +
+                    pose[bone].q[2] * g_wrenchReadyPose[bone].q[2] +
+                    pose[bone].q[3] * g_wrenchReadyPose[bone].q[3];
+        if (dot < 0.0f) dot = -dot;
+        if (dot > 1.0f) dot = 1.0f;
+        const float angleDeg = 2.0f * acosf(dot) * kRadToDeg;
+        if (posUu > kSwayPosThreshUu || angleDeg > kSwayAngThreshDeg) return false;
+    }
+    return true;
+}
+
+void pin_wrench_ready_pose(Qts* pose) {
+    if (!pose || !g_wrenchReadyValid ||
+        g_wrenchReadySkel != g_skelInst || g_boneCount <= patterns::kBoneRClusterLast)
+        return;
+    for (int i = patterns::kBoneRClusterFirst; i <= patterns::kBoneRClusterLast; ++i)
+        memcpy(&pose[i], &g_wrenchReadyPose[i], sizeof(Qts));
 }
 
 void set_dirty(uint8_t v) {
@@ -818,6 +1000,7 @@ void on_world_change() {
     g_bones = nullptr;
     g_boneCount = 0;
     g_refValid = false;
+    clear_wrench_pose_pin("world change");
     g_hasWritten[0] = g_hasWritten[1] = false;
     g_cacheSkelInst = nullptr;
     g_cacheMs = 0;
@@ -837,6 +1020,7 @@ void on_world_change() {
 }
 
 void release(const char* why) {
+    clear_wrench_pose_pin(why ? why : "rig release");
     // NEVER write without a live skeleton. on_world_change() nulls these the
     // moment a level swap is seen, so this is the interlock that makes the
     // call safe from any site: without it, a release on the world-change frame
@@ -1034,6 +1218,76 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
 
     if (!handsActor || !locate(handsActor)) return false;
 
+    if (!g_wrenchPosePinEnabled.load(std::memory_order_relaxed) &&
+        (g_wrenchPending || g_wrenchPosePinned)) {
+        clear_wrench_pose_pin("A/B switch off");
+        g_refValid = false;
+        g_hasWritten[hand] = false;
+        set_dirty(1);
+    }
+
+    // A synthetic trigger pulse is the authoritative marker that this attack
+    // came from the physical gesture. Keep this latch independent from the
+    // 120 ms button duration: the visual animation can outlast the input pulse.
+    void* holdable = nullptr;
+    const bool haveHoldable = hand == 1 && hands::current_holdable(&holdable) && holdable;
+    const wchar_t* holdableClass = haveHoldable ? patterns::object_class_name(holdable) : nullptr;
+    const bool wrenchEquipped = holdableClass && wcscmp(holdableClass, L"Wrench") == 0;
+    const uint64_t nowMs = GetTickCount64();
+    const bool gesturePulse = hand == 1 && wrenchEquipped &&
+                              g_wrenchPosePinEnabled.load(std::memory_order_relaxed) &&
+                              bvr::input::swing::enabled() &&
+                              bvr::input::swing::rt_pulse(nowMs);
+
+    if ((g_wrenchReadySkel && g_wrenchReadySkel != g_skelInst) ||
+        (g_wrenchReadyWeapon && g_wrenchReadyWeapon != holdable) ||
+        (g_wrenchPending && !gesturePulse && !g_wrenchPosePinned) ||
+        ((g_wrenchPending || g_wrenchPosePinned) && (!wrenchEquipped || hand != 1)))
+        clear_wrench_pose_pin("gesture ended or rig changed");
+
+    const wchar_t* handsAnimation =
+        wrenchEquipped ? wrench_hands_animation_name(g_skelInst, holdable) : nullptr;
+    const wchar_t* mappedIdleAnimation =
+        wrenchEquipped ? wrench_idle_animation_in_skeleton(g_skelInst) : nullptr;
+    const bool wrenchSwingAnimation = is_wrench_swing_animation(handsAnimation);
+    const bool wrenchIdleAnimation = is_wrench_idle_animation(handsAnimation) ||
+                                     is_wrench_idle_animation(mappedIdleAnimation);
+    static int lastIdleDiagnostic = -2;
+    const int idleDiagnostic = !wrenchEquipped ? -1
+                               : is_wrench_idle_animation(handsAnimation) ? 1
+                               : mappedIdleAnimation == nullptr             ? 0
+                                                                            : 2;
+    if (idleDiagnostic != lastIdleDiagnostic) {
+        lastIdleDiagnostic = idleDiagnostic;
+        if (idleDiagnostic == 1)
+            BVR_LOG("[bones] wrench idle clip resolved from HandsAnimationHandle: %ls",
+                    handsAnimation);
+        else if (idleDiagnostic == 2)
+            BVR_LOG("[bones] wrench idle clip resolved from SkeletonInstance map: %ls",
+                    mappedIdleAnimation);
+        else if (idleDiagnostic == 0)
+            BVR_LOG("[bones] wrench equipped; no FidgetWrench clip found in active animation map (hands handle: %ls)",
+                    handsAnimation ? handsAnimation : L"none");
+    }
+
+    // Capture the last engine-owned pose before adopting any newly evaluated
+    // swing pose. If this pulse did not produce the game's named wrench swing,
+    // the pending pin expires with the input pulse and ordinary attacks remain
+    // fully animated.
+    if (!g_wrenchPending && !g_wrenchPosePinned && gesturePulse) {
+        g_wrenchPending = true;
+        g_wrenchReadySkel = g_skelInst;
+        g_wrenchReadyWeapon = holdable;
+        g_wrenchReadyValid = g_refValid && g_boneCount > patterns::kBoneRClusterLast;
+        if (g_wrenchReadyValid) memcpy(g_wrenchReadyPose, g_ref, sizeof(Qts) * g_boneCount);
+    }
+    if (g_wrenchPending && wrenchSwingAnimation && g_wrenchReadyValid) {
+        g_wrenchPending = false;
+        g_wrenchPosePinned = true;
+        g_wrenchSettledFrames = 0;
+        BVR_LOG("[bones] physical wrench attack identified; pinning the visible ready pose");
+    }
+
     int first = 0, last = 0, anchor = 0;
     cluster_of(hand, &first, &last, &anchor);
     if (first < 0 || last >= g_boneCount || anchor < first || anchor > last) {
@@ -1064,9 +1318,29 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         Qts fresh[kMaxBones];
         if (!read_n(g_bones, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount)))
             return false;
-        bool adopt = true;
+
+        if (g_wrenchPosePinned) {
+            if (wrenchSwingAnimation) {
+                g_wrenchSettledFrames = 0;
+            } else if (wrench_ready_pose_settled(fresh)) {
+                ++g_wrenchSettledFrames;
+                if (g_wrenchSettledFrames >= 2) {
+                    clear_wrench_pose_pin("wrench animation blended back to ready pose");
+                }
+            } else {
+                g_wrenchSettledFrames = 0;
+            }
+        }
+        const bool suppressWrenchIdlePose =
+            wrenchEquipped && wrenchIdleAnimation && g_refValid;
+        bool adopt = !suppressWrenchIdlePose;
+        // The Wrench's authored FidgetWrench/FidgetSlapWrench clips rotate
+        // the resting weapon into a two-handed pose. Keep the already-settled
+        // equipped reference during those clips. The animation instance and
+        // its clock remain untouched; attack clips and collision sampling
+        // continue through the normal game path.
         if (g_refValid && g_swayKill.load(std::memory_order_relaxed)) {
-            adopt = false;
+            if (!suppressWrenchIdlePose) adopt = false;
             uint64_t nowMs = GetTickCount64();
             float maxPos = 0.0f, maxAng = 0.0f;
             static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneWeaponAttach};
@@ -1088,7 +1362,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 g_lastBigDeltaMs = nowMs;
             // Track through the animation AND a settle window past its last
             // big frame, so the eventual freeze holds the SETTLED pose.
-            adopt = (nowMs - g_lastBigDeltaMs) < kSwaySettleMs;
+            if (!suppressWrenchIdlePose)
+                adopt = (nowMs - g_lastBigDeltaMs) < kSwaySettleMs;
             if (g_telemetry.load(std::memory_order_relaxed) &&
                 nowMs - g_lastSwayTlmMs >= 1000) {
                 g_lastSwayTlmMs = nowMs;
@@ -1120,6 +1395,11 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             memcpy(g_ref, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
             g_refValid = true;
         }
+
+        // Keep the ready reference only for the driven wrench hand. The engine
+        // animation channel above remains live for its normal timing and hit
+        // notifications; reapply() uses the resulting composed pose as usual.
+        if (g_wrenchPosePinned) pin_wrench_ready_pose(g_ref);
     }
 
     // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to
@@ -1398,7 +1678,7 @@ void handle_command(const char* args) {
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
         BVR_LOG("[bones] usage: vrbones status|list [n]|poke <idx> <dUU>|freeze on|off|"
-                "collapse on|off|ref|anchor <idx>|lcluster <lo> <hi> <anchor>");
+                "collapse on|off|ref|anchor <idx>|lcluster <lo> <hi> <anchor>|wrenchpose on|off|status");
         return;
     }
     const char* rest = args + consumed;
@@ -1406,12 +1686,14 @@ void handle_command(const char* args) {
 
     if (strcmp(verb, "status") == 0) {
         BVR_LOG("[bones] inst=%p bones=%p count=%d writes=%u lastHand=%d refValid=%d "
-                "collapse=%d hideinactive=%d hiddenHand=%d",
+                "collapse=%d hideinactive=%d hiddenHand=%d wrenchPose=%d pending=%d pinned=%d",
                 g_skelInst, static_cast<void*>(g_bones), g_boneCount,
                 g_writes.load(std::memory_order_relaxed),
                 g_lastHand.load(std::memory_order_relaxed), g_refValid ? 1 : 0,
                 g_collapse.load(std::memory_order_relaxed) ? 1 : 0,
-                g_hideInactive.load(std::memory_order_relaxed) ? 1 : 0, g_hiddenHand);
+                g_hideInactive.load(std::memory_order_relaxed) ? 1 : 0, g_hiddenHand,
+                g_wrenchPosePinEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+                g_wrenchPending ? 1 : 0, g_wrenchPosePinned ? 1 : 0);
         // Session 30: the drive-residue state, on demand. Until now cacheAge
         // existed only on the `[b1r] cine edge` line and the sleeve latch was
         // printed nowhere at all, so a hands regression check had to provoke a
@@ -1581,6 +1863,20 @@ void handle_command(const char* args) {
         g_telemetry.store(on, std::memory_order_relaxed);
         BVR_LOG("[bones] telemetry %s%s", on ? "ON" : "off",
                 on ? " - [tlm] lines at ~5 Hz (head/ctrl/cam/actor/target/bones)" : "");
+    } else if (strcmp(verb, "wrenchpose") == 0) {
+        if (strcmp(rest, "on") == 0) {
+            g_wrenchPosePinEnabled.store(true, std::memory_order_relaxed);
+        } else if (strcmp(rest, "off") == 0) {
+            g_wrenchPosePinEnabled.store(false, std::memory_order_relaxed);
+            if (g_wrenchPending || g_wrenchPosePinned) {
+                clear_wrench_pose_pin("A/B switch off");
+                g_refValid = false;
+                g_hasWritten[1] = false;
+                set_dirty(1);
+            }
+        }
+        BVR_LOG("[bones] physical wrench pose suppression %s",
+                g_wrenchPosePinEnabled.load(std::memory_order_relaxed) ? "ON" : "OFF");
     } else if (strcmp(verb, "scalemode") == 0) {
         int m = -1;
         if (sscanf_s(rest, "%d", &m) == 1 && m >= 0 && m <= 3) {

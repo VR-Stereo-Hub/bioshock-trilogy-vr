@@ -109,6 +109,7 @@ bool sway_kill();
 // Seam commands (game thread): status | list [n] | skel [hands|weapon] |
 // poke <idx> <dUU> |
 // freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
+// wrenchpose on|off|status (A/B switch for gesture-originated Wrench pose pin) |
 // log on|off (in-headset telemetry: head/controller/camera/actor/target/bone
 // samples at ~5 Hz so a headset session can be diagnosed from the log)
 void handle_command(const char* args);
