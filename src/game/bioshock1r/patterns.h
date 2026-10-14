@@ -501,6 +501,19 @@ inline constexpr uint32_t kHandsVtableRva = 0xD8A28C;         // .?AVAHands@@ (M
 inline constexpr uint32_t kSkeletonInstanceVtableRva = 0xE19ACC; // .?AVSkeletonInstance@@
 inline constexpr uint32_t kActorMeshInstOffset = 0x128;  // AActor -> USkeletalMeshInstance*
 inline constexpr uint32_t kActorSkelInstOffset = 0x3FC;  // AActor -> SkeletonInstance*
+// The mesh instance's SOCKET TABLE (rs14, rs18): +0xE8 socket FNames (8 bytes each), +0xEC their
+// count, +0xF4 the bone each aliases, +0x100 a 48-byte FCoords offset in that bone's frame.
+inline constexpr uint32_t kMeshInstSocketNamesOffset = 0xE8;
+inline constexpr uint32_t kMeshInstSocketCountOffset = 0xEC;
+// AActor::GetBoneCoords, the C++ behind execGetBoneCoords (+0x545090), tools\ida\rs17/rs18:
+//   FCoords* __thiscall (FCoords* out, FName BoneName /* by value */, UBOOL bGetSocketCoords), ret 0x10
+// World space (origin, then X/Y/Z axes). A socket name resolves through the table above to its
+// bone (+0x3F4BD0); with bGetSocketCoords the socket's own offset is applied too (+0x3F9D80) -
+// the script corpus calls it that way for every socket. Its early returns (no mesh instance, a
+// failed LOD check) leave `out` unwritten.
+inline constexpr uint32_t kActorGetBoneCoordsRva = 0x544FA0;
+inline constexpr uint8_t kActorGetBoneCoordsPrologue[12] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8,
+                                                            0x83, 0xEC, 0x30, 0x56, 0x8B, 0xF1};
 inline constexpr uint32_t kSkelInstActorOffset = 0x04;   // backref to the actor
 inline constexpr uint32_t kSkelInstFreezeOffset = 0x20;  // int; SkeletonInstanceFreeze = 1
 inline constexpr uint32_t kSkelInstBonesOffset = 0x48;      // hkQsTransform* array A
@@ -839,6 +852,7 @@ struct Symbols {
     void* abilityFireStart = nullptr; // UAttackAbility::GetPerfectFireStart impl
     void* weaponInitDamage = nullptr;  // AWeapon::InitiateDamage impl (telemetry)
     void* abilityInitDamage = nullptr; // UAttackAbility::InitiateDamage impl (telemetry)
+    void* actorGetBoneCoords = nullptr; // AActor::GetBoneCoords (the weapon's muzzle socket)
 };
 
 // Runs all scans, logging each stage. False if anything failed to resolve.

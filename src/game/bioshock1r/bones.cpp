@@ -922,7 +922,13 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // 0.760 was the s61 in-headset calibration; 0.80 is BRVR's GunScale, adopted
 // 2026-08-22 for parity (see the g_scale note above for what a 5% change is
 // worth). 1.0 = authored, and at 1.0 the lane drops entirely.
-std::atomic<float> g_wScale{0.83f}; // s90: the tester's 2026-10-09 tune (was 0.80)
+// 2026-10-14: 1.0 - the game's own gun against the game's own hand, the tester's call ("attach
+// the gun in the same scale, tied to hand size, that the game wants by default"); with the
+// weapon following the hands below, the gun grows exactly as the hand does. (Was 0.83, the
+// tester's 2026-10-09 tune with the weapon on its own size.)
+// 2026-10-14 headset: 0.88, the tester's tune on top of that ("it's working well"), measured
+// against a hands and arms size of 0.81.
+std::atomic<float> g_wScale{0.88f};
 // s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
 // hand's scale (0.8 by default), so the two sides can never disagree. Declared here
 // because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set
@@ -931,7 +937,8 @@ std::atomic<float> g_wScale{0.83f}; // s90: the tester's 2026-10-09 tune (was 0.
 // s90: the tester's headset tune of 2026-10-09 21:47 is the default (was 0.83, Dishonored's hand;
 // the weapon followed it). With the weapon on its own size (g_wScale) it no longer follows.
 std::atomic<float> g_m4ArmSize{0.85f}; // s86: absolute (HANDS_DISHONORED.md)
-std::atomic<bool> g_m4WeaponFollows{false};
+// 2026-10-14: on again - the weapon at the hand's scale, as the game draws the two together.
+std::atomic<bool> g_m4WeaponFollows{true};
 void* g_wHoldable = nullptr; // the actor the lane is bound to
 void* g_wSkelInst = nullptr;
 Qts* g_wBones = nullptr;

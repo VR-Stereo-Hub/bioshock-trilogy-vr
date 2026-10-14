@@ -1,4 +1,4 @@
-// gpu-test-sources: src/game/bioshock1r/temporal.cpp src/game/bioshock1r/temporal_gpu.cpp src/game/bioshock1r/afw_gpu.cpp src/game/bioshock1r/alt_eye.cpp src/core/gfx/dlss_client.cpp src/core/gfx/blit.cpp src/core/gfx/frame_pacing.cpp
+// gpu-test-sources: src/game/bioshock1r/temporal.cpp src/game/bioshock1r/temporal_gpu.cpp src/game/bioshock1r/afw_gpu.cpp src/game/bioshock1r/alt_eye.cpp src/game/bioshock1r/laser_draw.cpp src/core/gfx/dlss_client.cpp src/core/gfx/blit.cpp src/core/gfx/frame_pacing.cpp
 // gpu-test-needs: dlss-host
 // The PRODUCTION glue (game/bioshock1r/temporal.cpp) driven the way the game and core drive
 // it, with the engine and core seams replaced by stubs that record what they are given:
@@ -26,6 +26,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/fg_sync.h"
+#include "game/bioshock1r/laser_draw.h"
 #include "game/bioshock1r/frame_context.h"
 #include "game/bioshock1r/temporal.h"
 #include "game/bioshock1r/native_repair.h"
@@ -67,6 +68,17 @@ void set_active(bool) {}
 void note_camera(uint64_t,int,const tgpu::Camera&,float,const tgpu::Params&,const afw::Params&) {}
 void finish_eye(ID3D11Texture2D*,uint64_t,int,float,float,bool) {}
 bool copy_output(ID3D11DeviceContext*,ID3D11Texture2D*,uint64_t,int,float,float) {return false;}
+}
+// The hand motion vectors' grips and the in-image laser's segment: no controllers and no aim
+// here, so the guides keep the room-fixed foreground vectors and no beam is drawn.
+namespace bvr::b1r::hands {
+bool active() { return false; }
+}
+namespace bvr::b1r::handback {
+float weight(int, uint64_t) { return 1.0f; }
+}
+namespace bvr::b1r::aim {
+bool laser_segment(laser_draw::Segment*) { return false; }
 }
 
 // alt_eye.cpp's MinHook use: the frame-delta hook needs the real exe, which a test does not
@@ -117,6 +129,7 @@ void set_held_rebuild(HeldReadyFn r, HeldRebuildFn fn) { stub::heldReady = r; st
 void set_alternate_eye(bool on) { stub::alternateEye = on; }
 int current_eye_sign() { return 0; }
 bool cinematic_active() { return false; }
+bool get_hand_pose(int, bool, HeadPose&) { return false; }
 void sr_push_eye(int sign) { stub::srTags.push_back(sign); }
 void set_sr_drift_resync(bool on) { stub::driftResync = on; }
 } // namespace bvr::vr

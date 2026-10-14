@@ -54,6 +54,22 @@ Button names: `A B X Y LB RB LS RS DUP DDOWN DLEFT DRIGHT START BACK NONE`.
 | **Modifier + selecting stick UP / DOWN** | Cycle the equipped weapon's ammo type. Pulsed, so one step per push - dominant axis only, diagonals ignored |
 | **Modifier + selecting stick RIGHT, held ~0.5 s** | **The MAP.** Right is the game's hint button, and `ShockPlayerController` gates the map behind `HintButtonHeld` / `HintHoldTime = 0.5 s` - so this one direction is HELD rather than pulsed. A short push is the hint on its own |
 
+### BS1 numpad: move and turn the hands (keyboard, game window focused)
+
+The same moves as F10 Hands > **Move the hand (as you see it)**, same step sizes, saved the same
+way. The gun rides the hand holding it, so moving that hand moves the gun. NumLock on or off.
+
+| Key | Move modes | Turn modes |
+|---|---|---|
+| **8 / 2** | forward / back | pitch up / down |
+| **6 / 4** | right / left | yaw right / left |
+| **0 / 5** | up / down | roll right / left |
+| **7** | step: Fine (0.2 cm, 0.5 deg) -> Normal (0.5 cm, 2 deg) -> Coarse (2 cm, 5 deg) | |
+| **9** | mode: WEAPON HAND MOVE -> WEAPON HAND TURN -> FREE HAND MOVE -> FREE HAND TURN | |
+
+The log names each press (`[hands] numpad: ...`). The older numpad modes (per-weapon placement,
+model trim, crosshair) remain only for the legacy hand modes, which F10 no longer selects.
+
 ### Live — comfort and scale
 
 BRVR's key names, units and shipped defaults, so a config carries between the two

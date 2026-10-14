@@ -33,6 +33,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/attach_census.h"
 #include "game/bioshock1r/handback.h"
+#include "game/bioshock1r/menu_backend.h"
 #include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scripted.h"
@@ -1116,6 +1117,57 @@ void tuner_log(const char* what) {
                 g_rotRollDeg[1].load(std::memory_order_relaxed), g_tuneStep);
 }
 
+// 2026-10-14: THE NUMPAD ON F10's STEP ROWS (mode 4). In the one hand drive the held hand
+// - and the gun riding its bones - is placed only by that hand's own trims, the values the F10
+// "Move the hand (as you see it)" buttons edit; the per-weapon placement and model trim the
+// legacy modes below edit are not read there, and the crosshair trims are bypassed along the
+// barrel. So the numpad presses those same buttons: the same moves and turns as you see them,
+// the same three step sizes, queued through the same backend call, saved the same way.
+//   8 / 2   forward / back        pitch up / down
+//   6 / 4   right / left          yaw right / left
+//   0 / 5   up / down             roll right / left
+//   7       step: Fine 0.2 cm, 0.5 deg -> Normal 0.5 cm, 2 deg -> Coarse 2 cm, 5 deg
+//   9       WEAPON HAND MOVE -> WEAPON HAND TURN -> FREE HAND MOVE -> FREE HAND TURN
+// The weapon hand is the one holding something (active_hand), the free hand the other.
+void poll_numpad_steps(bool modeDown, bool stepDown, const bool down[6]) {
+    static int s_mode = 0; // 0 weapon move, 1 weapon turn, 2 free move, 3 free turn
+    static int s_step = 1; // F10's default, Normal
+    static bool prevMode = false, prevStep = false, prev[6] = {};
+    static const float kStepCm[3] = {0.2f, 0.5f, 2.0f}, kStepDeg[3] = {0.5f, 2.0f, 5.0f};
+    static const char* kModes[4] = {"WEAPON HAND MOVE", "WEAPON HAND TURN", "FREE HAND MOVE", "FREE HAND TURN"};
+    static const char* kSteps[3] = {"Fine", "Normal", "Coarse"};
+    if (modeDown && !prevMode) {
+        s_mode = (s_mode + 1) % 4;
+        BVR_LOG("[hands] numpad: now %s (step %s)", kModes[s_mode], kSteps[s_step]);
+    }
+    prevMode = modeDown;
+    if (stepDown && !prevStep) {
+        s_step = (s_step + 1) % 3;
+        BVR_LOG("[hands] numpad: step %s - %.1f cm / %.1f deg per press", kSteps[s_step], kStepCm[s_step],
+                kStepDeg[s_step]);
+    }
+    prevStep = stepDown;
+    // Key i -> F10 row: the binds are fwd, back, right, left, up, down; the rows' axes are
+    // 0 right / yaw, 1 forward / pitch, 2 up / roll, as hand_position_step and
+    // hand_rotation_step take them.
+    static const int kAxis[6] = {1, 1, 0, 0, 2, 2};
+    static const float kSign[6] = {+1, -1, +1, -1, +1, -1};
+    const bool rot = s_mode == 1 || s_mode == 3;
+    const int held = active_hand() == 0 ? 0 : 1;
+    const int h = s_mode < 2 ? held : 1 - held;
+    for (int i = 0; i < 6; ++i) {
+        if (down[i] && !prev[i]) {
+            const float amount = kSign[i] * (rot ? kStepDeg[s_step] : kStepCm[s_step]);
+            menu::live_backend().hand_step(h, rot, kAxis[i], amount);
+            BVR_LOG("[hands] numpad: %s - the %s hand %s %+.1f %s", kModes[s_mode], h ? "RIGHT" : "LEFT",
+                    rot ? (kAxis[i] == 0 ? "yaw" : kAxis[i] == 1 ? "pitch" : "roll")
+                        : (kAxis[i] == 0 ? "right" : kAxis[i] == 1 ? "forward" : "up"),
+                    amount, rot ? "deg" : "cm");
+        }
+        prev[i] = down[i];
+    }
+}
+
 void poll_numpad_tuner() {
     struct Bind { int vk; int alt; int axis; float sign; };
     // alt = what the same physical key sends with NumLock OFF.
@@ -1134,9 +1186,11 @@ void poll_numpad_tuner() {
     if (!s_told) {
         s_told = true;
         BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
-                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND POS/"
-                "FREE-HAND ROT/FREE-HAND GRIP. Both NumLock states work.",
-                (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
+                "7 cycles step, 9 cycles %s. Both NumLock states work.",
+                (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF",
+                g_mode.load(std::memory_order_relaxed) == 4
+                    ? "WEAPON HAND MOVE/TURN, FREE HAND MOVE/TURN (F10's Move the hand rows)"
+                    : "PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND POS/FREE-HAND ROT/FREE-HAND GRIP");
     }
 
     // Keys BEFORE focus, so "pressed but the window was not foreground" is a
@@ -1152,6 +1206,13 @@ void poll_numpad_tuner() {
             BVR_LOG("[hands] numpad: key held, but the game window is not foreground - "
                     "ignoring (click the game window first)");
         }
+        return;
+    }
+
+    if (g_mode.load(std::memory_order_relaxed) == 4) {
+        bool down[6];
+        for (int i = 0; i < 6; ++i) down[i] = key_down(kBinds[i].vk, kBinds[i].alt);
+        poll_numpad_steps(key_down(VK_NUMPAD9, VK_PRIOR), key_down(VK_NUMPAD7, VK_HOME), down);
         return;
     }
 

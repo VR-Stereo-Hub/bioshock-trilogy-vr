@@ -384,6 +384,17 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
         BVR_LOG("[b1r] UAttackAbility::GetPerfectFireStart impl prologue mismatch at RVA 0x%X"
                 " - plasmid aim unavailable", kAbilityFireStartImplRva);
     }
+
+    // A direct call, never hooked: the same prologue gate, so a patched build refuses.
+    const uint8_t* boneCoords = image.base + kActorGetBoneCoordsRva;
+    if (is_memory_valid(boneCoords, sizeof kActorGetBoneCoordsPrologue) &&
+        memcmp(boneCoords, kActorGetBoneCoordsPrologue, sizeof kActorGetBoneCoordsPrologue) == 0) {
+        out.actorGetBoneCoords = const_cast<uint8_t*>(boneCoords);
+        BVR_LOG("[b1r] AActor::GetBoneCoords = %p (RVA 0x%X)", boneCoords, kActorGetBoneCoordsRva);
+    } else {
+        BVR_LOG("[b1r] AActor::GetBoneCoords prologue mismatch at RVA 0x%X - the barrel origin is unavailable",
+                kActorGetBoneCoordsRva);
+    }
 }
 
 const wchar_t* fname_text(int32_t index) {

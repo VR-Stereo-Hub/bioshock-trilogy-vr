@@ -150,6 +150,9 @@ const Spec kSpecs[] = {
     {S::OutputHeight,"OutputHeight",T::Display,"",L::Basic,"Output height",K::Slider,0,8192,"%.0f",nullptr},
     {S::TemporalTaa,"TemporalTaa",T::Display,"Temporal diagnostics",L::Debug,"TAA (superseded anti-aliasing)",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Any GPU. Softer than DLAA; selecting it switches DLSS off."},
     {S::HandMotionVectors,"HandMotionVectors",T::Display,"Upscaling and anti-aliasing (DLSS)",L::Advanced,"Hand motion vectors",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Tells DLSS and TAA how each controller moved the hand and weapon, so their textures stay sharp while you move them instead of smearing. Off: the hands are treated as standing still in the room, for comparison."},
+    {S::BarrelOrigin,"BarrelOrigin",T::Aim,"Aim origin",L::Basic,"Shots leave the barrel",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The bullet and the laser start at the drawn gun's muzzle, read from the weapon model itself, for every weapon. The origin sliders above are not used while it is on. Off: they start at the controller plus those sliders, as before."},
+    {S::BarrelAim,"BarrelAim",T::Aim,"Aim origin",L::Basic,"Aim along the barrel",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The bullet and the laser point the way the drawn gun's barrel points, for every weapon, and turn with your wrist. The Tilt and Turn trims are not used while it is on. Off: the controller's aim plus those trims, as before."},
+    {S::LaserInImage,"LaserInImage",T::Aim,"Aim laser",L::Advanced,"Draw the laser in the game image",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The laser and reticle are drawn into each eye's picture along the bullet's path, through the same camera as the gun, so the beam stays on the barrel. Needs DLSS, DLAA or AFW (otherwise the floating laser is used). Off: the floating laser, as before."},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
 }
