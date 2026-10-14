@@ -46,7 +46,7 @@ enum class Setting {
     PlasmidFxAlong, PlasmidFxAcross, PlasmidFxOut,
     AfwRebuild, AfwHandGain, AfwHandsMask, HandDepthProbe,
     OutputWidth, OutputHeight, TemporalTaa, HandMotionVectors, BarrelOrigin, BarrelAim, LaserInImage,
-    ReloadPlace, ReloadGunMotion, ReloadJoin,
+    ReloadPlace, ReloadGunMotion, ReloadJoin, GunRecoil,
     Count
 };
 struct Spec {

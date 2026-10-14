@@ -697,6 +697,18 @@ ray keeps reading the muzzle while the gun hand is pinned. F10: Hands > Reload a
 The bone-write fallback route (no palette) does not carry. Math: `hand_compose.h`
 `carried_by` / `toward` / `from_rest`, host-tested.
 
+**Recoil is back (2026-10-14, built, not headset-tested).** Mode 4 measures the hand's correction
+from the LIVE wrist every frame, so whatever the clip does to the wrist is undone - the idle
+sway (wanted) and the firing kick (not wanted) alike. Mode 3 kept recoil by un-pinning while the
+clip moved (s70n "pin when idle"); mode 4 had no equivalent. Now a gun's firing states
+(`Weapon*Firing`, on a weapon whose `animOn` is 1 - never the wrench or a plasmid cast) measure
+the gun hand's correction from its pose the frame before the shot (`from_rest`), so the kick
+plays on the controller. In at once (a Handoff with 0 ms in: the motion starts from zero, so it
+cannot jump), held through the 250 ms release after the state leaves at the kick's top, out over
+350 ms. The barrel ray holds its pre-kick offset for as long as the motion plays, so shots go
+where the player points and a long burst never drops to the slider origin. F10: Hands > Reload
+animation > `Recoil` (0..1, default 1); `vrhands handback recoil <0..1>`.
+
 Measured (`tools\handback-test.ps1`, the TRACE lines):
 
 | | |

@@ -118,6 +118,19 @@ int main() {
         r.update(false, 375);
         check(r.weight(375) <= 0.0001f + r.weight(375) && r.target == 1, "a reversal re-targets the controller");
         check(fabsf(smootherstep(0.5f) - 0.5f) < 1e-6f && smootherstep(0) == 0 && smootherstep(1) == 1, "smootherstep");
+        // The recoil's Handoff (handback.cpp make_kick): in at once, out over 350 ms after the
+        // 250 ms release, so the first frames of the kick are never eased away.
+        Handoff kick;
+        kick.inMs = 0;
+        kick.update(false, 0);
+        kick.update(true, 1000);
+        check(kick.weight(1000) == 0, "the kick is in on the shot's frame", kick.weight(1000), 0);
+        kick.update(false, 1100); // the state leaves at the top of the kick
+        check(kick.weight(1300) == 0, "the kick holds through the release", kick.weight(1300), 0);
+        kick.update(false, 1350);
+        check(kick.weight(1350 + 175) > 0.4f && kick.weight(1350 + 175) < 0.6f, "and settles over 350 ms");
+        kick.update(true, 1360); // a second shot mid-settle: back in at once, from where it stood
+        check(kick.weight(1360) == 0, "a second shot is in at once");
     }
     {   // An animation at the gun (2026-10-14): the free hand carried by the gun hand.
         // The clip: a gun-hand palm and a free-hand palm with a magazine bone off it.
