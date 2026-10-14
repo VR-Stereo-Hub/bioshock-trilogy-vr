@@ -801,13 +801,13 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
     // texture, and a vector that says it stood still in the room makes DLSS smear it.
     if (hist && g_handVectors.load(std::memory_order_relaxed)) {
         gp.handFullUu = g_handFullM.load() * ws;
-        gp.handZeroUu = std::max(g_handZeroM.load() * ws, gp.handFullUu + 1.0f);
+        gp.handZeroUu = (std::max)(g_handZeroM.load() * ws, gp.handFullUu + 1.0f);
         for (int h = 0; h < 2; ++h) {
             const tgpu::GripPose &a = st.grip[h], &b = cam.grip[h];
             if (!a.valid || !b.valid) continue;
             const float dx = b.loc[0] - a.loc[0], dy = b.loc[1] - a.loc[1], dz = b.loc[2] - a.loc[2];
             if (dx * dx + dy * dy + dz * dz > 200.0f * 200.0f) continue;   // a recenter or a load
-            gp.hand[h] = tgpu::hand_motion(a, b, std::min(st.gripWeight[h], cam.gripWeight[h]));
+            gp.hand[h] = tgpu::hand_motion(a, b, (std::min)(st.gripWeight[h], cam.gripWeight[h]));
         }
         if (gp.hand[0].valid || gp.hand[1].valid) {
             static bool logged = false;

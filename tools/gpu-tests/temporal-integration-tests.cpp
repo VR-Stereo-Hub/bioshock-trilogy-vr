@@ -68,6 +68,14 @@ void note_camera(uint64_t,int,const tgpu::Camera&,float,const tgpu::Params&,cons
 void finish_eye(ID3D11Texture2D*,uint64_t,int,float,float,bool) {}
 bool copy_output(ID3D11DeviceContext*,ID3D11Texture2D*,uint64_t,int,float,float) {return false;}
 }
+// The hand motion vectors' grips: no controllers here, so the guides keep the room-fixed
+// foreground vectors.
+namespace bvr::b1r::hands {
+bool active() { return false; }
+}
+namespace bvr::b1r::handback {
+float weight(int, uint64_t) { return 1.0f; }
+}
 
 // alt_eye.cpp's MinHook use: the frame-delta hook needs the real exe, which a test does not
 // have (the image base is null, so the byte check refuses before MinHook is reached).
@@ -117,6 +125,7 @@ void set_held_rebuild(HeldReadyFn r, HeldRebuildFn fn) { stub::heldReady = r; st
 void set_alternate_eye(bool on) { stub::alternateEye = on; }
 int current_eye_sign() { return 0; }
 bool cinematic_active() { return false; }
+bool get_hand_pose(int, bool, HeadPose&) { return false; }
 void sr_push_eye(int sign) { stub::srTags.push_back(sign); }
 void set_sr_drift_resync(bool on) { stub::driftResync = on; }
 } // namespace bvr::vr
