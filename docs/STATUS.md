@@ -2,6 +2,63 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-14 - BS1: DLSS hand vectors; shots and the laser along the drawn barrel
+
+**Branch `claude/bs1-barrel-origin`** (off `staging` 0afc3b6), 4 commits: `4ce23e0` integration
+suite fix, `202076d` barrel origin/direction + in-image laser, `16f4278` numpad = F10 hand rows,
+`e62894f` gun at the game's scale. The DLSS hand motion vectors merged to `staging` as #98
+(`0afc3b6`).
+
+### Current state
+
+- **DLSS/DLAA/TAA hand motion vectors (merged, #98):** hand pixels carry their controller's rigid
+  motion (TEMPORAL.md "2026-10-14"). Headset: "I think it kind of worked". `gpu-test temporal-gpu`
+  38/38.
+- **Shots and the laser leave along the drawn barrel - headset-verified ("That finally worked").**
+  The fire ray starts at the held gun's `muzzle` socket and points along the gun body's +X, both
+  from `AActor::GetBoneCoords` (+0x544FA0, IDA rs17/rs18; ENGINE_NOTES "The weapon's muzzle").
+  The laser and reticle are drawn into each eye image through that image's camera
+  (`laser_draw.cpp`); the XR quads are the fallback. **The bug that cost four headset rounds:** the
+  barrel origin ADDED the per-weapon F10 origin sliders (the tester's weapons.ini: Pistol +18.7 cm
+  up, MachineGun +13.1, Shotgun +7.5), lifting every shot off the barrel by a per-weapon amount;
+  the sliders and tilt/turn are bypassed at the barrel now. Body and socket axes measured 0.0 deg
+  apart on all three guns.
+- **Numpad (built, not headset-tested):** in mode 4 it presses F10's "Move the hand (as you see it)"
+  rows - 8/2 6/4 0/5 move or turn, 7 step, 9 weapon/free hand x move/turn (CONTROLS.md). The old
+  numpad modes edited per-weapon values mode 4 never reads.
+- **Gun at the game's own scale (built, not headset-tested):** weapon size default 1.0 and the weapon
+  follows the hands size again, so the gun keeps the game's size against the hand; position and
+  rotation are the game's authored offset from the palm. The tester's `menu-settings.ini`
+  `WeaponSize` was set 0.83 -> 1 (backup `menu-settings.ini.bak-pre-weapon-scale-20261014`).
+  "Every gun on the pistol's line" (a per-weapon gun re-seat) was built and dropped on the
+  tester's call.
+- **Installed:** Release `v0.8.3-207-ge62894f` (this branch's tip), built 2026-10-14; the game has
+  not run it yet - its log's build line must read `ge62894f`. The accepted AFW baseline DLL is backed
+  up in `<BS1 Build\Final>\bvr-backup-pre-handmv-20261014\`. Nothing diagnostic is armed; AFW
+  captures now also record `fresh.ray`/`fresh.muzzle` per present.
+- **Other games:** `git diff staging...HEAD -- src/core/` is one additive opt-in
+  (`LaserConfig::fixedRay`, default off; PORT-CANDIDATES row). BS2 and Infinite are untouched, not
+  verified.
+- **Captures:** F10 Diagnostics "Capture frame" writes `framedump_*.txt` (draw calls, not images);
+  "AFW capture" writes eye images, depth and masks to `dumps\`. The in-image laser is drawn after the
+  capture, so it is not in the images.
+
+### Next steps
+
+Headset: check the gun sits at the game's size in the hand on every weapon and the numpad moves the
+hands like the F10 rows; then open a draft PR of `claude/bs1-barrel-origin` into `staging`.
+
+### Session log 2026-10-14
+
+- Hand motion vectors (DLSS) built, A/B'd in the headset, merged as #98. The community DLSS fork
+  (Beren5556) has no hand vectors; its post-DLSS sharpen, depth-copy reuse and the missing SR mip
+  bias / projection jitter remain candidates.
+- Barrel: socket origin -> socket axis (per-weapon off) -> body axis (0.0 deg from the socket: not
+  it) -> laser on the fire ray via XR quads -> drawn in-image (same spot: the ray itself) -> the
+  per-weapon origin sliders found added on top; bypassed. Verified.
+- Found and fixed: the temporal-integration GPU suite stopped compiling after #98 (missing stubs,
+  `std::max` vs the Windows macro); it needs the DLSS helper to run, so it was skipped here.
+
 ## Session 2026-10-12 - BS1: accepted AFW baseline for staging
 
 ### Current state
