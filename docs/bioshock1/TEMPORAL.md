@@ -434,7 +434,7 @@ called directly (viewport +0xA4, vtable +0xF4, the arguments in ENGINE_NOTES).
 |---|---|---|
 | Depth | `bioshock1r/temporal.cpp` via `core/gfx/frame_inspector` `set_draw_tap` | The draw tap follows the game's depth binding. Per present interval, the backbuffer-size D24 surface with the most `DrawIndexed` calls is the WORLD pass and is copied before it is cleared or unbound; a later pass on the same surface (after the world's clear) is the FOREGROUND - the arms and the weapon - and is copied beside it. |
 | Cameras | `camera.cpp` -> `temporal::note_camera` | CalcView publishes the final camera of every build (after every offset). SequentialReentry images take the latest camera of their eye; AlternateEye images carry the exact build through a FIFO. |
-| Guides | `bioshock1r/temporal_gpu` | Depth (+ the foreground's where it drew) -> linear view depth, DLSS depth (reversed), camera motion vectors (previous UV minus current), and the hands mask (a foreground pass's pixels, or - BS1's case - raw depth inside the viewmodel's squeezed viewport range, [0, 0.010)). The vector audit scores them in-game. |
+| Guides | `bioshock1r/temporal_gpu` | Depth (+ the foreground's where it drew) -> linear view depth, DLSS depth (reversed), camera motion vectors (previous UV minus current), and the hands mask (a foreground pass's pixels, or - BS1's case - raw depth inside the viewmodel's squeezed viewport range, [0, 0.010)). Hand pixels near a tracked grip carry that controller's rigid motion (see "Hand motion vectors" below). The vector audit scores them in-game. |
 | DLSS | `core/gfx/dlss_client` + `src/tools/dlss_host` | An x64 helper owns NGX (310.7, preset K by default), one feature and history per eye, textures and fences shared by NT handle. The hands mask is DLSS's "bias current colour" mask. |
 | TAA | `bioshock1r/temporal_gpu` `TaaGpu` | Per eye: history fetched along the vectors, clamped to the current 3x3 range in YCoCg, blended at 0.12 (`dlss taaweight`). Hands, no history or off screen = the current image. |
 | Output | `core/vr/openxr_runtime` eye-processor seam | The result replaces the backbuffer copy into that eye's swapchain. Super Resolution asks core for eye swapchains at the HEADSET's size (the runtime's recommended eye size, at the render's aspect, at most 3x the render: `set_eye_output_size`; `dlss output <w>x<h>` overrides) and the game renders below it; anything not reconstructed is stretched. |
@@ -824,3 +824,46 @@ ghosts. Rebuild cost measures 1.985 ms for the regular fixture and 1.916 ms with
 foreground transport covering the entire 2064x2208 eye, below the 4 ms budget.
 The 725-check host transform suite passes. Native masked repair is the next
 investigation; this change does not add native geometry rendering.
+
+## 2026-10-14: hand motion vectors (DLSS / DLAA / TAA)
+
+**The smear.** With DLSS on, the hands' and weapon's textures smeared whenever the
+controllers moved. The guides gave every hand pixel the foreground transport above:
+the hand treated as standing still in the room, carried only through locomotion
+(`temporal.cpp` said so: "Head/controller motion is deliberately not included"). A
+hand swung through the air therefore had a vector pointing at where it was NOT last
+frame, and DLSS blended the wrong history into it. The bias-current-colour mask only
+softens that.
+
+**The fix.** `note_camera` now records each controller's GRIP pose per build, through
+the same pose funnel and `xr_pose_to_game` map the hands use, with the hand-back
+weight (1 = the controller drives that hand). The guide shader gives a hand pixel the
+nearer grip's rigid move between the two images of that eye -
+`p_prev = R_prev R_cur^T (p - grip_cur) + grip_prev`, then the previous camera - at full
+weight within 0.35 m of the grip, fading to the old transport by 0.60 m (the elbow and
+upper arm, which the controller only partly moves). A rigid offset between the grip and
+the drawn hand (grip calibration, model trim, the aim/grip orientation split) cancels
+out of that product, so no hand calibration enters it. A grip jump over 200 uu (a
+recenter, a load) or a missing pose falls back to the old vectors for that hand.
+
+**Also fixed:** in Stereo method "both eyes every frame" the right eye's second pass
+noted its camera without the frame context, so the right eye's hands got plain WORLD
+vectors (not even the locomotion transport). The second pass now takes the left pass's
+tracking frame and grips (same game frame, within 100 ms).
+
+**Not touched:** the accepted AFW reconstruction. AFW takes its foreground camera from
+its own path (`afw_gpu`); only the DLSS/TAA guide vectors changed.
+
+**Controls.** F10 Display > Upscaling and anti-aliasing (DLSS), Advanced: **Hand motion
+vectors** (default on; off is the old behaviour, for an A/B). Console: `dlss handmv
+on|off`, `dlss handr <full m> <zero m>`. The log prints `[temporal] hand motion
+vectors on` the first time a hand is carried.
+
+**Verified offline:** `gpu-test temporal-gpu` 38/38 - a grip turned 10 deg yaw and 6 deg
+pitch and moved (3, -2, 1) uu gives hand vectors within 0.010 px of the analytic truth
+(6.13 px true motion; the room-fixed control is off by 6.13 px), every world vector
+bit-identical, the nearer of two grips owns the pixel, and no hand / a hand beyond the
+radius / weight 0 reproduce the old vectors exactly. **Not headset-tested.** What to look
+for: hold a weapon with DLSS on and sweep it side to side - the texture should stay
+sharp; toggle the F10 box to compare. Finger animation, recoil and reload motion are
+not in the controller pose and still rely on the bias mask.
