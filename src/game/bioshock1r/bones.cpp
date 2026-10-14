@@ -926,7 +926,9 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // the gun in the same scale, tied to hand size, that the game wants by default"); with the
 // weapon following the hands below, the gun grows exactly as the hand does. (Was 0.83, the
 // tester's 2026-10-09 tune with the weapon on its own size.)
-std::atomic<float> g_wScale{1.0f};
+// 2026-10-14 headset: 0.88, the tester's tune on top of that ("it's working well"), measured
+// against a hands and arms size of 0.81.
+std::atomic<float> g_wScale{0.88f};
 // s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
 // hand's scale (0.8 by default), so the two sides can never disagree. Declared here
 // because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set

@@ -23,17 +23,17 @@ suite fix, `202076d` barrel origin/direction + in-image laser, `16f4278` numpad 
   up, MachineGun +13.1, Shotgun +7.5), lifting every shot off the barrel by a per-weapon amount;
   the sliders and tilt/turn are bypassed at the barrel now. Body and socket axes measured 0.0 deg
   apart on all three guns.
-- **Numpad (built, not headset-tested):** in mode 4 it presses F10's "Move the hand (as you see it)"
+- **Numpad (headset: "working well"):** in mode 4 it presses F10's "Move the hand (as you see it)"
   rows - 8/2 6/4 0/5 move or turn, 7 step, 9 weapon/free hand x move/turn (CONTROLS.md). The old
   numpad modes edited per-weapon values mode 4 never reads.
-- **Gun at the game's own scale (built, not headset-tested):** weapon size default 1.0 and the weapon
-  follows the hands size again, so the gun keeps the game's size against the hand; position and
+- **Gun at the game's own scale (headset: "working well"):** weapon size default 0.88 (the tester's
+  tune, at hands and arms size 0.81) and the weapon follows the hands size again, so the gun keeps the game's size against the hand; position and
   rotation are the game's authored offset from the palm. The tester's `menu-settings.ini`
   `WeaponSize` was set 0.83 -> 1 (backup `menu-settings.ini.bak-pre-weapon-scale-20261014`).
   "Every gun on the pistol's line" (a per-weapon gun re-seat) was built and dropped on the
   tester's call.
-- **Installed:** Release `v0.8.3-207-ge62894f` (this branch's tip), built 2026-10-14; the game has
-  not run it yet - its log's build line must read `ge62894f`. The accepted AFW baseline DLL is backed
+- **Installed / tested:** the headset build reads `v0.8.3-206-g16f4278-dirty` (pe 0x6ACF3A49,
+  03:16:09) - built 34 s before that tree was committed as `e62894f`. The accepted AFW baseline DLL is backed
   up in `<BS1 Build\Final>\bvr-backup-pre-handmv-20261014\`. Nothing diagnostic is armed; AFW
   captures now also record `fresh.ray`/`fresh.muzzle` per present.
 - **Other games:** `git diff staging...HEAD -- src/core/` is one additive opt-in
