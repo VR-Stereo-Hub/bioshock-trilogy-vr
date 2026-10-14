@@ -571,6 +571,14 @@ struct LaserConfig {
     float modelPitchTrimDeg = 0.0f;
     float modelYawTrimDeg = 0.0f;
     float modelRollTrimDeg = 0.0f;
+    // A FIXED ray (2026-10-14, BS1 opts in): the adapter hands over the beam's start and
+    // direction in XR space, already converted from the game's own fire ray, and the laser
+    // draws exactly that - no controller pose, trims or origin offsets. Its dots run from
+    // nearM to farM along it. For a beam that must leave the drawn gun and meet the drawn
+    // reticle, which a fresher re-derivation from the pose cannot promise. Off: unchanged.
+    bool fixedRay = false;
+    float fixedStartXr[3] = {0.0f, 0.0f, 0.0f};
+    float fixedDirXr[3] = {0.0f, 0.0f, -1.0f};
 };
 
 // Publish the laser state (game thread, once per frame). The render thread

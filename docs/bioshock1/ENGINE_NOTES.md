@@ -6242,3 +6242,80 @@ world coordinates, versus 17.937 uu for the world-fixed control. The curved GPU
 fixture leaves 2 holes during walking/turning versus 353/360 without transport,
 with zero ghosts after independent object motion and byte-identical world-only
 output. These are reconstruction improvements, not a native second-eye draw.
+
+## 2026-10-14 - The weapon's muzzle: a socket, and the engine call that places it
+
+**Every player weapon starts its muzzle flash and tracer at a socket named `muzzle`** (the
+UnrealScript corpus: each weapon class's OnFiredEffects AttachmentBone and the Tommy Gun's
+TracerStartBone). It is a SOCKET, not a bone - the shotgun's own skeleton has three bones and no
+muzzle (session 20 above) - so it lives in the weapon mesh instance's socket table (`+0xE8` names,
+`+0xEC` count, `+0xF4` aliased bone, `+0x100` 48-byte offset; the same table rs14 found on the
+Hands). Bone 44 is NOT a muzzle (`IKbindLhandDummy`, the census above), so the session-20 "muzzle
+ray" direction is a barrel-ish axis at best.
+
+**`AActor::GetBoneCoords` is `+0x544FA0`** (tools\ida\rs17_bone_coords.py,
+rs18_socket_coords.py), the C++ behind `execGetBoneCoords` (+0x545090):
+`FCoords* __thiscall (FCoords* out, FName name /* by value */, UBOOL bGetSocketCoords)`, `retn 10h`,
+prologue `55 8B EC 83 E4 F8 83 EC 30 56 8B F1`. Its name lookup (`+0x3F4BD0`) first swaps a socket
+name for the bone it aliases, then the SharedSkeletonData map (`+0x5F6500`) gives the index; with
+the flag clear it returns that BONE's coords (no socket offset), with it set `+0x3F9D80` applies
+the socket's own offset record together with the actor's location, draw scale and the
+SkeletonInstance (`actor+0x3FC`, required non-null). The script signature is
+`GetBoneCoords(name BoneName, optional bool bGetSocketCoords)` and the corpus passes `true` for
+every socket. Early returns (no mesh instance at `+0x128`, a failed check through the mesh's
+vtable `+0x120`) leave `out` UNWRITTEN - callers pre-fill it.
+
+**Used by the barrel origin** (`muzzle.cpp`, `aim.cpp`): the held weapon (Hands.CurrentHoldable)
+is asked for `muzzle` with the flag set on the game thread in CalcView. Because the held weapon
+rides the hand bone (the socket write above), this is the drawn barrel. aim runs before hands in
+CalcView, so the gun it reads was placed by the PREVIOUS frame's hand target; the socket is
+expressed in that frame's ray (zero-roll frame, cm) and applied to this frame's fire-ray origin
+(the laser draws that ray, below). **Not yet run in the game:**
+whether the LOD check lets the call through every frame, and the offsets each weapon reports,
+are the first run's questions (`vraim barrel` prints both).
+
+**The barrel's direction (same day).** The same call returns the socket's X/Y/Z axes. Which one
+runs along the barrel is not assumed: per weapon, the signed axis nearest the calibrated aim ray
+is chosen (axes are 90 deg apart, the calibration within a few tens of degrees) and refused below
+cos 60 deg. It is kept in the untrimmed aim pose's own frame (roll included), so it turns with
+the wrist exactly; the fire ray takes it (and so the laser, below). The per-weapon tilt/turn trims
+are bypassed while it holds. **Open for the first run:** which axis each weapon reports, and
+whether the returned axes are the socket's world axes or their transpose (`vraim barrel` logs the
+choice and its dot with the aim ray; a transposed set would show as a poor or wandering match).
+
+**The laser on the fire ray (same day, after the first headset look: the muzzle flash lined up,
+the beam did not).** The laser no longer rebuilds its ray from the controller pose on the render
+thread: BS1 hands core the fire ray's own two points - its origin (the muzzle) and its point at
+the reticle distance - converted to XR the way the camera draws them, i.e. `game_point_to_xr`
+of the point MINUS the head anchor (the camera is the pose map's head plus the head-offset
+sliders, camera.cpp). The reticle now takes the same conversion; before, it skipped the anchor
+(a few cm, invisible at reticle distance but not at the muzzle).
+
+**The barrel's direction comes from the gun body, not the socket (second headset look).** With
+the laser on the fire ray, the beam started at the flash but its line was off the drawn barrel by
+a different amount per weapon, while the run's log showed the socket axis chosen at 0.94-0.98 with
+the calibrated aim ray on all three guns. A socket's rotation is authored for its effect, so the
+direction now comes from `GetBoneCoords("muzzle", false)` - the same lookup without the socket
+flag returns the BONE the socket hangs on, i.e. the gun body's own frame (+X along the barrel on
+the shotgun's identity-ish skeleton, session 20). `vraim barrel src socket` switches back; the
+first measurement per weapon logs both axes and the angle between them.
+
+**The laser drawn into the eye images (third headset look: "still the same").** The run's log
+had the body and socket axes 0.0 deg apart on every weapon - the direction source was never the
+difference - so the remaining gap is between the room-space quads and the gun as rendered. The
+laser and reticle are now drawn INTO each eye image (`laser_draw.cpp`): the fire ray's dots
+projected through the camera that image was rendered with (the build's CalcView camera for a
+native eye, the held eye's `p.target` for an AFW rebuild), after the AFW source copy so the beam
+never becomes rebuild scenery. The gun is drawn through that same camera, so the two cannot part.
+The XR quad laser (`fixedRay`) and dot stand down while it draws and return within 250 ms if it
+stops (no DLSS/AFW image processing, a refused render target). F10 Aim > Aim laser, Advanced:
+"Draw the laser in the game image" (default on). Offline: `gpu-test laser-draw` 7/7.
+
+**The real cause (fourth look: the in-image laser sat exactly where the quads had).** The barrel
+origin ADDED the per-weapon F10 origin sliders on top of the muzzle, as trims - and the tester's
+weapons.ini holds old calibrations that moved the controller ray up to the drawn gun: Pistol
+up +18.7 / right -2.1 cm, MachineGun +13.1 / -3.5, Shotgun +7.5 / -2.8. Every shot and the laser
+therefore started that far above the barrel and ran parallel to it - a different amount per
+weapon, the flash itself (at the socket) lined up. At the barrel the sliders are now bypassed, as
+tilt/turn already were. The capture now records `fresh.ray` and `fresh.muzzle` per present for
+checking a run against the drawn gun offline.

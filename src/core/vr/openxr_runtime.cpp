@@ -88,6 +88,10 @@ std::atomic<bool> g_laserMuzzle{false};
 std::atomic<float> g_laserMuzzleD0[3] = {0.0f, 0.0f, -1.0f};
 std::atomic<float> g_laserModelPitchTrim{0.0f}, g_laserModelYawTrim{0.0f},
     g_laserModelRollTrim{0.0f};
+// A fixed ray (LaserConfig::fixedRay), slot 0 only.
+std::atomic<bool> g_laserFixed{false};
+std::atomic<float> g_laserFixedStart[3] = {0.0f, 0.0f, 0.0f};
+std::atomic<float> g_laserFixedDir[3] = {0.0f, 0.0f, -1.0f};
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstLaser{false};
 
@@ -3277,6 +3281,8 @@ struct LaserSnapshot {
     bool muzzle = false;
     float d0[3] = {0.0f, 0.0f, -1.0f};
     float modelPitch = 0.0f, modelYaw = 0.0f, modelRoll = 0.0f;
+    bool fixed = false;               // LaserConfig::fixedRay
+    float fixedStart[3] = {}, fixedDir[3] = {0.0f, 0.0f, -1.0f};
 };
 
 // Fill `quads` with the dots along one laser's ray and return how many were
@@ -3297,8 +3303,18 @@ uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
 
     int hand = ls.hand;
-    float pos[3], quat[4];
-    if (!input_get_hand_pose(hand, true, pos, quat)) return 0; // AIM pose = the fire ray
+    float pos[3], quat[4], d[3];
+    // A fixed ray (LaserConfig::fixedRay): the adapter's own points, used as given.
+    bool fixedRay = false;
+    if (ls.fixed) {
+        const float n = sqrtf(ls.fixedDir[0] * ls.fixedDir[0] + ls.fixedDir[1] * ls.fixedDir[1] +
+                              ls.fixedDir[2] * ls.fixedDir[2]);
+        if (std::isfinite(n) && n > 1e-4f) {
+            for (int i = 0; i < 3; ++i) { pos[i] = ls.fixedStart[i]; d[i] = ls.fixedDir[i] / n; }
+            fixedRay = true;
+        }
+    }
+    if (!fixedRay && !input_get_hand_pose(hand, true, pos, quat)) return 0; // AIM pose = the fire ray
 
     // Session 20 unification: the laser composes its pitch/yaw trim as a
     // quaternion in the controller's LOCAL frame - the model's and the fire
@@ -3308,8 +3324,10 @@ uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads
     // stops being a calibration tool and becomes a lie.
     constexpr float kDegToRad = 3.14159265f / 180.0f;
     const float fwd[3] = {0.0f, 0.0f, -1.0f};
-    float trim[4], q2[4], d[3];
-    if (ls.muzzle) {
+    float trim[4], q2[4];
+    if (fixedRay) {
+        // pos and d are final: no pose, no trim, no origin offset.
+    } else if (ls.muzzle) {
         // Muzzle ray: the beam follows the RENDERED barrel - the MODEL's trim
         // (roll included: it moves an off-axis vector) applied to the barrel
         // axis the game side derived from the driven rig this frame.
@@ -3336,7 +3354,7 @@ uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads
         float ofM = ls.posFwdCm * 0.01f;
         float orM = ls.posRightCm * 0.01f;
         float ouM = ls.posUpCm * 0.01f;
-        if (ofM != 0.0f || orM != 0.0f || ouM != 0.0f) {
+        if (!fixedRay && (ofM != 0.0f || orM != 0.0f || ouM != 0.0f)) {
             float yaw = atan2f(d[0], -d[2]);
             float right[3] = {cosf(yaw), 0.0f, sinf(yaw)};
             float up2[3] = {right[1] * d[2] - right[2] * d[1],
@@ -3435,6 +3453,11 @@ LaserSnapshot snapshot_laser_slot(int slot) {
     ls.modelPitch = g_laserModelPitchTrim.load(std::memory_order_relaxed);
     ls.modelYaw = g_laserModelYawTrim.load(std::memory_order_relaxed);
     ls.modelRoll = g_laserModelRollTrim.load(std::memory_order_relaxed);
+    ls.fixed = g_laserFixed.load(std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) {
+        ls.fixedStart[i] = g_laserFixedStart[i].load(std::memory_order_relaxed);
+        ls.fixedDir[i] = g_laserFixedDir[i].load(std::memory_order_relaxed);
+    }
     return ls;
 }
 
@@ -5637,6 +5660,11 @@ void set_laser(const LaserConfig& cfg) {
     g_laserModelPitchTrim.store(cfg.modelPitchTrimDeg, std::memory_order_relaxed);
     g_laserModelYawTrim.store(cfg.modelYawTrimDeg, std::memory_order_relaxed);
     g_laserModelRollTrim.store(cfg.modelRollTrimDeg, std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) {
+        g_laserFixedStart[i].store(cfg.fixedStartXr[i], std::memory_order_relaxed);
+        g_laserFixedDir[i].store(cfg.fixedDirXr[i], std::memory_order_relaxed);
+    }
+    g_laserFixed.store(cfg.fixedRay, std::memory_order_relaxed);
 }
 
 void set_aim_dot(const AimDotConfig& cfg) {

@@ -19,6 +19,7 @@
 
 #include "core/hooks/pattern_scan.h"
 #include "game/bioshock1r/frame_context.h"
+#include "game/bioshock1r/laser_draw.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <cstdint>
@@ -98,6 +99,11 @@ bool hook_live();
 // s91: the hand's aim ray (world origin and unit direction) as the fire seams use it; false when
 // aim is off, outside gameplay, or the ray is stale. hand 0 = left (plasmid), 1 = right.
 bool hand_ray(int hand, float origin[3], float dir[3]);
+
+// 2026-10-14: this frame's laser and reticle on the fire ray, in world UU, for the in-image
+// laser (laser_draw.h). Game thread: temporal.cpp's note_camera carries it with the build.
+// Invalid when neither would show, or when the in-image laser is switched off.
+bool laser_segment(laser_draw::Segment* out);
 
 // The weapon object the trigger-keyed hand map currently attributes to the
 // RIGHT hand - i.e. the equipped gun, once it has fired at least once. Null

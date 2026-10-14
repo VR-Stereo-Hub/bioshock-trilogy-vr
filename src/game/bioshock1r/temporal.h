@@ -59,6 +59,9 @@ void draw_status();
 // scores each rebuild against the next native frame of that eye. Game output: local only.
 // Each captured present stalls the frame on its readbacks (~120 MB at 2750x2850).
 void request_dump(int presents, uint32_t delayMs);
+// True while the in-image laser (laser_draw.h) was drawn into an eye image in the last 250 ms;
+// aim.cpp then keeps the XR laser and reticle quads off. Any thread.
+bool laser_drawn_recently();
 const char* dump_status();
 
 // Lifetime counters (render thread writes; read for status and the integration test).

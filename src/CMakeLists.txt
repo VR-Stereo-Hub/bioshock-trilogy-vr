@@ -92,6 +92,10 @@ add_library(bioshockvr SHARED
     game/bioshock1r/palette.cpp
     game/bioshock1r/handback.cpp
     game/bioshock1r/attach_census.cpp
+    game/bioshock1r/muzzle.cpp
+    game/bioshock1r/muzzle.h
+    game/bioshock1r/laser_draw.cpp
+    game/bioshock1r/laser_draw.h
     game/bioshock1r/hands_state.cpp
     game/bioshock1r/hands_state.h
     game/bioshock1r/hands.h

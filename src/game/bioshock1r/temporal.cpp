@@ -12,9 +12,11 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/afw_gpu.h"
 #include "game/bioshock1r/afw_motion.h"
+#include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/handback.h"
 #include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/laser_draw.h"
 #include "game/bioshock1r/resize.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/temporal_gpu.h"
@@ -91,6 +93,7 @@ std::atomic<bool> g_fgBias{true};   // the hands mask as DLSS's bias-current-col
 // Tracked hands carry their controller's own motion in the vectors (temporal_gpu.h
 // Params::hand): full within the first radius of the grip, none beyond the second.
 std::atomic<bool> g_handVectors{true};
+std::atomic<uint64_t> g_laserDrawMs{0}; // the in-image laser's last draw (laser_drawn_recently)
 std::atomic<float> g_handFullM{0.35f}, g_handZeroM{0.60f};
 std::atomic<bool> g_retry{false};
 std::atomic<uint32_t> g_resetEpoch{1};
@@ -109,6 +112,7 @@ struct CamRec {
     afw::TrackingFrame tracking;
     tgpu::GripPose grip[2];       // each controller's grip, world, as this build placed it
     float gripWeight[2] = {};     // 1 = the controller drives that hand, 0 = the game does
+    laser_draw::Segment laser;    // this build's laser and reticle on the fire ray (aim.cpp)
     uint64_t stampMs = 0;
 };
 const int kCamRing = 16;
@@ -218,6 +222,7 @@ struct EyeStore {
     afw::TrackingFrame tracking;
     tgpu::GripPose grip[2];
     float gripWeight[2] = {};
+    laser_draw::Segment laser;                   // the last image's build's (the held rebuild draws it)
     uint64_t build = 0;
     uint64_t stampMs = 0;
     uint32_t w = 0, h = 0;
@@ -1034,6 +1039,12 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
     }
     native_repair::finish_eye(f.src, camOk ? cam.build : 0, f.imageSign, f.tanH, f.tanV,
         mode == kOff && g_afw.load() && !f.sequential && f.srcW == f.dstW && f.srcH == f.dstH);
+
+    // 8. The laser, last: after the AFW store copied this image, so the beam never becomes
+    //    scenery the rebuild carries into the other eye. Drawn through this image's camera.
+    st.laser = camOk ? cam.laser : laser_draw::Segment{};
+    if (written && camOk && laser_draw::draw(ctx, f.dst, f.dstW, f.dstH, tc, cam.laser))
+        g_laserDrawMs.store(now, std::memory_order_relaxed);
     log_maybe(now);
     return written;
 }
@@ -1143,6 +1154,15 @@ void dump_tick(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf, const Eye
     fprintf(meta, "fresh.valid=%d\nfresh.build=%llu\nfresh.stampMs=%llu\n", (int)B.valid, (unsigned long long)F.build,
             (unsigned long long)F.stampMs);
     meta_camera(meta, "fresh.cam", B.cam);
+    // The fire ray of the fresh build - the in-image laser's line - and the engine's muzzle
+    // socket and barrel axis behind it, so a capture can be checked against the drawn gun.
+    {
+        const laser_draw::Segment& L = F.laser;
+        fprintf(meta, "fresh.ray=%d %.4f %.4f %.4f | %.7f %.7f %.7f\n", (int)L.valid, L.origin[0], L.origin[1],
+                L.origin[2], L.dir[0], L.dir[1], L.dir[2]);
+        fprintf(meta, "fresh.muzzle=%d %.4f %.4f %.4f | %.7f %.7f %.7f\n", (int)L.muzzleValid, L.muzzle[0],
+                L.muzzle[1], L.muzzle[2], L.barrelAxis[0], L.barrelAxis[1], L.barrelAxis[2]);
+    }
     fprintf(meta, "held.valid=%d\nheld.build=%llu\nheld.stampMs=%llu\n", (int)A.valid, (unsigned long long)Hs.build,
             (unsigned long long)Hs.stampMs);
     meta_camera(meta, "held.cam", A.cam);
@@ -1214,6 +1234,7 @@ int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
         ++g_tally.afwRebuilds;
         ++g_life.afwRebuilds;
         dump_tick(ctx, hf, F, Hs, A, B, p, hf.dst, 3);
+        if (laser_draw::draw(ctx, hf.dst, hf.w, hf.h, p.target, F.laser)) g_laserDrawMs.store(now, std::memory_order_relaxed);
         return 1;
     }
     char why[256] = "";
@@ -1228,6 +1249,9 @@ int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
         }
         if (A.valid) { ++g_tally.afwHeldSrc; ++g_life.afwWithHeld; }
         dump_tick(ctx, hf, F, Hs, A, B, p, g_warp.out(), 1);
+        // The rebuilt eye is this instant's held view (p.target), so the beam is drawn as that
+        // eye sees it - the fresh build's ray, through the held eye's own camera.
+        if (laser_draw::draw(ctx, hf.dst, hf.w, hf.h, p.target, F.laser)) g_laserDrawMs.store(now, std::memory_order_relaxed);
         return 1;
     }
     static bool logged = false;
@@ -1319,6 +1343,7 @@ void note_camera(int eyeSign, const FVector& loc, const FRotator& rot, const Fra
     const uint64_t b = ++g_buildCounter;
     CamRec& c = g_cams[b % kCamRing];
     c.build = b; c.sign = eyeSign; c.loc = loc; c.rot = rot; c.stampMs = now;
+    if (!aim::laser_segment(&c.laser)) c.laser = laser_draw::Segment{};
     if (tracking) {
         c.tracking = afw::tracking_frame(*tracking);
         note_grips(*tracking, now, c);
@@ -1588,6 +1613,10 @@ void request_dump(int presents, uint32_t delayMs) {
 }
 
 const char* dump_status() { return g_dumpStatus; }
+
+bool laser_drawn_recently() {
+    return GetTickCount64() - g_laserDrawMs.load(std::memory_order_relaxed) < 250;
+}
 
 Telemetry telemetry() {
     Telemetry t = g_life;
