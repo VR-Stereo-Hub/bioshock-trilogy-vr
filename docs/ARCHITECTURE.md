@@ -2975,3 +2975,18 @@ overlay swapchain. Existing adapters keep their prior path. BS1 temporal process
 longer reads panel visibility: DLSS, TAA, source validity and AFW history continue normally.
 The layer does not join the background pace-feed snapshot, which already retains only
 the base game layer while the headset is unfocused.
+
+### 2026-10-14: BS1 reloads play at the gun, the free hand carried by the gun hand
+
+The flat game authors a reload in the camera's frame: both hands and the gun move together in
+front of the face. The old reload lever handed both hands to that clip, so the gun left the
+player's hand. Now the gun hand stays on its controller and the free hand takes the gun hand's
+own palette correction, which puts it where the clip has it relative to the gun. A sibling VR
+mod made the same decision and measured it first, so BS1 follows it. BS1 adds a join gate
+on the clip's palm-to-palm distance, so the free hand leaves its controller only while the clip
+actually brings it to the gun; the reload state alone would also pull it from wherever the clip
+parks it off screen. The clip's own motion of the gun hand is a separate weight, default 0, as
+in that mod. BRVR's size-gated adoption is the reference for that path. The state gate stays
+`hands_state` (`WeaponReloading` lasts the whole clip, ENGINE_NOTES 2026-10-14). Reading the
+playing clip's name or time from the engine would allow per-clip rules; it was not needed for
+the reload and is left for later.

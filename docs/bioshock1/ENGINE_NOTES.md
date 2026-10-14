@@ -2013,6 +2013,24 @@ The states, from `Hands.uc`: `HandsOffscreen` (auto), `WeaponEquipping`,
 equivalents, `InjectingEve`, `UsingGathererTool`, `ExorcisingGatherer`,
 `PlayingScriptedHandAnimation`.
 
+**2026-10-14 - how a reload plays (the corpus: `Hands.uc`, `Weapon.uc`, `PlayerWeapon.uc`).**
+`ReloadWeapon()` is `ExecuteStateTransition('ReloadWeapon')`. `WeaponReloading` (Hands.uc:1242)
+calls `PlayerWeapon.PlayReloadingAnimations()` and then `FinishAnimation` on BOTH the hands'
+and the weapon's handle before it transitions, so **unlike `WeaponFiring` it lasts the whole
+clip** - the state is a sound gate for the reload's start and end. `PlayReloadingAnimations`
+goes through `PlayWeaponAnimations(handsAnim, weaponAnim, holderAnim, altFireAttachmentAnim,
+strictlySuperiorAttachmentAnim, rate, , easeIn)`: one clip on the Hands actor (channel 0), its
+partner on the weapon actor's own skeleton (the magazine, the drum, the bolt) and one on the
+third-person holder; each picked per reload rate (`GetAnimationForRate`, the reload upgrades),
+empty vs not-empty. **Three-part reloads** (`ShouldUseThreePartReloading`, the shell-fed guns)
+play start, a loop per round, then finish INSIDE the one `PlayReloadingAnimations` call, so the
+Hands state stays `WeaponReloading` from the first shell to the last: one hand-back, no gap.
+`ProceduralWeaponReloading` (:1269) is the same reload entered with the weapon hidden (it unhides
+it and plays with ease-in 0). The hand bob is a separate ADDITIVE clip on channel 2
+(`kHandBobAnimationChannel`, Hands.uc:314), weighted by the pawn's speed, so it rides on top of a
+reload. The clips are authored in the camera's frame: both hands and the gun move together in
+front of the face, which is why the reload is played at the gun in VR (handback.h).
+
 **Session 68 - where the states EXIT, which is the part the policy got wrong.**
 `WeaponFiring` (Hands.uc:1184) runs `PlayWeaponFiringAnimations()` and then
 `TransitionToNextStateInSequence()`; `PostWeaponFiring` (:1210) is a single

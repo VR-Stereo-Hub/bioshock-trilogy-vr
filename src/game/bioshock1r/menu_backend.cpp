@@ -9,6 +9,7 @@
 #include "bones.h"
 #include "camera.h"
 #include "game_ini.h"
+#include "handback.h"
 #include "hands.h"
 #include "resize.h"
 #include "scripted.h"
@@ -63,6 +64,9 @@ float raw_read(Setting id,int hand) {
         // Current mode-4 API (hand branch s85 or newer).
         case S::HandsArmsSize: return bones::m4_arm_size();
         case S::WeaponFollowsHands: return bones::m4_weapon_follows();
+        case S::ReloadPlace: return static_cast<float>(handback::reload_place());
+        case S::ReloadGunMotion: return handback::gun_motion_amount();
+        case S::ReloadJoin: return handback::join_cm();
         case S::HandPitch: case S::HandYaw: case S::HandRoll:
             bones::off_hand_rot_deg(hand,&a,&b,&c);return id==S::HandPitch?a:id==S::HandYaw?b:c;
         case S::HandGripForward: case S::HandGripRight: case S::HandGripUp:
@@ -158,6 +162,9 @@ bool raw_write(Setting id,int hand,float value) {
 #if __has_include("hand_compose.h")
         case S::HandsArmsSize: bones::set_m4_arm_size(value);break;
         case S::WeaponFollowsHands: bones::set_m4_weapon_follows(value!=0);break;
+        case S::ReloadPlace: handback::set_reload_place(static_cast<int>(value));break;
+        case S::ReloadGunMotion: handback::set_gun_motion_amount(value);break;
+        case S::ReloadJoin: handback::set_join_cm(value);break;
         case S::HandPitch: case S::HandYaw: case S::HandRoll:
             bones::off_hand_rot_deg(hand,&a,&b,&c);
             bones::set_off_hand_rot_deg(hand,id==S::HandPitch?value:a,id==S::HandYaw?value:b,id==S::HandRoll?value:c);break;
