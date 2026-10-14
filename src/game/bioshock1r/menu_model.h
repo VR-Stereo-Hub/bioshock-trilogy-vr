@@ -45,7 +45,7 @@ enum class Setting {
     Upscaler, DlssQuality, DlssModel, StereoMethod, AfwTint, TemporalAudit,
     PlasmidFxAlong, PlasmidFxAcross, PlasmidFxOut,
     AfwRebuild, AfwHandGain, AfwHandsMask, HandDepthProbe,
-    OutputWidth, OutputHeight, TemporalTaa,
+    OutputWidth, OutputHeight, TemporalTaa, HandMotionVectors,
     Count
 };
 struct Spec {

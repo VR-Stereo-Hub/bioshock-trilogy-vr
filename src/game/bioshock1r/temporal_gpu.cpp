@@ -40,6 +40,10 @@ cbuffer P : register(b0) {
     float4 fgPrevFwdTanH;
     float4 fgPrevRightTanV;
     float4 fgPrevUp;
+    float4 handCurW[2];     // xyz grip now (uu), w controller weight (0 = no hand)
+    float4 handPrev[2];     // xyz grip in the previous image
+    float4 handM[6];        // per hand, the rows of R_prev * R_cur^T
+    float4 handRadii;       // x full weight within (uu), y none beyond
 };
 
 float view_z(float raw) {
@@ -93,6 +97,28 @@ float2 foreground_vector_at(float2 uv, float vz) {
                        0.5f - dot(q, fgPrevUp.xyz) / (z * fgPrevRightTanV.w) * 0.5f);
     return puv - uv;
 }
+
+// A tracked hand's own motion: the nearer controller's rigid move about its grip, then the
+// previous camera. Fades to `base` away from the grip; `base` where no hand is valid.
+float2 hand_vector_at(float2 uv, float vz, float2 base) {
+    float3 p = curLocNear.xyz + cur_dir(uv) * vz;
+    float best = 1e30f;
+    int i = -1;
+    [unroll] for (int n = 0; n < 2; ++n) {
+        float d = distance(p, handCurW[n].xyz);
+        if (handCurW[n].w > 0.0f && d < best) { best = d; i = n; }
+    }
+    if (i < 0) return base;
+    float k = handCurW[i].w *
+              (1.0f - saturate((best - handRadii.x) / max(handRadii.y - handRadii.x, 1e-3f)));
+    if (k <= 0.0f) return base;
+    float3 r = p - handCurW[i].xyz;
+    float3 q = float3(dot(handM[i * 3].xyz, r), dot(handM[i * 3 + 1].xyz, r),
+                      dot(handM[i * 3 + 2].xyz, r)) + handPrev[i].xyz;
+    float2 puv;
+    if (!prev_uv(q - prevLocFar.xyz, puv)) return base;
+    return lerp(base, puv - uv, k);
+}
 )";
 
 const char* kMain = R"(
@@ -127,8 +153,10 @@ void csmain(uint3 id : SV_DispatchThreadID) {
     linearZ[id.xy] = vz;
     if (curUpHist.w < 0.5f) { motion[id.xy] = float2(0, 0); return; }
     float2 uv = (float2(id.xy) + 0.5f) / float2(w, h);
-    motion[id.xy] = hand > 0.5f && fgPrevLocValid.w > 0.5f && vz > 0.0f
+    float2 mv = hand > 0.5f && fgPrevLocValid.w > 0.5f && vz > 0.0f
         ? foreground_vector_at(uv, vz) : vector_at(uv, vz, 1.0f, true);
+    if (hand > 0.5f && vz > 0.0f) mv = hand_vector_at(uv, vz, mv);
+    motion[id.xy] = mv;
 }
 )";
 
@@ -214,8 +242,9 @@ struct alignas(16) CB {
     float sizeFlags[4];
     float depthRange[4];
     float fgPrevLocValid[4], fgPrevFwdTanH[4], fgPrevRightTanV[4], fgPrevUp[4];
+    float handCurW[2][4], handPrev[2][4], handM[6][4], handRadii[4];
 };
-static_assert(sizeof(CB) == 14 * 16, "CB layout");
+static_assert(sizeof(CB) == 25 * 16, "CB layout");
 
 void fill(CB& cb, const Params& p) {
     auto set = [](float* d, const float* s, float w) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = w; };
@@ -235,6 +264,14 @@ void fill(CB& cb, const Params& p) {
     set(cb.fgPrevFwdTanH, fg.fwd, fg.tanH);
     set(cb.fgPrevRightTanV, fg.right, fg.tanV);
     set(cb.fgPrevUp, fg.up, 0.0f);
+    for (int h = 0; h < 2; ++h) {
+        const Params::HandMotion& m = p.hand[h];
+        const bool on = m.valid && m.weight > 0.0f && p.handZeroUu > 0.0f;
+        set(cb.handCurW[h], m.cur, on ? (m.weight < 1.0f ? m.weight : 1.0f) : 0.0f);
+        set(cb.handPrev[h], m.prev, 0.0f);
+        for (int r = 0; r < 3; ++r) set(cb.handM[h * 3 + r], m.m + r * 3, 0.0f);
+    }
+    cb.handRadii[0] = p.handFullUu; cb.handRadii[1] = p.handZeroUu;
 }
 
 bool compile(ID3D11Device* dev, const char* body, const char* entry, ID3D11ComputeShader** out, char* why, size_t cap,
@@ -493,6 +530,21 @@ bool reproject(const Params& p, float u, float v, float viewZ, float* pu, float*
     *pu = (float)(0.5 + 0.5 * dot3(prev.right, q) / (z * prev.tanH));
     *pv = (float)(0.5 - 0.5 * dot3(prev.up, q) / (z * prev.tanV));
     return true;
+}
+
+Params::HandMotion hand_motion(const GripPose& prev, const GripPose& cur, float weight) {
+    Params::HandMotion m;
+    m.valid = prev.valid && cur.valid;
+    m.weight = weight;
+    if (!m.valid) return m;
+    for (int i = 0; i < 3; ++i) { m.cur[i] = cur.loc[i]; m.prev[i] = prev.loc[i]; }
+    // The basis vectors are R's columns, so (R_prev R_cur^T)[i][j] sums prev_axis[i] *
+    // cur_axis[j] over the three axes.
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            m.m[i * 3 + j] = prev.fwd[i] * cur.fwd[j] + prev.right[i] * cur.right[j] +
+                             prev.up[i] * cur.up[j];
+    return m;
 }
 
 bool TemporalGpu::init(ID3D11Device* dev, char* why, size_t cap) {

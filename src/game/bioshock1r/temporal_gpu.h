@@ -10,7 +10,8 @@
 // current camera, and projected into the previous camera of the SAME eye. Camera motion
 // only - anything moving on its own (NPCs, particles) carries the camera's vector, which
 // DLSS's own history rejection handles. Tracked foreground additionally carries the
-// previous camera through the player's locomotion, preserving real head motion.
+// previous camera through the player's locomotion, preserving real head motion, and a hand
+// near a tracked grip carries that controller's own motion (Params::hand).
 //
 // BioShock specifics (ENGINE_NOTES "D3D11 frame map", and the BioShock VR DLSS/DLAA
 // community fork's temporal_guides.cpp, MIT, which established them for this exe):
@@ -77,7 +78,29 @@ struct Params {
     // Only known foreground pixels use it; world motion keeps the real prev camera.
     bool foregroundCameraValid = false;
     Camera prevForeground;
+    // Tracked hands (0 left, 1 right): each controller's rigid move between the previous
+    // image of this eye and this one, in world space. A foreground pixel within fullUu of
+    // the nearer valid grip moves with that controller - p_prev = m * (p - cur) + prev,
+    // projected by `prev` - fading to the vector above by zeroUu (the elbow and upper arm,
+    // which the controller only partly moves). Without it a hand moved by the controller
+    // carries a vector that says it stood still in the room, and DLSS smears its texture.
+    struct HandMotion {
+        bool valid = false;
+        float weight = 1.0f;                  // 0..1 (the hand-back's controller weight)
+        float cur[3] = {}, prev[3] = {};      // grip, uu, world
+        float m[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // row-major R_prev * R_cur^T
+    } hand[2];
+    float handFullUu = 0.0f, handZeroUu = 0.0f;
 };
+
+// A grip pose in world space: location and the FRotator basis (ue_rot_basis).
+struct GripPose {
+    bool valid = false;
+    float loc[3] = {};
+    float fwd[3] = {1, 0, 0}, right[3] = {0, 1, 0}, up[3] = {0, 0, 1};
+};
+// The rigid move from `prev` to `cur`, as Params::HandMotion wants it.
+Params::HandMotion hand_motion(const GripPose& prev, const GripPose& cur, float weight);
 
 // The CPU form of the shader's reprojection (host tests and audits). u, v in [0,1] of the
 // current image; returns false when the point is behind the previous camera.

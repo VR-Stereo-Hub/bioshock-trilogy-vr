@@ -583,5 +583,97 @@ int main() {
         for(size_t i=0;i<fallback.size();++i) fallbackDiff=std::max(fallbackDiff,std::fabs(double(fallback[i]-realHead[i])));
         check(fallbackDiff==0,"invalid foreground metadata uses the existing world-camera path","largest delta %.9f",fallbackDiff);
     }
+    // 11. A hand moved by its controller carries that controller's rigid motion. The head is
+    //     still, so the world's vectors are zero; the right grip turned 10 deg in yaw and 6 in
+    //     pitch and moved (3, -2, 1) uu. The truth is computed here from the rotation itself,
+    //     not from tg::hand_motion. Controls: no hands is bit-identical to before, a hand
+    //     beyond the radius keeps the base vector, and the nearer of two grips wins.
+    {
+        Render grid;
+        grid.raw.resize((size_t)W * H);
+        std::vector<bool> hand(grid.raw.size());
+        auto depth = [](double z) { return float(kFar * (z - kNear) / (z * (kFar - kNear))); };
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            const size_t i = (size_t)y * W + x;
+            hand[i] = x >= W / 4 && x < 3 * W / 4 && y >= H / 4 && y < 3 * H / 4;
+            grid.raw[i] = hand[i] ? depth(40) * .01f : depth(300);
+        }
+        tg::Params p = params(c0, c0);
+        p.squeezeHi = .01f;
+        g.run(grid, p); const auto base = readback(g.t.motion());
+
+        const double a = 10 * 3.14159265 / 180, b = 6 * 3.14159265 / 180;
+        // R = Rz(a) * Ry(b), UE axes (X fwd, Y right, Z up); pitch up about Y.
+        const double R[3][3] = {{std::cos(a) * std::cos(b), -std::sin(a), -std::cos(a) * std::sin(b)},
+                                {std::sin(a) * std::cos(b), std::cos(a), -std::sin(a) * std::sin(b)},
+                                {std::sin(b), 0, std::cos(b)}};
+        tg::GripPose cur, prev;
+        cur.valid = prev.valid = true;
+        cur.loc[0] = -110; cur.loc[1] = 20; cur.loc[2] = 60;   // the hand, 40 uu ahead
+        for (int i = 0; i < 3; ++i) {
+            prev.loc[i] = cur.loc[i] + (i == 0 ? 3.0f : i == 1 ? -2.0f : 1.0f);
+            prev.fwd[i] = (float)R[i][0]; prev.right[i] = (float)R[i][1]; prev.up[i] = (float)R[i][2];
+        }
+        p.hand[1] = tg::hand_motion(prev, cur, 1.0f);
+        p.handFullUu = 100; p.handZeroUu = 150;
+        g.run(grid, p); const auto moved = readback(g.t.motion());
+
+        const tg::Camera& cc = p.cur;
+        double worst = 0, mean = 0, baseErr = 0, worldDiff = 0; size_t nh = 0;
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            const size_t i = (size_t)y * W + x;
+            if (!hand[i]) {
+                worldDiff = std::max(worldDiff, (double)std::fabs(moved[i * 2] - base[i * 2]) +
+                                                std::fabs(moved[i * 2 + 1] - base[i * 2 + 1]));
+                continue;
+            }
+            const double u = (x + .5) / W, v = (y + .5) / H, sx = u * 2 - 1, sy = 1 - v * 2;
+            double P[3], r[3], q[3];
+            for (int k = 0; k < 3; ++k) {
+                P[k] = cc.loc[k] + (cc.fwd[k] + cc.right[k] * sx * cc.tanH + cc.up[k] * sy * cc.tanV) * 40.0;
+                r[k] = P[k] - cur.loc[k];
+            }
+            for (int k = 0; k < 3; ++k) q[k] = R[k][0] * r[0] + R[k][1] * r[1] + R[k][2] * r[2] + prev.loc[k] - cc.loc[k];
+            const double z = q[0] * cc.fwd[0] + q[1] * cc.fwd[1] + q[2] * cc.fwd[2];
+            const double pu = .5 + .5 * (q[0] * cc.right[0] + q[1] * cc.right[1] + q[2] * cc.right[2]) / (z * cc.tanH);
+            const double pv = .5 - .5 * (q[0] * cc.up[0] + q[1] * cc.up[1] + q[2] * cc.up[2]) / (z * cc.tanV);
+            const double e = std::hypot((moved[i * 2] - (pu - u)) * W, (moved[i * 2 + 1] - (pv - v)) * H);
+            worst = std::max(worst, e);
+            baseErr += std::hypot((base[i * 2] - (pu - u)) * W, (base[i * 2 + 1] - (pv - v)) * H);
+            mean += std::hypot((pu - u) * W, (pv - v) * H); ++nh;
+        }
+        check(nh && worst < .05 && mean / nh > 3, "a tracked hand carries its controller's rigid motion",
+              "max error %.4f px over %zu hand px (true motion %.2f px mean)", worst, nh, nh ? mean / nh : 0.0);
+        check(nh && baseErr / nh > 3, "control: room-fixed hand vectors miss the controller's motion",
+              "mean error %.2f px without hand motion", nh ? baseErr / nh : 0.0);
+        check(worldDiff == 0, "hand motion leaves every world vector unchanged", "largest delta %.9f", worldDiff);
+
+        // The nearer grip wins: a second hand 500 uu away with a different move changes nothing.
+        tg::GripPose farCur = cur, farPrev = cur;
+        farCur.loc[1] += 500; farPrev.loc[1] += 520;
+        p.hand[0] = tg::hand_motion(farPrev, farCur, 1.0f);
+        g.run(grid, p); const auto twoHands = readback(g.t.motion());
+        double twoDiff = 0;
+        for (size_t i = 0; i < twoHands.size(); ++i) twoDiff = std::max(twoDiff, (double)std::fabs(twoHands[i] - moved[i]));
+        check(twoDiff == 0, "the nearer grip owns the pixel", "largest delta %.9f", twoDiff);
+
+        // Beyond the radius, and with no hands at all: the base vectors, bit for bit.
+        p.hand[0] = tg::Params::HandMotion{};
+        p.hand[1] = tg::hand_motion(farPrev, farCur, 1.0f);
+        g.run(grid, p); const auto beyond = readback(g.t.motion());
+        p.hand[1] = tg::Params::HandMotion{};
+        g.run(grid, p); const auto none = readback(g.t.motion());
+        p.hand[1] = tg::hand_motion(prev, cur, 0.0f);
+        g.run(grid, p); const auto weightless = readback(g.t.motion());
+        double beyondDiff = 0, noneDiff = 0, weightDiff = 0;
+        for (size_t i = 0; i < base.size(); ++i) {
+            beyondDiff = std::max(beyondDiff, (double)std::fabs(beyond[i] - base[i]));
+            noneDiff = std::max(noneDiff, (double)std::fabs(none[i] - base[i]));
+            weightDiff = std::max(weightDiff, (double)std::fabs(weightless[i] - base[i]));
+        }
+        check(beyondDiff == 0 && noneDiff == 0 && weightDiff == 0,
+              "no hand, a hand beyond the radius, or a zero weight: the previous vectors exactly",
+              "beyond %.9f, none %.9f, weight 0 %.9f", beyondDiff, noneDiff, weightDiff);
+    }
     return finish("temporal-gpu");
 }

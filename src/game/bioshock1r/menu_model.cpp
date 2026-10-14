@@ -149,6 +149,7 @@ const Spec kSpecs[] = {
     {S::OutputWidth,"OutputWidth",T::Display,"",L::Basic,"Output width",K::Slider,0,8192,"%.0f",nullptr},
     {S::OutputHeight,"OutputHeight",T::Display,"",L::Basic,"Output height",K::Slider,0,8192,"%.0f",nullptr},
     {S::TemporalTaa,"TemporalTaa",T::Display,"Temporal diagnostics",L::Debug,"TAA (superseded anti-aliasing)",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Any GPU. Softer than DLAA; selecting it switches DLSS off."},
+    {S::HandMotionVectors,"HandMotionVectors",T::Display,"Upscaling and anti-aliasing (DLSS)",L::Advanced,"Hand motion vectors",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Tells DLSS and TAA how each controller moved the hand and weapon, so their textures stay sharp while you move them instead of smearing. Off: the hands are treated as standing still in the room, for comparison."},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
 }

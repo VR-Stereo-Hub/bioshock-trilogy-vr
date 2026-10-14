@@ -13,6 +13,8 @@
 #include "game/bioshock1r/afw_gpu.h"
 #include "game/bioshock1r/afw_motion.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/handback.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/resize.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/temporal_gpu.h"
@@ -86,6 +88,10 @@ std::atomic<float> g_farUu{65536.0f};
 // wrong - the integration test measured exactly that against a crate 0.3 m away.
 std::atomic<float> g_bodyM{0.0f};
 std::atomic<bool> g_fgBias{true};   // the hands mask as DLSS's bias-current-colour mask
+// Tracked hands carry their controller's own motion in the vectors (temporal_gpu.h
+// Params::hand): full within the first radius of the grip, none beyond the second.
+std::atomic<bool> g_handVectors{true};
+std::atomic<float> g_handFullM{0.35f}, g_handZeroM{0.60f};
 std::atomic<bool> g_retry{false};
 std::atomic<uint32_t> g_resetEpoch{1};
 
@@ -101,9 +107,14 @@ struct CamRec {
     FVector loc{};
     FRotator rot{};
     afw::TrackingFrame tracking;
+    tgpu::GripPose grip[2];       // each controller's grip, world, as this build placed it
+    float gripWeight[2] = {};     // 1 = the controller drives that hand, 0 = the game does
     uint64_t stampMs = 0;
 };
 const int kCamRing = 16;
+// The last render view noted with its frame context. SequentialReentry's second pass
+// replays the same game frame for the right eye, so it takes the same tracking and grips.
+CamRec g_lastFramed;
 std::mutex g_camMutex;
 CamRec g_cams[kCamRing];
 uint64_t g_buildCounter = 0;
@@ -205,6 +216,8 @@ struct EyeStore {
     DXGI_FORMAT inFmt = DXGI_FORMAT_UNKNOWN;
     tgpu::Camera cam;
     afw::TrackingFrame tracking;
+    tgpu::GripPose grip[2];
+    float gripWeight[2] = {};
     uint64_t build = 0;
     uint64_t stampMs = 0;
     uint32_t w = 0, h = 0;
@@ -784,6 +797,27 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
             BVR_LOG("[temporal] foreground motion vectors include player locomotion (same-eye history)");
         }
     }
+    // And each hand's own controller motion on top: a hand swung through the air moves its
+    // texture, and a vector that says it stood still in the room makes DLSS smear it.
+    if (hist && g_handVectors.load(std::memory_order_relaxed)) {
+        gp.handFullUu = g_handFullM.load() * ws;
+        gp.handZeroUu = std::max(g_handZeroM.load() * ws, gp.handFullUu + 1.0f);
+        for (int h = 0; h < 2; ++h) {
+            const tgpu::GripPose &a = st.grip[h], &b = cam.grip[h];
+            if (!a.valid || !b.valid) continue;
+            const float dx = b.loc[0] - a.loc[0], dy = b.loc[1] - a.loc[1], dz = b.loc[2] - a.loc[2];
+            if (dx * dx + dy * dy + dz * dz > 200.0f * 200.0f) continue;   // a recenter or a load
+            gp.hand[h] = tgpu::hand_motion(a, b, std::min(st.gripWeight[h], cam.gripWeight[h]));
+        }
+        if (gp.hand[0].valid || gp.hand[1].valid) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                BVR_LOG("[temporal] hand motion vectors on: controller motion within %.0f-%.0f uu of each grip",
+                        gp.handFullUu, gp.handZeroUu);
+            }
+        }
+    }
     bool guidesOk = false;
     char why[256] = "";
     if (depthOk && camOk) {
@@ -923,6 +957,7 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
     if (camOk && depthOk && guidesOk) {
         st.cam = tc;
         st.tracking = cam.tracking;
+        for (int h = 0; h < 2; ++h) { st.grip[h] = cam.grip[h]; st.gripWeight[h] = cam.gripWeight[h]; }
         st.build = cam.build;
         st.stampMs = now;
         st.w = f.srcW; st.h = f.srcH;
@@ -1257,6 +1292,26 @@ void tick_resolution() {
     if(rw!=bw || rh!=bh) resize::request(rw,rh,"DLSS / resolution change");
 }
 
+// Each controller's grip as this build placed it: the pose funnel and the XR-to-game map the
+// hands use (frame_context.h), so a rigid offset between the grip and the drawn hand (the
+// grip calibration, the model trim, the aim/grip split) cancels out of the motion.
+static void note_grips(const FrameContext& ctx, uint64_t now, CamRec& c) {
+    const bool driven = hands::active() && ctx.vrDriving;
+    for (int h = 0; h < 2; ++h) {
+        c.grip[h] = tgpu::GripPose{};
+        c.gripWeight[h] = 0.0f;
+        bvr::vr::HeadPose hp{};
+        if (!driven || !bvr::vr::get_hand_pose(h, /*aimPose=*/false, hp)) continue;
+        const float pos[3] = {hp.px, hp.py, hp.pz}, quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+        const GamePose g = xr_pose_to_game(ctx, pos, quat);
+        tgpu::GripPose& out = c.grip[h];
+        out.valid = true;
+        out.loc[0] = g.loc.x; out.loc[1] = g.loc.y; out.loc[2] = g.loc.z;
+        ue_rot_basis(g.rot, out.fwd, out.right, out.up);
+        c.gripWeight[h] = handback::weight(h, now);
+    }
+}
+
 void note_camera(int eyeSign, const FVector& loc, const FRotator& rot, const FrameContext* tracking) {
     if (!active()) return;
     const uint64_t now = GetTickCount64();
@@ -1264,7 +1319,19 @@ void note_camera(int eyeSign, const FVector& loc, const FRotator& rot, const Fra
     const uint64_t b = ++g_buildCounter;
     CamRec& c = g_cams[b % kCamRing];
     c.build = b; c.sign = eyeSign; c.loc = loc; c.rot = rot; c.stampMs = now;
-    c.tracking = tracking ? afw::tracking_frame(*tracking) : afw::TrackingFrame{};
+    if (tracking) {
+        c.tracking = afw::tracking_frame(*tracking);
+        note_grips(*tracking, now, c);
+        g_lastFramed = c;
+    } else if (eyeSign > 0 && g_lastFramed.build == b - 1 && g_lastFramed.sign < 0 &&
+               now - g_lastFramed.stampMs <= 100) {
+        // SequentialReentry's right eye: the second pass of the left eye's frame.
+        c.tracking = g_lastFramed.tracking;
+        for (int h = 0; h < 2; ++h) { c.grip[h] = g_lastFramed.grip[h]; c.gripWeight[h] = g_lastFramed.gripWeight[h]; }
+    } else {
+        c.tracking = afw::TrackingFrame{};
+        for (int h = 0; h < 2; ++h) { c.grip[h] = tgpu::GripPose{}; c.gripWeight[h] = 0.0f; }
+    }
     if (g_afw.load(std::memory_order_relaxed)) {
         tgpu::Params depth;
         depth.nearUu = g_nearUu.load(); depth.farUu = g_farUu.load();
@@ -1367,6 +1434,18 @@ void handle_command(const char* verb, const char* args) {
             g_squeezeAuto.store(strstr(args, "off") == nullptr);
             BVR_LOG("[temporal] squeezed-depth re-expansion %s (in use now: [%.3f, %.3f))",
                     g_squeezeAuto.load() ? "auto" : "OFF", g_squeezeLo, g_squeezeHi);
+        } else if (word(args, "handmv")) {
+            g_handVectors.store(strstr(args, "off") == nullptr);
+            BVR_LOG("[dlss] hand motion vectors (controller motion on the hands) %s",
+                    g_handVectors.load() ? "on" : "OFF (the room-fixed control)");
+        } else if (word(args, "handr")) {
+            float full = 0, zero = 0;
+            if (sscanf_s(args + 5, "%f %f", &full, &zero) == 2 && full >= 0.0f && zero > full && zero < 2.0f) {
+                g_handFullM.store(full);
+                g_handZeroM.store(zero);
+            }
+            BVR_LOG("[dlss] hand motion: full within %.2f m of the grip, none beyond %.2f m",
+                    g_handFullM.load(), g_handZeroM.load());
         } else if (word(args, "probe")) {
             g_probeOn.store(strstr(args, "on") != nullptr);
             update_seams();
@@ -1375,7 +1454,8 @@ void handle_command(const char* verb, const char* args) {
         } else {
             BVR_LOG("[dlss] mode %s, quality %s, model %s, helper: %s | audit %s near %.1f far %.0f body %.2f m "
                     "| usage: dlss on|dlaa|sr|taa|off|retry|quality <0-4>|output <w>x<h>|auto|model <0-3>|audit on|off|"
-                    "near <uu>|far <uu>|body <m>|fgbias on|off|taaweight <0.02-1>",
+                    "near <uu>|far <uu>|body <m>|fgbias on|off|handmv on|off|handr <full m> <zero m>|"
+                    "taaweight <0.02-1>",
                     mode_name(g_mode.load()),
                     kQualityNames[g_quality.load()], kModelNames[g_model.load()], why_now().c_str(),
                     g_audit.load() ? "on" : "off", g_nearUu.load(), g_farUu.load(), g_bodyM.load());
@@ -1446,6 +1526,7 @@ float menu_read(menu::Setting id) {
         case S::AfwHandGain: return g_afwFgGain.load();
         case S::AfwHandsMask: return g_afwMask.load() ? 1.0f : 0.0f;
         case S::HandDepthProbe: return g_probeOn.load() ? 1.0f : 0.0f;
+        case S::HandMotionVectors: return g_handVectors.load() ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -1477,6 +1558,7 @@ bool menu_write(menu::Setting id, float value) {
             g_probeOn.store(v != 0);
             update_seams();
             return true;
+        case S::HandMotionVectors: g_handVectors.store(v != 0); return true;
         default: return false;
     }
 }
