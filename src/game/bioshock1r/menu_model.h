@@ -77,10 +77,11 @@ enum class Setting {
     HudHandWidth, HudHandLift, HudHandFace, HudHandTilt,
     HudPiece,
     BVR_HUD_PIECES(BVR_HUD_ENUM_PLACE)
-    HudScreenPause, HudScreenMap, HudScreenMachines, HudHideBackdrop,
-    // The weapon and plasmid dial (dial_input.cpp).
-    DialEnabled, DialDirectionOnly, DialNeutral, DialTravel, DialSnap, DialEntryTilt, DialEntryYaw,
-    DialWidth, DialDistance, DialGripTrigger, DialHoldSwap,
+    // ORDER = kSpecs' row order: spec(id) indexes the table by this value (static_assert'ed).
+    HudScreenPause, HudScreenMap, HudHideBackdrop, HudScreenMachines,
+    // The weapon and plasmid dial (dial_input.cpp, swap_hold.cpp).
+    DialEnabled, DialGripTrigger, DialHoldSwap, DialDirectionOnly, DialNeutral, DialTravel, DialSnap,
+    DialEntryTilt, DialEntryYaw, DialWidth, DialDistance,
     Count
 };
 struct Spec {

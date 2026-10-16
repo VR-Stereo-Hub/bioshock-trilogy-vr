@@ -6,13 +6,13 @@ namespace bvr::b1r::menu {
 namespace {
 using S = Setting; using T = Tab; using L = Level; using K = Kind;
 using P = Scope; using C = Condition;
-const char* const kHudAnchors = "On the HUD panel\0Hidden\0In the world\0Left hand\0Right hand\0";
-const char* const kHudScreens = "Flat screen (as before)\0On the HUD panel\0In the world\0";
+constexpr const char* kHudAnchors = "On the HUD panel\0Hidden\0In the world\0Left hand\0Right hand\0";
+constexpr const char* kHudScreens = "Flat screen (as before)\0On the HUD panel\0In the world\0";
 #define BVR_HUD_COUNT(n, label, help) +1
 constexpr int kHudPieceCount = 0 BVR_HUD_PIECES(BVR_HUD_COUNT);
 #undef BVR_HUD_COUNT
 // Stable keys are also the on-disk schema. Labels may change without losing settings.
-const Spec kSpecs[] = {
+constexpr Spec kSpecs[] = {
     {S::TextSize,"TextSize",T::Display,"",L::Basic,"Text size",K::Slider,0.8f,1.5f,"%.0f%%",nullptr},
     {S::ViewLevel,"ViewLevel",T::Display,"",L::Basic,"Options",K::Choice,0,2,nullptr,"Basic\0Advanced\0Debug\0"},
     {S::Height,"Height",T::Comfort,"",L::Basic,"Height offset",K::Slider,-150,150,"%+.0f cm",nullptr},
@@ -196,6 +196,15 @@ const Spec kSpecs[] = {
     {S::DialDistance,"WheelDial.Distance",T::Controls,"Weapon and plasmid dial",L::Advanced,"Wheel distance offset",K::Slider,-.3f,.5f,"%+.2f m",nullptr,P::Global,C::Always,"Moves the drawn wheel along its facing (+ farther from you). Where the hand starts stays the same, so you never reach for the wheel."},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
+// spec(id) indexes this table by the enum value, so a row out of the enum's order makes
+// F10 show one setting and change another (2026-10-16: Equal shares toggled grip +
+// trigger). Every row must sit at its own id.
+constexpr bool rows_in_enum_order() {
+    for (std::size_t i = 0; i < std::size(kSpecs); ++i)
+        if (static_cast<std::size_t>(kSpecs[i].id) != i) return false;
+    return true;
+}
+static_assert(rows_in_enum_order(), "kSpecs rows must be in Setting enum order");
 }
 const Spec* specs(std::size_t& count) { count = std::size(kSpecs); return kSpecs; }
 const Spec& spec(Setting id) {
@@ -246,7 +255,7 @@ const char* disabled_reason(const Spec& s, const Backend& b, int hand) {
     if((s.id==S::FreeArmAppearance || s.id==S::HideHeldArm) && b.read(S::ArmAppearance,0)==2) return "Arm behavior is set to hide both arms.";
     if((s.id==S::HudDistance || s.id==S::HudWidth || s.id==S::HudHeight) && !b.read(S::HudPanel,0)) return "Enable the HUD panel to adjust its placement.";
     if(s.id>=S::HudElHealth && s.id<=S::HudScreenMachines && !b.read(S::HudPanel,0)) return "Enable the HUD panel to place its pieces.";
-    if(s.id>S::DialEnabled && s.id<=S::DialDistance && !b.read(S::DialEnabled,0)) return "Turn on Pick with your hand to adjust this.";
+    if(s.id>S::DialHoldSwap && s.id<=S::DialDistance && !b.read(S::DialEnabled,0)) return "Turn on Pick with your hand to adjust this.";
     if(s.id==S::DialTravel && b.read(S::DialDirectionOnly,0)) return "Turn off Direction only to use hand travel.";
     if(s.id==S::HudHandTilt && b.read(S::HudHandFace,0)==0) return "Set Panel faces to Like a watch face to tilt it.";
     return nullptr;

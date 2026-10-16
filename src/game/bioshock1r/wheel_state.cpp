@@ -18,6 +18,7 @@ namespace {
 using CallMethodFn = void(__cdecl*)(void* movie, const char* method, const char* fmt, ...);
 CallMethodFn g_original = nullptr;
 const uint8_t* g_image = nullptr; // the exe's base, for swap_hold's pointer checks
+unsigned g_axisCalls = 0, g_checkCalls = 0; // the game thread: this opening's stick calls
 
 // The mirror is written by the hook (the game thread: UnrealScript and the C++ HUD
 // updaters) and read whole only by the F10 status; the dial reads the atomics.
@@ -117,6 +118,13 @@ void __cdecl detour(void* movie, const char* method, const char* fmt, ...) {
     bool want = false;
     __try {
         want = wheel::interesting(method);
+        // While a wheel is open: how often the game hands the stick to it. Each axis
+        // change runs CheckFor*RadialChange; only some go on to UpdateRadialAxis, the
+        // call that moves the pick (ENGINE_NOTES "The weapon and plasmid wheels").
+        if (g_open.load(std::memory_order_relaxed) >= 0 && method) {
+            if (method[0] == 'U' && !strcmp(method, "UpdateRadialAxis")) ++g_axisCalls;
+            else if (method[0] == 'C' && !strncmp(method, "CheckFor", 8)) ++g_checkCalls;
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         want = false;
     }
@@ -132,7 +140,12 @@ void __cdecl detour(void* movie, const char* method, const char* fmt, ...) {
         // The release reaching the HUD movie: what the swap hold kept back goes first,
         // so the game sees the order it would have (swap, pick, then the release).
         if (is_hud(movie)) {
-            if (!strcmp(method, "RBReleased") || !strcmp(method, "LBReleased")) swap_hold::on_release();
+            if (!strcmp(method, "RBReleased") || !strcmp(method, "LBReleased")) {
+                BVR_LOG("[wheel] closed: the game passed the stick to the wheel %u time(s) (%u change checks)",
+                        g_axisCalls, g_checkCalls);
+                g_axisCalls = g_checkCalls = 0;
+                swap_hold::on_release();
+            }
             else if (!strcmp(method, "InitializeMovie")) swap_hold::clear();
         }
     }

@@ -50,6 +50,19 @@ opening and closing so a run shows whether the game opened one. The provider dum
 3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
 (`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
 
+**Headset run 5 (2026-10-16).** Reported: the wheel only took a pick for about half a second
+after it opened, and Equal shares could not be turned off. Cause of the second, and likely of the
+first: the four F10 rows added this session (Hide the blurred backdrop, Open with grip + trigger,
+Hold the hand swap) sat in kSpecs out of the Setting enum's order, and `spec(id)` indexes the
+table by the enum - so a row showed one setting and validated/saved another (Equal shares'
+toggle was refused, and grip + trigger got saved ON without being asked for). Fixed by putting
+the enum in the table's order, plus a `static_assert` that every row sits at its own id. The
+tester's stray `WheelDial.GripTrigger 1` was removed from menu-settings.ini (backup
+`menu-settings.ini.bak-pre-griptrigger-fix`, CRLF kept). New: `[wheel] closed: the game passed the
+stick to the wheel N time(s) (M change checks)` on every close, so a run shows whether the stick
+reached the wheel. The hand swap hold worked in run 5: `sent the hand swap then
+class=TelekinesisAbility`.
+
 **After run 4: the hand swap held (built, not run in the game).** F10 > Controls > Weapon and
 plasmid dial > Hold the hand swap until the wheel closes (on): the movie's SwitchHandModes and
 its per-landing SelectPlasmid are held while a wheel is open and sent when it closes (ENGINE_NOTES
