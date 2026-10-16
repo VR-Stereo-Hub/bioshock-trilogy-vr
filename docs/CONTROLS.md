@@ -34,7 +34,7 @@ report. Only the *live* rows have code behind them.
 |---|---|---|---|
 | `FaceLayout` | `passthrough`, `session19` | `passthrough` | `passthrough` = the game's own layout, nothing rearranged. `session19` = the older rearrangement (Touch B = jump, Touch Y = first aid); still what BS2 uses |
 | `FaceA` `FaceB` `FaceX` `FaceY` | button name | from layout | Individual overrides on top of `FaceLayout` |
-| `GripL` `GripR` | button name | `LB` / `RB` | |
+| `GripL` `GripR` | button name | `LB` / `RB` | BS1 (2026-10-16): with F10 > Controls > Open with grip + trigger on (off by default), the bumper reaches the game only once that hand's trigger is pulled with the grip held, and stays held until the grip lets go; the trigger is consumed while its grip is held. The grip alone does nothing in the game. |
 | `StickClickL` `StickClickR` | button name | `LS` / `NONE` | BS1 eats R3: zoom is a comfort hazard in a headset and is unreachable by design |
 | `FlickUp` `FlickDown` `FlickLeft` `FlickRight` | button name | `DUP` `DDOWN` `DLEFT` `NONE` | BS1 has three ammo types, not four |
 | `ControllerDpadModifier` | `0`–`4` | `1` | 0 off · 1 right thumbrest · 2 R3 · 3 left grip · 4 left thumbrest. **Mode 5 (left hand near head) is not implemented** — it falls back to 1 with a log line |

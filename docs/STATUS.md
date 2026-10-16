@@ -50,6 +50,39 @@ opening and closing so a run shows whether the game opened one. The provider dum
 3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
 (`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
 
+**Headset run 4 (2026-10-16).** Reported: worse - Equal shares stops picks working (also in
+run 3), the plasmid arm still went to the default pose, the wheel could not be moved around;
+and the grip alone should open the wheels again (Open with grip + trigger now off by default).
+Found: the game passes the stick to the wheel only on axis CHANGE events, and only the change
+AFTER the one that crosses a wedge delivers it (ShockPlayerController.UpdateRadialMenu and
+the movie's CheckForRightRadialChange answering through a later console command). Equal
+shares holds an exact vector, so after the first crossing nothing changed and no pick landed;
+the free mode only worked through hand jitter. The dial now alternates the stick's length by
+1.5% on every read (inside the wedge; the movie ignores the same item). The arm: the movie's
+OpenAbilityMenu runs the console command SwitchHandModes BEFORE the wheel shows (AutoSwap), so
+the game swaps to the plasmid hand and starts its equip, then pauses - the arm is that frozen
+equip pose carried to the controller (the hands compose on the engine's live pose). Holding
+the mod's hand latch (run 3's change) cannot help. Next: hold that one console command while
+the wheel opens and issue it on the close, so the arm keeps its pose until the pick lands -
+it needs a hook on the movie's fscommand handler and a check of what an ability pick does in
+weapon hands.
+
+**Headset run 3 (2026-10-16).** Reported: the wheels mostly work but do not always appear
+centred on the hand, do not feel snappy or precise, the weapon wheel's left side was cut off, and
+during the plasmid wheel the left arm went to a default position and followed the controller.
+Measured on run 3's wheel dump: the wheel's centre is (0.484, 0.500) of the capture, not where
+the 16:9 renders put it, so the old box was off-centre and too narrow on the left - the boxes are
+now centred on the measured wheel. The HUD is laid out 4:3 and stretched onto the capture (the
+wheel's cross is 1.43x taller than wide in pixels, = (H/W)*4/3), so at the hand the ring was an
+ellipse whose items sat away from the directions that pick them - the dial now undoes the
+stretch (`dial_pose` pixel aspect). The HUD swapchain was rebuilt on every wheel open and close
+(the strip's height changes) - now grow-only, so opening no longer stalls a frame. New: F10 >
+Controls > Open with grip + trigger (default on), so the grip alone is free. The plasmid arm is
+the game swapping to plasmid hand mode when that wheel opens (`HANDMODE: PLASMID`) and the mod
+re-posing the picking arm as the plasmid hand mid-pick. Asked, the tester wants the arm to keep
+following the controller as it was. Holding `hands::active_hand()`'s latch while a wheel was
+open was tried and did not help (run 4) - reverted; the cause is in the game, see run 4.
+
 **Headset run 2 (2026-10-16).** The dial worked (opened, picked, drawn at the hand). Reported:
 the pieces took far bigger sections than they needed, the wheel too little, and the blur stayed.
 Measured on run 2's dump: the stage is stretched onto the 1664x1792 capture, so the rectangles

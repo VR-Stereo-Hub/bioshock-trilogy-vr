@@ -120,12 +120,18 @@ void set_flourish_chord_suspended(bool on);
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
 
-// BS1 (2026-10-15): the last word on the composed sticks. When set, it runs on the
+// BS1 (2026-10-15): the last word on the composed pad. When set, it runs on the
 // composed (VR) path after every other stage, on the game's XInput thread, with the
-// final buttons; returning true means it rewrote the four axes (the BS1 hand dial
-// steering the game's weapon/plasmid wheel). Null (the default) = untouched: BS2
-// and Infinite never set it.
-using StickOverrideFn = bool (*)(uint16_t buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
+// final pad; returning true means it rewrote some of it (the BS1 hand dial: the
+// bumpers that open the weapon/plasmid wheels, the triggers a grip+trigger opening
+// consumes, the sticks it steers the wheel with). Null (the default) = untouched:
+// BS2 and Infinite never set it.
+struct PadOverride {
+    uint16_t buttons;
+    uint8_t lt, rt;
+    int16_t lx, ly, rx, ry;
+};
+using StickOverrideFn = bool (*)(PadOverride* pad);
 void set_stick_override(StickOverrideFn fn);
 
 // Session 22 turn controls (persisted via vrpreset.ini; overlay sliders).

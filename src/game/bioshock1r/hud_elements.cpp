@@ -154,14 +154,16 @@ const Row kRows[] = {
     {"Prompt",    {0.545f, 0.360f, 0.850f, 0.620f}, 1,  kAlways},        // centerBox.focusArea, ReRoll
     {"Ammo",      {0.035f, 0.760f, 0.380f, 0.935f}, 7,  kWeaponInHand},  // ammoScrollBar
     {"Plasmid",   {0.035f, 0.760f, 0.380f, 0.935f}, 7,  kPlasmidInHand}, // CurrentAbilityName (frame 2)
-    // The wheel in three parts. Measured on renders of the open wheel at 2, 6 and 8 items
-    // (the merged HUDRadial, stage 1280x720) the ring was 474..839 x 150..511, but in the
-    // headset that cut the wheel short, so each part now takes the whole band it can reach:
-    // the ring 384..934 x 122..536, the name above it, the button line below. Each owns its
-    // rectangle while the wheel is up (the game is paused, nothing else shows there).
-    {"Wheel",     {0.3000f, 0.1700f, 0.7300f, 0.7450f}, -1, kWheelOpen},  // HandsIcons radials (the ring)
-    {"WheelName", {0.3000f, 0.1000f, 0.7300f, 0.1700f}, -1, kWheelOpen},  // the highlighted item's name
-    {"WheelLabel",{0.3300f, 0.7450f, 0.7000f, 0.8100f}, -1, kWheelOpen},  // SELECT WEAPON / SELECT PLASMID
+    // The wheel in three parts, measured on a headset dump of the open weapon wheel
+    // (dumps\hud-20261016-014647, 1792x1920): the items span 0.295..0.674 x 0.248..0.753
+    // around the wheel's centre (0.4844, 0.5005) - NOT where the 16:9 renders put it, which
+    // is why the ring was off-centre at the hand and cut on the left. The ring's box is
+    // centred on that centre, so the hand is the wheel's middle; the name (0.198..0.233)
+    // sits above it, the button line (0.775..0.803) below. Each owns its rectangle while the
+    // wheel is up (the game is paused, nothing else shows there).
+    {"Wheel",     {0.2870f, 0.2380f, 0.6818f, 0.7630f}, -1, kWheelOpen},  // HandsIcons radials (the ring)
+    {"WheelName", {0.3000f, 0.1850f, 0.6688f, 0.2380f}, -1, kWheelOpen},  // the highlighted item's name
+    {"WheelLabel",{0.3350f, 0.7660f, 0.6350f, 0.8120f}, -1, kWheelOpen},  // SELECT WEAPON / SELECT PLASMID
     {"Subtitles", {0.220f, 0.775f, 0.760f, 0.940f}, 3,  kAlways},        // subtitleTextHolder, AreaNameMovie
     {"Tutorial",  {0.220f, 0.650f, 0.760f, 0.755f}, 4,  kAlways},        // trainingTextHolder
     {"Objective", {0.660f, 0.000f, 1.000f, 0.130f}, 8,  kAlways},        // chatBoxMovie.importantTextHolder
@@ -504,10 +506,16 @@ bool provide(const vr::HudElementFrame& f, int maxQuads, vr::HudElementPlan* out
         dial_input::Visual dv;
         if (wheel && g_leaseKind >= 0 && dial_input::visual(&dv) && dv.kind == g_leaseKind) {
             const int iw = row_index("Wheel"), in = row_index("WheelName"), il = row_index("WheelLabel");
+            // The HUD is laid out 4:3 and stretched onto the capture: measured on a
+            // headset dump (1792x1920) the wheel's cross is 1.425 times taller than wide
+            // in capture pixels, (H/W) * 4/3 = 1.429. Undone at the hand: a round ring.
+            const float pxAspect = static_cast<float>(f.texH) / static_cast<float>(f.texW) * (4.0f / 3.0f);
             if (cfg[iw].anchor != hudel::kOff)
-                hudel::dial_pose(cfg[iw].rect, cfg[iw].rect, f.texW, f.texH, dv.center, dv.q, dv.widthM, &cfg[iw]);
+                hudel::dial_pose(cfg[iw].rect, cfg[iw].rect, f.texW, f.texH, dv.center, dv.q, dv.widthM, pxAspect,
+                                 &cfg[iw]);
             if (cfg[in].anchor != hudel::kOff)
-                hudel::dial_pose(cfg[iw].rect, cfg[in].rect, f.texW, f.texH, dv.center, dv.q, dv.widthM, &cfg[in]);
+                hudel::dial_pose(cfg[iw].rect, cfg[in].rect, f.texW, f.texH, dv.center, dv.q, dv.widthM, pxAspect,
+                                 &cfg[in]);
             cfg[il].anchor = hudel::kOff;
             if (!g_dialShown) {
                 g_dialShown = true;

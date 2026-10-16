@@ -18,11 +18,11 @@ namespace {
 using S = menu::Setting;
 
 std::atomic<bool> g_enabled{true}, g_directionOnly{true}, g_snap{true}, g_entryTilt{false}, g_entryYaw{false};
+std::atomic<bool> g_gripTrigger{false}; // the tester's call after run 4: the grip alone, as before
 std::atomic<float> g_neutralMm{2.0f}, g_travelCm{4.0f};
-// The width of the Wheel row's box at the hand. The box was widened to the whole band the
-// wheel can reach (0.43 of the HUD, was 0.295), so 0.5 m keeps the ring itself at about
-// the 0.35 m the Dishonored VR mod tuned.
-std::atomic<float> g_widthM{0.5f}, g_distanceM{0.0f};
+// The width of the Wheel row's box at the hand: the band the wheel's items reach
+// (0.295..0.674 of the HUD, measured on a headset dump), so this is the ring's width.
+std::atomic<float> g_widthM{0.35f}, g_distanceM{0.0f};
 
 // The pose the last press froze, for hud_elements (render thread). A seqlock: the
 // XInput thread writes it once per press; a reader retries if a write overlapped.
@@ -51,7 +51,34 @@ const char* slot_name(int s) {
     return s >= 0 && s < 8 ? k[s] : "none";
 }
 
-bool override_sticks(uint16_t buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
+// Grip + trigger opens a wheel (F10 Controls > Open with grip + trigger, off by default), so
+// the grip alone is free. The grip reaches the game as its bumper (GripL/GripR = LB/RB);
+// while a grip is held its trigger is consumed (no shot), the bumper is withheld until
+// the trigger is pulled, and then held until the grip lets go - the release still
+// commits, and a quick squeeze of both still cycles like the bumper tap.
+constexpr uint8_t kComboTrigger = 128; // half a pull
+bool g_comboOpen[2] = {};              // XInput thread only
+
+bool combine_grip_trigger(bvr::input::PadOverride* pad) {
+    bool changed = false;
+    for (int h = 0; h < 2; ++h) {
+        const uint16_t bump = h ? kRB : kLB;
+        uint8_t& trig = h ? pad->rt : pad->lt;
+        const bool grip = (pad->buttons & bump) != 0;
+        if (!grip) {
+            g_comboOpen[h] = false;
+            continue;
+        }
+        if (trig >= kComboTrigger) g_comboOpen[h] = true;
+        if (trig) { trig = 0; changed = true; }
+        if (!g_comboOpen[h]) { pad->buttons = static_cast<uint16_t>(pad->buttons & ~bump); changed = true; }
+    }
+    return changed;
+}
+
+bool override_sticks(bvr::input::PadOverride* pad) {
+    bool changed = g_gripTrigger.load(std::memory_order_relaxed) && combine_grip_trigger(pad);
+    const uint16_t buttons = pad->buttons;
     const bool on = g_enabled.load(std::memory_order_relaxed) && wheel_state::live();
     dial::Config c;
     c.directionOnly = g_directionOnly.load(std::memory_order_relaxed);
@@ -120,13 +147,26 @@ bool override_sticks(uint16_t buttons, int16_t* lx, int16_t* ly, int16_t* rx, in
         g_agg = Agg{};
         g_agg.since = now;
     }
-    if (steerHand < 0) return false;
+    if (steerHand < 0) return changed;
     // The hand alone: its slot on the right stick (the movie takes the stick that last
     // changed wedge), the left stick held still so it cannot take the wheel.
-    *rx = static_cast<int16_t>(lroundf(steerOut.x * 32767.0f));
-    *ry = static_cast<int16_t>(lroundf(steerOut.y * 32767.0f));
-    *lx = 0;
-    *ly = 0;
+    //
+    // KEEP THE AXES MOVING. The game feeds the wheel only on an axis CHANGE
+    // (ShockPlayerController.UpdateRadialMenu_RX/RY): each change first asks the movie
+    // whether the wedge changed (CheckForRightRadialChange, which answers through a
+    // console command that lands later), and only a LATER change event passes the stick
+    // on (UpdateRadialAxis). A held, exact slot vector - Equal shares - gives the one
+    // crossing and then no more events, so the pick never landed (headset runs 3 and 4);
+    // the free mode worked only because hand jitter kept the axes changing. So every
+    // read alternates the length by 1.5%, which stays inside the slot's wedge (cardinals
+    // past 0.901, diagonals inside 0.2..0.9) and which the movie ignores for the same item.
+    static bool s_dither = false;
+    s_dither = !s_dither;
+    const float k = s_dither ? 32767.0f : 32767.0f * 0.985f;
+    pad->rx = static_cast<int16_t>(lroundf(steerOut.x * k));
+    pad->ry = static_cast<int16_t>(lroundf(steerOut.y * k));
+    pad->lx = 0;
+    pad->ly = 0;
     return true;
 }
 
@@ -172,6 +212,7 @@ float menu_read(menu::Setting id) {
         case S::DialSnap: return g_snap.load() ? 1.0f : 0.0f;
         case S::DialEntryTilt: return g_entryTilt.load() ? 1.0f : 0.0f;
         case S::DialEntryYaw: return g_entryYaw.load() ? 1.0f : 0.0f;
+        case S::DialGripTrigger: return g_gripTrigger.load() ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -183,6 +224,11 @@ bool menu_write(menu::Setting id, float value) {
                 BVR_LOG("[dial] hand dial %s", value != 0 ? "ON" : "off");
             return true;
         case S::DialDirectionOnly: g_directionOnly.store(value != 0); return true;
+        case S::DialGripTrigger:
+            if (g_gripTrigger.exchange(value != 0) != (value != 0))
+                BVR_LOG("[dial] wheels open with %s", value != 0 ? "grip + trigger (the grip alone is free)"
+                                                                  : "the grip alone (as the game's bumper)");
+            return true;
         case S::DialWidth: g_widthM.store(value); return true;
         case S::DialDistance: g_distanceM.store(value); return true;
         case S::DialNeutral: g_neutralMm.store(value); return true;

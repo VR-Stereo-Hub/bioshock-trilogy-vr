@@ -48,11 +48,12 @@ struct ElementCfg {
     float trims[kMaxTrims][4] = {};
     // POSED: placed by the caller, not by its anchor - the wheel's ring and name at the
     // hand dial. XR LOCAL centre and orientation (+Z toward the viewer), and metres per
-    // capture pixel (the piece keeps its aspect).
+    // capture pixel across and down (they differ when the capture's pixels are not square).
     bool posed = false;
     float posePos[3] = {};
     float poseQuat[4] = {0, 0, 0, 1};
     float poseMPerPx = 0.0f;
+    float poseMPerPxY = 0.0f;
     float offX = 0.0f;    // metres: right on the panel/world plane or across the hand panel
     float offY = 0.0f;    // metres: up
     float scale = 1.0f;
@@ -157,13 +158,18 @@ inline void park_world(const vr::HudElementFrame& f, WorldPark* park) {
 // reference rectangle (the wheel's ring): the ring's centre lands on `centre`, the
 // ring is `widthM` wide, and the piece sits at its own offset from the ring on the
 // dial's plane (so the item name stays above the ring). Rectangles normalised.
+// `pxAspect` is how much taller than wide one capture pixel is in the art: the HUD is
+// stretched onto a capture of another shape, and at the hand the wheel is drawn as the
+// art was made (round), so heights are divided by it. 1 = square pixels.
 inline void dial_pose(const float ring[4], const float piece[4], uint32_t texW, uint32_t texH,
-                      const float centre[3], const float q[4], float widthM, ElementCfg* e) {
+                      const float centre[3], const float q[4], float widthM, float pxAspect,
+                      ElementCfg* e) {
     const float ringPx = (ring[2] - ring[0]) * static_cast<float>(texW);
-    if (ringPx < 1.0f || widthM <= 0.0f) { e->posed = false; return; }
+    if (ringPx < 1.0f || widthM <= 0.0f || !(pxAspect > 0.1f)) { e->posed = false; return; }
     const float m = widthM / ringPx;
+    const float my = m / pxAspect;
     const float dx = ((piece[0] + piece[2]) - (ring[0] + ring[2])) * 0.5f * static_cast<float>(texW) * m;
-    const float dy = -((piece[1] + piece[3]) - (ring[1] + ring[3])) * 0.5f * static_cast<float>(texH) * m;
+    const float dy = -((piece[1] + piece[3]) - (ring[1] + ring[3])) * 0.5f * static_cast<float>(texH) * my;
     const float r0[3] = {1, 0, 0}, u0[3] = {0, 1, 0};
     float right[3], up[3];
     xrmath::quat_rotate(q[0], q[1], q[2], q[3], r0, right);
@@ -171,6 +177,7 @@ inline void dial_pose(const float ring[4], const float piece[4], uint32_t texW, 
     for (int k = 0; k < 3; ++k) e->posePos[k] = centre[k] + right[k] * dx + up[k] * dy;
     for (int k = 0; k < 4; ++k) e->poseQuat[k] = q[k];
     e->poseMPerPx = m;
+    e->poseMPerPxY = my;
     e->posed = true;
 }
 
@@ -380,7 +387,7 @@ inline bool build_plan(const ElementCfg* els, int count, const HandCfg& hand, Wo
             for (int k = 0; k < 3; ++k) q.pos[k] = e.posePos[k];
             for (int k = 0; k < 4; ++k) q.quat[k] = e.poseQuat[k];
             q.widthM = pw * e.poseMPerPx;
-            q.heightM = ph * e.poseMPerPx;
+            q.heightM = ph * (e.poseMPerPxY > 0.0f ? e.poseMPerPxY : e.poseMPerPx);
         } else if (e.anchor == kWindow || e.anchor == kWorld) {
             // Its own place on the panel, plus its own offset, at its own scale.
             const float cx = (static_cast<float>(px[i][0] + px[i][2]) * 0.5f / W - 0.5f) * f.winWidth + e.offX;

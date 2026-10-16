@@ -80,7 +80,7 @@ enum class Setting {
     HudScreenPause, HudScreenMap, HudScreenMachines, HudHideBackdrop,
     // The weapon and plasmid dial (dial_input.cpp).
     DialEnabled, DialDirectionOnly, DialNeutral, DialTravel, DialSnap, DialEntryTilt, DialEntryYaw,
-    DialWidth, DialDistance,
+    DialWidth, DialDistance, DialGripTrigger,
     Count
 };
 struct Spec {

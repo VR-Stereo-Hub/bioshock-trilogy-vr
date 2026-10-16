@@ -575,9 +575,10 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         }
     }
     if (StickOverrideFn ov = g_stickOverride.load(std::memory_order_relaxed)) {
-        int16_t lx = out.lx, ly = out.ly, rx = out.rx, ry = out.ry;
-        if (ov(out.buttons, &lx, &ly, &rx, &ry)) {
-            out.lx = lx; out.ly = ly; out.rx = rx; out.ry = ry;
+        PadOverride p{out.buttons, out.lt, out.rt, out.lx, out.ly, out.rx, out.ry};
+        if (ov(&p)) {
+            out.buttons = p.buttons; out.lt = p.lt; out.rt = p.rt;
+            out.lx = p.lx; out.ly = p.ly; out.rx = p.rx; out.ry = p.ry;
         }
     }
     if (g_packetBump || memcmp(&out, &g_lastComposed, sizeof out) != 0) {

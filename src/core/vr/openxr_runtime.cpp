@@ -3630,9 +3630,13 @@ bool submit_hud_elements(HudElementsProviderFn provider, ID3D11Texture2D* hudTex
     if (plan.clears > kMaxHudElementOps) plan.clears = kMaxHudElementOps;
     if (plan.postClears > kMaxHudElementOps) plan.postClears = kMaxHudElementOps;
 
-    const uint32_t imgH = hd.Height + plan.stripH;
-    if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width || g_hudSwapH != imgH)
-        create_hud_swapchain(hd.Width, imgH);
+    // GROW-ONLY: the strip changes height whenever a piece starts or stops moving (a wheel
+    // opening adds its rows), and recreating the swapchain each time stalled the frame the
+    // wheel opened on. A taller image is reused; rows below the strip are never shown.
+    const uint32_t needH = hd.Height + plan.stripH;
+    if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width || g_hudSwapH < needH)
+        create_hud_swapchain(hd.Width, (needH + 63u) & ~63u);
+    const uint32_t imgH = g_hudSwapH;
     if (g_hudSwapchain == XR_NULL_HANDLE) return false;
     if ((plan.clears || plan.postClears) && g_hudImageRtvs.size() != g_hudImages.size()) {
         g_hudImageRtvs.assign(g_hudImages.size(), nullptr);
@@ -3655,7 +3659,7 @@ bool submit_hud_elements(HudElementsProviderFn provider, ID3D11Texture2D* hudTex
                        idx < g_hudImages.size();
     if (ready) {
         ID3D11Texture2D* img = g_hudImages[idx].texture;
-        if (plan.stripH == 0)
+        if (imgH == hd.Height)
             g_context->CopyResource(img, hudTex);
         else
             g_context->CopySubresourceRegion(img, 0, 0, 0, 0, hudTex, 0, nullptr);
@@ -4567,8 +4571,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
         if (hudTex) {
             D3D11_TEXTURE2D_DESC hd{};
             hudTex->GetDesc(&hd);
-            if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width ||
-                g_hudSwapH != hd.Height)
+            // With an elements provider registered (BS1), its taller swapchain is reused
+            // here too, so moving between "pieces" and "whole" never rebuilds it. Without
+            // one (every other game) the test is exactly the old one.
+            const bool fits = elements ? g_hudSwapW == hd.Width && g_hudSwapH >= hd.Height
+                                       : g_hudSwapW == hd.Width && g_hudSwapH == hd.Height;
+            if (g_hudSwapchain == XR_NULL_HANDLE || !fits)
                 create_hud_swapchain(hd.Width, hd.Height);
             if (g_hudSwapchain != XR_NULL_HANDLE) {
                 uint32_t idx = 0;
@@ -4576,8 +4584,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_hudSwapchain, &ai, &idx))) {
                     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                     wi.timeout = XR_INFINITE_DURATION;
-                    if (XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwapchain, &wi)))
-                        g_context->CopyResource(g_hudImages[idx].texture, hudTex);
+                    if (XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwapchain, &wi))) {
+                        if (g_hudSwapH == hd.Height)
+                            g_context->CopyResource(g_hudImages[idx].texture, hudTex);
+                        else
+                            g_context->CopySubresourceRegion(g_hudImages[idx].texture, 0, 0, 0, 0,
+                                                             hudTex, 0, nullptr);
+                    }
                     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                     xrReleaseSwapchainImage(g_hudSwapchain, &ri);
 
