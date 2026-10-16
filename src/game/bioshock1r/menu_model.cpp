@@ -182,6 +182,13 @@ const Spec kSpecs[] = {
     {S::HudScreenPause,"HudScreen.Pause",T::HUD,"Menus",L::Basic,"Pause menu",K::Choice,0,2,nullptr,kHudScreens,P::Global,C::Always,"Flat screen: the anchored screen, as before. On the HUD panel or in the world: the game keeps drawing in 3D behind the menu, and the menu sits where the HUD panel is or stays where you were looking when it opened."},
     {S::HudScreenMap,"HudScreen.Map",T::HUD,"Menus",L::Basic,"Map",K::Choice,0,2,nullptr,kHudScreens,P::Global,C::Always,"Where the map opens. The same choices as the pause menu."},
     {S::HudScreenMachines,"HudScreen.Machines",T::HUD,"Menus",L::Basic,"Machines",K::Choice,0,2,nullptr,kHudScreens,P::Global,C::Always,"Vending machines, U-Invent, the Gatherer's Garden and the Gene Bank. The same choices as the pause menu. The hacking game always takes the flat screen: the game stops drawing the world for it."},
+    {S::DialEnabled,"WheelDial",T::Controls,"Weapon and plasmid dial",L::Basic,"Pick with your hand",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Hold the right grip for the weapon wheel or the left grip for the plasmid wheel, then move that hand toward the item and let go. The sticks do nothing while the wheel is open. A grip tap still cycles. Each item gets an equal share of the circle, however many you have."},
+    {S::DialDirectionOnly,"WheelDial.DirectionOnly",T::Controls,"Weapon and plasmid dial",L::Advanced,"Direction only",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Only the direction the hand moves counts, so a small movement picks. Off: the hand must travel the distance below."},
+    {S::DialNeutral,"WheelDial.Neutral",T::Controls,"Weapon and plasmid dial",L::Advanced,"Neutral radius",K::Slider,.5f,15,"%.1f mm",nullptr,P::Global,C::Always,"How far the hand moves before anything is picked."},
+    {S::DialTravel,"WheelDial.Travel",T::Controls,"Weapon and plasmid dial",L::Advanced,"Hand travel (direction only off)",K::Slider,2,30,"%.0f cm",nullptr,P::Global,C::Always,"With Direction only off and Equal shares off: the movement for a full stick."},
+    {S::DialSnap,"WheelDial.Snap",T::Controls,"Weapon and plasmid dial",L::Advanced,"Equal shares",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Each item you have gets an equal slice of the circle and empty slots cannot be picked. Off: the game's own wedges, where the corners are narrower."},
+    {S::DialEntryTilt,"WheelDial.EntryTilt",T::Controls,"Weapon and plasmid dial",L::Advanced,"Follow head tilt on opening",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The dial's plane tilts with your head when it opens. Off: upright."},
+    {S::DialEntryYaw,"WheelDial.EntryYaw",T::Controls,"Weapon and plasmid dial",L::Advanced,"Follow head direction on opening",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The dial's plane turns to where you look when it opens. Off: it faces your position from the hand."},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
 }
@@ -234,6 +241,8 @@ const char* disabled_reason(const Spec& s, const Backend& b, int hand) {
     if((s.id==S::FreeArmAppearance || s.id==S::HideHeldArm) && b.read(S::ArmAppearance,0)==2) return "Arm behavior is set to hide both arms.";
     if((s.id==S::HudDistance || s.id==S::HudWidth || s.id==S::HudHeight) && !b.read(S::HudPanel,0)) return "Enable the HUD panel to adjust its placement.";
     if(s.id>=S::HudElHealth && s.id<=S::HudScreenMachines && !b.read(S::HudPanel,0)) return "Enable the HUD panel to place its pieces.";
+    if(s.id>S::DialEnabled && s.id<=S::DialEntryYaw && !b.read(S::DialEnabled,0)) return "Turn on Pick with your hand to adjust this.";
+    if(s.id==S::DialTravel && b.read(S::DialDirectionOnly,0)) return "Turn off Direction only to use hand travel.";
     if(s.id==S::HudHandTilt && b.read(S::HudHandFace,0)==0) return "Set Panel faces to Like a watch face to tilt it.";
     return nullptr;
 }

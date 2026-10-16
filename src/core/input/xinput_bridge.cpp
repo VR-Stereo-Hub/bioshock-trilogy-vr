@@ -62,6 +62,7 @@ std::atomic<bool> g_pitchLiftOnBumpers{true};
 // slot shape as the pitch error above; stale or zero composes byte-identical
 // sticks, which is the whole cross-game safety argument.
 std::atomic<float> g_moveYawOffDeg{0.0f};
+std::atomic<StickOverrideFn> g_stickOverride{nullptr}; // BS1 hand dial; null = untouched
 std::atomic<uint64_t> g_moveYawOffMs{0};
 
 // s63 MOVEMENT-STICK DEADZONE PRE-COMPENSATION, ported from the BRVR mod.
@@ -573,6 +574,12 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
             }
         }
     }
+    if (StickOverrideFn ov = g_stickOverride.load(std::memory_order_relaxed)) {
+        int16_t lx = out.lx, ly = out.ly, rx = out.rx, ry = out.ry;
+        if (ov(out.buttons, &lx, &ly, &rx, &ry)) {
+            out.lx = lx; out.ly = ly; out.rx = rx; out.ry = ry;
+        }
+    }
     if (g_packetBump || memcmp(&out, &g_lastComposed, sizeof out) != 0) {
         ++g_packet;
         g_packetBump = false;
@@ -943,6 +950,8 @@ void last_composed_buttons(uint16_t* buttons) {
     // edges here covers a physical pad too. Session 42: BS2's menukey lane.
     if (buttons) *buttons = g_lastButtons.load(std::memory_order_relaxed);
 }
+
+void set_stick_override(StickOverrideFn fn) { g_stickOverride.store(fn, std::memory_order_relaxed); }
 
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
     std::lock_guard<std::mutex> lock(g_mutex);

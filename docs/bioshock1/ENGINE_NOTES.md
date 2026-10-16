@@ -6505,3 +6505,28 @@ other hand's wheel swaps hands first when `AutoSwap` (`SwitchHandModes`). Releas
 `UnKillLook` and `ForceUnPause` - the wheel holds the look and the game while it is open (the
 opening half is native). The ammo-type selector is separate: `ammoScrollBar`, three
 `ammoMenu` rings, bottom left.
+
+### The HUD movie's call routine - the wheels' stage seam (2026-10-15, tools\ida\fw1/fw2)
+
+Every call into a gameswf movie BY NAME goes through one routine:
+`void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)`
+at **+0x427220** (`patterns.h kFlashCallMethodRva`, prologue verified on both sides of the
+relocated SEH push). It returns at once unless `movie+0x114` (the gameswf movie interface) is set,
+formats the arguments and invokes the ActionScript function. **Both kinds of caller reach it**: the
+C++ HUD updaters (158 literal method names at 277 call sites - `AddWeapon "%ls, %ls, %d, %d, %d"`,
+`AddAbility "%ls, %ls"`, `RemoveWeapon "%ls"`, `SelectWeapon "%ls"`, `SetHealth "%d, %d"`, ...)
+and the UnrealScript natives `execCallMethodVoid/Int/Float/FloatFloat/String/...` (+0x427480 ..
++0x427CA0), which pass the FName's ANSI text. So `CallHUDFunction('OpenWeaponMenu' | 'RBReleased' |
+'OpenAbilityMenu' | 'LBReleased')` - what `OpenWeaponMenu`/`CloseWeaponMenu` (the XENON_RB / LB
+bindings) send - arrives here too. Movies are fetched by name through `GetPlayingMovie` (+0x43E220:
+a linear search of the GUI controller's playing list comparing the FName). The movie's filename is
+the string at `movie+0x40`, the same field screens.cpp reads; the HUD is `HUDRadial.swf`
+(`HUDPC.swf` on mouse and keyboard). Another trap: `AddAbility` is ALSO sent to the
+`PCWeaponSelection` movie, so a mirror must filter on the movie.
+
+`wheel_state.cpp` hooks it (observe, then forward every call unchanged: the routine reads only what
+its format asks for, at most 27 dwords at any known site) and rebuilds both wheels' slot lists and
+open state (`wheel_mirror.h`). The wheels ignore the stick until their open animation reaches frame
+5 (`weaponScrollCycling`/`abilityScrollCycling` = false, about 210 ms) and act only when the stick
+crosses into a wedge (`CheckRadialForChange`), so the hand dial holds neutral for 250 ms after the
+wheel shows and then steps to the slot.

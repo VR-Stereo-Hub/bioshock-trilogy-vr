@@ -17,6 +17,8 @@
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hud_elements.h"
+#include "game/bioshock1r/dial_input.h"
+#include "game/bioshock1r/wheel_state.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/resize.h"
@@ -201,6 +203,8 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
                 bones::scale(1), bones::weapon_scale(), camera::head_up_uu());
     }
     hud_elements::init();     // the HUD's pieces on their own anchors; all on the panel until moved
+    wheel_state::install(image); // the HUD movie's own calls: which wheel is up, how many slots
+    dial_input::init();       // pick from those wheels with the hand (F10 > Controls; off until enabled)
     menu::load_preferences(); // player choices win after legacy startup defaults
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;

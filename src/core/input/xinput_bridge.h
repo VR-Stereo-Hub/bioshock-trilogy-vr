@@ -120,6 +120,14 @@ void set_flourish_chord_suspended(bool on);
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
 
+// BS1 (2026-10-15): the last word on the composed sticks. When set, it runs on the
+// composed (VR) path after every other stage, on the game's XInput thread, with the
+// final buttons; returning true means it rewrote the four axes (the BS1 hand dial
+// steering the game's weapon/plasmid wheel). Null (the default) = untouched: BS2
+// and Infinite never set it.
+using StickOverrideFn = bool (*)(uint16_t buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
+void set_stick_override(StickOverrideFn fn);
+
 // Session 22 turn controls (persisted via vrpreset.ini; overlay sliders).
 // Smooth scale multiplies composed stick X under the vr-gameplay gate; snap
 // mode consumes stick-X edges into discrete steps the camera adapter drains

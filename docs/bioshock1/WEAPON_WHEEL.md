@@ -1,6 +1,17 @@
 # BS1 weapon and plasmid wheels in VR: the Dishonored VR hand dial, ported
 
-Status: **design, nothing built.** Written 2026-10-15 from a read of the Dishonored VR mod's
+Status (2026-10-15): **the stage seam (3.8) and the dial input (3.1-3.7, 3.9) are built and
+host-tested, not run in the game.** `wheel_state.cpp` hooks the HUD movie's call routine
+(ENGINE_NOTES "The HUD movie's call routine") and `wheel_mirror.h` rebuilds both wheels from it;
+`wheel_dial.h` is the pure dial, `dial_input.cpp` steers the game's sticks through
+`xinput_bridge::set_stick_override`. F10 > Controls > Weapon and plasmid dial, off until enabled;
+the settings listed in 3.15 that belong to the input are there. One finding the design did not
+have: the movie ignores the stick for its open animation (~210 ms) and reacts only to wedge
+CROSSINGS, so the dial holds neutral for 250 ms after the wheel shows (`Config::armMs`). Not built
+yet: the Dial anchor, the name panel and the close lease (3.10-3.11), immersion (3.13), gates
+(3.14). Host suite `wheel-dial` (81 checks).
+
+Original status: design. Written 2026-10-15 from a read of the Dishonored VR mod's
 hand dial (`C:\dev\Dishonored-VR`, VR-126 and its follow-ups) and of BS1's own wheels
 (ENGINE_NOTES "2026-10-15 - The weapon and plasmid wheels"). Every Dishonored behaviour below
 cites the file it lives in. Engine numbers are BS1's own; none is copied from Dishonored.

@@ -12,6 +12,7 @@
 #include "handback.h"
 #include "hands.h"
 #include "hud_elements.h"
+#include "dial_input.h"
 #include "resize.h"
 #include "scripted.h"
 #include "temporal.h"
@@ -60,6 +61,7 @@ float raw_read(Setting id,int hand) {
     value=temporal::menu_read(id);if(std::isfinite(value)) return value;
     value=alt_eye::menu_read(id);if(std::isfinite(value)) return value;
     value=hud_elements::menu_read(id);if(std::isfinite(value)) return value;
+    value=dial_input::menu_read(id);if(std::isfinite(value)) return value;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
@@ -159,7 +161,8 @@ bool raw_write(Setting id,int hand,float value) {
     if(id==S::TextSize) {g_textSize.store(value,std::memory_order_relaxed);return true;}
     if(id==S::ViewLevel) {g_level.store(static_cast<int>(value),std::memory_order_relaxed);return true;}
     if(camera::menu_write(id,value)||aim::menu_write(id,value)||hands::menu_write(id,value)||bones::menu_write(id,hand,value)) return true;
-    if(temporal::menu_write(id,value)||alt_eye::menu_write(id,value)||hud_elements::menu_write(id,value)) return true;
+    if(temporal::menu_write(id,value)||alt_eye::menu_write(id,value)||hud_elements::menu_write(id,value)||
+       dial_input::menu_write(id,value)) return true;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
@@ -341,6 +344,7 @@ public:
     void temporal_status() override {temporal::draw_status();}
     void diagnostics(Tab tab) override {
         if(tab==Tab::HUD) hud_elements::draw_panel();
+        if(tab==Tab::Controls) dial_input::draw_panel();
         if(tab==Tab::Runtime && theme::section("Runtime status")) {
             ImGui::Text("%.1f fps  /  %.2f ms",ImGui::GetIO().Framerate,1000.f/std::max(ImGui::GetIO().Framerate,1.f));
             ImGui::Text("OpenXR session: %s",vr::session_live()?"active":"unavailable");

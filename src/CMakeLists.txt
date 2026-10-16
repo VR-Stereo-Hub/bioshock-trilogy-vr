@@ -94,6 +94,12 @@ add_library(bioshockvr SHARED
     game/bioshock1r/hud_elements.cpp
     game/bioshock1r/hud_elements.h
     game/bioshock1r/hud_elements_plan.h
+    game/bioshock1r/wheel_state.cpp
+    game/bioshock1r/wheel_state.h
+    game/bioshock1r/wheel_mirror.h
+    game/bioshock1r/wheel_dial.h
+    game/bioshock1r/dial_input.cpp
+    game/bioshock1r/dial_input.h
     game/bioshock1r/attach_census.cpp
     game/bioshock1r/muzzle.cpp
     game/bioshock1r/muzzle.h

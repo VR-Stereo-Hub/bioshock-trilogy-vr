@@ -514,6 +514,25 @@ inline constexpr uint32_t kMeshInstSocketCountOffset = 0xEC;
 inline constexpr uint32_t kActorGetBoneCoordsRva = 0x544FA0;
 inline constexpr uint8_t kActorGetBoneCoordsPrologue[12] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8,
                                                             0x83, 0xEC, 0x30, 0x56, 0x8B, 0xF1};
+// ---- 2026-10-15: THE HUD MOVIE'S CALLS (the weapon/plasmid dial's stage seam) ----------------
+// Every call into a gameswf movie BY NAME goes through one routine, tools\ida\fw1/fw2:
+//   void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)
+// It returns early unless movie+0x114 (the gameswf movie interface) is set. Both paths reach it:
+// the C++ HUD updaters (AddWeapon "%ls, %ls, %d, %d, %d", AddAbility "%ls, %ls", RemoveWeapon
+// "%ls", SelectWeapon "%ls", ... - 158 literal method names at 277 call sites) and the
+// UnrealScript natives execCallMethodVoid/Int/Float/String (+0x427480 ...), which pass the FName's
+// ANSI text - so CallHUDFunction('OpenWeaponMenu' / 'RBReleased' / ...) arrives here too. The
+// movie's filename is the string at movie+0x40 (screens.cpp reads the same field).
+// Prologue: push ebp / mov ebp,esp / mov eax,fs:0 / push -1 | push <SEH, relocated> | push eax /
+// mov fs:0,esp / sub esp,130h / push esi / push edi / mov edi,[ebp+8] / cmp [edi+114h],0 / jz.
+inline constexpr uint32_t kFlashCallMethodRva = 0x427220;
+inline constexpr uint8_t kFlashCallMethodHead[11] = {0x55, 0x8B, 0xEC, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF};
+inline constexpr uint32_t kFlashCallMethodTailAt = 0x10; // after the relocated 68 <imm32>
+inline constexpr uint8_t kFlashCallMethodTail[29] = {0x50, 0x64, 0x89, 0x25, 0x00, 0x00, 0x00, 0x00, 0x81, 0xEC,
+                                                     0x30, 0x01, 0x00, 0x00, 0x56, 0x57, 0x8B, 0x7D, 0x08, 0x83,
+                                                     0xBF, 0x14, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x13};
+inline constexpr uint32_t kFlashMovieInterfaceOffset = 0x114;
+inline constexpr uint32_t kFlashMovieFilenameOffset = 0x40;
 inline constexpr uint32_t kSkelInstActorOffset = 0x04;   // backref to the actor
 inline constexpr uint32_t kSkelInstFreezeOffset = 0x20;  // int; SkeletonInstanceFreeze = 1
 inline constexpr uint32_t kSkelInstBonesOffset = 0x48;      // hkQsTransform* array A

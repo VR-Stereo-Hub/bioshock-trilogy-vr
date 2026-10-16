@@ -76,6 +76,8 @@ enum class Setting {
     HudPiece,
     BVR_HUD_PIECES(BVR_HUD_ENUM_PLACE)
     HudScreenPause, HudScreenMap, HudScreenMachines,
+    // The weapon and plasmid dial (dial_input.cpp).
+    DialEnabled, DialDirectionOnly, DialNeutral, DialTravel, DialSnap, DialEntryTilt, DialEntryYaw,
     Count
 };
 struct Spec {

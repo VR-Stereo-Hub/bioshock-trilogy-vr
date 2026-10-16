@@ -43,10 +43,17 @@
 
 ### Next steps
 
-**Weapon and plasmid dial (designed, not built):** `docs/bioshock1/WEAPON_WHEEL.md` - the
-Dishonored VR hand dial behaviour by behaviour, mapped onto BS1's two wheels and every stage
-(0-8 weapons, 2-6 plasmids). First step: the IDA seam that tells the mod a wheel is open and how
-many slots are filled (section 3.8).
+**Weapon and plasmid dial (input built, host-tested, not run in the game):**
+`docs/bioshock1/WEAPON_WHEEL.md`. A hook on the HUD movie's call routine (+0x427220, IDA fw1/fw2)
+mirrors both wheels' slots and open state (`[wheel] weapons N [...] | plasmids M [...]` on every
+change). With F10 > Controls > Weapon and plasmid dial > Pick with your hand ON, holding the right
+grip opens the weapon wheel and the right hand's movement picks; the left grip and hand do the
+plasmids (`[dial] weapon wheel: the right hand picks`, `[dial] ... closed after N ms on <slot>`,
+`[dial] 3 s:` while steering). The wheel still draws on the HUD panel; the dial at the hand is next.
+
+Headset for the dial: load a save with 2+ weapons, enable it, hold the right grip, move the hand
+toward each item and release - each should equip, including the lower-left; a grip tap should still
+cycle. Then the plasmids with the left hand. Send the log if a pick misses.
 
 Headset (no simulator run was done): in play with the bars, ammo and money showing, F10 > HUD >
 Element rectangles > Dump the HUD; then again with a pickup or hack prompt and with a subtitle.
