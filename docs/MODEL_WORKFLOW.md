@@ -91,6 +91,10 @@ Unofficial BioShock SDK's `HAVOK BUILD` does, for the 2007 game's package format
 # a UI movie: XML structure, ActionScript, frames
 .\tools\flash-export.ps1 -Game bs1 -ListMovies
 .\tools\flash-export.ps1 -Game bs1 -Movie HUDPC [-What xml|script|frame]
+# ...with the real art: BS1 stores it as DXT in a gameswf custom tag FFDec draws solid red.
+# Decode both movies into one folder in the model workspace, then point FFDec at the copies.
+py tools\flash-decode.py <FlashMovies>\sharedlibrary.swf <ws>\flash\bs1\decoded\sharedlibrary.swf
+py tools\flash-decode.py <FlashMovies>\HUDPC.swf <ws>\flash\bs1\decoded\HUDPC.swf --local-imports
 # the UnrealScript corpus into tools\uscript\<game>\
 .\tools\uscript-export.ps1 -Game bs1 [-Only ShockGame] [-Inventory]
 ```
@@ -130,6 +134,13 @@ its environment and exits non-zero on an uncaught exception.
 - **Welded points are not draw vertices.** The engine splits vertices at UV/normal seams.
 - **A PSKX is a static mesh, but the add-on still makes a one-bone armature for it.**
   `inspect_model.py` skips the skin-weight checks for `.pskx` for that reason.
+- **FFDec draws BS1's UI art as solid red, and a HUDPC render is mostly empty.** The art is
+  DXT1/DXT5 in custom tag 512 (`id, w, h, format, 0`, then the blocks; 0 = DXT1, 4 = DXT5),
+  and HUDPC imports 93 symbols from `..\FlashMovies\sharedlibrary.swf`, which FFDec does not
+  resolve. `tools\flash-decode.py` fixes the first; its `--local-imports` rewrites the path,
+  but FFDec 26.2.1 still renders HUDPC's frame without the imported symbols - render the
+  symbols from the decoded sharedlibrary.swf itself (`-selectid`, ids from `-export symbolClass`).
+  A movie's static frame is placeholders; the game fills it from ActionScript at run time.
 - **UModel prints its errors to stdout and its exit code says nothing**; the script reads
   the text (`*** ERROR`).
 - **A BS1 map has a localised copy per language** (`<map>_deu.bsm`, ...) holding voice and
