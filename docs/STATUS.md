@@ -43,6 +43,11 @@
 
 ### Next steps
 
+**Weapon and plasmid dial (designed, not built):** `docs/bioshock1/WEAPON_WHEEL.md` - the
+Dishonored VR hand dial behaviour by behaviour, mapped onto BS1's two wheels and every stage
+(0-8 weapons, 2-6 plasmids). First step: the IDA seam that tells the mod a wheel is open and how
+many slots are filled (section 3.8).
+
 Headset (no simulator run was done): in play with the bars, ammo and money showing, F10 > HUD >
 Element rectangles > Dump the HUD; then again with a pickup or hack prompt and with a subtitle.
 Send the `dumps\hud-*` files - the rectangles get corrected from them. Then set Health to Left

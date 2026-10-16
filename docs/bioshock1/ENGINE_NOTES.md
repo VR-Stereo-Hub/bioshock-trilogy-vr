@@ -6453,3 +6453,55 @@ real clips. Measured on the merged movie, stage pixels (1280x720):
   `ingamemanual`, `PlasmidTraining*`, `Warning`. The pause menu and the machines draw over a live
   world through the same gameswf path, so they land in the HUD capture: that is why they can ride
   the HUD panel or the world instead of the flat screen (F10 > HUD > Menus).
+
+## 2026-10-15 - The weapon and plasmid wheels: slots, stages, input
+
+Read from HUDRadial.swf's ActionScript (`UpdateRadialAxis`, `WeaponSelectionMenu`,
+`AbilitySelectionMenu`, `ContextSetPendingWeapon`, `ContextSelectAbility`, `RBReleased`,
+`LBReleased`, `AddWeapon`, `AddAbility`, `RemoveWeapon`) and the UnrealScript corpus, and
+rendered in every stage from the movie itself (a test SWF built from the merged HUDRadial: the
+open wheel frame, each slot's real icon from sharedlibrary.swf, the selection glow). Not yet
+compared with a capture.
+
+**Two wheels, one shape.** `HandsIcons.weaponScrollBar` (RB, "SELECT WEAPON") and
+`HandsIcons.abilityScrollBar` (LB, "SELECT PLASMID") are the same 8-position radial, both centred
+at stage (662, 340) (HandsIcons at 179.2,-25.95 x1.75; the bars at -393,209 inside). Frames 1-5
+open it (the slots scale out from the centre), 5-10 hold it open, 11-14 close it; frames 15-78
+are the PC "top bar" layout, which the pad build does not use. The title ("Do Not Translate" in
+the movie) is the highlighted item's name, filled at run time; the centre disc is
+`SelectedWeaponIcon` / `SelectedAbilityIcon`.
+
+**Slots fill in a fixed order** - `AddWeapon`/`AddAbility` put each new item in the first empty
+index (`findEmpty`), `RemoveWeapon` splices the list closed:
+
+| Index | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| Position | up | down | left | right | up-left | up-right | down-right | down-left |
+| Icon `_rotation` | 0 | -180 | 90 | -90 | 45 | -45 | -135 | 135 |
+
+An empty slot (`contents` frame 2) draws NOTHING - no ring, no spoke - so the wheel's shape is the
+stage: 2 items = a vertical pair, 4 = a cross, 6 = a cross plus the two upper diagonals, 8 = the
+full ring. Each slot (`wpnMenuN` / `abilityMenuN`) idles at frame 1 (contents at half
+brightness, glow alpha 0), plays 2..38 to the selected glow, 39/40 out.
+
+**Stages.** `MaxWeapons = MaxAbilities = 8`. Weapons: wrench, pistol, machine gun, shotgun,
+grenade launcher, chemical thrower, crossbow and the research camera (the HUD files the camera as
+a weapon; `SelectWrench`/`SelectResearchCamera` exist) - up to all 8. Plasmids: the wheel shows
+the EQUIPPED active slots: `ShockPlayer.BasePlasmidSlots = 2` (4 in the DLC challenge maps),
+grown by "Plasmid Slot" upgrades (`ActiveGeneticSlotUpgrade`, Gene Bank) to 6 - indices 6 and 7
+stay empty. With 0 items the wheel never opens (`slotsFilled == 0` returns); with 1 the bumper
+just selects it (no wheel).
+
+**Input, exactly as the movie reads it.** `UpdateRadialAxis(x, y)` gets the stick; thresholds
+`RadialCenterThreshold 0.5`, `RadialThreshold 0.2`, `RadialMidrangeThreshold 0.9`,
+`RadialFarThreshold 0.901`. Diagonals win first (|x|,|y| > 0.2 and both inside 0.9), then the
+cardinals need the far ring (> 0.901) with the other axis centred (< 0.5). An index beyond
+`slotsFilled` is ignored. WEAPONS are PENDING while RB is held (`ContextSetPendingWeapon` ->
+`MGPendingWeapon`) and committed on release (`RBReleased`: plays 39, `SelectedWeapon`,
+`SelectWeapon`, "UISelectedWeapon"); PLASMIDS switch the moment the stick lands
+(`ContextSelectAbility` -> `SelectAbility`). A bumper TAP with no stick cycles to the next
+(down) or previous (up) weapon that has ammo (`AmmoTotal > 0`), or the next plasmid. Opening the
+other hand's wheel swaps hands first when `AutoSwap` (`SwitchHandModes`). Release sends
+`UnKillLook` and `ForceUnPause` - the wheel holds the look and the game while it is open (the
+opening half is native). The ammo-type selector is separate: `ammoScrollBar`, three
+`ammoMenu` rings, bottom left.
