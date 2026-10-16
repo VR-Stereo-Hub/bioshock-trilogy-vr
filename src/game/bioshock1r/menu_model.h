@@ -47,6 +47,11 @@ enum class Setting {
     AfwRebuild, AfwHandGain, AfwHandsMask, HandDepthProbe,
     OutputWidth, OutputHeight, TemporalTaa, HandMotionVectors, BarrelOrigin, BarrelAim, LaserInImage,
     ReloadPlace, ReloadGunMotion, ReloadJoin, GunRecoil,
+    // The HUD pieces (hud_elements.cpp): one anchor each, in the element table's order.
+    HudElHealth, HudElEve, HudElReticle, HudElTarget, HudElPrompt, HudElEquipment,
+    HudElSubtitles, HudElTutorial, HudElObjective, HudElMessages, HudElMoney,
+    HudElAudioLog, HudElEscort,
+    HudHandWidth, HudHandLift, HudHandFace, HudHandTilt,
     Count
 };
 struct Spec {

@@ -2990,3 +2990,19 @@ in that mod. BRVR's size-gated adoption is the reference for that path. The stat
 `hands_state` (`WeaponReloading` lasts the whole clip, ENGINE_NOTES 2026-10-14). Reading the
 playing clip's name or time from the engine would allow per-clip rules; it was not needed for
 the reload and is left for later.
+
+### 2026-10-15: BS1's HUD in pieces - cut from the one capture, not routed per draw
+
+The Dishonored VR mod splits its HUD by routing each Scaleform draw to a sink by the draw's own
+rectangle. That gives clean pieces even where they overlap, and it cost that mod frames that took
+weeks to find: a per-draw vertex probe (~11 ms of CPU a second), cross-thread routing locks and a
+render-target switch per piece. BS1 takes the pieces and the anchors and leaves the routing:
+gameswf is still captured whole into the one existing target, and the pieces are fixed rectangles
+of that capture, cut on the HUD swapchain image once per present (a copy per moved piece into a
+strip below the capture, one ClearView for the vacated places, a quad per piece over the same
+image). Core gains only a provider seam (`set_hud_elements_provider`), inert unless registered;
+the element table, anchors and F10 live in `bioshock1r/hud_elements.cpp`. What it gives up:
+overlapping pieces cannot be separated, and Dishonored's `frame` anchor (a piece drawn into the
+eye image) is not offered, since that needs the per-draw route. Both are acceptable for BS1's HUD,
+whose pieces sit in separate parts of the screen; if one is ever needed, route only that piece's
+draws by state, not by probe.

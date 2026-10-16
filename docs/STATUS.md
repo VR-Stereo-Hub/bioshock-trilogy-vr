@@ -2,11 +2,42 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Next session - BS1 HUD overhaul, the Dishonored VR way
+## Session 2026-10-15 - BS1 HUD overhaul: the HUD in pieces, the Dishonored VR way
 
-**Branch `claude/bs1-hud-overhaul`** (off `staging` 2954c26). Nothing built on it yet.
+**Branch `claude/bs1-hud-overhaul`** (off `staging` 2954c26). Local commits only; not pushed.
 
-### The task
+### Current state
+
+- **The pieces, identified (offline).** HUDPC.swf's ActionScript, its placements and the
+  UnrealScript callers give 13 pieces: health, EVE, game crosshair, enemy name/health, use/hack
+  prompts, weapon/ammo/plasmid, subtitles, tutorial, objective, radio messages, money/ADAM, audio
+  log, Little Sister/timers. The art was confirmed by decoding sharedlibrary.swf's DXT bitmaps
+  (`tools\flash-decode.py`; FFDec drew them red). ENGINE_NOTES "2026-10-15 - The HUD's pieces".
+- **Built, host-tested, not run in the game:** each piece has an F10 anchor (HUD > HUD pieces):
+  On the HUD panel (default - today's picture) / Hidden / In the world / Left hand / Right hand,
+  plus hand panel width 0.22 m, lift 0.06 m, faces you or like a watch (HUD on the hands). The
+  pieces are rectangles of the ONE existing HUD capture, cut on the HUD swapchain image per present
+  (a copy per moved piece, one ClearView) - no per-draw work, no new targets; core gains only
+  `set_hud_elements_provider`, inert unless registered (PORT-CANDIDATES row; decision log
+  2026-10-15). `[hudel] 3 s:` logs the plan's cost (mean/max) while any piece is moved.
+- **The rectangles are NOT measured.** They come from the movie's 16:9 layout and assume the
+  stage fills the capture. F10 > HUD > Element rectangles > **Dump the HUD** writes
+  `dumps\hud-*.bmp`, `_boxes.bmp` (every rectangle outlined) and `.txt` (each rectangle's content
+  box, and any content no rectangle covers); sliders there correct a rectangle, Save writes
+  `hud-elements.ini`.
+- **Installed:** Release `claude/bs1-hud-overhaul` tree (this session's build). Nothing armed.
+  `git diff staging...HEAD -- src/core/` is the provider seam only. BS2/Infinite untouched.
+
+### Next steps
+
+Headset (no simulator run was done): in play with the bars, ammo and money showing, F10 > HUD >
+Element rectangles > Dump the HUD; then again with a pickup or hack prompt and with a subtitle.
+Send the `dumps\hud-*` files - the rectangles get corrected from them. Then set Health to Left
+hand and EVE to Right hand (HUD pieces): each should sit 6 cm above its controller, 22 cm wide,
+facing you, and leave the panel. Watch the log for `xr: HUD elements live` and the `[hudel] 3 s:`
+cost line (expect single-digit microseconds).
+
+### The brief (2026-10-14 handoff)
 
 Port the Dishonored VR mod's per-element HUD (`C:\dev\Dishonored-VR`) to BS1: the same pieces on
 the same anchors in the same spots. Today BS1 captures the whole gameswf HUD into ONE panel

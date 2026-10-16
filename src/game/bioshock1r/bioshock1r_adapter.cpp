@@ -16,6 +16,7 @@
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/resize.h"
@@ -199,6 +200,7 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
                 "%.1f UU (a saved vrpreset.ini loads LATER and overrides all three)",
                 bones::scale(1), bones::weapon_scale(), camera::head_up_uu());
     }
+    hud_elements::init();     // the HUD's pieces on their own anchors; all on the panel until moved
     menu::load_preferences(); // player choices win after legacy startup defaults
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;

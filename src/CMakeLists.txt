@@ -91,6 +91,9 @@ add_library(bioshockvr SHARED
     game/bioshock1r/hands.cpp
     game/bioshock1r/palette.cpp
     game/bioshock1r/handback.cpp
+    game/bioshock1r/hud_elements.cpp
+    game/bioshock1r/hud_elements.h
+    game/bioshock1r/hud_elements_plan.h
     game/bioshock1r/attach_census.cpp
     game/bioshock1r/muzzle.cpp
     game/bioshock1r/muzzle.h

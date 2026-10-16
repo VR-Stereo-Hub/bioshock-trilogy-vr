@@ -6337,3 +6337,62 @@ therefore started that far above the barrel and ran parallel to it - a different
 weapon, the flash itself (at the socket) lined up. At the barrel the sliders are now bypassed, as
 tilt/turn already were. The capture now records `fresh.ray` and `fresh.muzzle` per present for
 checking a run against the drawn gun offline.
+
+## 2026-10-15 - The HUD's pieces: what HUDPC.swf draws, and where
+
+For the per-element HUD (`hud_elements.cpp`, the Dishonored VR mod's HUD anchors on BS1's own
+pieces). Everything here is read offline from the shipped movies and the UnrealScript corpus;
+nothing was measured in a capture yet. F10 > HUD > Element rectangles > Dump the HUD is the
+measurement.
+
+**The movie.** `Gui.ini [HUD]` loads `..\FlashMovies\HUDPC.swf` (PC) full-screen at (0,0),
+`BackgroundAlpha=0`. Stage 1280x719 (25600x14380 twips). `SetRes(XRes,YRes)` picks a branch:
+at exactly 4:3 the root boxes sit at x 0; otherwise `centerBox`, `HandsIcons` and
+`PhotoDisplayBox` move +160 and `rightBox` +320 - the 4:3 layout centred in a 16:9 stage. The
+VR eye is near-square but not 0.75, so it takes the 16:9 branch. How gameswf maps the stage onto
+a near-square capture (stretch or fit) is the open question the dump answers.
+
+**The art is not in HUDPC.** 93 symbols (bars, frames, icons, reticles) are imported from
+`sharedlibrary.swf`, and every bitmap in both movies is DXT in a gameswf custom tag (512) FFDec
+cannot draw. `tools\flash-decode.py` turns them into standard bitmaps (MODEL_WORKFLOW). Decoded,
+the art confirms the pieces: `HUD_HealthBar` (red) and `HUD_EveBar` (blue), `HUD_HealthEve_Cover`
+(the two hypo gauges), `HUD_PlasmidBG` / `HUD_Ammo_Base1` / `HUD_Ammo_Base3` (the plasmid and
+ammo slots), `Adam_Counter` ($ frame), `Radio_Anim` / `Logs_Anim`, `GH_Icon_Lit` (Little
+Sister), `EnemyHealth_RedBar` (the arc above the crosshair), `Big_Box_Frame` (quest box),
+`TrainingBackground` (the paper), `HUD_Ret_<weapon>` (one crosshair per weapon).
+
+**The pieces** (root clip -> what drives it -> rest position on the 16:9 stage):
+
+| Piece | Clips | Driven by (HUDPC function; UnrealScript caller where there is one) | Where |
+|---|---|---|---|
+| Health / EVE | `healthBar`, `bioAmmoBar`, `hypoScrollBar`, `BioAmmoBankHolder` | `SetHealth`, `SetBioAmmo`, `*BarFlash`, `HighlightHypo` (native) | top-left, bars y 61-87 / 94-120 px |
+| Crosshair | `centerBox.ReticleHolder` | `SetReticleType/Info/Underlay`, `ShowHackUnderlay` (`ShockHUD`) | centre, 606-670 x 331-395 |
+| Enemy | `centerBox.EnemyType`, `FrozenHealth` | `ShowEnemyTypeInfo`, `SetHealthOfFocus`, vulnerabilities | above the crosshair |
+| Prompt | `centerBox.focusArea` (use/hack/item/take, container list), `ReRoll`, `Gatherer*Focus` | `HUDMessage` UseFocus, HackFocus, Focus, FocusNoUse, ReRollFocus, Gatherer*; `OpenContainer` | right of and below the crosshair |
+| Equipment | `HandsIcons` (weapon/plasmid selectors), `ammoScrollBar`, `CurrentAbilityName` | `AddWeapon/Ammo/Ability`, `Select*`, `ShowPCWeaponSelector`, `SetActiveHands` (`Hands.uc`) | bottom-left (ammo slots ~91-131 x 563-667) |
+| Subtitles | `centerBox.subtitleTextHolder`, `AreaNameMovie` | `HUDMessage` Subtitle / MapHUDRegion, `SetDialogSubtitles` | bottom centre, 304-973 x 556-663 |
+| Tutorial | `centerBox.trainingTextHolder` | `HUDMessage` Training, `ShowHelpTagInfoNow` | lower centre, 304-973 x 466-533 |
+| Objective | `rightBox.chatBoxMovie.importantTextHolder`, `centerBox.GPSArrow` | `HUDMessage` Quests, `ShowGPSArrow` | top-right |
+| Messages | `rightBox.chatBoxMovie.ChatMovie0-5` | `HUDMessage` Radio, AISpeech | top-right, under the objective |
+| Money | `rightBox.CreditCount`, `AdamCount`, `UnreadLogsIndicator` | `Show*CountAndAutoHide`, `Update*Count` | right edge, y ~336-398 |
+| Audio log | `rightBox.logHolder` | `HUDMessage` Log, `SetLogPhoto`, `SetRadioPhoto` | bottom-right, ~1135-1280 x 645-677 |
+| Escort / timers | `GathererHealth`, `NeedleHolder`, `flipTimer`, `dlcTimerMovie` | `EscortedGathererHealth` (`ShockPlayer`), `ShowNeedleMeter` (`ShockHUD`), `SetTimer` | top-left, under the bars |
+| Camera | `CameraOverlay`, `FocusAnimationTweener`, `PhotoDisplayBox` | `ShowCameraOverlay`, `AddPhotoInfo` | whole view / centre |
+| Full screen | `WidescreenBars` (skipped since s29), `ShutterMovie`, `DeathScreen`, `TempWatermark` | `ShowWidescreenBars`, `ActivateShutter`, `ShowDeathScreen` | whole view |
+
+**Traps found reading it.** (1) The HUD hides its own pieces by state: `HideAllExceptMessages` /
+`ShowAll` (busy) and `ShowWidescreenBars` hide the bars, ammo, selectors and crosshair - visibility
+is game state, never a reason to classify draws. (2) `SetSubtitleTimings` lifts `logHolder`,
+`ammoScrollBar` and `CurrentAbilityName` by `SubYOffset` while a subtitle shows (not at 4:3), so
+those rectangles need room for both heights. (3) Several clips rest OFF the stage and animate in
+(`ammoScrollBar` y 901, `hypoScrollBar`, `SubDrop`, the selector bars), so authored bounds are
+not screen rectangles. (4) A movie's static frame is placeholder art; the game fills it at run time.
+
+**How the split works without the Dishonored mod's costs.** Dishonored routed every HUD draw by
+its rectangle (a per-draw probe: ~11 ms of CPU a second, plus locks and target switches). Here
+the HUD is still captured whole (one target, unchanged); the pieces are rectangles OF that
+capture, cut on the HUD swapchain image after the per-present copy: one `CopySubresourceRegion`
+per moved piece into a strip below the capture, one `ClearView` for the places they left, and
+one quad layer per piece sampling a sub-rectangle of the same image. No per-draw work, no new
+capture target, no readback; the plan is arithmetic over 13 rows. The cost is that two pieces
+whose rectangles overlap cannot be separated - the rectangles are chosen not to.

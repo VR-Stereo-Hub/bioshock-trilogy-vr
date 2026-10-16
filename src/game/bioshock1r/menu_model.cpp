@@ -6,6 +6,7 @@ namespace bvr::b1r::menu {
 namespace {
 using S = Setting; using T = Tab; using L = Level; using K = Kind;
 using P = Scope; using C = Condition;
+const char* const kHudAnchors = "On the HUD panel\0Hidden\0In the world\0Left hand\0Right hand\0";
 // Stable keys are also the on-disk schema. Labels may change without losing settings.
 const Spec kSpecs[] = {
     {S::TextSize,"TextSize",T::Display,"",L::Basic,"Text size",K::Slider,0.8f,1.5f,"%.0f%%",nullptr},
@@ -157,6 +158,23 @@ const Spec kSpecs[] = {
     {S::ReloadGunMotion,"ReloadGunMotion",T::Hands,"Reload animation",L::Advanced,"Gun moves with the reload",K::Slider,0,1,"%.2f",nullptr,P::Global,C::ComposedHands,"At the gun: how much of the reload's own movement of the gun (tilting it for the magazine) plays on top of your hand. 0 keeps the gun exactly where you hold it."},
     {S::ReloadJoin,"ReloadJoin",T::Hands,"Reload animation",L::Advanced,"Other hand joins within",K::Slider,0,200,"%.0f cm",nullptr,P::Global,C::ComposedHands,"At the gun: your other hand joins the reload while the game's animation has it this close to the gun, and fades back to its controller over the next 20 cm. Larger: it always joins."},
     {S::GunRecoil,"GunRecoil",T::Hands,"Reload animation",L::Basic,"Recoil",K::Slider,0,1,"%.2f",nullptr,P::Global,C::ComposedHands,"How much of each gun's firing kick moves the gun in your hand. It kicks and settles back; the shot still goes where you were pointing. 0 keeps the gun still. Never the wrench."},
+    {S::HudElHealth,"HudElement.Health",T::HUD,"HUD pieces",L::Basic,"Health bar",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The red health bar with its first-aid count. On a hand it fills the hand panel's width."},
+    {S::HudElEve,"HudElement.Eve",T::HUD,"HUD pieces",L::Basic,"EVE bar",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The blue EVE bar with its hypo count. Put it on the other hand from the health bar to split them, as in the Dishonored VR mod."},
+    {S::HudElReticle,"HudElement.Reticle",T::HUD,"HUD pieces",L::Basic,"Game crosshair",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The game's own crosshair at the centre of the HUD. The mod's reticle and laser are separate (Aim tab)."},
+    {S::HudElTarget,"HudElement.Target",T::HUD,"HUD pieces",L::Basic,"Enemy name and health",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The enemy's name and the health arc above the crosshair."},
+    {S::HudElPrompt,"HudElement.Prompt",T::HUD,"HUD pieces",L::Basic,"Use and hack prompts",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"Pick up, use, hack, search and the container list, right of the crosshair."},
+    {S::HudElEquipment,"HudElement.Equipment",T::HUD,"HUD pieces",L::Basic,"Weapon, ammo and plasmid",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The ammo types and clip, and the plasmid name, bottom left."},
+    {S::HudElSubtitles,"HudElement.Subtitles",T::HUD,"HUD pieces",L::Basic,"Subtitles",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"Dialogue subtitles and the area name, bottom centre."},
+    {S::HudElTutorial,"HudElement.Tutorial",T::HUD,"HUD pieces",L::Basic,"Tutorial messages",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The training messages above the subtitles."},
+    {S::HudElObjective,"HudElement.Objective",T::HUD,"HUD pieces",L::Basic,"Objective",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The current goal box, top right."},
+    {S::HudElMessages,"HudElement.Messages",T::HUD,"HUD pieces",L::Basic,"Radio messages",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"Radio and speech lines under the objective, top right."},
+    {S::HudElMoney,"HudElement.Money",T::HUD,"HUD pieces",L::Basic,"Money and ADAM",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The dollar and ADAM counters, right edge."},
+    {S::HudElAudioLog,"HudElement.AudioLog",T::HUD,"HUD pieces",L::Basic,"Audio log",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The playing audio log's speaker, bottom right."},
+    {S::HudElEscort,"HudElement.Escort",T::HUD,"HUD pieces",L::Basic,"Little Sister and timers",K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,"The escorted Little Sister's health and the gatherer meter, under the bars."},
+    {S::HudHandWidth,"HudHandWidth",T::HUD,"HUD on the hands",L::Advanced,"Panel width",K::Slider,.08f,.6f,"%.2f m",nullptr,P::Global,C::Always,"Each piece on a hand fills this width; pieces on the same hand stack upward. 0.22 is the Dishonored VR mod's tune."},
+    {S::HudHandLift,"HudHandLift",T::HUD,"HUD on the hands",L::Advanced,"Height above the hand",K::Slider,-.2f,.3f,"%+.2f m",nullptr},
+    {S::HudHandFace,"HudHandFace",T::HUD,"HUD on the hands",L::Advanced,"Panel faces",K::Choice,0,1,nullptr,"You\0Like a watch face\0",P::Global,C::Always,"You: the panel always turns to your eyes and never rolls. Like a watch face: it lies on the back of the hand and turns with it."},
+    {S::HudHandTilt,"HudHandTilt",T::HUD,"HUD on the hands",L::Advanced,"Watch tilt",K::Slider,-90,90,"%+.0f deg",nullptr},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
 }
@@ -206,6 +224,8 @@ const char* disabled_reason(const Spec& s, const Backend& b, int hand) {
     if(s.id==S::SceneTurnRate && !b.read(S::SceneTurning,0)) return "Enable turning during cutscenes to adjust this.";
     if((s.id==S::FreeArmAppearance || s.id==S::HideHeldArm) && b.read(S::ArmAppearance,0)==2) return "Arm behavior is set to hide both arms.";
     if((s.id==S::HudDistance || s.id==S::HudWidth || s.id==S::HudHeight) && !b.read(S::HudPanel,0)) return "Enable the HUD panel to adjust its placement.";
+    if(s.id>=S::HudElHealth && s.id<=S::HudHandTilt && !b.read(S::HudPanel,0)) return "Enable the HUD panel to place its pieces.";
+    if(s.id==S::HudHandTilt && b.read(S::HudHandFace,0)==0) return "Set Panel faces to Like a watch face to tilt it.";
     return nullptr;
 }
 } // namespace bvr::b1r::menu
