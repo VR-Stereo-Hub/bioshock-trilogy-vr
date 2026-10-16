@@ -8,7 +8,14 @@
 //     its controller. A PHYSICAL swing keeps the tracked hand: the player's arm IS the swing;
 //   - a scripted hand animation (PlayingScriptedHandAnimation, the EVE hypo, gatherer tools -
 //     BS1's takedowns) owns both hands;
-//   - gun fire stays tracked unless its lever is on (Dishonored's default);
+//   - gun fire stays tracked unless its lever is on (Dishonored's default), but its RECOIL
+//     plays (2026-10-14): mode 4 pins the gun hand's wrist to the controller every frame,
+//     which removed the firing clip's kick along with the idle sway. During a gun's firing
+//     states the gun hand's correction is measured from its pose just before the shot
+//     instead (the same layering as "gun moves with the reload"), so the clip's kick moves
+//     the gun on the controller and it settles back; the shot still leaves along the
+//     barrel as it was before the kick (aim.cpp update_barrel holds it). The wrench and the
+//     abilities are excluded (animOn, the state name);
 //   - a reload plays AT THE GUN by default (2026-10-14, a sibling VR mod's "animation at the hand"):
 //     the weapon hand stays on its controller and the whole clip is carried by that hand's
 //     correction, so the other hand goes where the clip has it AGAINST THE GUN - it finds the
@@ -40,8 +47,8 @@ float weight(int hand, uint64_t nowMs);
 // the weapon hand's correction (where the clip has it against the gun). Before the join gate.
 float carry(int hand, uint64_t nowMs);
 
-// The weapon hand while an animation plays at the gun: how much of the clip's own motion of
-// the hand, against its pose just before, plays on the controller (0 = pinned).
+// The weapon hand while an animation plays at the gun, or a gun fires: how much of the clip's
+// own motion of the hand, against its pose just before, plays on the controller (0 = pinned).
 float gun_motion(int hand, uint64_t nowMs);
 
 // How much of the carry applies when the clip has the free hand's palm `clipCm` from the
@@ -63,9 +70,12 @@ float gun_motion_amount();
 void set_gun_motion_amount(float v);
 float join_cm();
 void set_join_cm(float cm);
+// F10: the recoil's share of the firing clip's kick (0 = the gun stays pinned, as before).
+float recoil_amount();
+void set_recoil_amount(float v);
 
 // `vrhands handback ...`: status | melee on|off | swing on|off | scripted on|off |
-// fire on|off | reload off|hand|view | gunmotion <0..1> | join <cm> |
+// fire on|off | recoil <0..1> | reload off|hand|view | gunmotion <0..1> | join <cm> |
 // force l|r|both|off | blendms <in> <out> | release <ms>
 void handle_command(const char* rest);
 

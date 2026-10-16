@@ -1794,9 +1794,18 @@ static void update_barrel_direction(const RayBase& b, const float socketAxes[3][
 // that placed the gun (last frame's), in that ray's frame. Only while the controller drives the
 // weapon hand - when the game animates it (a scripted beat, the hand-back) the gun is not where
 // the controller is, and the old origin stands. A short miss holds the last offset.
+// 2026-10-14: while only a clip's own motion of the gun hand is playing on the controller (the
+// recoil, the reload's gun motion - handback::gun_motion) the offset is HELD for as long as it
+// lasts: the shot leaves along the barrel as it was before the kick, where the player points,
+// and a full-auto burst longer than the miss window does not drop to the old origin.
 static void update_barrel(const FrameContext& ctx, uint64_t now) {
     const RayBase& b = g_prevBase;
     const int hand = hands::active_hand() == 0 ? 0 : 1;
+    if (g_barrel.valid && g_barrel.hand == hand && handback::gun_motion(hand, now) > 0.0f &&
+        handback::weight(hand, now) >= 1.0f && handback::carry(hand, now) <= 0.0f) {
+        g_barrel.stampMs = now;
+        return;
+    }
     void* weapon = nullptr;
     bool ok = (g_barrelOrigin.load(std::memory_order_relaxed) || g_barrelAim.load(std::memory_order_relaxed)) &&
               g_gameplayView && b.valid && b.hand == hand &&

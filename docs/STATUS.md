@@ -2,13 +2,20 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Session 2026-10-14 (second) - BS1: the reticle is a dot again; reloads play at the gun
+## Session 2026-10-14 (second) - BS1: the reticle is a dot again; reloads play at the gun; recoil
 
 **Branch `claude/bs1-reticle-reload`** (off `staging` 117ec58, after #99 merged the barrel work with
-weapon size 0.88 as the default).
+weapon size 0.88 as the default) is draft PR #100. **Branch `claude/bs1-gun-recoil`** is cut from it
+and adds the recoil; it is a draft PR into `staging` and carries #100's commits until #100 lands.
 
 ### Current state
 
+- **Recoil (built, host-tested, not run in the game):** mode 4 re-pinned the gun hand to the
+  controller every frame, which cancelled the firing clip's kick. A gun's firing states now play
+  the kick on the controller, measured from the pose the frame before the shot, then settle back
+  (in at once, 250 ms hold, 350 ms out). The shot still leaves along the pre-kick barrel. Wrench
+  and plasmids excluded. F10: Hands > Reload animation > Recoil (default 1). HANDS_DISHONORED.md
+  "Recoil is back".
 - **Reticle (built, not headset-tested):** the in-image reticle from #99 was a ring at twice the
   Reticle size slider; it is the laser's solid dot at the slider's diameter again, as the XR aim
   dot always was (`laser_draw.cpp`).
@@ -29,7 +36,9 @@ Headset: reload the pistol, the Tommy Gun and the shotgun with "Reloads play: At
 hand should come to the gun, do the reload there and return to its controller. After each reload
 the log has `[handback] at the gun: the clip brought the left palm within X cm`. If the hand never
 joins, raise "Other hand joins within" past that X. Also try "Gun moves with the reload" at 1 and
-"In front of the face" for comparison. Check that the reticle is a dot.
+"In front of the face" for comparison. Check that the reticle is a dot. Fire the pistol, the Tommy
+Gun (a long burst) and the shotgun: each should kick in the hand and settle back, and shots should
+land on the reticle. Recoil 0 is the comparison; the wrench must not change.
 
 ## Session 2026-10-14 - BS1: DLSS hand vectors; shots and the laser along the drawn barrel
 
