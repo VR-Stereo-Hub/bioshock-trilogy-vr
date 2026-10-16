@@ -1,5 +1,6 @@
 #include "wheel_state.h"
 #include "wheel_mirror.h"
+#include "swap_hold.h"
 #include "patterns.h"
 #include "core/util/log.h"
 
@@ -16,6 +17,7 @@ namespace {
 
 using CallMethodFn = void(__cdecl*)(void* movie, const char* method, const char* fmt, ...);
 CallMethodFn g_original = nullptr;
+const uint8_t* g_image = nullptr; // the exe's base, for swap_hold's pointer checks
 
 // The mirror is written by the hook (the game thread: UnrealScript and the C++ HUD
 // updaters) and read whole only by the F10 status; the dial reads the atomics.
@@ -118,6 +120,7 @@ void __cdecl detour(void* movie, const char* method, const char* fmt, ...) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         want = false;
     }
+    swap_hold::poll(g_image); // one pointer compare once it is in
     if (want) {
         va_list ap;
         va_start(ap, fmt);
@@ -126,6 +129,12 @@ void __cdecl detour(void* movie, const char* method, const char* fmt, ...) {
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
         va_end(ap);
+        // The release reaching the HUD movie: what the swap hold kept back goes first,
+        // so the game sees the order it would have (swap, pick, then the release).
+        if (is_hud(movie)) {
+            if (!strcmp(method, "RBReleased") || !strcmp(method, "LBReleased")) swap_hold::on_release();
+            else if (!strcmp(method, "InitializeMovie")) swap_hold::clear();
+        }
     }
     // Forward unchanged. The original reads only what its format asks for (at most 27
     // dwords at the 158 known call sites: SetHackingParameters' five doubles and 17
@@ -142,6 +151,7 @@ void __cdecl detour(void* movie, const char* method, const char* fmt, ...) {
 
 bool install(const bvr::pattern_scan::ProcessImage& image) {
     InitializeCriticalSection(&g_lock);
+    g_image = image.base;
     uint8_t* target = const_cast<uint8_t*>(image.base) + patterns::kFlashCallMethodRva;
     const uint8_t* tail = target + patterns::kFlashCallMethodTailAt;
     if (!bvr::pattern_scan::is_memory_valid(target, patterns::kFlashCallMethodTailAt + sizeof patterns::kFlashCallMethodTail) ||

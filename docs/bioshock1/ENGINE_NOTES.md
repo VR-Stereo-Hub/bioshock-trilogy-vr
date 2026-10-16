@@ -6373,6 +6373,31 @@ The boxes were too big: the bar clips reach stage x 413 at most (`healthBar` 55.
 rows now end at 0.325 instead of 0.594. Clip bounds are no use for the rest - most clips park
 off-screen in some frame - so the other rows wait for in-game dumps.
 
+### The movie's fscommands, and the wheels' hand swap (2026-10-16, tools\ida\fc1/fc2)
+
+gameswf implements `fscommand(cmd, args)` as `getURL("FSCommand:<cmd>", args)`: the action
+executor (+0x8020B0) tests the "FSCommand:" prefix (+0x8040F2, +0x804813) and calls ONE global
+function pointer, `void __cdecl cb(movie_interface*, const char* cmd, const char* args, void*
+user)`, slot at **RVA 0x1380D68**, user data at the dword before it (`patterns.h kFsCallback*`:
+the slot is read from the code at +0x804105 `cmp [slot]`, +0x804118 `push [slot-4]`, +0x80412E
+`call [slot]`, and all three must agree). The engine turns the command into a movie EVENT: its
+names are registered by FName (+0x43B620 for the GUI controller's set - TriggerEffectEvent,
+RunConsoleCommand, LaunchMainMenu, ...; +0x1CE1B0/+0x1DD370 for ShockPlayer's - SelectWeapon,
+SelectAmmo, SelectPlasmid, ...) and reach `FlashGUIController.OnMovieEvent` (script:
+RunConsoleCommand -> `ConsoleCommand(Data.Command)`) and ShockPlayer's native `OnMovieEvent`.
+
+**The plasmid arm during the wheel.** HUDRadial's `OpenAbilityMenu` runs
+`fscommand("RunConsoleCommand","Command=SwitchHandModes")` BEFORE the wheel shows when the
+other hand is up (`AutoSwap`; without it the wheel refuses to open), and `ContextSelectAbility`
+sends `fscommand("SelectPlasmid","class=<name>")` every time the stick lands on a plasmid.
+`ShockPlayer.SwitchHandModes` from weapon hands is `SetActiveAbilityClass(LastAbility, true)`.
+So the plasmid hand equips the moment the wheel opens and again at each landing, and the open
+wheel pauses the game - the arm freezes in the equip pose, which the hands mode then carries to
+the controller. `swap_hold.cpp` swaps the callback pointer (no code patch) and, while a wheel is
+open, holds the SwitchHandModes command and the last SelectPlasmid, then sends them through the
+engine's callback, in that order, when the release call (LBReleased/RBReleased) reaches the
+movie - before the movie's own release handling, so the game sees its usual order.
+
 ### The blur behind the menus (2026-10-16, tools\ida\mb1_menu_blur.py)
 
 While paused the game keeps rendering the world (AFW eye frames and CalcView carry on at full

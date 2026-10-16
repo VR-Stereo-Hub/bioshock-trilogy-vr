@@ -539,6 +539,20 @@ inline constexpr uint32_t kFlashMovieInterfaceOffset = 0x114;
 // is up (two passes: copy, draw, copy, draw). One caller (+0x7BCEEB). Prologue: push ebp /
 // mov ebp,esp / push -1 | push <SEH, relocated> | mov eax,fs:0 / push eax / mov fs:0,esp /
 // sub esp,20h / push ebx / mov ebx,ecx / push esi / push edi / mov edi,[ebx+28h].
+// gameswf's fscommand callback (tools\ida\fc1/fc2, ENGINE_NOTES "The movie's fscommands"):
+// the action executor tests a getURL for "FSCommand:" and calls ONE global function pointer,
+// void __cdecl cb(movie_interface*, const char* command, const char* args, void* user), with
+// its user data in the dword before it. No code is patched: the pointer is swapped. Its
+// address is read from the code that uses it and must agree at all three sites:
+//   +0x804105  39 05 <slot>   cmp [slot], eax  (is a callback registered)
+//   +0x804118  FF 35 <user>   push [slot-4]    (the user data)
+//   +0x80412E  FF 15 <slot>   call [slot]
+// Measured slot RVA 0x1380D68.
+inline constexpr uint32_t kFsCallbackTestRva = 0x804105; // 39 05 imm32
+inline constexpr uint32_t kFsCallbackUserRva = 0x804118; // FF 35 imm32
+inline constexpr uint32_t kFsCallbackCallRva = 0x80412E; // FF 15 imm32
+inline constexpr uint32_t kFsCallbackSlotRva = 0x1380D68;
+
 inline constexpr uint32_t kPostEffectRunRva = 0x7C9CB0;
 inline constexpr uint8_t kPostEffectRunHead[6] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68};
 inline constexpr uint32_t kPostEffectRunTailAt = 0x0A; // after the relocated <imm32>

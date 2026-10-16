@@ -50,6 +50,18 @@ opening and closing so a run shows whether the game opened one. The provider dum
 3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
 (`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
 
+**After run 4: the hand swap held (built, not run in the game).** F10 > Controls > Weapon and
+plasmid dial > Hold the hand swap until the wheel closes (on): the movie's SwitchHandModes and
+its per-landing SelectPlasmid are held while a wheel is open and sent when it closes (ENGINE_NOTES
+"The movie's fscommands"). Log: `[swaphold] fscommands pass through the mod` once at the start,
+`[swaphold] the wheel's hand swap is held ...` at an opening, `[swaphold] the wheel closed: sent
+...` at the close. Headset run 5: a weapon in the right hand, open the plasmid wheel with the left
+grip - the left arm should keep following the controller with its old pose while you pick, and
+become the plasmid hand only after you let go, with the plasmid you picked. Try Equal shares on
+again (runs 3-4's fault fixed). Not verified: what the game does with a plasmid pick while still
+in weapon hands is only what it did before, delayed - if the picked plasmid is not the one
+equipped, the log line names what was sent.
+
 **Headset run 4 (2026-10-16).** Reported: worse - Equal shares stops picks working (also in
 run 3), the plasmid arm still went to the default pose, the wheel could not be moved around;
 and the grip alone should open the wheels again (Open with grip + trigger now off by default).

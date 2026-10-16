@@ -1,6 +1,7 @@
 #include "dial_input.h"
 #include "wheel_dial.h"
 #include "wheel_state.h"
+#include "swap_hold.h"
 #include "menu_theme.h"
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
@@ -213,6 +214,7 @@ float menu_read(menu::Setting id) {
         case S::DialEntryTilt: return g_entryTilt.load() ? 1.0f : 0.0f;
         case S::DialEntryYaw: return g_entryYaw.load() ? 1.0f : 0.0f;
         case S::DialGripTrigger: return g_gripTrigger.load() ? 1.0f : 0.0f;
+        case S::DialHoldSwap: return swap_hold::enabled() ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -224,6 +226,7 @@ bool menu_write(menu::Setting id, float value) {
                 BVR_LOG("[dial] hand dial %s", value != 0 ? "ON" : "off");
             return true;
         case S::DialDirectionOnly: g_directionOnly.store(value != 0); return true;
+        case S::DialHoldSwap: swap_hold::set_enabled(value != 0); return true;
         case S::DialGripTrigger:
             if (g_gripTrigger.exchange(value != 0) != (value != 0))
                 BVR_LOG("[dial] wheels open with %s", value != 0 ? "grip + trigger (the grip alone is free)"
