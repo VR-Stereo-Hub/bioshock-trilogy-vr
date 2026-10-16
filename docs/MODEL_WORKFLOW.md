@@ -94,7 +94,10 @@ Unofficial BioShock SDK's `HAVOK BUILD` does, for the 2007 game's package format
 # ...with the real art: BS1 stores it as DXT in a gameswf custom tag FFDec draws solid red.
 # Decode both movies into one folder in the model workspace, then point FFDec at the copies.
 py tools\flash-decode.py <FlashMovies>\sharedlibrary.swf <ws>\flash\bs1\decoded\sharedlibrary.swf
-py tools\flash-decode.py <FlashMovies>\HUDPC.swf <ws>\flash\bs1\decoded\HUDPC.swf --local-imports
+py tools\flash-decode.py <FlashMovies>\HUDRadial.swf <ws>\flash\bs1\decoded\HUDRadial.swf
+# ...and whole: the imported art merged in (FFDec does not follow imports when rendering)
+ffdec-cli -swf2xml <ws>\...\sharedlibrary.swf shared.xml ; ffdec-cli -swf2xml <ws>\...\HUDRadial.swf radial.xml
+py tools\flash-merge.py shared.xml radial.xml merged.xml ; ffdec-cli -xml2swf merged.xml HUDRadial_merged.swf
 # the UnrealScript corpus into tools\uscript\<game>\
 .\tools\uscript-export.ps1 -Game bs1 [-Only ShockGame] [-Inventory]
 ```
@@ -137,10 +140,13 @@ its environment and exits non-zero on an uncaught exception.
 - **FFDec draws BS1's UI art as solid red, and a HUDPC render is mostly empty.** The art is
   DXT1/DXT5 in custom tag 512 (`id, w, h, format, 0`, then the blocks; 0 = DXT1, 4 = DXT5),
   and HUDPC imports 93 symbols from `..\FlashMovies\sharedlibrary.swf`, which FFDec does not
-  resolve. `tools\flash-decode.py` fixes the first; its `--local-imports` rewrites the path,
-  but FFDec 26.2.1 still renders HUDPC's frame without the imported symbols - render the
-  symbols from the decoded sharedlibrary.swf itself (`-selectid`, ids from `-export symbolClass`).
-  A movie's static frame is placeholders; the game fills it from ActionScript at run time.
+  resolve. `tools\flash-decode.py` fixes the first. FFDec 26.2.1 does not follow imports when
+  it renders even with a local path, so `tools\flash-merge.py` copies the imported symbols
+  into the movie through FFDec's XML (`-swf2xml`, merge, `-xml2swf`); in the merged movie a
+  root clip's id is its original id + 4000. A movie's static frame shows authored rest poses
+  and placeholders; the game fills and moves it from ActionScript at run time.
+- **BS1 in VR plays `HUDRadial.swf`, not `HUDPC.swf`** (`Gui.ini [HUD]` has both; the pad
+  build uses `Filename=`). Same clips and functions, slightly different placements.
 - **UModel prints its errors to stdout and its exit code says nothing**; the script reads
   the text (`*** ERROR`).
 - **A BS1 map has a localised copy per language** (`<map>_deu.bsm`, ...) holding voice and
