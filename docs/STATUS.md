@@ -2,11 +2,63 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Next session - BS1 HUD overhaul, the Dishonored VR way
+
+**Branch `claude/bs1-hud-overhaul`** (off `staging` 2954c26). Nothing built on it yet.
+
+### The task
+
+Port the Dishonored VR mod's per-element HUD (`C:\dev\Dishonored-VR`) to BS1: the same pieces on
+the same anchors in the same spots. Today BS1 captures the whole gameswf HUD into ONE panel
+(`src/core/gfx/hud_capture.*`, F10 HUD tab: `HudPanel`, distance, width, height). Dishonored
+splits the captured HUD into elements by where each draw lands on the screen and gives each its
+own anchor (`off`, `frame`, `window`, `world`, `handL`, `handR`).
+
+Read first, in Dishonored-VR (grep, never whole-file):
+- `docs/dishonored/HUD_ANCHORS.md` sections 1-5 (from line ~1924): the pieces, the `[Hud]` keys,
+  the gate, the log lines, the traps.
+- `docs/dishonored/HUD_ELEMENTS_HOWTO.md`: measuring an element's screen rectangle and baking it.
+- `src/core/gfx/hud_layout.cpp` `kRows`: the element table and its default anchors (vitals
+  top-left, reticle, prompt right of the reticle, equipment, subtitles, objective, toast,
+  tutorial, the menu screens by UI context). The hand placement: `HandL`/`HandR` panels, 0.22 m
+  wide, billboard or watch face; vitals on the back of the hand split across both hands.
+- Then the later entries at the top of HUD_ANCHORS (semantic ownership, 2026-09-25..10-04).
+
+BS1's own pieces are a different set (health/EVE bars, ammo, money, the plasmid/weapon icons, the
+compass arrow, hack/pickup prompts, subtitles). Measure their rectangles; never copy one of
+Dishonored's numbers. BS1's HUD fingerprint and the letterbox SKIP are in ENGINE_NOTES "Session
+19" and the `hud_capture.h` banner. The decoupling rule applies: put the element routing in the
+BS1 adapter or as a purely additive core opt-in that BS2 and Infinite never take.
+
+### Performance is a requirement, not a polish item
+
+Dishonored's HUD rework lost frames to costs that were hard to find (its
+`docs/dishonored/PERFORMANCE.md` 2026-09-25/26 entries and `docs/TRAPS.md`):
+- **Per-draw work.** Its region probe read each HUD draw's vertices through the shader's
+  transform: 38,349 probes per 3 s, about 11 ms of CPU a second, plus routing locks and
+  render-target switches outside that interval. Its later fix: no per-draw searches, no
+  cross-thread mutexes; carry immutable owner records with the draw.
+- **Periodic discovery.** A 750 ms object re-collection (376 pointer probes per object, each
+  range-checked) made a ~50 ms game-thread stall once a second while walking. Average FPS hid
+  it; the frame-gap log found it.
+- **Full-size captures.** One full-resolution RGBA8 capture target is ~31 MB at 2750x2850 and
+  costs a copy every present; idle targets must be released.
+- **A cache that stops remembering.** A full lookup cache that fell back to walking GObjects
+  (~100 ms a miss) froze the game. Caches must refuse when full and batch name lookups.
+- **Logs.** A per-second warning ran 842 lines a session; state lines log once.
+
+So: no per-draw allocation, lock, engine query or GPU readback; classify once per batch or per
+present where possible; one fixed set of capture targets at the HUD's own size; every probe and
+census default off; a 3 s aggregate cost line (mean/max) from the first build, so a hitch shows
+up as a number. Judge by frame gaps and the stereo pair rate, not the average tick.
+
 ## Session 2026-10-14 (second) - BS1: the reticle is a dot again; reloads play at the gun; recoil
 
-**Branch `claude/bs1-reticle-reload`** (off `staging` 117ec58, after #99 merged the barrel work with
-weapon size 0.88 as the default) is draft PR #100. **Branch `claude/bs1-gun-recoil`** is cut from it
-and adds the recoil; it is a draft PR into `staging` and carries #100's commits until #100 lands.
+**Merged to `staging` on 2026-10-15** as #100 (`ad53e91`, reticle + reloads) and #101 (`2954c26`,
+recoil) on the tester's word after a run. That run (build `v0.8.3-213-g4112d35`, the same tree as
+`staging` 2954c26) logged recoil on every `WeaponFiring`, and one reload at the gun with the free
+hand's carry at 1.00 and `the clip brought the left palm within 18.2 cm` (join distance 35 cm).
+No explicit headset verdict on each item was recorded.
 
 ### Current state
 
@@ -27,7 +79,8 @@ and adds the recoil; it is a draft PR into `staging` and carries #100's commits 
   own motion of the gun hand on the controller. F10: Hands > Reload animation ("Reloads play":
   Off / At the gun / In front of the face). Design: HANDS_DISHONORED.md "A reload plays AT THE
   GUN"; script findings: ENGINE_NOTES "how a reload plays"; decision log 2026-10-14.
-- **Installed:** this branch's Release build. No game or simulator was run.
+- **Installed:** Release `v0.8.3-213-g4112d35`, the source tree of `staging` 2954c26; the tester ran
+  it on 2026-10-14 14:46 (log build line matches). Nothing diagnostic is armed. No simulator run.
 - **Other games:** `src/core/` untouched.
 
 ### Next steps
