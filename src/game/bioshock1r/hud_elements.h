@@ -20,4 +20,11 @@ float menu_read(menu::Setting id);   // NaN = not this module's setting
 bool menu_write(menu::Setting id, float value);
 void draw_panel();             // F10 HUD tab: rectangles, dump, park (render thread)
 
+// Game-thread state the pieces follow.
+void set_plasmid_in_hand(bool plasmid);   // aim.cpp, on every held-item change
+// The Menus rows: does this screens::PanelKind ride the HUD instead of the flat
+// screen? camera.cpp asks before publishing a UI pause, then says which one rides.
+bool screen_rides(int panelKind);
+void set_riding_screen(int panelKind);    // 0 = none
+
 } // namespace bvr::b1r::hud_elements

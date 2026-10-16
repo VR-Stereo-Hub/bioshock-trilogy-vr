@@ -22,6 +22,7 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/handback.h"
+#include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/muzzle.h"
 #include "game/bioshock1r/temporal.h"
@@ -1091,6 +1092,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
         strcpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str());
     }
     const int ph = profile_hand(key);
+    if (!key.empty()) hud_elements::set_plasmid_in_hand(ph == 0); // the Ammo / Plasmid HUD pieces swap on it
     if (key.empty()) {
         menu::profile_changed("",-1);
         // s68: a genuinely UNKNOWN holdable (the rig itself unreadable). This is

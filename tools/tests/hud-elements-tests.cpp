@@ -148,6 +148,116 @@ int main() {
         check(plan.clears == 3, "dropped pieces are not cleared from the window", plan.clears, 3);
     }
 
+    {   // ownership: Health (big, low priority) moved, EVE (inside it, owns) stays on the panel
+        ElementCfg e[2];
+        e[0].rect[0] = 0.04f; e[0].rect[1] = 0.05f; e[0].rect[2] = 0.32f; e[0].rect[3] = 0.20f;
+        e[0].priority = 6; e[0].anchor = kHandL;
+        e[1].rect[0] = 0.10f; e[1].rect[1] = 0.13f; e[1].rect[2] = 0.31f; e[1].rect[3] = 0.17f;
+        e[1].priority = 5;
+        WorldPark park;
+        build_plan(e, 2, hand, &park, frame(), 8, &plan, &st);
+        // The panel: Health's place cleared, EVE's pixels put back exactly where they were.
+        bool restored = false;
+        for (int i = 0; i < plan.copies; ++i)
+            restored |= plan.copy[i].src[0] == 200 && plan.copy[i].src[1] == 260 && plan.copy[i].dstX == 200 &&
+                        plan.copy[i].dstY == 260 && plan.copy[i].src[2] == 620 && plan.copy[i].src[3] == 340;
+        check(restored && st.restored == 1, "the owner's pixels go back on the panel", st.restored, 1);
+        // Health's copy: EVE's rectangle carved out at the same offset inside the strip copy.
+        const auto& c = plan.copy[0];
+        check(plan.postClears == 1 && st.carved == 1, "the owner is carved out of the moved copy", plan.postClears, 1);
+        check(plan.postClear[0][0] == c.dstX + (200 - 80) && plan.postClear[0][1] == c.dstY + (260 - 100) &&
+              plan.postClear[0][2] == c.dstX + (620 - 80) && plan.postClear[0][3] == c.dstY + (340 - 100),
+              "carve lands on the owner's pixels in the copy", plan.postClear[0][0], c.dstX + 120);
+        // Reverse: EVE moved, Health on the panel - nothing restored, nothing carved.
+        e[0].anchor = kWindow; e[1].anchor = kHandR;
+        build_plan(e, 2, hand, &park, frame(), 8, &plan, &st);
+        check(st.restored == 0 && st.carved == 0 && plan.postClears == 0, "the owner moving needs no carve",
+              st.carved + st.restored, 0);
+    }
+    {   // a piece on the panel with its own offset and scale gets its own quad, head-locked
+        table(els, 10);
+        els[6].offX = 0.1f; els[6].offY = -0.05f; els[6].scale = 2.0f;
+        WorldPark park;
+        auto f = frame();
+        check(build_plan(els, 10, hand, &park, f, 8, &plan, &st), "placed piece builds a plan");
+        const auto& q = plan.quad[1];
+        const float mPerPx = f.winWidth / f.texW;
+        const float cx = ((0.30f + 0.34f) * 0.5f - 0.5f) * f.winWidth + 0.1f;
+        check(!q.local && std::fabs(q.pos[0] - cx) < 1e-3f, "offset on the panel plane", q.pos[0], cx);
+        check(std::fabs(q.pos[2] + f.winDist) < 1e-6f, "at the panel's distance", q.pos[2], -f.winDist);
+        check(std::fabs(q.widthM - 80 * mPerPx * 2.0f) < 1e-4f, "scaled", q.widthM, 80 * mPerPx * 2.0f);
+    }
+    {   // state rows: an inactive row is neither moved nor carves anything
+        table(els, 10);
+        els[2].anchor = kHandL;
+        els[2].active = false;
+        WorldPark park;
+        check(!build_plan(els, 10, hand, &park, frame(), 8, &plan, &st), "an inactive moved row is no plan");
+        els[2].active = true;
+        els[3].active = false;
+        els[3].rect[0] = 0.0f; els[3].rect[1] = 0.0f; els[3].rect[2] = 1.0f; els[3].rect[3] = 1.0f;
+        els[3].priority = -1; // the wheel: owns everything while it is open
+        build_plan(els, 10, hand, &park, frame(), 8, &plan, &st);
+        check(st.carved == 0, "a closed wheel carves nothing", st.carved, 0);
+        els[3].active = true;
+        build_plan(els, 10, hand, &park, frame(), 8, &plan, &st);
+        check(st.carved == 1, "an open wheel owns what it covers", st.carved, 1);
+    }
+    {   // a piece made of columns (EVE: bar + gauge staircase): its own pixels only, both ways
+        ElementCfg e[2];
+        e[0].rect[0] = 0.10f; e[0].rect[1] = 0.10f; e[0].rect[2] = 0.30f; e[0].rect[3] = 0.20f;
+        e[0].priority = 6;                                  // Health: a plain box
+        e[1].rect[0] = 0.10f; e[1].rect[1] = 0.15f; e[1].rect[2] = 0.30f; e[1].rect[3] = 0.25f;
+        e[1].priority = 5;                                  // EVE: two columns inside its box
+        e[1].nParts = 2;
+        const float p0[4] = {0.10f, 0.18f, 0.15f, 0.25f}, p1[4] = {0.15f, 0.15f, 0.30f, 0.20f};
+        for (int k = 0; k < 4; ++k) { e[1].parts[0][k] = p0[k]; e[1].parts[1][k] = p1[k]; }
+        e[1].anchor = kHandL;
+        WorldPark park;
+        build_plan(e, 2, hand, &park, frame(), 8, &plan, &st);
+        check(plan.clears == 3, "the panel loses only the columns (+ the strip)", plan.clears, 3);
+        // Its copy is the box; what is not a column is carved: above column 0 and below column 1.
+        check(plan.postClears == 2, "the rest of its box is carved from the copy", plan.postClears, 2);
+        const auto& c = plan.copy[0];
+        check(plan.postClear[0][0] == c.dstX && plan.postClear[0][1] == c.dstY &&
+              plan.postClear[0][2] == c.dstX + 100 && plan.postClear[0][3] == c.dstY + 60,
+              "above the first column", plan.postClear[0][3], c.dstY + 60);
+        check(plan.postClear[1][0] == c.dstX + 100 && plan.postClear[1][1] == c.dstY + 100 &&
+              plan.postClear[1][2] == c.dstX + 400 && plan.postClear[1][3] == c.dstY + 200,
+              "below the second column", plan.postClear[1][1], c.dstY + 100);
+        // Health moved instead: the columns inside its box go back on the panel, not the box.
+        e[1].anchor = kWindow; e[0].anchor = kHandR;
+        build_plan(e, 2, hand, &park, frame(), 8, &plan, &st);
+        int restores = 0;
+        for (int i = 1; i < plan.copies; ++i) ++restores;
+        check(restores == 2 && plan.postClears == 2, "each column it covers restored and carved", restores, 2);
+    }
+    {   // trims: cut from the moved copy, cleared from the panel with the box, shown nowhere
+        ElementCfg e[1];
+        e[0].rect[0] = 0.10f; e[0].rect[1] = 0.10f; e[0].rect[2] = 0.30f; e[0].rect[3] = 0.20f;
+        e[0].nTrims = 1;
+        const float t[4] = {0.10f, 0.18f, 0.12f, 0.30f}; // hangs below the box: clipped to it
+        for (int k = 0; k < 4; ++k) e[0].trims[0][k] = t[k];
+        e[0].anchor = kHandL;
+        WorldPark park;
+        build_plan(e, 1, hand, &park, frame(), 8, &plan, &st);
+        const auto& c = plan.copy[0];
+        check(plan.postClears == 1 && plan.postClear[0][0] == c.dstX && plan.postClear[0][1] == c.dstY + 160 &&
+              plan.postClear[0][2] == c.dstX + 40 && plan.postClear[0][3] == c.dstY + 200,
+              "the trim is cut from the copy, inside its box", plan.postClear[0][1], c.dstY + 160);
+        check(plan.clear[0][0] == 200 && plan.clear[0][3] == 400, "the panel still loses the whole box",
+              plan.clear[0][3], 400);
+        e[0].anchor = kWindow;
+        check(!build_plan(e, 1, hand, &park, frame(), 8, &plan, &st), "on the panel a trim does nothing");
+    }
+    {   // a riding menu in the world: one quad, the whole capture, parked once
+        WorldPark park;
+        auto f = frame();
+        check(build_screen_plan(&park, f, &plan) && plan.quads == 1 && plan.quad[0].local &&
+              plan.quad[0].rect[2] == f.texW && plan.quad[0].rect[3] == f.texH && plan.clears == 0,
+              "screen plan is the whole capture, world-locked");
+    }
+
     printf("hud-elements: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

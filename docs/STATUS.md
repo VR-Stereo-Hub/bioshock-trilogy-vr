@@ -8,14 +8,27 @@
 
 ### Current state
 
-- **The pieces, identified (offline).** HUDPC.swf's ActionScript, its placements and the
-  UnrealScript callers give 13 pieces: health, EVE, game crosshair, enemy name/health, use/hack
-  prompts, weapon/ammo/plasmid, subtitles, tutorial, objective, radio messages, money/ADAM, audio
-  log, Little Sister/timers. The art was confirmed by decoding sharedlibrary.swf's DXT bitmaps
-  (`tools\flash-decode.py`; FFDec drew them red). ENGINE_NOTES "2026-10-15 - The HUD's pieces".
+- **The pieces, identified (offline).** The VR build plays `HUDRadial.swf` (the pad HUD), not
+  HUDPC. Its ActionScript, placements and the UnrealScript callers give 16 pieces: health, EVE,
+  game crosshair, enemy name/health, use/hack prompts, ammo, plasmid, the weapon/plasmid wheel,
+  subtitles, tutorial, objective, radio messages, money/ADAM, audio log, Little Sister/gatherer,
+  challenge timers. Rendered whole with the real art (`tools\flash-decode.py` for the DXT
+  bitmaps, `tools\flash-merge.py` for the imported symbols). ENGINE_NOTES "2026-10-15 - The
+  HUD's pieces" and its "rendered whole" part.
+- **How the touching pieces separate.** Health/EVE: the bars are cleanly apart; the two hypo
+  gauges are one bitmap with interlocking rims, cut along a seam through the gap between them so
+  each gauge goes with its own bar (EVE's piece is its bar plus its gauge as one-pixel columns);
+  both pieces reach x 760 for the longer bars after upgrades. Where pieces
+  overlap, a priority decides who owns the pixels (carved out of the other piece, put back on the
+  panel if the owner stays). Ammo/plasmid: one slot the game swaps by the
+  held item, so two rows on one rectangle chosen by state. The wheel is a row live while a bumper
+  is held, owning everything it covers.
 - **Built, host-tested, not run in the game:** each piece has an F10 anchor (HUD > HUD pieces):
-  On the HUD panel (default - today's picture) / Hidden / In the world / Left hand / Right hand,
-  plus hand panel width 0.22 m, lift 0.06 m, faces you or like a watch (HUD on the hands). The
+  On the HUD panel (default - today's picture) / Hidden / In the world / Left hand / Right hand;
+  HUD > Adjust a piece: left/right, up/down and size per piece (Dishonored's WinX/WinY/Scale and
+  HandX/HandY/Scale); HUD > Menus: the pause menu, the map and the machines on the flat screen
+  (default, as before), the HUD panel, or the world (parked where you looked). Hand panel width
+  0.22 m, lift 0.06 m, faces you or like a watch (HUD on the hands). The
   pieces are rectangles of the ONE existing HUD capture, cut on the HUD swapchain image per present
   (a copy per moved piece, one ClearView) - no per-draw work, no new targets; core gains only
   `set_hud_elements_provider`, inert unless registered (PORT-CANDIDATES row; decision log
@@ -35,7 +48,10 @@ Element rectangles > Dump the HUD; then again with a pickup or hack prompt and w
 Send the `dumps\hud-*` files - the rectangles get corrected from them. Then set Health to Left
 hand and EVE to Right hand (HUD pieces): each should sit 6 cm above its controller, 22 cm wide,
 facing you, and leave the panel. Watch the log for `xr: HUD elements live` and the `[hudel] 3 s:`
-cost line (expect single-digit microseconds).
+cost line (expect single-digit microseconds). Then HUD > Menus > Pause menu: On the HUD panel and
+In the world - the pause menu should stay in 3D over the world (log `[hudel] menu rides ...`);
+Flat screen must behave exactly as before. Hold a bumper with Weapon and plasmid wheel set to In
+the world. Switch weapon <-> plasmid with Ammo and Plasmid on different hands.
 
 ### The brief (2026-10-14 handoff)
 

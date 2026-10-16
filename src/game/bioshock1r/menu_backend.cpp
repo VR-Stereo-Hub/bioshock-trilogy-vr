@@ -317,6 +317,7 @@ public:
         c.handMode=static_cast<int>(hands::menu_read(S::HandMode));c.maxHandMode=hands::menu_max_mode();
         c.solverV2=bones::menu_read(S::ArmSolver,0)!=0;c.hasSolverChoice=bones::menu_has_solver_choice();
         c.cameraHook=camera::hook_live();c.engineReady=c.cameraHook;
+        c.hudPiece=static_cast<int>(hud_elements::menu_read(S::HudPiece));
         vr::HeadPose pose{};c.tracking=vr::peek_head_pose(pose);
         std::lock_guard<std::mutex> lock(g_mutex);
         c.profile=g_profile;c.profileHand=g_profileHand;c.notice=g_notice;

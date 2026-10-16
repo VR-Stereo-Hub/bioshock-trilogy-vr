@@ -6338,15 +6338,23 @@ weapon, the flash itself (at the socket) lined up. At the barrel the sliders are
 tilt/turn already were. The capture now records `fresh.ray` and `fresh.muzzle` per present for
 checking a run against the drawn gun offline.
 
-## 2026-10-15 - The HUD's pieces: what HUDPC.swf draws, and where
+## 2026-10-15 - The HUD's pieces: what the HUD movie draws, and where
 
 For the per-element HUD (`hud_elements.cpp`, the Dishonored VR mod's HUD anchors on BS1's own
 pieces). Everything here is read offline from the shipped movies and the UnrealScript corpus;
 nothing was measured in a capture yet. F10 > HUD > Element rectangles > Dump the HUD is the
 measurement.
 
-**The movie.** `Gui.ini [HUD]` loads `..\FlashMovies\HUDPC.swf` (PC) full-screen at (0,0),
-`BackgroundAlpha=0`. Stage 1280x719 (25600x14380 twips). `SetRes(XRes,YRes)` picks a branch:
+**Which movie: `HUDRadial.swf`, not `HUDPC.swf`.** `Gui.ini [HUD]` names both (`PCFilename=`
+HUDPC, `Filename=` HUDRadial); the VR build drives a pad, and the screens log has always read
+`top = "..\FlashMovies\HUDRadial.swf" -> gameplay`. The two carry the same clips and the same
+ActionScript functions (HUDPC adds only `ShowWatermark`); HUDRadial's stage is 1280x720 and its
+placements differ by a few pixels. The section below was first read from HUDPC; the rectangles
+in `hud_elements.cpp` are HUDRadial's. Machines are likewise the pad movies (`craftingstation`,
+not `craftingstationPC`); the pause menu is `PausePC.swf` for both.
+
+**The movie.** `Gui.ini [HUD]` loads it full-screen at (0,0),
+`BackgroundAlpha=0`. HUDPC's stage is 1280x719 (25600x14380 twips). `SetRes(XRes,YRes)` picks a branch:
 at exactly 4:3 the root boxes sit at x 0; otherwise `centerBox`, `HandsIcons` and
 `PhotoDisplayBox` move +160 and `rightBox` +320 - the 4:3 layout centred in a 16:9 stage. The
 VR eye is near-square but not 0.75, so it takes the 16:9 branch. How gameswf maps the stage onto
@@ -6396,3 +6404,52 @@ per moved piece into a strip below the capture, one `ClearView` for the places t
 one quad layer per piece sampling a sub-rectangle of the same image. No per-draw work, no new
 capture target, no readback; the plan is arithmetic over 13 rows. The cost is that two pieces
 whose rectangles overlap cannot be separated - the rectangles are chosen not to.
+
+### The pieces rendered whole, and how each pair separates (HUDRadial, merged with its art)
+
+`tools\flash-merge.py` puts sharedlibrary.swf's 370 symbols into HUDRadial so FFDec draws the
+real clips. Measured on the merged movie, stage pixels (1280x720):
+
+- **Health and EVE.** `healthBar` (55..413 x 47..139) is the red bar AND both hypo gauges: the
+  gauge pair is ONE bitmap (`HUD_HealthEve_Cover`, 76x91) whose two gear rims interlock (rows
+  88-95, x 66-116, never under 38 of 75 columns covered), so no straight cut separates first-aid
+  from EVE hypo. `bioAmmoBar` (111..400 x 96..122) is the blue bar alone; its clip starts at
+  x 111 under the lower gear and is drawn over it. The bars themselves are cleanly apart: rows
+  90-95 are empty for x >= 118. The gauge pair is one shape (1153) with one bitmap fill (atlas
+  77), centres first aid (104.0, 78.0) and EVE hypo (85.4, 111.7); the first-aid ring passes in
+  FRONT of the EVE gauge's top. Geometry alone (nearest centre, radius-weighted, ring-then-tooth
+  rules) left tooth fragments on the wrong side - three cuts were rejected in review. What works
+  is a SEAM: the cheapest left-to-right path at 8x through the transparent gap between the gears
+  (cost = coverage; never through either disc; held to y 88.5..98 right of x 88, where the
+  first-aid ring runs along the top of the EVE drop box with no gap). It crosses drawn art for
+  63 of 544 eighth-columns, only where the rims touch. Above the seam is first aid, below it
+  EVE, and the EVE bar's own clip (from x 111, drawn over the gauge) is EVE. As one-pixel
+  columns that is 51 rectangles, 113 of 580,044 first-aid eighth-pixels inside them. Hence:
+  **Health = 71.6..760 x 46..98.9 (red bar + first-aid gauge); EVE = the columns (bar + EVE
+  gauge)**, EVE owning the overlap. When Health moves, two bits of its gauge that hang below
+  its ring (the lower-left tooth, x 72..87, and the ring's tail under the + box, x 109..118)
+  are trimmed per column from just below the gauge's own edge, so it sits flush; on the panel
+  nothing is trimmed. Both pieces run to x 760 because the bars lengthen with
+  the maximum (`setHealthBar`/`setBioAmmoBar`: BGMid width x max/100, the end cap follows).
+- **Ammo and plasmid share ONE slot.** `ammoScrollBar` (the three-ring ammo holder, ~55..290 x
+  552..668) and `CurrentAbilityName` (the plasmid gear and name bar, 58..483 x 591..670, frame 2)
+  sit on top of each other. `SetActiveHands("Weapon"|"Plasmid")` (called from `Hands.uc`) shows
+  one and hides the other (`ammoScrollBar._visible`, `CurrentAbilityName.gotoAndStop(1|2)`), so
+  they are separated by STATE: two rows on one rectangle, the active one chosen from the held
+  item (`aim.cpp`'s profile hand: plasmids are hand 0).
+- **The weapon and plasmid wheels** are `HandsIcons`' two 8-slot radials (`weaponScrollBar`,
+  `abilityScrollBar`, "SELECT WEAPON" / "SELECT PLASMID"), both at (-393,209) inside HandsIcons
+  (root 19.2+160, -25.95, scale 1.75): the wheel's centre is stage (662, 340), open size about
+  366 x 466. The pad opens it while a bumper is HELD (a tap only swaps the raised hand).
+- **Other gameplay pieces found and left on the panel:** the Little Sister rescue/harvest prompt
+  (`centerBox.Gatherer{Save,Kill,Collect}Focus`, 0.16..0.69 x 0.49..0.63 - it crosses the
+  crosshair, so no rectangle takes it alone), the unread-log indicator (`rightBox.
+  UnreadLogsIndicator`, right edge, mid height), "search again" (`ReRoll`, inside the tutorial's
+  band), the research camera overlay and photo grade (`CameraOverlay`, `PhotoDisplayBox`), the
+  death and Vita-Chamber screens (`DeathScreen`, `ShutterMovie`).
+- **Menus are other movies on the same stack**: `PausePC` (pause), `Maps`, the machines
+  (`craftingstation`, `PlasmiNow`, `PlasmidEquip`, `GeneBank`), `Hacking` (its Gui.ini entry sets
+  `ShouldPauseGameRenderingWhileActive`, so the world stops - it can only be a flat screen),
+  `ingamemanual`, `PlasmidTraining*`, `Warning`. The pause menu and the machines draw over a live
+  world through the same gameswf path, so they land in the HUD capture: that is why they can ride
+  the HUD panel or the world instead of the flat screen (F10 > HUD > Menus).

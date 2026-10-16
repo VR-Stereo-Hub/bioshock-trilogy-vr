@@ -641,7 +641,7 @@ void set_hud_texture_provider(HudTextureProviderFn fn);
 // CopySubresourceRegion each) and cleared from its old place (one ClearView),
 // and every quad samples a sub-rectangle of the same image. Null (the
 // default) keeps the single head-locked quad byte-identical for BS2/Infinite.
-constexpr int kMaxHudElementOps = 16;
+constexpr int kMaxHudElementOps = 256;
 constexpr int kMaxHudElementQuads = 8;
 struct HudElementFrame {          // what the provider sees, once per present
     uint32_t texW = 0, texH = 0;  // the HUD capture
@@ -662,10 +662,15 @@ struct HudElementQuad {
     float pos[3] = {}, quat[4] = {0, 0, 0, 1};
     float widthM = 0, heightM = 0;
 };
+// Run in this order: the capture copied in, `clear` (vacated places and the
+// strip), `copy` (pieces into the strip, and pixels a piece left behind that
+// another piece owns put back), `postClear` (what a piece's copy holds that is
+// another piece's, carved out of it).
 struct HudElementPlan {
     uint32_t stripH = 0;          // rows added below the capture for moved pieces
     int copies = 0; HudElementCopy copy[kMaxHudElementOps];
     int clears = 0; uint32_t clear[kMaxHudElementOps][4];
+    int postClears = 0; uint32_t postClear[kMaxHudElementOps][4];
     int quads = 0; HudElementQuad quad[kMaxHudElementQuads];
 };
 // Render thread, per present. Pure arithmetic: no allocation, no lock, no

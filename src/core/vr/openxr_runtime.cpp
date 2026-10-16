@@ -3628,12 +3628,13 @@ bool submit_hud_elements(HudElementsProviderFn provider, ID3D11Texture2D* hudTex
     if (plan.quads > maxQuads) plan.quads = maxQuads;
     if (plan.copies > kMaxHudElementOps) plan.copies = kMaxHudElementOps;
     if (plan.clears > kMaxHudElementOps) plan.clears = kMaxHudElementOps;
+    if (plan.postClears > kMaxHudElementOps) plan.postClears = kMaxHudElementOps;
 
     const uint32_t imgH = hd.Height + plan.stripH;
     if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width || g_hudSwapH != imgH)
         create_hud_swapchain(hd.Width, imgH);
     if (g_hudSwapchain == XR_NULL_HANDLE) return false;
-    if (plan.clears && g_hudImageRtvs.size() != g_hudImages.size()) {
+    if ((plan.clears || plan.postClears) && g_hudImageRtvs.size() != g_hudImages.size()) {
         g_hudImageRtvs.assign(g_hudImages.size(), nullptr);
         for (size_t i = 0; i < g_hudImages.size(); ++i) {
             D3D11_RENDER_TARGET_VIEW_DESC rd{};
@@ -3658,27 +3659,31 @@ bool submit_hud_elements(HudElementsProviderFn provider, ID3D11Texture2D* hudTex
             g_context->CopyResource(img, hudTex);
         else
             g_context->CopySubresourceRegion(img, 0, 0, 0, 0, hudTex, 0, nullptr);
-        // Clear BEFORE the piece copies: the vacated places in the capture, and
-        // the strip (the provider lists it), so a piece that stops being moved
-        // leaves nothing behind. The copies read the capture, not this image.
-        if (plan.clears) {
-            ID3D11RenderTargetView* rtv = idx < g_hudImageRtvs.size() ? g_hudImageRtvs[idx] : nullptr;
-            ID3D11DeviceContext1* ctx1 = nullptr;
-            if (rtv && SUCCEEDED(g_context->QueryInterface(__uuidof(ID3D11DeviceContext1),
-                                                           reinterpret_cast<void**>(&ctx1)))) {
-                D3D11_RECT rects[kMaxHudElementOps];
-                for (int i = 0; i < plan.clears; ++i)
-                    rects[i] = {static_cast<LONG>(plan.clear[i][0]), static_cast<LONG>(plan.clear[i][1]),
-                                static_cast<LONG>(plan.clear[i][2]), static_cast<LONG>(plan.clear[i][3])};
-                const float zero[4] = {0, 0, 0, 0};
-                ctx1->ClearView(rtv, zero, rects, static_cast<UINT>(plan.clears));
-                ctx1->Release();
-            } else if (!g_loggedHudClearFail) {
+        ID3D11RenderTargetView* rtv = idx < g_hudImageRtvs.size() ? g_hudImageRtvs[idx] : nullptr;
+        ID3D11DeviceContext1* ctx1 = nullptr;
+        if ((plan.clears || plan.postClears) &&
+            (!rtv || FAILED(g_context->QueryInterface(__uuidof(ID3D11DeviceContext1),
+                                                      reinterpret_cast<void**>(&ctx1))))) {
+            ctx1 = nullptr;
+            if (!g_loggedHudClearFail) {
                 g_loggedHudClearFail = true;
                 BVR_LOG("xr: HUD elements cannot clear (no RTV on the HUD swapchain image or no "
                         "D3D11.1 context) - a moved element also stays on the window");
             }
         }
+        auto clear_rects = [&](const uint32_t (*r)[4], int n) {
+            if (!ctx1 || n <= 0) return;
+            D3D11_RECT rects[kMaxHudElementOps];
+            for (int i = 0; i < n; ++i)
+                rects[i] = {static_cast<LONG>(r[i][0]), static_cast<LONG>(r[i][1]),
+                            static_cast<LONG>(r[i][2]), static_cast<LONG>(r[i][3])};
+            const float zero[4] = {0, 0, 0, 0};
+            ctx1->ClearView(rtv, zero, rects, static_cast<UINT>(n));
+        };
+        // Clear BEFORE the piece copies: the vacated places in the capture, and
+        // the strip (the provider lists it), so a piece that stops being moved
+        // leaves nothing behind. The copies read the capture, not this image.
+        clear_rects(plan.clear, plan.clears);
         for (int i = 0; i < plan.copies; ++i) {
             const HudElementCopy& c = plan.copy[i];
             if (c.src[2] <= c.src[0] || c.src[3] <= c.src[1] || c.src[2] > hd.Width ||
@@ -3688,6 +3693,9 @@ bool submit_hud_elements(HudElementsProviderFn provider, ID3D11Texture2D* hudTex
             D3D11_BOX box{c.src[0], c.src[1], 0, c.src[2], c.src[3], 1};
             g_context->CopySubresourceRegion(img, 0, c.dstX, c.dstY, 0, hudTex, 0, &box);
         }
+        // AFTER the copies: carve out of a piece what another piece owns.
+        clear_rects(plan.postClear, plan.postClears);
+        if (ctx1) ctx1->Release();
     }
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(g_hudSwapchain, &ri);

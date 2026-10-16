@@ -21,6 +21,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
+#include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 #include "core/vr/openxr_runtime.h"
@@ -2337,7 +2338,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // exactly what the first cut did.
     }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
-    bvr::vr::publish_ui_pause(panelUp && (!sceneOwnsPanel || g_playerOpenedPanel));
+    // A UI pause whose Menus row (F10 > HUD) is not the flat screen RIDES the
+    // HUD instead: no ui pause, so the projection stays up and the menu, which
+    // gameswf draws into the HUD capture over the live world, goes where that
+    // row says. Off (the default) is exactly the line before this change.
+    const bool uiPause = panelUp && (!sceneOwnsPanel || g_playerOpenedPanel);
+    const bool rides = uiPause && hud_elements::screen_rides(static_cast<int>(screens::panel_kind()));
+    hud_elements::set_riding_screen(rides ? static_cast<int>(screens::panel_kind()) : 0);
+    bvr::vr::publish_ui_pause(uiPause && !rides);
     // Suppress the aim laser and the aim dot while a scene owns the view. The
     // game's own reticle is NOT this call - it goes out through the engine SET
     // handler in assert_crosshair, which reads the same predicate so the three
