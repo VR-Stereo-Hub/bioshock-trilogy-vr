@@ -189,6 +189,8 @@ const Spec kSpecs[] = {
     {S::DialSnap,"WheelDial.Snap",T::Controls,"Weapon and plasmid dial",L::Advanced,"Equal shares",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Each item you have gets an equal slice of the circle and empty slots cannot be picked. Off: the game's own wedges, where the corners are narrower."},
     {S::DialEntryTilt,"WheelDial.EntryTilt",T::Controls,"Weapon and plasmid dial",L::Advanced,"Follow head tilt on opening",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The dial's plane tilts with your head when it opens. Off: upright."},
     {S::DialEntryYaw,"WheelDial.EntryYaw",T::Controls,"Weapon and plasmid dial",L::Advanced,"Follow head direction on opening",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The dial's plane turns to where you look when it opens. Off: it faces your position from the hand."},
+    {S::DialWidth,"WheelDial.Width",T::Controls,"Weapon and plasmid dial",L::Basic,"Wheel size at the hand",K::Slider,.15f,1.2f,"%.2f m",nullptr,P::Global,C::Always,"The width of the wheel's ring where the grip was pressed. 0.35 is the Dishonored VR mod's tune."},
+    {S::DialDistance,"WheelDial.Distance",T::Controls,"Weapon and plasmid dial",L::Advanced,"Wheel distance offset",K::Slider,-.3f,.5f,"%+.2f m",nullptr,P::Global,C::Always,"Moves the drawn wheel along its facing (+ farther from you). Where the hand starts stays the same, so you never reach for the wheel."},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
 }
@@ -241,7 +243,7 @@ const char* disabled_reason(const Spec& s, const Backend& b, int hand) {
     if((s.id==S::FreeArmAppearance || s.id==S::HideHeldArm) && b.read(S::ArmAppearance,0)==2) return "Arm behavior is set to hide both arms.";
     if((s.id==S::HudDistance || s.id==S::HudWidth || s.id==S::HudHeight) && !b.read(S::HudPanel,0)) return "Enable the HUD panel to adjust its placement.";
     if(s.id>=S::HudElHealth && s.id<=S::HudScreenMachines && !b.read(S::HudPanel,0)) return "Enable the HUD panel to place its pieces.";
-    if(s.id>S::DialEnabled && s.id<=S::DialEntryYaw && !b.read(S::DialEnabled,0)) return "Turn on Pick with your hand to adjust this.";
+    if(s.id>S::DialEnabled && s.id<=S::DialDistance && !b.read(S::DialEnabled,0)) return "Turn on Pick with your hand to adjust this.";
     if(s.id==S::DialTravel && b.read(S::DialDirectionOnly,0)) return "Turn off Direction only to use hand travel.";
     if(s.id==S::HudHandTilt && b.read(S::HudHandFace,0)==0) return "Set Panel faces to Like a watch face to tilt it.";
     return nullptr;

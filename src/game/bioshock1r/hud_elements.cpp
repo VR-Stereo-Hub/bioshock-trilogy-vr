@@ -1,6 +1,8 @@
 #include "hud_elements.h"
 #include "hud_elements_plan.h"
 #include "menu_theme.h"
+#include "dial_input.h"
+#include "wheel_state.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -12,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -145,7 +148,13 @@ const Row kRows[] = {
     {"Prompt",    {0.545f, 0.360f, 0.850f, 0.620f}, 1,  kAlways},        // centerBox.focusArea, ReRoll
     {"Ammo",      {0.035f, 0.760f, 0.380f, 0.935f}, 7,  kWeaponInHand},  // ammoScrollBar
     {"Plasmid",   {0.035f, 0.760f, 0.380f, 0.935f}, 7,  kPlasmidInHand}, // CurrentAbilityName (frame 2)
-    {"Wheel",     {0.370f, 0.140f, 0.670f, 0.800f}, -1, kWheelOpen},     // HandsIcons radials, centre (662,340)
+    // The wheel in three parts, measured on renders of the open wheel at 2, 6 and 8 items
+    // (the merged HUDRadial, stage 1280x720): the ring 474..839 x 150..511, the item name
+    // 538..785 x 96..122 (wider for a long name, centred on 662), the button line
+    // 526..795 x 536..563. Each owns its rectangle while the wheel is up.
+    {"Wheel",     {0.3650f, 0.2000f, 0.6600f, 0.7170f}, -1, kWheelOpen},  // HandsIcons radials (the ring)
+    {"WheelName", {0.3600f, 0.1250f, 0.6700f, 0.1780f}, -1, kWheelOpen},  // the highlighted item's name
+    {"WheelLabel",{0.4000f, 0.7380f, 0.6300f, 0.7900f}, -1, kWheelOpen},  // SELECT WEAPON / SELECT PLASMID
     {"Subtitles", {0.220f, 0.775f, 0.760f, 0.940f}, 3,  kAlways},        // subtitleTextHolder, AreaNameMovie
     {"Tutorial",  {0.220f, 0.650f, 0.760f, 0.755f}, 4,  kAlways},        // trainingTextHolder
     {"Objective", {0.660f, 0.000f, 1.000f, 0.130f}, 8,  kAlways},        // chatBoxMovie.importantTextHolder
@@ -179,6 +188,14 @@ std::atomic<int> g_riding{0}; // the PanelKind riding the HUD now, 0 = none
 hudel::WorldPark g_park, g_screenPark;
 int g_wasRiding = 0;
 ULONGLONG g_bumperSince = 0, g_wheelUntil = 0;
+int g_leaseKind = -1;      // the wheel last seen open: 0 weapons, 1 plasmids
+bool g_dialShown = false;
+
+int row_index(const char* key) {
+    for (int i = 0; i < kCount; ++i)
+        if (!strcmp(kRows[i].key, key)) return i;
+    return 0;
+}
 struct Cost { unsigned calls = 0, active = 0; double sumUs = 0, maxUs = 0; ULONGLONG since = 0; } g_cost;
 hudel::PlanStats g_lastStats;
 uint32_t g_lastStrip = 0;
@@ -404,17 +421,31 @@ bool provide(const vr::HudElementFrame& f, int maxQuads, vr::HudElementPlan* out
         active = g_screenAnchor[riding].load(std::memory_order_relaxed) == 2 &&
                  hudel::build_screen_plan(&g_screenPark, f, out);
     } else {
-        // The wheel is open while a bumper is HELD (a tap only swaps the hand),
-        // and for its close animation after.
-        bool lb = false, rb = false;
-        bvr::input::last_composed_bumpers(&lb, &rb);
-        if (lb || rb) {
-            if (!g_bumperSince) g_bumperSince = nowMs;
-            if (nowMs - g_bumperSince >= 200) g_wheelUntil = nowMs + 300;
+        // The wheel on screen. From the game's own HUD calls when they are arriving
+        // (wheel_state): open from OpenWeaponMenu/OpenAbilityMenu to RBReleased/LBReleased,
+        // plus a 250 ms LEASE for the close animation (frames 11-14, ~170 ms at 24 fps),
+        // so the ring, its crop and the dial pose hold until it has faded - no flash on
+        // the panel. Without them: a bumper HELD 200 ms (a tap only swaps the hand), +300 ms.
+        bool wheel;
+        if (wheel_state::live()) {
+            const int openKind = wheel_state::open_kind();
+            if (openKind >= 0) {
+                g_leaseKind = openKind;
+                g_wheelUntil = nowMs + 250;
+            }
+            wheel = openKind >= 0 || nowMs < g_wheelUntil;
         } else {
-            g_bumperSince = 0;
+            bool lb = false, rb = false;
+            bvr::input::last_composed_bumpers(&lb, &rb);
+            if (lb || rb) {
+                if (!g_bumperSince) g_bumperSince = nowMs;
+                if (nowMs - g_bumperSince >= 200) g_wheelUntil = nowMs + 300;
+            } else {
+                g_bumperSince = 0;
+            }
+            wheel = nowMs < g_wheelUntil;
+            g_leaseKind = -1;
         }
-        const bool wheel = nowMs < g_wheelUntil;
         const bool plasmid = g_plasmidInHand.load(std::memory_order_relaxed);
 
         hudel::ElementCfg cfg[kCount];
@@ -445,6 +476,25 @@ bool provide(const vr::HudElementFrame& f, int maxQuads, vr::HudElementPlan* out
                 case kWheelOpen: cfg[i].active = wheel; break;
                 default: cfg[i].active = true; break;
             }
+        }
+        // The hand dial: the ring where the grip was pressed, facing you, the item name
+        // above it where the game puts it, the button line hidden. The pose is the one the
+        // dial froze at the press (dial_input) and holds through the close lease.
+        dial_input::Visual dv;
+        if (wheel && g_leaseKind >= 0 && dial_input::visual(&dv) && dv.kind == g_leaseKind) {
+            const int iw = row_index("Wheel"), in = row_index("WheelName"), il = row_index("WheelLabel");
+            if (cfg[iw].anchor != hudel::kOff)
+                hudel::dial_pose(cfg[iw].rect, cfg[iw].rect, f.texW, f.texH, dv.center, dv.q, dv.widthM, &cfg[iw]);
+            if (cfg[in].anchor != hudel::kOff)
+                hudel::dial_pose(cfg[iw].rect, cfg[in].rect, f.texW, f.texH, dv.center, dv.q, dv.widthM, &cfg[in]);
+            cfg[il].anchor = hudel::kOff;
+            if (!g_dialShown) {
+                g_dialShown = true;
+                BVR_LOG("[hudel] the %s wheel at the hand dial (%.2f m wide, centre %.3f %.3f %.3f)",
+                        dv.kind ? "plasmid" : "weapon", dv.widthM, dv.center[0], dv.center[1], dv.center[2]);
+            }
+        } else if (!wheel) {
+            g_dialShown = false;
         }
         if (g_repark.exchange(false, std::memory_order_relaxed)) g_park.valid = false;
         hudel::HandCfg hand;

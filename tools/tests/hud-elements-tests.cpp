@@ -250,6 +250,39 @@ int main() {
         e[0].anchor = kWindow;
         check(!build_plan(e, 1, hand, &park, frame(), 8, &plan, &st), "on the panel a trim does nothing");
     }
+    {   // the hand dial: the ring posed at the dial, the name above it, the panel cleared
+        const auto f = frame();
+        const float ring[4] = {0.3650f, 0.2000f, 0.6600f, 0.7170f};
+        const float name[4] = {0.3600f, 0.1250f, 0.6700f, 0.1780f};
+        const float centre[3] = {0.2f, 1.1f, -0.4f};
+        float q[4];
+        bvr::xrmath::quat_axis_angle(0, 1, 0, 0.6f, q); // turned and upright
+        ElementCfg e[2];
+        for (int k = 0; k < 4; ++k) { e[0].rect[k] = ring[k]; e[1].rect[k] = name[k]; }
+        e[0].priority = e[1].priority = -1;
+        dial_pose(ring, ring, f.texW, f.texH, centre, q, 0.35f, &e[0]);
+        dial_pose(ring, name, f.texW, f.texH, centre, q, 0.35f, &e[1]);
+        e[1].anchor = kOff; // a posed piece is shown whatever its panel anchor says
+        WorldPark park;
+        check(build_plan(e, 2, hand, &park, f, 8, &plan, &st), "the dial builds a plan");
+        check(plan.quads == 3 && st.moved == 2, "the ring and the name each get a quad", plan.quads, 3);
+        const auto& r = plan.quad[1];
+        const auto& n = plan.quad[2];
+        check(r.local && std::fabs(r.pos[0] - centre[0]) < 1e-5f && std::fabs(r.pos[1] - centre[1]) < 1e-5f &&
+              std::fabs(r.pos[2] - centre[2]) < 1e-5f, "the ring is centred on the dial");
+        check(std::fabs(r.widthM - 0.35f) < 0.003f, "the ring is the dial's width", r.widthM, 0.35);
+        check(std::fabs(r.quat[1] - q[1]) < 1e-6f && std::fabs(r.quat[3] - q[3]) < 1e-6f, "the dial's orientation");
+        const float u0[3] = {0, 1, 0};
+        float up[3];
+        bvr::xrmath::quat_rotate(q[0], q[1], q[2], q[3], u0, up);
+        const float above = (n.pos[0] - r.pos[0]) * up[0] + (n.pos[1] - r.pos[1]) * up[1] + (n.pos[2] - r.pos[2]) * up[2];
+        const float want = ((ring[1] + ring[3]) - (name[1] + name[3])) * 0.5f * f.texH * (0.35f / ((ring[2] - ring[0]) * f.texW));
+        check(std::fabs(above - want) < 1e-4f && above > r.heightM * 0.5f, "the name sits above the ring, as drawn",
+              above, want);
+        check(std::fabs(n.widthM / r.widthM - (name[2] - name[0]) / (ring[2] - ring[0])) < 0.01f,
+              "the name keeps its size against the ring");
+        check(plan.clears >= 2, "both leave the panel", plan.clears, 2);
+    }
     {   // a riding menu in the world: one quad, the whole capture, parked once
         WorldPark park;
         auto f = frame();

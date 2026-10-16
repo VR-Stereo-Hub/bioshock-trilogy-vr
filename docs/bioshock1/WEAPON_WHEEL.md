@@ -7,9 +7,22 @@ host-tested, not run in the game.** `wheel_state.cpp` hooks the HUD movie's call
 `xinput_bridge::set_stick_override`. F10 > Controls > Weapon and plasmid dial, off until enabled;
 the settings listed in 3.15 that belong to the input are there. One finding the design did not
 have: the movie ignores the stick for its open animation (~210 ms) and reacts only to wedge
-CROSSINGS, so the dial holds neutral for 250 ms after the wheel shows (`Config::armMs`). Not built
-yet: the Dial anchor, the name panel and the close lease (3.10-3.11), immersion (3.13), gates
-(3.14). Host suite `wheel-dial` (81 checks).
+CROSSINGS, so the dial holds neutral for 250 ms after the wheel shows (`Config::armMs`).
+
+2026-10-16: **the Dial anchor, the name panel and the close lease (3.9-3.11) are built and
+host-tested, not run in the game.** The HUD table's wheel is now three rows: `Wheel` (the ring,
+0.365..0.660 x 0.200..0.717), `WheelName` (the highlighted item's name, 0.360..0.670 x
+0.125..0.178) and `WheelLabel` (SELECT WEAPON / SELECT PLASMID, 0.400..0.630 x 0.738..0.790),
+all owning what they cover while open. With the dial on and a tracked press, `dial_input` publishes
+the pose the press froze (seqlock, once per press) and `hud_elements` poses the ring at it at
+F10 > Controls > Weapon and plasmid dial > **Dial width** (0.35 m) and **Dial distance** (along the
+dial's facing), the name rigidly above the ring as the movie draws it, and hides the button line.
+The open state comes from the mirror (`wheel_state`), and the lease keeps the pieces up and posed
+for 250 ms after it closes (the close animation; the "+3 presents" half is not needed when the
+time runs on the provider's own clock, which only ticks on presents). Unarmed or untracked, the
+wheel stays on the HUD panel as before. Log: `[hudel] the weapon wheel at the hand dial ...` once
+per opening. Not built yet: immersion (3.13), gates (3.14). Host suites `wheel-dial` (81 checks)
+and `hud-elements` (53).
 
 Original status: design. Written 2026-10-15 from a read of the Dishonored VR mod's
 hand dial (`C:\dev\Dishonored-VR`, VR-126 and its follow-ups) and of BS1's own wheels

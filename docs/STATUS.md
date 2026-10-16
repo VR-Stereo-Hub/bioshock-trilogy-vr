@@ -49,11 +49,16 @@ mirrors both wheels' slots and open state (`[wheel] weapons N [...] | plasmids M
 change). With F10 > Controls > Weapon and plasmid dial > Pick with your hand ON, holding the right
 grip opens the weapon wheel and the right hand's movement picks; the left grip and hand do the
 plasmids (`[dial] weapon wheel: the right hand picks`, `[dial] ... closed after N ms on <slot>`,
-`[dial] 3 s:` while steering). The wheel still draws on the HUD panel; the dial at the hand is next.
+`[dial] 3 s:` while steering). The wheel's ring and the item name now draw AT the hand where the
+grip was pressed (F10 Dial width 0.35 m, Dial distance), held 250 ms after release for the close
+animation; the SELECT button line is hidden there.
 
-Headset for the dial: load a save with 2+ weapons, enable it, hold the right grip, move the hand
-toward each item and release - each should equip, including the lower-left; a grip tap should still
-cycle. Then the plasmids with the left hand. Send the log if a pick misses.
+Headset for the dial: load a save with 2+ weapons, enable it, hold the right grip - the ring
+should appear facing you at the hand, the name above it - move the hand toward each item and
+release; each should equip, including the lower-left, and the ring should fade out at the hand,
+not jump to the panel. A grip tap should still cycle. Then the plasmids with the left hand. If
+the ring shows a sliver of something else, or is cut off, the Wheel/WheelName rectangles need the
+Dump (below). Send the log if a pick misses.
 
 Headset (no simulator run was done): in play with the bars, ammo and money showing, F10 > HUD >
 Element rectangles > Dump the HUD; then again with a pickup or hack prompt and with a subtitle.

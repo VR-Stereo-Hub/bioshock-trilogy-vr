@@ -46,6 +46,13 @@ struct ElementCfg {
     // the two bits of its gauge that hang below the ring, to sit flush.
     int nTrims = 0;
     float trims[kMaxTrims][4] = {};
+    // POSED: placed by the caller, not by its anchor - the wheel's ring and name at the
+    // hand dial. XR LOCAL centre and orientation (+Z toward the viewer), and metres per
+    // capture pixel (the piece keeps its aspect).
+    bool posed = false;
+    float posePos[3] = {};
+    float poseQuat[4] = {0, 0, 0, 1};
+    float poseMPerPx = 0.0f;
     float offX = 0.0f;    // metres: right on the panel/world plane or across the hand panel
     float offY = 0.0f;    // metres: up
     float scale = 1.0f;
@@ -124,6 +131,7 @@ inline bool owns(const ElementCfg* els, int a, int b) {
 // Moved = it gets its own quad. On the panel with a placement of its own
 // counts, since it no longer sits where the game drew it.
 inline bool is_moved(const ElementCfg& e) {
+    if (e.posed) return e.poseMPerPx > 0.0f;
     if (e.anchor == kWorld || e.anchor == kHandL || e.anchor == kHandR) return true;
     return e.anchor == kWindow && (e.offX != 0.0f || e.offY != 0.0f || e.scale != 1.0f);
 }
@@ -143,6 +151,27 @@ inline void park_world(const vr::HudElementFrame& f, WorldPark* park) {
     const float back[3] = {-fwd[0], 0.0f, -fwd[2]}; // the quad's +Z faces the viewer
     facing_quat(back, park->quat);
     park->valid = true;
+}
+
+// Pose a piece at the hand dial, keeping where the game draws it relative to a
+// reference rectangle (the wheel's ring): the ring's centre lands on `centre`, the
+// ring is `widthM` wide, and the piece sits at its own offset from the ring on the
+// dial's plane (so the item name stays above the ring). Rectangles normalised.
+inline void dial_pose(const float ring[4], const float piece[4], uint32_t texW, uint32_t texH,
+                      const float centre[3], const float q[4], float widthM, ElementCfg* e) {
+    const float ringPx = (ring[2] - ring[0]) * static_cast<float>(texW);
+    if (ringPx < 1.0f || widthM <= 0.0f) { e->posed = false; return; }
+    const float m = widthM / ringPx;
+    const float dx = ((piece[0] + piece[2]) - (ring[0] + ring[2])) * 0.5f * static_cast<float>(texW) * m;
+    const float dy = -((piece[1] + piece[3]) - (ring[1] + ring[3])) * 0.5f * static_cast<float>(texH) * m;
+    const float r0[3] = {1, 0, 0}, u0[3] = {0, 1, 0};
+    float right[3], up[3];
+    xrmath::quat_rotate(q[0], q[1], q[2], q[3], r0, right);
+    xrmath::quat_rotate(q[0], q[1], q[2], q[3], u0, up);
+    for (int k = 0; k < 3; ++k) e->posePos[k] = centre[k] + right[k] * dx + up[k] * dy;
+    for (int k = 0; k < 4; ++k) e->poseQuat[k] = q[k];
+    e->poseMPerPx = m;
+    e->posed = true;
 }
 
 // A riding screen (pause menu, map, a machine) shown in the world: the whole
@@ -222,7 +251,7 @@ inline bool build_plan(const ElementCfg* els, int count, const HandCfg& hand, Wo
     for (int i = 0; i < count; ++i) {
         if (!valid[i]) continue;
         const ElementCfg& e = els[i];
-        const bool hide = e.anchor == kOff;
+        const bool hide = e.anchor == kOff && !e.posed;
         if (!hide && !is_moved(e)) continue;
         // One quad stays for the window itself; the clears must fit whole.
         if (out->clears + nReg[i] + 1 >= kOps || (!hide && (nMoved + 1 >= maxQuads || out->copies >= kOps))) {
@@ -346,7 +375,13 @@ inline bool build_plan(const ElementCfg* els, int count, const HandCfg& hand, Wo
         vr::HudElementQuad& q = out->quad[out->quads];
         q.rect[0] = dst[i][0]; q.rect[1] = dst[i][1]; q.rect[2] = dst[i][0] + pw; q.rect[3] = dst[i][1] + ph;
         const float scale = e.scale > 0.05f ? e.scale : 0.05f;
-        if (e.anchor == kWindow || e.anchor == kWorld) {
+        if (e.posed) {
+            q.local = true;
+            for (int k = 0; k < 3; ++k) q.pos[k] = e.posePos[k];
+            for (int k = 0; k < 4; ++k) q.quat[k] = e.poseQuat[k];
+            q.widthM = pw * e.poseMPerPx;
+            q.heightM = ph * e.poseMPerPx;
+        } else if (e.anchor == kWindow || e.anchor == kWorld) {
             // Its own place on the panel, plus its own offset, at its own scale.
             const float cx = (static_cast<float>(px[i][0] + px[i][2]) * 0.5f / W - 0.5f) * f.winWidth + e.offX;
             const float cy = -(static_cast<float>(px[i][1] + px[i][3]) * 0.5f / H - 0.5f) * winH + e.offY;

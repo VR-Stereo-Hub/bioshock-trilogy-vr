@@ -16,7 +16,9 @@
     X(Prompt, "Use and hack prompts", "Pick up, use, hack, search and the container list, right of the crosshair.") \
     X(Ammo, "Ammo", "The ammo holder, shown while a weapon is in your hand. Bottom left.")         \
     X(Plasmid, "Plasmid", "The plasmid gear and name, shown while a plasmid is in your hand. The game draws it where the ammo goes.") \
-    X(Wheel, "Weapon and plasmid wheel", "The selection wheel while a bumper is held.")           \
+    X(Wheel, "Weapon and plasmid wheel", "The selection wheel's ring while it is open. With Pick with your hand on (Controls tab) it opens at the hand instead.") \
+    X(WheelName, "Wheel item name", "The highlighted item's name above the wheel. At the hand dial it stays above the ring.") \
+    X(WheelLabel, "Wheel button line", "SELECT WEAPON / SELECT PLASMID under the wheel. Hidden at the hand dial.") \
     X(Subtitles, "Subtitles", "Dialogue subtitles and the area name, bottom centre.")              \
     X(Tutorial, "Tutorial messages", "The training messages above the subtitles.")                \
     X(Objective, "Objective", "The current goal, top right.")                                     \
@@ -78,6 +80,7 @@ enum class Setting {
     HudScreenPause, HudScreenMap, HudScreenMachines,
     // The weapon and plasmid dial (dial_input.cpp).
     DialEnabled, DialDirectionOnly, DialNeutral, DialTravel, DialSnap, DialEntryTilt, DialEntryYaw,
+    DialWidth, DialDistance,
     Count
 };
 struct Spec {
