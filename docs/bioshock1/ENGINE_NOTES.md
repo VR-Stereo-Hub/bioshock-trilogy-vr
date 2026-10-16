@@ -6359,6 +6359,32 @@ at exactly 4:3 the root boxes sit at x 0; otherwise `centerBox`, `HandsIcons` an
 `PhotoDisplayBox` move +160 and `rightBox` +320 - the 4:3 layout centred in a 16:9 stage. The
 VR eye is near-square but not 0.75, so it takes the 16:9 branch. How gameswf maps the stage onto
 a near-square capture (stretch or fit) is the open question the dump answers.
+**2026-10-16, the first headset run:** the capture is **1664x1792** (aspect 0.929, the eye's
+backbuffer: `[hud] capture RT created 1664x1792`). **The stage is STRETCHED onto it**, measured on
+the automatic dump (`dumps\hud-20261016-003628`): the red bar's frame is 65 capture px tall where
+the stage has 26 (x2.49 = 1792/720) and the gauge pair 211 for 91, while x scales by 1.3
+(1664/1280). So stage fractions are capture fractions, and the rectangles land where the art is
+(Health content 0.056..0.229 x 0.064..0.137, inside its row). The art on the panel is as tall as
+the flat game's would be on a 0.93 screen. The provider now also dumps once 600 ms into the first
+wheel opening of a session.
+
+The boxes were too big: the bar clips reach stage x 413 at most (`healthBar` 55..413,
+`bioAmmoBar` 111..400 across all frames, `tools`-side bounds walk of the merged movie), so the
+rows now end at 0.325 instead of 0.594. Clip bounds are no use for the rest - most clips park
+off-screen in some frame - so the other rows wait for in-game dumps.
+
+### The blur behind the menus (2026-10-16, tools\ida\mb1_menu_blur.py)
+
+While paused the game keeps rendering the world (AFW eye frames and CalcView carry on at full
+rate). A frame dump with the weapon wheel open shows, after the tonemap on the eye's LDR target,
+two extra full-screen passes from return +0x7C9E8C: copy the image to a 1664x1792 target, draw
+(sampling the depth copy), copy, draw. They come from the camera's **post-effect runner**
+`void __thiscall Run(this)` at **+0x7C9CB0** (`patterns.h kPostEffectRunRva`, prologue verified
+around the relocated SEH push; one caller, +0x7BCEEB), which loops over the effect list at
+`this+0x28` and draws each. The list is empty in play (no +0x7C9E8C draws in a gameplay dump); the
+paused game puts its blur in it. No UnrealScript pushes it, so it is native. The normal final
+composite is a separate call (+0x7BCF13 -> +0x7CA05F) and keeps running. `menu_blur.cpp` returns
+from the runner while a menu the player opened or a wheel is up.
 
 **The art is not in HUDPC.** 93 symbols (bars, frames, icons, reticles) are imported from
 `sharedlibrary.swf`, and every bitmap in both movies is DXT in a gameswf custom tag (512) FFDec

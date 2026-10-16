@@ -104,10 +104,10 @@ void observe(void* movie, const char* method, const char* fmt, va_list ap) {
     g_open.store(g_mirror.open, std::memory_order_relaxed);
     if (!g_known.exchange(true, std::memory_order_relaxed))
         BVR_LOG("[wheel] the HUD movie's calls are arriving (first: %s) - the wheel stage is known", method);
-    // Opening and closing are logged by the dial with what it did; the lists here.
-    const bool listChange = changed && strncmp(method, "Open", 4) != 0 && strcmp(method, "RBReleased") != 0 &&
-                            strcmp(method, "LBReleased") != 0 && strncmp(method, "Select", 6) != 0;
-    if (listChange) log_state();
+    // The lists, and each opening and closing - one line each, so a run says whether
+    // the game opened a wheel at all, whatever the dial did with it. Selections are
+    // per stick step and stay quiet.
+    if (changed && strncmp(method, "Select", 6) != 0) log_state();
     LeaveCriticalSection(&g_lock);
 }
 

@@ -26,5 +26,6 @@ void set_plasmid_in_hand(bool plasmid);   // aim.cpp, on every held-item change
 // screen? camera.cpp asks before publishing a UI pause, then says which one rides.
 bool screen_rides(int panelKind);
 void set_riding_screen(int panelKind);    // 0 = none
+bool hide_backdrop();                     // F10 HUD > Menus > Hide the blurred backdrop
 
 } // namespace bvr::b1r::hud_elements

@@ -32,6 +32,8 @@
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/menu_blur.h"
+#include "game/bioshock1r/wheel_state.h"
 #include "game/bioshock1r/native_proof.h"
 #include "game/shared/ue_math.h"
 
@@ -2346,6 +2348,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     const bool rides = uiPause && hud_elements::screen_rides(static_cast<int>(screens::panel_kind()));
     hud_elements::set_riding_screen(rides ? static_cast<int>(screens::panel_kind()) : 0);
     bvr::vr::publish_ui_pause(uiPause && !rides);
+    // The paused game's blurred backdrop (F10 HUD > Menus): skipped while a menu
+    // the player opened or a weapon/plasmid wheel is up, so the world shows behind.
+    menu_blur::set_suppressed(hud_elements::hide_backdrop() && (uiPause || wheel_state::open_kind() >= 0));
     // Suppress the aim laser and the aim dot while a scene owns the view. The
     // game's own reticle is NOT this call - it goes out through the engine SET
     // handler in assert_crosshair, which reads the same predicate so the three

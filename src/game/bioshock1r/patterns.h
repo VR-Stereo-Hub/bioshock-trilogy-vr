@@ -532,6 +532,19 @@ inline constexpr uint8_t kFlashCallMethodTail[29] = {0x50, 0x64, 0x89, 0x25, 0x0
                                                      0x30, 0x01, 0x00, 0x00, 0x56, 0x57, 0x8B, 0x7D, 0x08, 0x83,
                                                      0xBF, 0x14, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x13};
 inline constexpr uint32_t kFlashMovieInterfaceOffset = 0x114;
+
+// The camera's post-effect runner (tools\ida\mb1_menu_blur.py, ENGINE_NOTES "The blur behind the
+// menus"): void __thiscall Run(this), which draws every effect in the list at this+0x28 onto the
+// tonemapped image. Empty in play; the paused game's menu blur is in it while a menu or a wheel
+// is up (two passes: copy, draw, copy, draw). One caller (+0x7BCEEB). Prologue: push ebp /
+// mov ebp,esp / push -1 | push <SEH, relocated> | mov eax,fs:0 / push eax / mov fs:0,esp /
+// sub esp,20h / push ebx / mov ebx,ecx / push esi / push edi / mov edi,[ebx+28h].
+inline constexpr uint32_t kPostEffectRunRva = 0x7C9CB0;
+inline constexpr uint8_t kPostEffectRunHead[6] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68};
+inline constexpr uint32_t kPostEffectRunTailAt = 0x0A; // after the relocated <imm32>
+inline constexpr uint8_t kPostEffectRunTail[25] = {0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+                                                   0x25, 0x00, 0x00, 0x00, 0x00, 0x83, 0xEC, 0x20, 0x53,
+                                                   0x8B, 0xD9, 0x56, 0x57, 0x8B, 0x7B, 0x28};
 inline constexpr uint32_t kFlashMovieFilenameOffset = 0x40;
 inline constexpr uint32_t kSkelInstActorOffset = 0x04;   // backref to the actor
 inline constexpr uint32_t kSkelInstFreezeOffset = 0x20;  // int; SkeletonInstanceFreeze = 1

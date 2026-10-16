@@ -68,6 +68,9 @@ const float kHealthTrims[][4] = {
     {112.0f / 1280, 90.850f / 720, 113.0f / 1280, 100.0f / 720},
     {113.0f / 1280, 90.825f / 720, 114.0f / 1280, 100.0f / 720},
     {114.0f / 1280, 90.650f / 720, 118.0f / 1280, 100.0f / 720}, // flush with the box's bottom
+    // Under the red bar (its frame ends at y 87): the top edge of the EVE bar's frame,
+    // which the headset's dump showed as a sliver along the bottom of the moved piece.
+    {118.0f / 1280, 90.650f / 720, 416.0f / 1280, 100.0f / 720},
 };
 constexpr int kHealthTrimCount = static_cast<int>(sizeof kHealthTrims / sizeof kHealthTrims[0]);
 
@@ -141,27 +144,31 @@ const float kEveParts[][4] = {
 constexpr int kEveCount = static_cast<int>(sizeof kEveParts / sizeof kEveParts[0]);
 
 const Row kRows[] = {
-    {"Health",    {0.05596f, 0.06389f, 0.59375f, 0.13733f}, 6, kAlways, nullptr, 0, kHealthTrims, kHealthTrimCount}, // red bar + first-aid gauge
-    {"Eve",       {0.04375f, 0.12240f, 0.59375f, 0.19167f}, 5, kAlways, kEveParts, kEveCount}, // bioAmmoBar + EVE gauge
-    {"Reticle",   {0.455f, 0.455f, 0.525f, 0.560f}, 0,  kAlways},        // centerBox.ReticleHolder
+    // The bars end where the movie's own clips do at their longest (healthBar 55..413,
+    // bioAmmoBar 111..400 across every frame): x 0.325. The first headset run had them to
+    // 0.594, so a bar on a hand sat in a strip that was mostly empty.
+    {"Health",    {0.05596f, 0.06389f, 0.32500f, 0.13733f}, 6, kAlways, nullptr, 0, kHealthTrims, kHealthTrimCount}, // red bar + first-aid gauge
+    {"Eve",       {0.04375f, 0.12240f, 0.32500f, 0.19167f}, 5, kAlways, kEveParts, kEveCount}, // bioAmmoBar + EVE gauge
+    {"Reticle",   {0.462f, 0.460f, 0.518f, 0.557f}, 0,  kAlways},        // centerBox.ReticleHolder (596..660 x 334..398)
     {"Target",    {0.360f, 0.280f, 0.640f, 0.450f}, 2,  kAlways},        // EnemyType, FrozenHealth
     {"Prompt",    {0.545f, 0.360f, 0.850f, 0.620f}, 1,  kAlways},        // centerBox.focusArea, ReRoll
     {"Ammo",      {0.035f, 0.760f, 0.380f, 0.935f}, 7,  kWeaponInHand},  // ammoScrollBar
     {"Plasmid",   {0.035f, 0.760f, 0.380f, 0.935f}, 7,  kPlasmidInHand}, // CurrentAbilityName (frame 2)
-    // The wheel in three parts, measured on renders of the open wheel at 2, 6 and 8 items
-    // (the merged HUDRadial, stage 1280x720): the ring 474..839 x 150..511, the item name
-    // 538..785 x 96..122 (wider for a long name, centred on 662), the button line
-    // 526..795 x 536..563. Each owns its rectangle while the wheel is up.
-    {"Wheel",     {0.3650f, 0.2000f, 0.6600f, 0.7170f}, -1, kWheelOpen},  // HandsIcons radials (the ring)
-    {"WheelName", {0.3600f, 0.1250f, 0.6700f, 0.1780f}, -1, kWheelOpen},  // the highlighted item's name
-    {"WheelLabel",{0.4000f, 0.7380f, 0.6300f, 0.7900f}, -1, kWheelOpen},  // SELECT WEAPON / SELECT PLASMID
+    // The wheel in three parts. Measured on renders of the open wheel at 2, 6 and 8 items
+    // (the merged HUDRadial, stage 1280x720) the ring was 474..839 x 150..511, but in the
+    // headset that cut the wheel short, so each part now takes the whole band it can reach:
+    // the ring 384..934 x 122..536, the name above it, the button line below. Each owns its
+    // rectangle while the wheel is up (the game is paused, nothing else shows there).
+    {"Wheel",     {0.3000f, 0.1700f, 0.7300f, 0.7450f}, -1, kWheelOpen},  // HandsIcons radials (the ring)
+    {"WheelName", {0.3000f, 0.1000f, 0.7300f, 0.1700f}, -1, kWheelOpen},  // the highlighted item's name
+    {"WheelLabel",{0.3300f, 0.7450f, 0.7000f, 0.8100f}, -1, kWheelOpen},  // SELECT WEAPON / SELECT PLASMID
     {"Subtitles", {0.220f, 0.775f, 0.760f, 0.940f}, 3,  kAlways},        // subtitleTextHolder, AreaNameMovie
     {"Tutorial",  {0.220f, 0.650f, 0.760f, 0.755f}, 4,  kAlways},        // trainingTextHolder
     {"Objective", {0.660f, 0.000f, 1.000f, 0.130f}, 8,  kAlways},        // chatBoxMovie.importantTextHolder
     {"Messages",  {0.600f, 0.130f, 1.000f, 0.250f}, 9,  kAlways},        // chatBoxMovie.ChatMovie0-5
     {"Money",     {0.840f, 0.455f, 1.000f, 0.580f}, 10, kAlways},        // rightBox.CreditCount, AdamCount
     {"AudioLog",  {0.800f, 0.700f, 1.000f, 0.930f}, 11, kAlways},        // rightBox.logHolder
-    {"Escort",    {0.050f, 0.200f, 0.390f, 0.330f}, 12, kAlways},        // GathererHealth, NeedleHolder
+    {"Escort",    {0.045f, 0.195f, 0.315f, 0.285f}, 12, kAlways},        // GathererHealth (64..398 x 144..202)
     {"Timers",    {0.030f, 0.440f, 0.320f, 0.690f}, 13, kAlways},        // flipTimer
 };
 constexpr int kCount = static_cast<int>(sizeof kRows / sizeof kRows[0]);
@@ -178,6 +185,7 @@ std::atomic<int> g_piece{0};
 std::atomic<float> g_handWidth{0.22f}, g_handLift{0.06f}, g_handTilt{0.0f};
 std::atomic<bool> g_handWatch{false};
 std::atomic<bool> g_repark{false}, g_dumpRequest{false};
+std::atomic<bool> g_hideBackdrop{true}; // camera.cpp gates core's backdrop skip on it
 std::atomic<bool> g_plasmidInHand{false};
 // The Menus rows: 0 flat screen (as before), 1 the HUD panel, 2 the world;
 // indexed by screens::PanelKind (Pause 1, Map 2, Machine 3).
@@ -429,9 +437,22 @@ bool provide(const vr::HudElementFrame& f, int maxQuads, vr::HudElementPlan* out
         bool wheel;
         if (wheel_state::live()) {
             const int openKind = wheel_state::open_kind();
+            // Once per session, 600 ms into an opening (past the open animation): dump
+            // the HUD so the wheel's own rectangles are measured from the game.
+            static ULONGLONG s_openSince = 0;
+            static bool s_wheelDumped = false;
             if (openKind >= 0) {
                 g_leaseKind = openKind;
                 g_wheelUntil = nowMs + 250;
+                if (!s_openSince) s_openSince = nowMs;
+                if (!s_wheelDumped && nowMs - s_openSince >= 600) {
+                    s_wheelDumped = true;
+                    g_dumpRequest.store(true, std::memory_order_relaxed);
+                    BVR_LOG("[hudel] the %s wheel is open - dumping the HUD once for its rectangles",
+                            openKind ? "plasmid" : "weapon");
+                }
+            } else {
+                s_openSince = 0;
             }
             wheel = openKind >= 0 || nowMs < g_wheelUntil;
         } else {
@@ -518,6 +539,21 @@ bool provide(const vr::HudElementFrame& f, int maxQuads, vr::HudElementPlan* out
     g_lastStrip = out->stripH;
     g_lastCopies = out->copies;
     const ULONGLONG now = nowMs;
+    // One automatic dump per session, 3 s after a piece first leaves the panel in
+    // play: the rectangles are measured from it, with nothing for the player to do.
+    // A single readback, like the button's; never again until the next launch.
+    static ULONGLONG s_movedSince = 0;
+    static bool s_autoDumped = false;
+    if (!s_autoDumped && !riding && st.moved > 0) {
+        if (!s_movedSince) s_movedSince = now;
+        else if (now - s_movedSince >= 3000) {
+            s_autoDumped = true;
+            g_dumpRequest.store(true, std::memory_order_relaxed);
+            BVR_LOG("[hudel] a piece is off the panel - dumping the HUD once for the rectangles");
+        }
+    } else if (!s_autoDumped) {
+        s_movedSince = 0;
+    }
     if (!g_cost.since) g_cost.since = now;
     if (now - g_cost.since >= 3000) {
         if (g_cost.active)
@@ -553,6 +589,8 @@ bool screen_rides(int panelKind) {
 
 void set_riding_screen(int panelKind) { g_riding.store(panelKind, std::memory_order_relaxed); }
 
+bool hide_backdrop() { return g_hideBackdrop.load(std::memory_order_relaxed); }
+
 float menu_read(menu::Setting id) {
     const int i = static_cast<int>(id) - static_cast<int>(S::HudElHealth);
     if (i >= 0 && i < kCount) return static_cast<float>(g_anchor[i].load(std::memory_order_relaxed));
@@ -572,6 +610,7 @@ float menu_read(menu::Setting id) {
         case S::HudScreenPause: return static_cast<float>(g_screenAnchor[1].load(std::memory_order_relaxed));
         case S::HudScreenMap: return static_cast<float>(g_screenAnchor[2].load(std::memory_order_relaxed));
         case S::HudScreenMachines: return static_cast<float>(g_screenAnchor[3].load(std::memory_order_relaxed));
+        case S::HudHideBackdrop: return g_hideBackdrop.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -610,6 +649,10 @@ bool menu_write(menu::Setting id, float value) {
         case S::HudScreenPause: return screen(1);
         case S::HudScreenMap: return screen(2);
         case S::HudScreenMachines: return screen(3);
+        case S::HudHideBackdrop:
+            if (g_hideBackdrop.exchange(value != 0, std::memory_order_relaxed) != (value != 0))
+                BVR_LOG("[hudel] menus: the blurred backdrop %s", value != 0 ? "hidden" : "drawn (as the game does)");
+            return true;
         default: return false;
     }
 }

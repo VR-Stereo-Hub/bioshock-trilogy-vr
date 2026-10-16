@@ -17,9 +17,12 @@ namespace bvr::b1r::dial_input {
 namespace {
 using S = menu::Setting;
 
-std::atomic<bool> g_enabled{false}, g_directionOnly{true}, g_snap{true}, g_entryTilt{false}, g_entryYaw{false};
+std::atomic<bool> g_enabled{true}, g_directionOnly{true}, g_snap{true}, g_entryTilt{false}, g_entryYaw{false};
 std::atomic<float> g_neutralMm{2.0f}, g_travelCm{4.0f};
-std::atomic<float> g_widthM{0.35f}, g_distanceM{0.0f};
+// The width of the Wheel row's box at the hand. The box was widened to the whole band the
+// wheel can reach (0.43 of the HUD, was 0.295), so 0.5 m keeps the ring itself at about
+// the 0.35 m the Dishonored VR mod tuned.
+std::atomic<float> g_widthM{0.5f}, g_distanceM{0.0f};
 
 // The pose the last press froze, for hud_elements (render thread). A seqlock: the
 // XInput thread writes it once per press; a reader retries if a write overlapped.

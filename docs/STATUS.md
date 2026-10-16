@@ -43,6 +43,29 @@
 
 ### Next steps
 
+**2026-10-16 headset run 1 and what changed after it.** The wheel looked as before because
+"Pick with your hand" was never turned on (it defaulted to off; `WheelDial` absent from
+menu-settings.ini) - it is now on by default, and `[wheel] ... open: WEAPON wheel` logs every
+opening and closing so a run shows whether the game opened one. The provider dumps the HUD once
+3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
+(`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
+
+**Headset run 2 (2026-10-16).** The dial worked (opened, picked, drawn at the hand). Reported:
+the pieces took far bigger sections than they needed, the wheel too little, and the blur stayed.
+Measured on run 2's dump: the stage is stretched onto the 1664x1792 capture, so the rectangles
+sit on the art, but the bars' boxes ran to x 0.594 where the clips end at 0.325 - fixed, plus a
+trim for the EVE frame's edge under Health; the Reticle and Escort boxes tightened to their clips;
+the Wheel/WheelName/WheelLabel boxes widened to the band the wheel can reach (Dial width default
+0.5 m to keep the ring ~0.35 m). The blur: the first fix skipped the wrong draw; a frame dump
+named the engine's post-effect runner, now skipped while a menu or wheel is up
+(`[menublur] menu closed: the blur pass was skipped N time(s)`). The other rows (Target, Prompt,
+Ammo, Objective, Messages, Money, AudioLog) are still the first guesses: they need a dump taken
+while each is on screen.
+
+Headset run 3: Health and EVE on hands; open the weapon wheel and hold it a second (the dump fires);
+open the pause menu - the world behind it should be sharp. For any other piece that cuts too much,
+F10 > HUD > Element rectangles > Dump the HUD while it is showing, and send the `dumps\hud-*` files.
+
 **Weapon and plasmid dial (input built, host-tested, not run in the game):**
 `docs/bioshock1/WEAPON_WHEEL.md`. A hook on the HUD movie's call routine (+0x427220, IDA fw1/fw2)
 mirrors both wheels' slots and open state (`[wheel] weapons N [...] | plasmids M [...]` on every

@@ -3006,3 +3006,16 @@ overlapping pieces cannot be separated, and Dishonored's `frame` anchor (a piece
 eye image) is not offered, since that needs the per-draw route. Both are acceptable for BS1's HUD,
 whose pieces sit in separate parts of the screen; if one is ever needed, route only that piece's
 draws by state, not by probe.
+
+### 2026-10-16: BS1's menu blur switched off at the engine's post-effect runner, not per draw
+
+The paused game blurs the view behind the pause menu, the map, the machines and the
+weapon/plasmid wheels. In VR it reads as a blurred box that follows the head. A first attempt
+skipped HUD-target draws that sample a rendered texture; the headset run showed it took the
+game's normal final composite and missed the blur. A frame dump with the wheel open named the
+real one: the camera's post-effect runner (+0x7C9CB0, ENGINE_NOTES "The blur behind the menus")
+draws every effect in its list, the list is empty in play, and the menu blur is in it while a
+menu is up. So BS1 hooks the runner and returns early while a menu the player opened or a wheel
+is up (F10 HUD > Menus > Hide the blurred backdrop, on) - one check per view, the BS1 form of the
+Dishonored VR mod's NoBlur. It also stops any other post effect for as long as a menu is up,
+which is acceptable: the game is paused. Core is untouched.

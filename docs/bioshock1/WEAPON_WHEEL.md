@@ -4,7 +4,7 @@ Status (2026-10-15): **the stage seam (3.8) and the dial input (3.1-3.7, 3.9) ar
 host-tested, not run in the game.** `wheel_state.cpp` hooks the HUD movie's call routine
 (ENGINE_NOTES "The HUD movie's call routine") and `wheel_mirror.h` rebuilds both wheels from it;
 `wheel_dial.h` is the pure dial, `dial_input.cpp` steers the game's sticks through
-`xinput_bridge::set_stick_override`. F10 > Controls > Weapon and plasmid dial, off until enabled;
+`xinput_bridge::set_stick_override`. F10 > Controls > Weapon and plasmid dial, on by default since 2026-10-16 (the first headset run had it off, so the wheel was unchanged);
 the settings listed in 3.15 that belong to the input are there. One finding the design did not
 have: the movie ignores the stick for its open animation (~210 ms) and reacts only to wedge
 CROSSINGS, so the dial holds neutral for 250 ms after the wheel shows (`Config::armMs`).

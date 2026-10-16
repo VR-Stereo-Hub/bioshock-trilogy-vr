@@ -20,7 +20,7 @@ struct Visual {
     int kind = -1;
     float center[3] = {};
     float q[4] = {0, 0, 0, 1};
-    float widthM = 0.35f;
+    float widthM = 0.5f;
 };
 bool visual(Visual* out);
 float menu_read(menu::Setting id);    // NaN = not this module's setting

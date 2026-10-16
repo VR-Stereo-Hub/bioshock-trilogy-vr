@@ -77,7 +77,7 @@ enum class Setting {
     HudHandWidth, HudHandLift, HudHandFace, HudHandTilt,
     HudPiece,
     BVR_HUD_PIECES(BVR_HUD_ENUM_PLACE)
-    HudScreenPause, HudScreenMap, HudScreenMachines,
+    HudScreenPause, HudScreenMap, HudScreenMachines, HudHideBackdrop,
     // The weapon and plasmid dial (dial_input.cpp).
     DialEnabled, DialDirectionOnly, DialNeutral, DialTravel, DialSnap, DialEntryTilt, DialEntryYaw,
     DialWidth, DialDistance,
