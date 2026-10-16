@@ -1332,7 +1332,7 @@ static void note_grips(const FrameContext& ctx, uint64_t now, CamRec& c) {
         out.valid = true;
         out.loc[0] = g.loc.x; out.loc[1] = g.loc.y; out.loc[2] = g.loc.z;
         ue_rot_basis(g.rot, out.fwd, out.right, out.up);
-        c.gripWeight[h] = handback::weight(h, now);
+        c.gripWeight[h] = handback::tracked(h, now);
     }
 }
 

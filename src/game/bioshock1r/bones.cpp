@@ -7351,7 +7351,17 @@ void m4_compose(bool late) {
     palette::HandXform palX[2];
     float palmComposed[2][3] = {};
     bool socketsWritten[2] = {false, false};
-    for (int h = 0; h < 2; ++h) {
+    // 2026-10-14: an animation played AT THE GUN (handback.h, a sibling VR mod's "animation at the hand")
+    // carries the free hand by the weapon hand's final correction, so the weapon hand is
+    // composed first. The gun hand's pose just before (the rest the clip's own motion of the
+    // gun is measured from) is kept per hand while no hand-back touches it.
+    const int gunHand = g_m4.held == 0 ? 0 : 1;
+    static ik::Bone s_gunRest[2];
+    static bool s_gunRestValid[2] = {false, false};
+    static float s_joinMinCm[2] = {1e9f, 1e9f};
+    static bool s_carrying[2] = {false, false};
+    for (int hi = 0; hi < 2; ++hi) {
+        const int h = hi == 0 ? gunHand : 1 - gunHand;
         const M4Hand& T = g_m4.hand[h];
         if (!T.valid) continue;
         const int w = m4_wrist(h);
@@ -7435,7 +7445,46 @@ void m4_compose(bool late) {
             // game position and the target (Dishonored blend_transform_palm: interpolating the
             // translation instead swung the palm on an arc about the mesh origin).
             const float wgt = hbWeight[h];
-            const palette_math::Blended bl = palette_math::blend_hand(D.q, sPos, palmComp, target.t, wgt);
+            // ---- 2026-10-14: AN ANIMATION AT THE GUN (handback.h) ---------------------------
+            // The controller side of the blend, before the hand-back to the game: the hand's own
+            // correction (q, palm at, size), then
+            //   gun hand:  the clip's own motion of the hand against its pose just before, layered
+            //              on the controller - D measured from that rest pose instead of the live
+            //              one, x -> target + Drest.q (x - restPalm) s (BRVR's HandAnim=1);
+            //   free hand: the WEAPON hand's final correction applied to this hand's bones, so it
+            //              stands where the clip has it against the gun (hand_compose.h carried_by), gated by
+            //              how near the clip has it to the gun.
+            hc::Placement own{D.q, target.t, sPos};
+            const float toCmClip = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+            if (h == gunHand) {
+                const float g = handback::gun_motion(h, now);
+                if (!handback::active(h, now)) {
+                    memcpy(s_gunRest[h].p, A[w].p, 12);
+                    memcpy(s_gunRest[h].q, A[w].q, 16);
+                    s_gunRestValid[h] = true;
+                }
+                if (g > 0.0f && s_gunRestValid[h])
+                    own = hc::toward(own, hc::from_rest(target, s_gunRest[h], palmLocal, palmComp, sPos), g);
+            } else if (palX[gunHand].valid) {
+                const float c0 = handback::carry(h, now);
+                const palette::HandXform& G = palX[gunHand];
+                const float clipCm = ik::length(palmComp - ik::vec(G.pivot)) * toCmClip;
+                if (c0 > 0.0f) {
+                    if (!s_carrying[h]) s_joinMinCm[h] = 1e9f;
+                    s_carrying[h] = true;
+                    if (clipCm < s_joinMinCm[h]) s_joinMinCm[h] = clipCm;
+                    const float c = c0 * handback::join_gate(clipCm);
+                    const hc::Placement gun{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                    own = hc::toward(own, hc::carried_by(gun, ik::vec(G.pivot), palmComp), c);
+                } else if (s_carrying[h]) {
+                    s_carrying[h] = false;
+                    if (!late)
+                        BVR_LOG("[handback] at the gun: the clip brought the %s palm within %.1f cm of the gun hand's "
+                                "(join distance %.0f cm)",
+                                h ? "right" : "left", s_joinMinCm[h], handback::join_cm());
+                }
+            }
+            const palette_math::Blended bl = palette_math::blend_hand(own.q, own.s, palmComp, own.at, wgt);
             const ik::Quat qb = bl.q;
             const float sb = bl.s;
             const ik::Vec palmAt = bl.palmAt;

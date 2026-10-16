@@ -679,8 +679,23 @@ script state (`hands_state`, which mode 4 had never located - fixed). A TRIGGER 
 keeps it tracked; `Scripted` states (EVE hypo, scripted hand animations, gatherer tools - BS1's
 takedowns) own both; fire and reload are levers, off. 250 ms in, 250 ms release, 350 ms out,
 smootherstep; the palm on the straight line; the arm lerped to the game's by `1 - weight`; the
-weapon follows the blended hand. `vrhands handback status|melee|swing|scripted|fire|reload
-on|off|force l|r|both|off|blendms|release`.
+weapon follows the blended hand. `vrhands handback status|melee|swing|scripted|fire on|off|
+reload off|hand|view|gunmotion <0..1>|join <cm>|force l|r|both|off|blendms|release`.
+
+**A reload plays AT THE GUN (2026-10-14, built, not headset-tested).** The design follows a
+sibling VR mod's "animation at the hand": the weapon hand stays on
+its controller, and the free hand is placed by the WEAPON hand's palette correction instead of
+its own, so it stands where the reload clip has it against the gun - wherever the gun is held -
+and blends back to its own controller after (the same Handoff timings). BS1's twist: it joins
+only while the clip has its palm within the join distance of the gun hand's (default 35 cm,
+fading over 20 cm), so a clip that keeps the free hand low and away leaves it on the
+controller. The log line `at the gun: the clip brought the left palm within X cm` after each
+reload measures the real clips. Optional: `Gun moves with the reload` (0 by default, as the
+sibling mod ships) layers the clip's own motion of the gun hand on the controller, measured from its pose
+just before the reload (BRVR's `HandAnim=1`). Arms stay solved to the drawn wrists. The barrel
+ray keeps reading the muzzle while the gun hand is pinned. F10: Hands > Reload animation.
+The bone-write fallback route (no palette) does not carry. Math: `hand_compose.h`
+`carried_by` / `toward` / `from_rest`, host-tested.
 
 Measured (`tools\handback-test.ps1`, the TRACE lines):
 

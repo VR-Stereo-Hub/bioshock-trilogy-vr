@@ -2,6 +2,35 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-14 (second) - BS1: the reticle is a dot again; reloads play at the gun
+
+**Branch `claude/bs1-reticle-reload`** (off `staging` 117ec58, after #99 merged the barrel work with
+weapon size 0.88 as the default).
+
+### Current state
+
+- **Reticle (built, not headset-tested):** the in-image reticle from #99 was a ring at twice the
+  Reticle size slider; it is the laser's solid dot at the slider's diameter again, as the XR aim
+  dot always was (`laser_draw.cpp`).
+- **Reloads play at the gun (built, host-tested, not run in the game):** the gun hand stays on its
+  controller; the free hand takes the gun hand's palette correction, so it goes where the game's
+  reload clip has it against the gun, wherever the gun is held, and blends back after. It joins
+  only while the clip has its palm within 35 cm of the gun hand's (fading over 20 cm). The gun's
+  own parts animate as before. Optional `Gun moves with the reload` (default 0) layers the clip's
+  own motion of the gun hand on the controller. F10: Hands > Reload animation ("Reloads play":
+  Off / At the gun / In front of the face). Design: HANDS_DISHONORED.md "A reload plays AT THE
+  GUN"; script findings: ENGINE_NOTES "how a reload plays"; decision log 2026-10-14.
+- **Installed:** this branch's Release build. No game or simulator was run.
+- **Other games:** `src/core/` untouched.
+
+### Next steps
+
+Headset: reload the pistol, the Tommy Gun and the shotgun with "Reloads play: At the gun". The left
+hand should come to the gun, do the reload there and return to its controller. After each reload
+the log has `[handback] at the gun: the clip brought the left palm within X cm`. If the hand never
+joins, raise "Other hand joins within" past that X. Also try "Gun moves with the reload" at 1 and
+"In front of the face" for comparison. Check that the reticle is a dot.
+
 ## Session 2026-10-14 - BS1: DLSS hand vectors; shots and the laser along the drawn barrel
 
 **Branch `claude/bs1-barrel-origin`** (off `staging` 0afc3b6), 4 commits: `4ce23e0` integration

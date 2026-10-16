@@ -17,15 +17,14 @@ template <class T> void rel(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
 constexpr int kMaxDots = 16;
 
-// One quad per dot from SV_VertexID; the pixel shader draws a soft disc, or a ring for the
-// reticle. Premultiplied output.
+// One quad per dot from SV_VertexID; the pixel shader draws a soft disc - the laser's dots and
+// the reticle alike, as the XR quads draw both from one texture. Premultiplied output.
 const char* kShader = R"(
 cbuffer C : register(b0) {
     float4 dots[16];   // xy centre (NDC), zw radius (NDC)
     float4 color;      // rgb, a = opacity
-    float4 info;       // x: index of the reticle ring (-1 = none)
 };
-struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; nointerpolation float ring : TEXCOORD1; };
+struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 V vs(uint id : SV_VertexID) {
     const float2 corner[6] = {float2(-1, -1), float2(-1, 1), float2(1, 1),
                               float2(-1, -1), float2(1, 1), float2(1, -1)};
@@ -34,19 +33,13 @@ V vs(uint id : SV_VertexID) {
     V o;
     o.pos = float4(dots[d].xy + k * dots[d].zw, 0, 1);
     o.uv = k;
-    o.ring = (float)d == info.x ? 1.0f : 0.0f;
     return o;
 }
 float4 ps(V i) : SV_Target {
+    // The XR laser's own dot (openxr_runtime.cpp create_laser): a solid core to a quarter of
+    // the radius, then (1 - r)^1.5, so the two lasers read the same size.
     float r = length(i.uv);
-    float a;
-    if (i.ring > 0.5f) {
-        a = saturate((1.0f - r) * 8.0f) * saturate((r - 0.55f) * 8.0f);
-    } else {
-        // The XR laser's own dot (openxr_runtime.cpp create_laser): a solid core to a quarter of
-        // the radius, then (1 - r)^1.5, so the two lasers read the same size.
-        a = r >= 1.0f ? 0.0f : (r < 0.25f ? 1.0f : pow(1.0f - r, 1.5f));
-    }
+    float a = r >= 1.0f ? 0.0f : (r < 0.25f ? 1.0f : pow(1.0f - r, 1.5f));
     a *= color.a;
     return float4(color.rgb * a, a);
 }
@@ -55,7 +48,6 @@ float4 ps(V i) : SV_Target {
 struct alignas(16) CB {
     float dots[kMaxDots][4];
     float color[4];
-    float info[4];
 };
 
 ID3D11Device* g_dev = nullptr;
@@ -260,10 +252,11 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, uint32_t w, uint32_t h
             add(nearUu * powf(farUu / nearUu, t), s.dotDeg);
         }
     }
-    const int ring = s.reticle ? add(s.reticleUu, s.reticleDeg * 2.0f) : -1;
+    // The reticle is a dot of the slider's diameter, as the XR aim dot (build_aim_dot_layer) is.
+    // 2026-10-14: it was a ring at twice that size, which read as a circle, not the dot.
+    if (s.reticle) add(s.reticleUu, s.reticleDeg);
     if (n == 0) return false;
     cb.color[0] = 1.0f; cb.color[1] = 60.0f / 255.0f; cb.color[2] = 40.0f / 255.0f; cb.color[3] = 1.0f;
-    cb.info[0] = static_cast<float>(ring);
 
     Saved saved(ctx);
     D3D11_MAPPED_SUBRESOURCE m;
