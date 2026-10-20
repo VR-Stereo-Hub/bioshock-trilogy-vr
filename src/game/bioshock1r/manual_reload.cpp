@@ -161,6 +161,10 @@ bool weapon_space(void* weapon, const char* exclude, float m[3][3], float* s, fl
 // What the free hand carries this frame (set by tick, applied by carry() from the hand's placement).
 int g_carryMode = 0;            // 0 nothing, 1 the part rides the hand, 2 the part is gone
 bool g_havokCopy = false;       // this eject's spent part fell as a Havok copy (dropped_part.h)
+bool g_copyRounds = false;      // ...and that copy is the pistol's rounds, not the part itself
+bool g_handLock = false;        // Output::handLock this frame (the bolt held)
+float g_lockW = 0.0f;           // ...eased (hand_lock)
+uint64_t g_lockMs = 0;
 // The latch: the spent part's first bone where it sat in the gun (weapon space, at the eject), and
 // the carried new one's distance from there (carry(), read by the next tick).
 bool g_seatValid = false;
@@ -197,8 +201,15 @@ void apply_parts(const rr::Output& o, const Frame& f) {
     g_carryWeapon = f.weapon;
     // 2026-10-20 the eject: the spent part falls out of the gun under gravity (world down), unless a
     // Havok copy already took its place (then it is simply gone).
-    const bool falling = o.carry == 3 && !g_havokCopy;
-    if (o.carry == 3 && g_havokCopy) g_carryMode = 2;
+    // 12:49 run: the gun's own part lying on the floor flickered and floated - it is drawn in the hands'
+    // foreground layer (depth and motion vectors for things near the hands), never the world's. So it
+    // only falls out of the gun briefly, then is gone; a world prop (dropped_part) is what stays.
+    // The Tommy Gun's drum IS its own world copy: gone at once. The pistol's copy is its rounds: the
+    // cylinder still falls out first.
+    constexpr float kOwnFallS = 0.45f;
+    const bool copyIsPart = g_havokCopy && !g_copyRounds;
+    const bool falling = o.carry == 3 && !copyIsPart && o.fallS < kOwnFallS;
+    if (o.carry == 3 && !falling) g_carryMode = 2;
     if (g_carryMode != 2 && !falling) return;
     float m[3][3], s = 1, o0[3], p0[3];
     if (!weapon_space(f.weapon, o.part, m, &s, o0, p0) || !(s > 1e-6f)) return;
@@ -247,7 +258,7 @@ void haptic(rr::Haptic h, const Frame& f) {
 }
 
 const char* kind_name(rr::Kind k) {
-    static const char* const n[] = {"pull", "carry", "fetch", "insert", "flick", "play", "finish"};
+    static const char* const n[] = {"pull", "carry", "fetch", "insert", "flick", "play", "finish", "slide"};
     return n[static_cast<int>(k)];
 }
 
@@ -279,6 +290,16 @@ bool can_reload(void* weapon, uint64_t now) {
 } // namespace
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
+
+float hand_lock(uint64_t nowMs) {
+    // Eased toward the machine's ask: 100 ms onto the part, 200 ms back to the controller.
+    const float dt = g_lockMs && nowMs > g_lockMs ? static_cast<float>(nowMs - g_lockMs) : 0.0f;
+    g_lockMs = nowMs;
+    const bool on = g_handLock && g_machine.active();
+    g_lockW += (on ? 1.0f : -1.0f) * dt / (on ? 100.0f : 200.0f);
+    g_lockW = g_lockW < 0 ? 0 : g_lockW > 1 ? 1 : g_lockW;
+    return g_lockW * g_lockW * (3.0f - 2.0f * g_lockW);
+}
 
 // The part the free hand carries moves with the hand exactly as the clip's hand would carry it: the
 // clip has the part in the clip's hand (paused at this phase's time), and the free hand is that clip
@@ -466,6 +487,7 @@ void tick(const Frame& f) {
         // otherwise the gun's own part falls (the pistol's cylinder is part of the gun's mesh).
         const float still[3] = {0.0f, 0.0f, 0.0f};
         g_havokCopy = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, still);
+        g_copyRounds = g_havokCopy && dropped_part::dropped_rounds_only();
         g_seatValid = false; // the latch is read below, once the clip holds the gun open
         // The floor for the gun's own part, if it falls: the player's feet (Location minus the
         // collision cylinder's half height).
@@ -521,6 +543,7 @@ void tick(const Frame& f) {
         g_lastBuzzMs = f.now;
         bvr::vr::pulse_hand(f.freePhys, kBuzzAmp, kBuzzMs);
     }
+    g_handLock = o.handLock;
     g_claim.store(o.claim, std::memory_order_relaxed);
     // For the grip arbiter (dial_input): a reload in progress that wants the grip owns it outright.
     g_reach.store(o.active ? (o.claim ? 0.0f : -1.0f) : o.reach, std::memory_order_relaxed);

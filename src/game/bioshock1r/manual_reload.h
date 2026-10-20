@@ -50,6 +50,9 @@ void carry(const HandPlacement& hp);
 
 // A manual reload is in progress (the hands stay on their controllers; the two-handed grip waits).
 bool active();
+// Game thread, once per compose: 0..1, how much the free hand is drawn where the clip's own hand is
+// (holding the Tommy Gun's bolt: the hand locked onto it in the game's grip), eased in and out.
+float hand_lock(uint64_t nowMs);
 
 // XInput thread: the free hand's grip. Records it for the game thread, and withholds its bumper while
 // the reload claims it. True when claimed this frame. `locked`: the grip arbiter gave this squeeze

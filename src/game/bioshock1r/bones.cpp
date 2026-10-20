@@ -7977,6 +7977,11 @@ void m4_compose(bool late) {
                 // Two hands on the gun: this hand rides it where the game's clip has it (the same
                 // carry, at the hold's weight).
                 if (twoHold > 0.0f) own = hc::toward(own, carried_on_gun(), twoHold);
+                // 2026-10-20: the manual reload's bolt held - this hand drawn ON it, where the clip's own
+                // hand grips it (fingers and all), riding it back as the bolt follows the real hand.
+                static float s_lock = 0.0f;
+                if (!late) s_lock = manual_reload::hand_lock(now);
+                if (s_lock > 0.0f) own = hc::toward(own, carried_on_gun(), s_lock);
             }
             const palette_math::Blended bl = palette_math::blend_hand(own.q, own.s, palmComp, own.at, wgt);
             const ik::Quat qb = bl.q;

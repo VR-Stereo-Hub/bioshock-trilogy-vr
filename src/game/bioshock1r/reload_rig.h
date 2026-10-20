@@ -44,6 +44,9 @@ enum class Kind : uint8_t {
     Flick,   // a flick of the gun hand (or pushing the part along the path) - the pistol's close
     Play,    // the clip runs on its own from t0 to t1
     Finish,  // let the clip run to its end: the game completes the reload
+    Slide,   // 2026-10-20: a part that slides along the gun (the Tommy Gun's bolt): grabbed near the path's
+             // start, it follows the hand's travel back along the gun 1:1 (Phase::travel), both ways while
+             // held, and the drawn hand is locked onto it in the clip's own grip (Output::handLock)
 };
 
 struct Phase {
@@ -64,6 +67,7 @@ struct Phase {
     // fetch's t0 the game's hand has tossed it, 70-78 units off the palm), so a carried part sits in
     // the hand as the game holds it, fingers and all. The latch's snap plays on from there.
     float holdT = -1.0f;
+    float travel = 0.0f; // Slide: the part's full travel back along the gun (grip-frame units)
 };
 inline float hold_t(const Phase& p) { return p.holdT >= 0 ? p.holdT : p.t0; }
 
@@ -96,7 +100,9 @@ inline constexpr Phase kTommy[] = {
     // Held at 1.113 s while carrying: the clip's hand on the new drum at the well (17.6 units off the palm).
     {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch", false, false, 1.0f, 1.113f},
     {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum", false, false, 1.0f, 1.113f},
-    {Kind::Pull, 2.058f, 2.244f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 1.5f},
+    // The bolt (tools\blender\reload_pose.py): TG_Bolt runs 16.4 units straight back between 2.10 and
+    // 2.20 s, the clip's hand on it. Grabbed near the clip's hand from either side, 2x the reach.
+    {Kind::Slide, 2.10f, 2.20f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 2.0f, -1.0f, 16.4f},
     {Kind::Play, 2.244f, 2.80f, nullptr, 0, nullptr, "the bolt runs home"},
     {Kind::Finish, 3.20f, 3.33f, nullptr, 0, nullptr, "done"}};
 
@@ -263,6 +269,7 @@ struct Output {
     const char* event = nullptr;// a transition worth a log line
     bool active = false;        // a manual reload is in progress
     bool ejected = false;       // this frame the spent part starts to fall (`part` names it)
+    bool handLock = false;      // the free hand is drawn where the clip's own hand is (on the bolt)
 };
 
 // The first Fetch of a program (where an eject starts), -1 when it has none.
@@ -330,6 +337,7 @@ private:
     bool dropping_ = false;     // the spent part is falling; then the first Fetch
     bool lying_ = false;        // and lies where it fell through that Fetch
     bool snap_ = false;         // an Insert's part reached its latch: the clip seats it
+    float grabX_ = 0;           // a Slide: where along the gun the hand took hold
     float dropAt_ = 0;
 
     // The eject: hold the clip open with the spent part seated while it falls, then wait at the first
@@ -535,6 +543,37 @@ private:
                     sub_ = Sub::Wait; // let go short: it springs back to where it began
                     lastProgress_ = 0;
                     lastT_ = p.t0;
+                }
+                break;
+            }
+            case Kind::Slide: {
+                o.hold = true;
+                if (sub_ == Sub::Wait) {
+                    const bool near = near_phase(p, in.hand, grabU);
+                    o.buzz = near;
+                    o.t = T(p.t0);
+                    if (near && in.gripRise) {
+                        sub_ = Sub::Drag;
+                        grabX_ = in.hand.x;
+                        o.haptic = Haptic::Grab;
+                    }
+                    break;
+                }
+                // Held: the part is where the hand has pulled it, back along the gun (-x), both ways.
+                float prog = p.travel > 1e-3f ? (grabX_ - in.hand.x) / p.travel : 1.0f;
+                prog = prog < 0 ? 0 : prog > 1 ? 1 : prog;
+                if (prog - lastProgress_ > 0.25f) o.haptic = Haptic::Tick;
+                lastProgress_ = prog;
+                o.t = T(p.t0 + (p.t1 - p.t0) * prog);
+                o.handLock = true;
+                if (prog >= 0.95f) {
+                    o.haptic = Haptic::Seat;
+                    o.event = p.say;
+                    o.t = T(p.t1);
+                    next(in);
+                } else if (!in.grip) {
+                    sub_ = Sub::Wait; // let go short: it springs home
+                    lastProgress_ = 0;
                 }
                 break;
             }

@@ -22,5 +22,8 @@ bool capture(void* weapon);
 // the engine refused; the log says which step.
 // `hands` (the Hands actor) is the last-resort spawner.
 bool drop(void* weapon, void* hands, const float velocity[3]);
+// The last drop was the pistol's ROUNDS (PI_AmmoType by name), not the visible part itself: the gun's
+// own cylinder still has to fall out (briefly - it is drawn in the hands' layer, never on the floor).
+bool dropped_rounds_only();
 
 } // namespace bvr::b1r::dropped_part

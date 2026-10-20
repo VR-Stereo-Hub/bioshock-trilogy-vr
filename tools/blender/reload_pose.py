@@ -143,6 +143,11 @@ for t in [float(x) for x in re.split(r"[ ,]+", args.times.strip()) if x]:  # Pow
         rel = pm.inverted() @ qm
         pose["part_in_palm"] = {"location": list(rel.to_translation()), "quaternion": list(rel.to_quaternion())}
         pose["part_from_palm_cm"] = (qm.to_translation() - pm.to_translation()).length
+        # And in the gun's own frame (its root bone): how far the part travels along the gun.
+        root = ga.pose.bones[0]
+        rm = ga.matrix_world @ root.matrix
+        pose["part_in_gun"] = list((rm.inverted() @ qm).to_translation())
+        pose["palm_in_gun"] = list((rm.inverted() @ pm).to_translation())
         focus = (pm.to_translation() + qm.to_translation()) / 2
     pose["renders"] = render("t%05.3f" % t, focus)
     R["poses"].append(pose)

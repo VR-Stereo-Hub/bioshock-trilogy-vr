@@ -52,6 +52,21 @@ NOT run in the simulator or the headset.
   Gun's bolt is grabbed from either side (Phase `bothSides`, 1.5x reach). The carried part is held as
   the clip's own hand holds it at the gun (Phase `holdT`: Tommy 1.113 s, pistol 0.89 s; found with
   `tools\blender\reload_pose.py` - at the old hold times the game's hand had tossed the part).
+- **Third headset run (12:49) and the fixes after it.** The Tommy Gun's Havok drum now spawns (through
+  the hands' script spawn) and lands and piles up, but fell from head height: it is placed with its
+  physics off now (SetLocation, the Location field if that is refused; `[drop] placed at ...`). The
+  pistol's cylinder on the floor floated and flickered: weapon parts are drawn in the hands'
+  FOREGROUND layer (its depth and motion vectors), never convincingly on the floor - so the gun's own
+  part only falls out briefly (0.45 s) and is gone, and the pistol drops its ROUNDS (`PI_AmmoType` by
+  name) as the world prop that stays. The Tommy Gun's bolt is a new Slide step (`reload_rig`
+  Kind::Slide): TG_Bolt runs 16.4 units straight back (2.10-2.20 s, `reload_pose.py`), grabbed near
+  the clip's hand from either side at 2x reach, it follows the hand's travel back along the gun 1:1,
+  both ways, and while held the drawn hand is LOCKED onto it where the clip's own hand grips it
+  (`manual_reload::hand_lock`, eased 100/200 ms). The old pull mapped the hand onto the clip hand's
+  whole reach-and-pull path, forward only - "twice as far, and it does not follow the hand".
+  Open: the pistol's carried new cylinder "flickers and oscillates" - unexplained; it is held next to
+  the gun hand, where the hand motion vectors of the two grips meet, so it may be AFW (worth one look
+  with Stereo instead of AFW).
 - **The hands stay on the controllers through a weapon swap** (`hands_state.cpp`): the swap passes
   through ProceduralLoweringHands, classed Scripted, so the hand-back gave both hands to the game for
   its release - the left hand flew to the next gun's grip and back. It is Offscreen now.

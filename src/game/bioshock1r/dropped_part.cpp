@@ -5,6 +5,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -50,27 +51,29 @@ struct Captured {
     float loc[3] = {};
     int32_t rot[3] = {};
     float scale = 1.0f;
+    bool byName = false; // the mesh is not the ammo model's own (the pistol's rounds)
 } g_cap;
+bool g_lastRounds = false;
 
 void* class_of(void* obj) {
     void* c = nullptr;
     return obj && rd(static_cast<uint8_t*>(obj) + patterns::kUObjectClassOffset, &c) ? c : nullptr;
 }
 
-// Object.DynamicLoadObject(string, Class, optional bool MayFail) -> Object. The class of classes is
-// any class's own class.
-void* load_class(void* any, const wchar_t* path) {
-    void* classClass = class_of(class_of(any));
-    if (!classClass) return nullptr;
+// Object.DynamicLoadObject(string, Class, optional bool MayFail) -> Object.
+void* load_object(void* any, const wchar_t* path, void* ofClass) {
+    if (!ofClass) return nullptr;
     struct {
         FStr name;
         void* cls;
         uint32_t mayFail;
         void* ret;
         int32_t pad[4];
-    } p{fstr(path), classClass, 1, nullptr, {}};
+    } p{fstr(path), ofClass, 1, nullptr, {}};
     return script::call(any, "DynamicLoadObject", &p) ? p.ret : nullptr;
 }
+// A class by name: the class of classes is any class's own class.
+void* load_class(void* any, const wchar_t* path) { return load_object(any, path, class_of(class_of(any))); }
 
 bool set_physics(void* a, uint8_t phys) {
     struct {
@@ -101,9 +104,21 @@ bool capture(void* weapon) {
         return false;
     }
     const int32_t meshOff = script::property_offset(am, L"StaticMesh");
-    if (meshOff < 0 || !rd(static_cast<uint8_t*>(am) + meshOff, &g_cap.mesh) || !g_cap.mesh) {
-        BVR_LOG("[drop] the visible magazine has no static mesh");
-        return false;
+    if (meshOff >= 0) rd(static_cast<uint8_t*>(am) + meshOff, &g_cap.mesh);
+    g_cap.byName = false;
+    if (!g_cap.mesh) {
+        // The pistol's AmmoModel carries no mesh while it is hidden; its rounds are PI_AmmoType
+        // (ShockGame.U, the six cartridges) - they fall instead, where the ammo model sits.
+        const wchar_t* cls = patterns::object_class_name(weapon);
+        if (cls && !_wcsicmp(cls, L"Pistol")) {
+            void* smClass = load_class(weapon, L"Engine.StaticMesh");
+            if (smClass) g_cap.mesh = load_object(weapon, L"ShockGame.WP_Pistol.PI_AmmoType", smClass);
+            g_cap.byName = g_cap.mesh != nullptr;
+        }
+        if (!g_cap.mesh) {
+            BVR_LOG("[drop] the visible magazine has no static mesh");
+            return false;
+        }
     }
     if (!rd(static_cast<uint8_t*>(am) + patterns::kActorLocOffset, &g_cap.loc) ||
         !rd(static_cast<uint8_t*>(am) + patterns::kActorLocOffset + 12, &g_cap.rot) ||
@@ -159,26 +174,45 @@ static void* spawn_through_hands(void* hands, void* cls, const Captured& c) {
     script::call(hands, "DetachFromBone", &dp);
     const int32_t prio = script::property_offset(a, L"DrawPriority");
     if (prio >= 0) wr(static_cast<uint8_t*>(a) + prio, uint8_t{0}); // 1 = the hands' foreground layer
+    return a;
+}
+
+// Where the magazine was. With its physics OFF: a Havok body keeps the place it was made at (the
+// 12:49 run: spawned through the hands, the drum fell from the hands actor, head high).
+static bool place_at(void* a, const Captured& c) {
+    set_physics(a, 0);
     struct {
         float loc[3];
         uint32_t noTest;
         uint32_t ret;
         int32_t pad[3];
     } sl{{c.loc[0], c.loc[1], c.loc[2]}, 1, 0, {}};
-    script::call(a, "SetLocation", &sl);
+    const bool ok = script::call(a, "SetLocation", &sl) && sl.ret != 0;
     struct {
         int32_t rot[3];
         uint32_t ret;
         int32_t pad[3];
     } sr{{c.rot[0], c.rot[1], c.rot[2]}, 0, {}};
     script::call(a, "SetRotation", &sr);
-    return a;
+    float now[3] = {};
+    rd(static_cast<uint8_t*>(a) + patterns::kActorLocOffset, &now);
+    if (!ok || std::fabs(now[2] - c.loc[2]) > 1.0f) {
+        // SetLocation refused (or moved it elsewhere): write the field, which Havok reads as it starts.
+        wr(static_cast<uint8_t*>(a) + patterns::kActorLocOffset, c.loc);
+        wr(static_cast<uint8_t*>(a) + patterns::kActorLocOffset + 12, c.rot);
+    }
+    BVR_LOG("[drop] placed at the magazine: SetLocation %s, now %.1f %.1f %.1f (wanted %.1f %.1f %.1f)",
+            ok ? "ok" : "REFUSED", now[0], now[1], now[2], c.loc[0], c.loc[1], c.loc[2]);
+    return ok;
 }
+
+bool dropped_rounds_only() { return g_lastRounds; }
 
 bool drop(void* weapon, void* hands, const float velocity[3]) {
     if (!g_cap.valid || !weapon) return false;
     const Captured c = g_cap;
     g_cap.valid = false;
+    g_lastRounds = c.byName;
     // The 12:21 headset run: Spawn(PhysicalReactiveActor) returned nothing every time. The game spawns
     // NonPhysicalReactiveActor at runtime itself (SecurityCamera.OnKilled) - the same prop with its
     // physics off, turned on below - and the hands' script spawn is the last resort.
@@ -196,8 +230,9 @@ bool drop(void* weapon, void* hands, const float velocity[3]) {
         if (a) break;
     }
     if (!a) return false;
-    // Its physics is built for the mesh it has, so: off, the magazine's mesh and size, then Havok.
-    set_physics(a, 0);
+    // Its physics is built for the mesh it has and where it is, so: off, moved to the magazine, the
+    // magazine's mesh and size, then Havok.
+    place_at(a, c);
     struct {
         void* mesh;
         int32_t pad[3];

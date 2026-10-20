@@ -110,9 +110,14 @@ int main() {
         check(s.m.phase() == 4, "seated: the bolt next", s.m.phase(), 4);
         o = s.step(kTommyDrumIn[3].p, false);
         o = s.step(kTommyBolt[0].p, false);
-        check(o.buzz && std::fabs(o.t - 2.058f) < 0.01f, "the clip waits at the bolt", o.t, 2.058);
+        check(o.buzz && std::fabs(o.t - 2.10f) < 0.01f, "the clip waits at the bolt", o.t, 2.10);
         o = s.step(kTommyBolt[0].p, true);
-        o = s.step(kTommyBolt[2].p, true);
+        o = s.step(kTommyBolt[0].p - Vec{8.2f, 0, 0}, true); // half its 16.4 travel back
+        check(o.handLock && std::fabs(o.t - 2.15f) < 0.01f, "held: the bolt follows the hand, the hand on it",
+              o.t, 2.15);
+        o = s.step(kTommyBolt[0].p - Vec{4.1f, 0, 0}, true); // and forward again
+        check(std::fabs(o.t - 2.125f) < 0.01f, "both ways while held", o.t, 2.125);
+        o = s.step(kTommyBolt[0].p - Vec{16.4f, 0, 0}, true);
         check(s.m.phase() == 5, "racked: the bolt runs home on its own", s.m.phase(), 5);
         for (int i = 0; i < 80; ++i) o = s.step(Vec{40, 7, 2}, false);
         check(s.m.phase() == 6 && o.run, "then the clip is let run to its end", s.m.phase(), 6);
@@ -228,8 +233,7 @@ int main() {
         boltOther.y = -boltOther.y - 10.0f;
         o = s.step(boltOther, false);
         o = s.step(boltOther, true);
-        Vec boltEnd = kTommyBolt[2].p;
-        boltEnd.y = -boltEnd.y - 10.0f;
+        Vec boltEnd = boltOther - Vec{17.0f, 0, 0};
         for (int i = 0; i < 5; ++i) o = s.step(boltEnd, true);
         check(s.m.phase() == 5, "the bolt racked from the other side", s.m.phase(), 5);
 
