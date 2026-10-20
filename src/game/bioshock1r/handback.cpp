@@ -7,6 +7,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/hand_compose.h"
 #include "game/bioshock1r/hands_state.h"
+#include "game/bioshock1r/manual_reload.h"
 
 #include <windows.h>
 
@@ -101,7 +102,11 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
     int kick = gunFire && !(mask & (1 << wh)) && g_recoil.load(std::memory_order_relaxed) > 0.0f ? 1 << wh : 0;
     if (kick && strcmp(g_reason, "none") == 0) g_reason = "recoil";
     int atGun = 0;
-    if (st == State::Reloading) {
+    // 2026-10-20: a MANUAL reload (manual_reload.h) drives the clip from the player's hands, so the
+    // hands stay on their controllers - the clip only shapes the fingers.
+    if (st == State::Reloading && manual_reload::active()) {
+        g_reason = "manual reload (the hands stay on the controllers)";
+    } else if (st == State::Reloading) {
         const Place p = static_cast<Place>(g_reload.load());
         if (p == Place::View) {
             mask |= 3;

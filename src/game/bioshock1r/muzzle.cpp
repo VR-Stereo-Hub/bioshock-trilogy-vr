@@ -106,6 +106,18 @@ void take_axes(const float c[12], float axes[3][3]) {
 }
 } // namespace
 
+bool bone_coords(void* actor, int32_t nameIndex, float origin[3], float axes[3][3]) {
+    if (!g_fn || !actor || nameIndex < 0) return false;
+    float c[12];
+    for (float& v : c) v = std::numeric_limits<float>::quiet_NaN();
+    if (!call_guarded(actor, c, nameIndex, 0, 0)) return false;
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(c[i]) || std::fabs(c[i]) > 1.0e7f) return false;
+    for (int i = 0; i < 3; ++i) origin[i] = c[i];
+    take_axes(c, axes);
+    return axes[0][0] == axes[0][0] && (axes[0][0] != 0.0f || axes[0][1] != 0.0f || axes[0][2] != 0.0f);
+}
+
 bool locate(void* weapon, float origin[3], float socketAxes[3][3], float boneAxes[3][3]) {
     if (!g_fn || !weapon) return false;
     void* inst = nullptr;

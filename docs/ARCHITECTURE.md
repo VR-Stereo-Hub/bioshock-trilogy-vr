@@ -3069,3 +3069,16 @@ simulator showed too small on the Tommy Gun (one kick per burst) and too large o
 (eight per swing); the player's fire seam (one call per shot, aim.cpp) and, for the wrench, the
 hands' firing state beginning give one kick per shot and still follow fire rate and ammo without
 a trigger watch. Pure logic in `two_hand_math.h`.
+
+### 2026-10-20: BS1's manual reload holds the game's own reload clip; it never replays one
+
+The reload is the game's: the mod calls `PlayerWeapon.Reload` by name and holds the clip the game's
+script waits on (`Weapon.FinishAnimations`) through Actor's animation API (`script_call.cpp`: GNames ->
+FindFunction -> ProcessEvent). The alternative - recording the clips and drawing them ourselves, then
+writing the ammunition - was rejected: it would duplicate the game's ammunition rules, its sounds and
+its timing, and every weapon would need its ammo fields found. Holding the clip keeps all of that the
+game's; the mod only decides the clip's TIME, from the player's hand along the clip hand's own path
+(the paths and times measured once per clip, `reload_rig.h`). A part a hand carries is moved by the
+same placement that moves the clip's hand onto the controller (back through the gun hand's, on through
+the free hand's), so it stays in the drawn fingers without a per-part offset table. Pure state machine
+in `reload_rig.h` (host suite `reload-rig`); a reload the button begins is never held.

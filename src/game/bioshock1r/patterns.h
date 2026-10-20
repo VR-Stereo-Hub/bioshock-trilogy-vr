@@ -421,6 +421,16 @@ inline constexpr uint32_t kExpectedWeaponFireStartImplRva = 0x226840;
 inline constexpr uint32_t kAbilityFireStartImplRva = 0x1BC220;   // direct call target
 inline constexpr uint8_t kAbilityFireStartPrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
 inline constexpr uint32_t kWeaponOwnerOffset = 0x454;      // AWeapon -> owning pawn
+// 2026-10-20 (the manual reload): the animation handles a weapon's reload waits on. Weapon.uc
+// stores AnimationHandle (the weapon's own clip) and PlayerWeapon the hands' clip handle as ints.
+// Found live by `vrreload probe` (manual_reload.cpp), which asks the game itself: during a reload
+// every int slot of the weapon was offered to IsAnimationHandleValid on the weapon, its holder and
+// the Hands actor, and only these two were live, named as the reload clips (Tommy Gun 'Reload' /
+// 'ReloadTommyGun', pistol 'FastReload' / 'FastReloadPistol', shotgun 'Reload_Loop' /
+// 'ReloadShotgun_LOOP' and 'Reload' / 'ReloadShotgun_End'), at the same time of the same length.
+// HolderAnimationHandle was never live on the holder (no holder clip in this view).
+inline constexpr uint32_t kWeaponAnimationHandleOffset = 0x5F4;      // on the weapon actor
+inline constexpr uint32_t kWeaponHandsAnimationHandleOffset = 0x8F0; // on the Hands actor
 inline constexpr uint32_t kAbilityInstigatorOffset = 0xF0; // UAttackAbility -> instigator
 // AActor field offsets used by the fire path (from the APawn::GetViewPoint /
 // GetViewDirection implementations, vtable slots +0x360 / +0x35C):
@@ -514,6 +524,18 @@ inline constexpr uint32_t kMeshInstSocketCountOffset = 0xEC;
 inline constexpr uint32_t kActorGetBoneCoordsRva = 0x544FA0;
 inline constexpr uint8_t kActorGetBoneCoordsPrologue[12] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8,
                                                             0x83, 0xEC, 0x30, 0x56, 0x8B, 0xF1};
+// ---- 2026-10-20: CALLING SCRIPT FUNCTIONS BY NAME (the manual reload, script_call.h) ----------
+// UObject::FindFunction(FName name /* by value, 8 bytes */, UBOOL global), ret 0xC, tools\ida\mr2:
+// BS1 strips the "Failed to find function" text (mr1: NONE), so it was found by BS2's shape - the
+// `ret 0xC` callee followed within a few instructions by `call [reg+0xC]` (ProcessEvent, vtable slot
+// 3) at 70 sites. It returns null unless the engine's two script-ready globals are set, and null
+// for a name the class does not have - never asserts. Head: push ebp; mov ebp,esp; and esp,-8;
+// cmp dword ptr [global],0.
+inline constexpr uint32_t kFindFunctionRva = 0x6F5F70;
+inline constexpr uint8_t kFindFunctionPrologue[8] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0x3D};
+// UObject::ProcessEvent outer (kNativeConstantAnchorRva): (UFunction*, void* parms, void* result),
+// ret 0xC. Head: push ebp; mov ebp,esp; mov eax,[ecx+0xF8].
+inline constexpr uint8_t kProcessEventPrologue[9] = {0x55, 0x8B, 0xEC, 0x8B, 0x81, 0xF8, 0x00, 0x00, 0x00};
 // ---- 2026-10-15: THE HUD MOVIE'S CALLS (the weapon/plasmid dial's stage seam) ----------------
 // Every call into a gameswf movie BY NAME goes through one routine, tools\ida\fw1/fw2:
 //   void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)
@@ -899,6 +921,8 @@ struct Symbols {
     void* weaponInitDamage = nullptr;  // AWeapon::InitiateDamage impl (telemetry)
     void* abilityInitDamage = nullptr; // UAttackAbility::InitiateDamage impl (telemetry)
     void* actorGetBoneCoords = nullptr; // AActor::GetBoneCoords (the weapon's muzzle socket)
+    void* findFunction = nullptr;       // UObject::FindFunction (script_call.h)
+    void* processEvent = nullptr;       // UObject::ProcessEvent outer (script_call.h)
 };
 
 // Runs all scans, logging each stage. False if anything failed to resolve.

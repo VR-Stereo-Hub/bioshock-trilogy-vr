@@ -237,6 +237,23 @@ bool off_hand_tracked();
 bool mirror_hands();
 bool mirror_hands_enabled();
 void set_mirror_hands(bool on);
+
+// ---- 2026-10-20: the held weapon's own skeleton, for the manual reload (manual_reload.h) ----
+// The bound weapon's bones: count, index by name (-1 absent), the pose its clip has them in now
+// (weapon space, before the weapon size), and a per-bone offset added to that pose when the
+// skeleton is written (the part a hand carries). Offsets last until cleared. Game thread.
+int weapon_bone_count();
+int weapon_bone_index(const char* name);
+const char* weapon_bone_name(int i);
+bool weapon_bone_pose(int i, float p[3], float q[4]);
+void set_weapon_part_offset(int i, const float d[3]);
+// The whole pose of a part instead (weapon space, before the weapon size): the part a hand carries.
+void set_weapon_part_pose(int i, const float p[3], const float q[4]);
+void clear_weapon_part_offsets();
+// Mirrored (the gun in the left hand): reflect a point in the grip's frame across the gun's own
+// centre plane, so it reads as it would with the gun in the right hand (m4_pose's flip).
+void unmirror_grip_point(float p[3]);
+void unmirror_grip_dir(float d[3]); // the same for a direction (no plane offset)
 void off_hand_cm(int hand, float* fwd, float* right, float* up);
 void set_off_hand_cm(int hand, float fwd, float right, float up);
 void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll);

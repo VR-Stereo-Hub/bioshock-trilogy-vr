@@ -1,6 +1,7 @@
 #include "two_hand.h"
 #include "two_hand_math.h"
 #include "hand_compose.h"
+#include "manual_reload.h"
 #include "patterns.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
@@ -218,7 +219,7 @@ float menu_read(menu::Setting id) {
         case S::TwoHandDistance: return g_grabCm.load();
         case S::ShotHaptics: return g_shots.load() ? 1.0f : 0.0f;
         case S::ShotHapticStrength: return g_shotAmp.load();
-        default: return std::numeric_limits<float>::quiet_NaN();
+        default: return manual_reload::menu_read(id);
     }
 }
 
@@ -234,7 +235,7 @@ bool menu_write(menu::Setting id, float value) {
                 BVR_LOG("[twohand] gunshot haptics %s", value != 0 ? "ON" : "off");
             return true;
         case S::ShotHapticStrength: g_shotAmp.store(value); return true;
-        default: return false;
+        default: return manual_reload::menu_write(id, value);
     }
 }
 

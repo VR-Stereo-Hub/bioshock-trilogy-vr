@@ -86,6 +86,8 @@ enum class Setting {
     GrabEnabled, GrabDistance, GrabMirror,
     // The two-handed grip and the gunshot kick (two_hand.cpp).
     TwoHandEnabled, TwoHandDistance, ShotHaptics, ShotHapticStrength,
+    // The manual reload (manual_reload.cpp).
+    ManualReload,
     Count
 };
 struct Spec {

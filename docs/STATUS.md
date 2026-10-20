@@ -2,6 +2,55 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-20 - BS1: the manual reload
+
+**Branch `claude/bs1-manual-reload`** (off `claude/bs1-two-hand-grip` d517367). Local commits only.
+
+### Current state
+
+- **The manual reload (built, host-tested, simulator-checked on all three guns; not in the headset).**
+  The game's OWN reload clip, held and driven by the player's hands (`reload_rig.h` the programs and
+  the state machine, host suite `reload-rig` 38 checks; `manual_reload.cpp` the glue). The game starts
+  its reload as always (`PlayerWeapon.Reload`, called by name) and its script waits on the clip, so
+  while the mod holds the clip's time (Actor's animation API through `script_call.cpp`) the game waits,
+  and when the clip ends the game refills the gun itself - ammo, sounds and timing stay the game's.
+  Each step is a segment of the clip where the clip's own off hand works a part; inside it the clip
+  time follows the player's hand along the clip hand's path in the grip's frame (12 cm to grab, only
+  forward, let go short and it springs back, past 85% it completes). A part between steps rides the
+  hand exactly as the clip's hand would hold it (the part moved back through the gun hand's placement
+  and on through the free hand's, so it stays in the drawn fingers and turns with them); let go and
+  it is gone; a grip at the waist (38-100 cm below the head) takes a new one; within 6 cm of its path
+  it is guided home. Steps: Tommy Gun - pull the drum down, drop it, a new one up into the well, rack
+  the bolt; pistol (top-break) - push the barrel down, pull the cylinder out, drop it, a new one in,
+  flick the gun (320 deg/s) or push the barrel back up; shotgun - a shell from the waist pressed into
+  the port per loop, then the pump back and forward in one stroke; fire to stop loading early. The
+  free hand's grip is the reload's for the whole reload (no plasmid wheel), the hand buzzes where it
+  should grab (the grab's 60 ms at 0.35), clicks on each seat. A gun that runs dry: the game's own
+  automatic reload is adopted and waits for the hands. The reload button still reloads the normal way
+  (a reload begun within 1.5 s of X is never held). The two-handed grip stands aside during a reload;
+  the hand-back leaves both hands on their controllers. F10 > Controls > Manual reload > Reload with
+  your hands (on).
+- **Simulator (2026-10-20, all on the 11:01 save):** Tommy Gun start to finish twice (39-23 -> 40-22),
+  pistol twice (2-21 -> 6-17), shotgun from empty (adopted, 4 shells, pump; 4-11), the reload button
+  (normal, not held), the gun in the left hand (mirrored: the right hand pulled the drum, held it).
+  Captures: the drum and the new drum sit in the drawn fingers; the pistol's new cylinder at the
+  fingertips; the shotgun's shell is carried at the palm (its loop starts with the shell by the port,
+  not in the clip's hand) and did not show in the capture - likely inside the open hand.
+- **Test aids:** `vrreload watch on` (where the hand should go next, cm), `vrreload probe` (the reload
+  handles), `vrreload hold <s>` / `release`, `vrreload give <n> <Package.Class>` (ammunition through
+  `ShockPlayer.GiveItem`), `vrbones reloadrec <s>` (a clip, part by part). ENGINE_NOTES "2026-10-20".
+- No `src/core/` change.
+
+### Next steps
+
+- Headset: each gun's reload by hand. Watch for: the reach to each part (12 cm), the waist pouch height,
+  the shotgun shell visible in the hand, the pistol's spent cylinder in the hand, the flick speed.
+  `[reload] <weapon> <clip> phase N ...` logs every step.
+- Not covered: the grenade launcher, chemical thrower and crossbow (no programs: they reload normally),
+  the pistol's plain `Reload` clip without the fast-reload upgrade (runs the fast clip's program scaled
+  in time - unmeasured), a highlight showing where to grab (the reference draws a ghost part; here the
+  hand buzzes).
+
 ## Session 2026-10-19 - BS1: two hands on the gun, and the shots in the hand
 
 **Branch `claude/bs1-two-hand-grip`** (off `claude/bs1-hud-overhaul` 33c2022). Local commits only.

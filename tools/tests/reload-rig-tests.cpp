@@ -1,0 +1,195 @@
+// reload-rig-tests.cpp - host tests for src/game/bioshock1r/reload_rig.h, the BS1 manual reload's
+// programs and state machine. Run `.\tools\host-test.ps1 reload-rig`.
+//
+// What has to hold:
+//   project - the nearest point of a path gives the clip time between its samples and the
+//             progress along its length; far from the path the distance says so
+//   tommy   - a grip away from the drum starts nothing; at the drum it asks the game to reload;
+//             the held clip time follows the hand down the drum's path, only forward; past the
+//             end the drum rides the hand; letting go drops it; a grip at the pouch takes a new one;
+//             near the well it is guided home and seats; the bolt is pulled the same way; the clip
+//             then plays on its own and is let run to its end; the reload ending returns to idle
+//   timeout - no clip within the start window aborts (a full gun, no ammunition)
+//   shotgun - a grip at the pouch starts the reload with the shell already in hand; the start clip
+//             runs; the loop seats the shell; the next loop wants a new shell from the pouch;
+//             the end clip is the pump, back then forward
+//   scale   - a variant clip of a different length scales every held time
+#include "game/bioshock1r/reload_rig.h"
+
+#include <cmath>
+#include <cstdio>
+
+using namespace bvr::b1r::reload_rig;
+using bvr::b1r::arm_ik::Vec;
+
+static int g_checks = 0, g_fails = 0;
+static void check(bool ok, const char* what, double got = 0, double want = 0) {
+    ++g_checks;
+    if (!ok) {
+        ++g_fails;
+        printf("  FAIL %s: got %.6f want %.6f\n", what, got, want);
+    }
+}
+
+struct Sim {
+    Machine m;
+    Config c;
+    Input in;
+    float now = 0;
+    const wchar_t* cls = L"MachineGun";
+    Output step(Vec hand, bool grip, bool pouch = false) {
+        now += 0.011f;
+        in.now = now;
+        in.hand = hand;
+        in.gripRise = grip && !in.grip;
+        in.grip = grip;
+        in.inPouch = pouch;
+        in.entryProgram = entry(cls);
+        in.clipProgram = in.clipLive ? find(cls, in.clip) : nullptr;
+        Output o = m.update(in, c);
+        in.clipNew = false;
+        return o;
+    }
+    void clip(const wchar_t* name, float len) {
+        in.clipLive = true;
+        in.clip = name;
+        in.clipLen = len;
+        in.clipNew = true;
+    }
+};
+
+int main() {
+    // ---- project ----
+    {
+        const Projection a = project(kTommyDrumOut, 4, kTommyDrumOut[0].p);
+        check(std::fabs(a.t - 0.267f) < 1e-4f && a.progress < 1e-4f && a.dist < 1e-4f, "path start", a.t, 0.267);
+        const Projection b = project(kTommyDrumOut, 4, kTommyDrumOut[3].p);
+        check(std::fabs(b.t - 0.567f) < 1e-4f && b.progress > 0.9999f, "path end", b.t, 0.567);
+        const Vec mid = (kTommyDrumOut[1].p + kTommyDrumOut[2].p) * 0.5f;
+        const Projection m = project(kTommyDrumOut, 4, mid + Vec{0, 3, 0});
+        check(m.t > 0.369f && m.t < 0.466f && std::fabs(m.dist - 3.0f) < 0.6f, "mid segment, 3 off", m.t, 0.42);
+        const Projection far = project(kTommyDrumOut, 4, Vec{200, 0, 0});
+        check(far.dist > 150.0f, "far from the path (negative control)", far.dist, 150);
+    }
+    // ---- tommy, the whole reload ----
+    {
+        Sim s;
+        Output o = s.step(Vec{40, 7, 2}, false); // at the fore-grip, not the drum
+        o = s.step(Vec{40, 7, 2}, true);
+        check(o.act == Act::None && !s.m.active(), "a grip away from the drum starts nothing");
+        o = s.step(Vec{40, 7, 2}, false);
+        o = s.step(kTommyDrumOut[0].p + Vec{2, 0, 0}, false);
+        check(o.buzz && o.claim, "at the drum: buzz, and the grip is the reload's");
+        o = s.step(kTommyDrumOut[0].p + Vec{2, 0, 0}, true);
+        check(o.act == Act::StartReload && s.m.active(), "a grip at the drum asks the game to reload");
+        s.clip(L"Reload", 3.33f);
+        o = s.step(kTommyDrumOut[0].p, true);
+        check(o.hold && std::fabs(o.t - 0.267f) < 0.01f, "held at the drum's segment start", o.t, 0.267);
+        o = s.step(kTommyDrumOut[2].p, true);
+        check(o.hold && std::fabs(o.t - 0.466f) < 0.01f, "the clip follows the hand down", o.t, 0.466);
+        o = s.step(kTommyDrumOut[1].p, true);
+        check(o.t >= 0.46f, "never back up the path", o.t, 0.466);
+        o = s.step(kTommyDrumOut[3].p + Vec{0, 0, -5}, true);
+        check(s.m.phase() == 1, "past the end: the next phase (carry)", s.m.phase(), 1);
+        o = s.step(Vec{10, 0, -90}, true);
+        check(o.carry == 1 && o.part && std::fabs(o.t - 0.567f) < 0.01f, "the drum rides the hand", o.carry, 1);
+        o = s.step(Vec{10, 0, -90}, false);
+        check(o.carry == 2 && s.m.phase() == 2, "let go: dropped, fetch next", s.m.phase(), 2);
+        o = s.step(Vec{10, 0, -90}, false, true);
+        check(o.buzz && o.carry == 2 && std::fabs(o.t - 0.933f) < 0.01f, "at the pouch: buzz, clip at the insert start", o.t,
+              0.933);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(s.m.phase() == 3, "a grip at the pouch takes a drum", s.m.phase(), 3);
+        o = s.step(Vec{10, 0, -90}, true);
+        check(o.carry == 1, "the new drum rides the hand", o.carry, 1);
+        o = s.step(kTommyDrumIn[0].p + Vec{0, 2, 0}, true);
+        o = s.step(kTommyDrumIn[1].p, true);
+        check(o.carry == 0 && o.t > 0.95f, "near the well: guided, the clip carries it", o.t, 1.0);
+        o = s.step(kTommyDrumIn[3].p, true);
+        check(s.m.phase() == 4, "seated: the bolt next", s.m.phase(), 4);
+        o = s.step(kTommyDrumIn[3].p, false);
+        o = s.step(kTommyBolt[0].p, false);
+        check(o.buzz && std::fabs(o.t - 2.058f) < 0.01f, "the clip waits at the bolt", o.t, 2.058);
+        o = s.step(kTommyBolt[0].p, true);
+        o = s.step(kTommyBolt[2].p, true);
+        check(s.m.phase() == 5, "racked: the bolt runs home on its own", s.m.phase(), 5);
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{40, 7, 2}, false);
+        check(s.m.phase() == 6 && o.run, "then the clip is let run to its end", s.m.phase(), 6);
+        s.in.clipLive = false;
+        o = s.step(Vec{40, 7, 2}, false);
+        check(!s.m.active(), "the reload ended: idle");
+    }
+    // ---- timeout ----
+    {
+        Sim s;
+        s.step(kTommyDrumOut[0].p, false);
+        Output o = s.step(kTommyDrumOut[0].p, true);
+        for (int i = 0; i < 70 && o.act != Act::Abort; ++i) o = s.step(kTommyDrumOut[0].p, true);
+        check(o.act == Act::Abort && !s.m.active(), "no clip: abort");
+    }
+    // ---- shotgun ----
+    {
+        Sim s;
+        s.cls = L"Shotgun";
+        Output o = s.step(Vec{10, 0, -60}, false, true);
+        check(o.claim && o.buzz, "the shotgun: the pouch is where a reload begins");
+        o = s.step(Vec{10, 0, -60}, true, true);
+        check(o.act == Act::StartReload, "a shell from the pouch starts it");
+        s.clip(L"SingleFrame", 0.033f);
+        o = s.step(Vec{10, 0, -60}, true);
+        check(o.run, "the start clip runs on");
+        s.clip(L"Reload_Loop", 0.49f);
+        o = s.step(Vec{10, 0, -60}, true);
+        check(s.m.phase() == 1 && o.carry == 1, "the loop: the shell is already in hand", s.m.phase(), 1);
+        o = s.step(kShotgunShell[0].p, true);
+        o = s.step(kShotgunShell[5].p, true);
+        check(s.m.phase() == 2, "pressed in", s.m.phase(), 2);
+        for (int i = 0; i < 40; ++i) o = s.step(Vec{30, 0, -20}, false);
+        check(o.run, "the loop runs out");
+        s.clip(L"Reload_Loop", 0.49f);
+        o = s.step(Vec{30, 0, -20}, false);
+        check(s.m.phase() == 0 && o.carry == 2, "the next loop wants a new shell", s.m.phase(), 0);
+        o = s.step(Vec{10, 0, -60}, true, true);
+        check(s.m.phase() == 1, "taken at the pouch", s.m.phase(), 1);
+        s.clip(L"Reload", 0.95f);
+        o = s.step(Vec{52, 18, 16}, false);
+        check(s.m.program() && s.m.program()->clip == kPrograms[5].clip, "the end clip is the pump");
+        o = s.step(kShotgunPumpBack[0].p, true);
+        o = s.step(kShotgunPumpBack[2].p, true);
+        check(s.m.phase() == 1, "pumped back", s.m.phase(), 1);
+        // one stroke: still holding at the back, straight on forward
+        o = s.step(kShotgunPumpFwd[3].p, true);
+        o = s.step(kShotgunPumpFwd[3].p, false);
+        check(s.m.phase() == 2 && o.run && o.jump, "and forward: done, the clip let run", s.m.phase(), 2);
+    }
+    // ---- adopt: the game reloads by itself (the gun ran dry) ----
+    {
+        Sim s;
+        s.clip(L"Reload", 3.33f);
+        s.in.adopt = true;
+        Output o = s.step(Vec{40, 7, 2}, false);
+        check(s.m.active() && o.hold && std::fabs(o.t - 0.267f) < 0.01f, "adopted: held at the drum, waiting", o.t,
+              0.267);
+        s.in.adopt = false;
+        o = s.step(kTommyDrumOut[0].p, true);
+        o = s.step(kTommyDrumOut[3].p, true);
+        check(s.m.phase() == 1, "and the hands carry it on", s.m.phase(), 1);
+        Sim b; // the reload button: not adopted - it plays as always
+        b.clip(L"Reload", 3.33f);
+        o = b.step(Vec{40, 7, 2}, false);
+        check(!b.m.active() && !o.hold, "a reload the button began is never held");
+    }
+    // ---- scale ----
+    {
+        Sim s;
+        s.cls = L"Pistol";
+        s.step(kPistolOpen[0].p, false);
+        Output o = s.step(kPistolOpen[0].p, true);
+        s.clip(L"Reload", 3.6f); // twice the recorded 1.80 s
+        o = s.step(kPistolOpen[0].p, true);
+        check(std::fabs(o.t - 2.0f * 0.189f) < 0.01f, "a clip twice as long holds at twice the time", o.t, 0.378);
+    }
+
+    printf("reload-rig: %d checks, %d failed\n", g_checks, g_fails);
+    return g_fails ? 1 : 0;
+}

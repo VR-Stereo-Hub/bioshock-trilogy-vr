@@ -19,6 +19,7 @@
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/manual_reload.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
 #include "game/bioshock1r/hud_elements.h"
@@ -746,6 +747,8 @@ void apply_command(const char* cmd, const char* args) {
         aim::handle_command(args); // M6 decoupled aim; logs its own echoes
     } else if (strcmp(cmd, "vrhands") == 0) {
         hands::handle_command(args); // M7 viewmodel; logs its own echoes
+    } else if (strcmp(cmd, "vrreload") == 0) {
+        manual_reload::handle_command(args); // 2026-10-20 the manual reload; logs its own echoes
     } else if (strcmp(cmd, "vrbones") == 0) {
         bones::handle_command(args); // M7-v2 skeleton probes; logs its own echoes
     } else if (strcmp(cmd, "vrbody") == 0) {

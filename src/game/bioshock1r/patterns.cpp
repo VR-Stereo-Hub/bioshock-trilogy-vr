@@ -395,6 +395,20 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
         BVR_LOG("[b1r] AActor::GetBoneCoords prologue mismatch at RVA 0x%X - the barrel origin is unavailable",
                 kActorGetBoneCoordsRva);
     }
+
+    // 2026-10-20: script functions by name (the manual reload). Both gated on their heads.
+    const uint8_t* findFn = image.base + kFindFunctionRva;
+    const uint8_t* procEv = image.base + kNativeConstantAnchorRva;
+    if (is_memory_valid(findFn, sizeof kFindFunctionPrologue) &&
+        memcmp(findFn, kFindFunctionPrologue, sizeof kFindFunctionPrologue) == 0 &&
+        is_memory_valid(procEv, sizeof kProcessEventPrologue) &&
+        memcmp(procEv, kProcessEventPrologue, sizeof kProcessEventPrologue) == 0) {
+        out.findFunction = const_cast<uint8_t*>(findFn);
+        out.processEvent = const_cast<uint8_t*>(procEv);
+        BVR_LOG("[b1r] UObject::FindFunction = %p, ProcessEvent = %p (script calls by name)", findFn, procEv);
+    } else {
+        BVR_LOG("[b1r] FindFunction/ProcessEvent prologue mismatch - script calls (the manual reload) unavailable");
+    }
 }
 
 const wchar_t* fname_text(int32_t index) {

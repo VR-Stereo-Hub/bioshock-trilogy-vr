@@ -6597,3 +6597,46 @@ shotgun's long pump hid the same error. `m4_compose` maps the two-handed grab po
 (the hold, the reload at the gun) through it every frame, so any size slider keeps the hand on the
 drawn grip; `[twohand] the gun is drawn at ...` logs the ratio and the correction per gun and on
 every size change. Derived from `wskel_compose` and the s86/s91 compose; not yet headset-measured.
+
+## 2026-10-20 - Script functions by name, and the reload clip held by the hands
+
+**FindFunction (RVA 0x6F5F70).** `UObject::FindFunction(FName /*8 bytes, by value*/, UBOOL global)`,
+`ret 0xC`. BS1 strips the "Failed to find function" text (`tools\ida\mr1`: no string, ASCII or
+UTF-16), so it was found by BS2's shape (`tools\ida\mr2`): the `ret 0xC` callee followed within a few
+instructions by `call [reg+0xC]` (ProcessEvent, vtable slot 3) at 70 sites (the 205-site top hit is the
+allocator, a false positive). Its body returns null unless two script-ready globals are set and
+null for a name the class lacks - it never asserts. With ProcessEvent (the outer body at the anchor
+RVA 0x375140) and GNames, `script_call.cpp` runs any script function on any object: a parameter block
+in declaration order, 4-byte slots, UBOOL 4 bytes, FName 8, the return value last. UE2's ProcessEvent
+does not destroy the caller's parameters, so a caller-owned FString is safe to pass to a function that
+only reads it (`ShockPlayer.GiveItem(Amount, "ShockGame.Pistol_ArmorPiercing")` - the `vrreload give`
+test aid).
+
+**Actor's animation API works through it.** `IsAnimationHandleValid`, `GetAnimationName`,
+`GetAnimationCurrentTime`, `SetAnimationCurrentTime`, `PauseAnimation`, `ResumeAnimation`,
+`GetAnimationLength`, `SetAnimationPlaybackRate` (Actor.uc; the corpus shows their bodies as @NULL, but
+they run). Verified on the simulator: a held reload clip stays at the exact time set (0.450 s for 2 s),
+the game waits in `WeaponReloading`, and on resume it completes and refills (39-23 -> 40-22).
+
+**The reload waits on two handles** (`Weapon.FinishAnimations`): `weapon+0x5F4` (Weapon.AnimationHandle,
+the weapon's own clip) and `weapon+0x8F0` (the Hands actor's clip). Found by `vrreload probe`, which
+offers every int slot of the weapon to IsAnimationHandleValid on the weapon, its holder and the Hands
+actor during a reload: only these two were live, both named reload clips at the same time of the same
+length. `HolderAnimationHandle` was never live (no holder clip in this view). The refill happens when
+the clip ends (PlayerWeapon: `FillWeaponClipWithAvailableAmmunition`), so a held clip holds the ammo.
+
+**The clips, measured with `vrbones reloadrec`** (weapon bones against their rest; the off hand's palm
+in the grip's frame; clip-local seconds):
+
+| Weapon | Clip (weapon / hands) | What the off hand does, clip seconds |
+|---|---|---|
+| Tommy Gun | `Reload` / `ReloadTommyGun`, 3.33 s | bolt locks back 0.09; drum (`TG_AmmoClip`) pulled 63 units down 0.27-0.57; a new drum up and in 0.93-1.22; bolt (`TG_Bolt`) pulled 17.4 back 2.06-2.24, runs home 2.43-2.80 |
+| Pistol (fast reload) | `FastReload` / `FastReloadPistol`, 1.80 s | top-break: barrel and cylinder (`Barrel`, `DrumParent`, `drum`) fold 105 deg on the hinge 0.19-0.38 (`over`, the latch, turns first); cylinder out sideways 0.47-0.66; a new one in 0.76-0.93; flicked shut 1.40-1.55 with no hand on it |
+| Shotgun | `SingleFrame` (start), `Reload_Loop` / `ReloadShotgun_LOOP` 0.49 s per shell, `Reload` / `ReloadShotgun_End` 0.95 s | start: the hand drops to the pouch; each loop presses `SG_Shell` 20 units into the port with an 84-deg turn 0.03-0.27; end: `SG_Pump` 17.6 back 0.41-0.49 and forward 0.59-0.69 |
+
+The shotgun is ShouldUseThreePartReloading: the game plays a loop per missing shell and the end only
+when full; firing during a loop interrupts the reload (the shells already in stay). An empty gun's
+automatic reload and the reload button both reach the same reload; the bound `XENON_X` is the button.
+The parts are model space (the root at 0 for the pistol and the Tommy Gun; the shotgun's root
+`SG_Body` is not at the grip), and the visible magazine is the weapon's `AmmoModel`, attached to a
+socket on that part - moving the part moves it.

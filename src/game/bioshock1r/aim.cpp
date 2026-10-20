@@ -25,6 +25,7 @@
 #include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/muzzle.h"
+#include "game/bioshock1r/script_call.h"
 #include "game/bioshock1r/temporal.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/shared/ue_math.h"
@@ -1606,6 +1607,7 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     seed_default_profiles();
     load_weapon_profiles(); // a user's weapons.ini overrides the seeds key by key
     muzzle::init(g_syms.actorGetBoneCoords);
+    script::init(g_syms.findFunction, g_syms.processEvent);
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
 }

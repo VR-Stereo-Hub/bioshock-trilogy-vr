@@ -3,6 +3,7 @@
 #include "wheel_state.h"
 #include "swap_hold.h"
 #include "two_hand.h"
+#include "manual_reload.h"
 #include "bones.h"
 #include "menu_theme.h"
 #include "core/input/xinput_bridge.h"
@@ -137,7 +138,9 @@ bool grab(bvr::input::PadOverride* pad) {
     // 2026-10-19: the two-handed grip goes first (its own F10 switch). While the hand without
     // the gun is at the gun's second grip (or holding it), that grip is the two-handed grip's and
     // the hand-over leaves it alone - reaching for a fore-end cannot hand the gun over.
-    const int freeClaimedPhys = two_hand::pad(pad, gunPhys, busy, &changed) ? 1 - gunPhys : -1;
+    // 2026-10-20: the manual reload before both - its grip strips the bumper the others read.
+    const bool reloadClaim = manual_reload::pad(pad, &changed);
+    const int freeClaimedPhys = (two_hand::pad(pad, gunPhys, busy, &changed) || reloadClaim) ? 1 - gunPhys : -1;
     if (!g_grabOn.load(std::memory_order_relaxed)) {
         g_grabPhys = -1;
         g_eligible = false;
