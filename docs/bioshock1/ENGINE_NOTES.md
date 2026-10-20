@@ -6674,3 +6674,22 @@ dead developer function here: it calls `Weapon.AddStatUpgrade`, whose body is em
 `ShockCheatManager.GiveAll` lists eight weapons (Wrench, Pistol, Shotgun, Crossbow, GrenadeLauncher,
 MachineGun, ChemicalThrower, ResearchCamera) and every ammunition class; the cheat manager itself needs
 cheats enabled, so the mod calls the same ShockPlayer/ShockPawn functions on the pawn directly.
+
+## 2026-10-20 - A physics prop made at runtime (the dropped magazine)
+
+From the UnrealScript corpus; not yet seen live. The visible magazine is `Weapon.AmmoModel`, a
+`VisibleAmmoModel` actor (DrawType static mesh) attached to the gun at `AmmunitionModelSocket`, its
+mesh the current ammunition's `VisualAmmoModel` (Tommy Gun `WP_TommyGun.TG_AmmoModel`, pistol
+`WP_Pistol.PI_AmmoType`, shotgun `WP_Shotgun.shotgun_shell`; `ShowAmmoModel` swaps it per ammo type).
+Dead enemies drop weapons natively (`ShockAI.DropWeapons`; an `AIAttachment` is
+`bIsHavokPhysicsEventually` with a `StaticMeshAttachmentHavokDataClass`). For a prop made by the mod:
+`Engine.HavokActor` is `bNoDelete` (level-placed only); `ShockGame.PhysicalReactiveActor` (a
+ReactiveActor: static mesh, `HavokDataClass` `Engine.HavokSimplePhysicsData`, `Physics=PHYS_Havok`,
+`bBlockActors/bBlockPlayers` false, telekinesis-able) is spawnable. The calls, all on Actor by name:
+`Spawn(class, owner, tag, location, rotation, bNoCollisionFail, label)` (return after 52 bytes of
+parameters), `SetStaticMesh`, `SetDrawScale`, `SetPhysics` (EPhysics: PHYS_None 0, PHYS_Havok 1),
+`HavokSetLinearVelocity` / `HavokSetAngularVelocity (vector, optional name bone)`, `HavokIsActive`;
+`LifeSpan` (property) removes it. The class comes from `Object.DynamicLoadObject("ShockGame.
+PhysicalReactiveActor", Class)`, the class of classes being any class's own class. `dropped_part.cpp`
+turns physics off before the mesh and size change and back on after, so the Havok body is built for
+the magazine and not for the class's default cube.

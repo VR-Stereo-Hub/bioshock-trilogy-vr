@@ -23,10 +23,29 @@ NOT run in the simulator or the headset.
   skeleton for the mirror's pin; its mesh's centre comes from the engine's render bounds
   (`Actor.GetRenderBoundingBox`) taken into its own frame (Location/Rotation), averaged over 16
   frames and latched. `[bones] rigid holdable ...: its mesh's centre is ...` logs it.
-- **Reloads ease in and out** (`handback::depart_gate`, F10 Hands > Reload animation > Ease in and
-  out over, 8 cm): the free hand follows the at-the-gun clip only as far as the clip moves it from
-  where it began, against the gun hand, so the clip's return to the grip never plays on the hand.
-  The `[handback] at the gun` line now also says how far the clip took it.
+- **The wrench no longer swings on a hand-over** (`camera.cpp`, `dial_input.cpp`): the swing detector
+  samples the weapon hand's slot, which a hand-over moves to the other controller - the jump read as a
+  swing. Its gate shuts at the swap and stays shut 400 ms. (A trial "reloads ease in and out" was
+  taken back out after the headset run: unclear it helped.)
+- **The reload button ejects; so does a gun that runs dry** (manual reload on, the pistol and the
+  Tommy Gun; `reload_rig` Input `eject` / `ejectAdopted`, Program `ejectT` / `ejectPart`,
+  `dropped_part.cpp`). X never reaches the game; the mod asks the game to reload. When the clip starts
+  it is held where the gun is open with the spent part still seated (Tommy 0.267 s, pistol 0.466 s),
+  the part falls for 0.7 s (the gun's own part bones under gravity, or for the Tommy Gun's drum a
+  Havok copy of its AmmoModel, removed again if it would not simulate), then the reload waits at the
+  first Fetch: a new one from the waist, seat it, close / rack. Nothing to reload (full, or no spare
+  rounds: PlayerWeapon.Reload's own rule, now checked through GetNumberOfItems) buzzes no. The shotgun
+  keeps the game's button. Off: X is the game's reload exactly as before.
+  The first headset run of this (12:00) was broken three ways, all fixed here: every eject was
+  refused (no spare pistol rounds), the dry guns' own reloads sat at the old first step (the pistol's
+  latch up, the Tommy Gun's drum held), and the pistol's AmmoModel had no mesh to copy.
+- **Meshes, from `Build\Final\BakedScripts\pc\ShockGame.U`** (the first-person weapons are not in the
+  maps; UModel lists the script package): `PI_AmmoType` is the pistol's six ROUNDS, not its cylinder
+  (the cylinder is `WP_PistolMesh`'s own `DrumParent`/`drum` bones); `TG_AmmoModel` is the Tommy Gun's
+  drum; `SpentShell` is a casing - a later "the rounds tumble out" can spawn those.
+- **The hands stay on the controllers through a weapon swap** (`hands_state.cpp`): the swap passes
+  through ProceduralLoweringHands, classed Scripted, so the hand-back gave both hands to the game for
+  its release - the left hand flew to the next gun's grip and back. It is Offscreen now.
 - **F10 > Cheats** (`cheats.cpp`): Give all weapons / Give all weapons, upgraded. The game's own
   developer functions by name (ShockCheatManager.GiveAll's lists): UnlockInventorySlots, GiveWeapon
   for each weapon not yet held, GiveItem 999 of every ammunition. Upgraded does New Game Plus's own
@@ -38,9 +57,12 @@ NOT run in the simulator or the headset.
 
 ### Next steps
 
-- Headset (or a simulator run, if the tester allows one): Cheats > both buttons (watch `[cheats]`);
-  the wrench in the left hand; a crossbow / grenade launcher / chemical thrower reload (the eased
-  carry); a hand-over with the Tommy Gun in hand (must not start a reload).
+- Headset (or a simulator run, if the tester allows one): X on the pistol and the Tommy Gun with the
+  manual reload on (watch `[drop]` and `[reload]`): does the magazine fall and land, at the right size;
+  is the pistol's AmmoModel the cylinder or only its rounds (the `[drop] magazine noted: mesh ...`
+  line names it)? Cheats > both buttons (watch `[cheats]`); a wrench hand-over (no swing).
+- The tester's next round: a revamp of the manual reload around easy handling ("pulling the ammo out
+  of anything") - this eject is the first piece.
 - Not checked: whether the upgrade attachments show at once on a weapon already in hand.
 
 ## Session 2026-10-20 - BS1: the manual reload

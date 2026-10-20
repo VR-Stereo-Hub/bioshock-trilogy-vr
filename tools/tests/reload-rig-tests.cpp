@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 using namespace bvr::b1r::reload_rig;
 using bvr::b1r::arm_ik::Vec;
@@ -178,6 +179,71 @@ int main() {
         b.clip(L"Reload", 3.33f);
         o = b.step(Vec{40, 7, 2}, false);
         check(!b.m.active() && !o.hold, "a reload the button began is never held");
+    }
+    // ---- eject: the reload button with the manual reload on ----
+    {
+        Sim s;
+        s.in.eject = true;
+        Output o = s.step(Vec{40, 7, 2}, false);
+        check(o.act == Act::StartReload && o.carry == 0, "eject: the reload is asked for, the drum still in");
+        s.in.eject = false;
+        o = s.step(Vec{40, 7, 2}, false);
+        check(s.m.active() && o.carry == 0, "waiting for the game: the drum stays in");
+        s.clip(L"Reload", 3.33f);
+        o = s.step(Vec{40, 7, 2}, false);
+        check(o.ejected && o.part && !strcmp(o.part, "TG_AmmoClip"), "the clip starts: the drum is to fall");
+        check(o.carry == 3 && o.hold && std::fabs(o.t - 0.267f) < 0.01f,
+              "held where the drum still sits, falling", o.t, 0.267);
+        o = s.step(Vec{40, 7, 2}, false);
+        check(!o.ejected && o.carry == 3 && o.fallS > 0.0f, "the drop is once; the fall goes on", o.fallS, 0.011);
+        for (int i = 0; i < 70; ++i) o = s.step(Vec{40, 7, 2}, false);
+        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 0.933f) < 0.01f && o.carry == 2,
+              "after the fall: the fetch, the gun open and empty", o.t, 0.933);
+        o = s.step(Vec{0, 0, -40}, true, true);
+        check(s.m.phase() == 3, "a new drum from the pouch", s.m.phase(), 3);
+
+        Sim p;
+        p.cls = L"Pistol";
+        p.in.eject = true;
+        p.step(Vec{40, 7, 2}, false);
+        p.in.eject = false;
+        p.clip(L"FastReload", 1.80f);
+        o = p.step(Vec{40, 7, 2}, false);
+        check(o.ejected && o.carry == 3 && std::fabs(o.t - 0.466f) < 0.01f, "pistol: open, the cylinder falls", o.t,
+              0.466);
+        for (int i = 0; i < 70; ++i) o = p.step(Vec{40, 7, 2}, false);
+        check(p.m.phase() == 3 && std::fabs(o.t - 0.756f) < 0.01f, "then take a new one", o.t, 0.756);
+
+        Sim d; // the gun ran dry: the game's own reload ejects the same way
+        d.in.ejectAdopted = true;
+        d.clip(L"Reload", 3.33f);
+        d.in.adopt = true;
+        o = d.step(Vec{40, 7, 2}, false);
+        check(d.m.active() && o.ejected && o.carry == 3, "a dry gun's reload drops the drum too");
+        Sim d0; // ejectAdopted off (the manual reload's old way): it waits at the drum
+        d0.clip(L"Reload", 3.33f);
+        d0.in.adopt = true;
+        o = d0.step(Vec{40, 7, 2}, false);
+        check(d0.m.active() && !o.ejected && std::fabs(o.t - 0.267f) < 0.01f, "without it: waits for the hands");
+
+        Sim a; // the game will not reload: nothing is dropped
+        a.in.eject = true;
+        a.step(Vec{40, 7, 2}, false);
+        a.in.eject = false;
+        for (int i = 0; i < 80; ++i) o = a.step(Vec{40, 7, 2}, false);
+        check(!a.m.active() && o.carry == 0 && !o.ejected, "no reload: the drum stays");
+
+        Sim g; // the shotgun starts at the pouch: no eject
+        g.cls = L"Shotgun";
+        g.in.eject = true;
+        o = g.step(Vec{40, 7, 2}, false);
+        check(o.act != Act::StartReload && !g.m.active(), "the shotgun does not eject");
+
+        Sim f; // full: the button does nothing
+        f.in.eject = true;
+        f.in.canReload = false;
+        o = f.step(Vec{40, 7, 2}, false);
+        check(o.act != Act::StartReload && o.haptic == Haptic::Deny, "a full gun does not eject: it buzzes no");
     }
     // ---- scale ----
     {

@@ -64,6 +64,10 @@ struct Program {
     const Phase* phases;
     int n;
     bool entryAtPouch;     // the reload begins with a part from the pouch (the shotgun's shell)
+    // 2026-10-20, the eject: the clip time where the gun is open and the spent part still sits in it
+    // (held while that part falls), and the part. ejectT < 0: this clip does not eject.
+    float ejectT = -1.0f;
+    const char* ejectPart = nullptr;
 };
 
 // ---- the programs ------------------------------------------------------------------------------
@@ -129,9 +133,11 @@ inline constexpr Phase kShotgunEnd[] = {
     {Kind::Finish, 0.90f, 0.95f, nullptr, 0, nullptr, "done"}};
 
 inline constexpr Program kPrograms[] = {
-    {L"MachineGun", L"Reload", 3.33f, kTommy, 7, false},
-    {L"Pistol", L"FastReload", 1.80f, kPistol, 7, false},
-    {L"Pistol", L"Reload", 1.80f, kPistol, 7, false}, // no fast-reload upgrade: the same, scaled
+    // Eject: the Tommy Gun's drum sits seated as the clip's hand reaches it (0.267, the pull's start);
+    // the pistol is folded open with its cylinder still in at 0.466 (the cylinder's pull begins).
+    {L"MachineGun", L"Reload", 3.33f, kTommy, 7, false, 0.267f, "TG_AmmoClip"},
+    {L"Pistol", L"FastReload", 1.80f, kPistol, 7, false, 0.466f, "DrumParent+drum"},
+    {L"Pistol", L"Reload", 1.80f, kPistol, 7, false, 0.466f, "DrumParent+drum"}, // no fast-reload upgrade: scaled
     {L"Shotgun", L"SingleFrame", 0.033f, kShotgunStart, 1, true},
     {L"Shotgun", L"Reload_Loop", 0.49f, kShotgunLoop, 4, true},
     {L"Shotgun", L"Reload", 0.95f, kShotgunEnd, 3, true},
@@ -191,6 +197,7 @@ struct Config {
     float flickDegPerSec = 320; // a flick of the gun hand
     float startTimeoutS = 0.6f; // the game must begin its reload within this, or there is none
     float settleProgress = 0.85f;// let go past this and a pull completes itself
+    float dropS = 0.7f;         // the eject: how long the spent part falls before it is gone
 };
 
 struct Input {
@@ -210,6 +217,10 @@ struct Input {
     float gunDegPerSec = 0;     // the gun hand's turn rate
     bool adopt = false;         // a reload the GAME began (the gun ran dry), not the reload button:
                                 // it waits for the hands like one they began
+    bool eject = false;         // 2026-10-20: the reload button with the manual reload on - the gun
+                                // opens and its magazine drops, then the reload waits at the
+                                // program's first Fetch (a new one from the pouch)
+    bool ejectAdopted = false;  // and a reload the game began (the gun ran dry) ejects the same way
 };
 
 enum class Act : uint8_t { None, StartReload, Abort };
@@ -221,7 +232,9 @@ struct Output {
     float t = 0;                // clip seconds, ACTUAL clip (scaled)
     bool run = false;           // let the clip run (resume)
     bool jump = false;          // with run: set the clip to `t` first (once)
-    int carry = 0;              // 0 the clip has the part; 1 the part rides the hand; 2 it is gone
+    int carry = 0;              // 0 the clip has the part; 1 the part rides the hand; 2 it is gone;
+                                // 3 it falls out of the gun (`fallS` seconds into the fall)
+    float fallS = 0;
     const char* part = nullptr; // the part(s) `carry` applies to
     bool atPalm = false;        // carried at the palm, not where the clip's hand holds it
     Vec carryFrom{};            // the clip's palm where the carried part sits on it (grip frame)
@@ -233,7 +246,16 @@ struct Output {
     Haptic haptic = Haptic::None;
     const char* event = nullptr;// a transition worth a log line
     bool active = false;        // a manual reload is in progress
+    bool ejected = false;       // this frame the spent part starts to fall (`part` names it)
 };
+
+// The first Fetch of a program (where an eject starts), -1 when it has none.
+inline int first_fetch(const Program* p) {
+    if (!p) return -1;
+    for (int i = 0; i < p->n; ++i)
+        if (p->phases[i].kind == Kind::Fetch) return i;
+    return -1;
+}
 
 class Machine {
 public:
@@ -250,6 +272,11 @@ public:
             case State::Idle:
                 if (in.adopt && in.clipLive && in.clipProgram) {
                     begin(in.clipProgram, in);
+                    if (in.ejectAdopted && start_drop(in, o)) {
+                        running(in, c, grabU, o, /*fresh=*/true);
+                        o.event = "the gun ran dry: it opens and the magazine drops - take a new one from the pouch";
+                        break;
+                    }
                     running(in, c, grabU, o, /*fresh=*/true);
                     if (!o.event) o.event = "the game's own reload waits for the hands";
                     break;
@@ -283,6 +310,20 @@ private:
     float lastProgress_ = 0, lastT_ = 0, grabU_ = 0;
     bool carrying_ = false;     // a part rides the hand
     bool carriedFromEntry_ = false;
+    bool ejecting_ = false;     // the reload button started this one: it ejects when the clip starts
+    bool dropping_ = false;     // the spent part is falling; then the first Fetch
+    float dropAt_ = 0;
+
+    // The eject: hold the clip open with the spent part seated while it falls, then wait at the first
+    // Fetch. False (nothing changes) for a program that does not eject.
+    bool start_drop(const Input& in, Output& o) {
+        if (!prog_ || prog_->ejectT < 0 || first_fetch(prog_) < 0) return false;
+        dropping_ = true;
+        dropAt_ = in.now;
+        o.ejected = true;
+        o.part = prog_->ejectPart;
+        return true;
+    }
 
     const Phase& ph() const { return prog_->phases[phase_]; }
     float T(float recorded) const { return recorded * scale_; }
@@ -291,7 +332,23 @@ private:
 
     void idle(const Input& in, const Config&, float grabU, Output& o) {
         const Program* e = in.entryProgram;
+        if (in.eject && e && e->ejectT >= 0 && !in.canReload) {
+            o.haptic = Haptic::Deny; // full, or nothing to reload with
+            o.event = "eject: nothing to reload (full, or no spare rounds)";
+            return;
+        }
         if (!e || !in.canReload || in.clipLive) return;
+        // The reload button: the gun opens and its magazine drops (a program that ejects only).
+        if (in.eject) {
+            if (e->ejectT < 0 || first_fetch(e) < 0) return;
+            state_ = State::Starting;
+            startAt_ = in.now;
+            ejecting_ = true;
+            o.act = Act::StartReload;
+            o.claim = true;
+            o.event = "eject: the game is asked to reload";
+            return;
+        }
         const Phase& first = e->phases[0];
         bool go = false;
         if (e->entryAtPouch) {
@@ -321,9 +378,14 @@ private:
         if (in.clipLive && in.clipProgram) {
             begin(in.clipProgram, in);
             o.event = "the game's reload clip is held";
+            if (ejecting_) {
+                ejecting_ = false;
+                if (start_drop(in, o)) o.event = "eject: the gun opens, the magazine drops - take a new one from the pouch";
+            }
             return;
         }
         if (in.now - startAt_ > c.startTimeoutS) {
+            ejecting_ = false;
             state_ = State::Idle;
             o.act = Act::Abort;
             o.haptic = Haptic::Deny;
@@ -334,6 +396,7 @@ private:
     void begin(const Program* p, const Input& in) {
         prog_ = p;
         phase_ = 0;
+        dropping_ = false;
         state_ = State::Running;
         scale_ = (p->clipLen > 1e-4f && in.clipLen > 1e-4f) ? in.clipLen / p->clipLen : 1.0f;
         enter(in);
@@ -379,6 +442,22 @@ private:
             state_ = State::Idle;
             carrying_ = false;
             o.event = "the reload ended";
+            return;
+        }
+        // The eject: the gun held open, the spent part falling out of it; then the first Fetch.
+        if (dropping_) {
+            lastNow_ = in.now;
+            o.claim = true;
+            o.hold = true;
+            o.t = T(prog_->ejectT);
+            o.part = prog_->ejectPart;
+            o.fallS = in.now - dropAt_;
+            o.carry = o.fallS < c.dropS ? 3 : 2;
+            if (o.fallS >= c.dropS) {
+                dropping_ = false;
+                phase_ = first_fetch(prog_);
+                enter(in);
+            }
             return;
         }
         const Phase& p = ph();

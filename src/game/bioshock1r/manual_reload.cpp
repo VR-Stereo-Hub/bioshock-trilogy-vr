@@ -4,6 +4,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/dropped_part.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
 #include "game/bioshock1r/muzzle.h"
@@ -47,6 +48,11 @@ std::atomic<float> g_reach{-1.0f}; // Output::reach, for the grip arbiter
 std::atomic<uint64_t> g_claimMs{0};
 std::atomic<bool> g_active{false};
 std::atomic<uint64_t> g_reloadButtonMs{0}; // the last time the reload button was down
+// 2026-10-20: with the manual reload on, the reload button ejects instead (the gun in hand has a
+// program that fetches a new magazine): game thread -> XInput thread, and the press back.
+std::atomic<bool> g_ejectable{false};
+std::atomic<bool> g_ejectReq{false};
+bool g_xDown = false; // XInput thread
 bool g_suppressUntilUp = false; // XInput thread
 
 // Game thread.
@@ -154,6 +160,7 @@ bool weapon_space(void* weapon, const char* exclude, float m[3][3], float* s, fl
 
 // What the free hand carries this frame (set by tick, applied by carry() from the hand's placement).
 int g_carryMode = 0;            // 0 nothing, 1 the part rides the hand, 2 the part is gone
+bool g_havokCopy = false;       // this eject's spent part fell as a Havok copy (dropped_part.h)
 const char* g_carryPart = nullptr;
 void* g_carryWeapon = nullptr;
 bool g_carryAtPalm = false;
@@ -177,10 +184,16 @@ void apply_parts(const rr::Output& o, const Frame& f) {
     g_carryPart = o.part;
     g_carryAtPalm = o.atPalm;
     g_carryWeapon = f.weapon;
-    if (g_carryMode != 2) return;
+    // 2026-10-20 the eject: the spent part falls out of the gun under gravity (world down), unless a
+    // Havok copy already took its place (then it is simply gone).
+    const bool falling = o.carry == 3 && !g_havokCopy;
+    if (o.carry == 3 && g_havokCopy) g_carryMode = 2;
+    if (g_carryMode != 2 && !falling) return;
     float m[3][3], s = 1;
     if (!weapon_space(f.weapon, o.part, m, &s) || !(s > 1e-6f)) return;
-    const Vec w{0, 0, -4000.0f};
+    const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
+    const Vec w = falling ? Vec{0, 0, -0.5f * 980.0f * uu * o.fallS * o.fallS} : Vec{0, 0, -4000.0f};
+    if (falling) g_carryMode = 0; // the clip still has it; it is only moved
     const float dw[3] = {(m[0][0] * w.x + m[0][1] * w.y + m[0][2] * w.z) / s,
                          (m[1][0] * w.x + m[1][1] * w.y + m[1][2] * w.z) / s,
                          (m[2][0] * w.x + m[2][1] * w.y + m[2][2] * w.z) / s};
@@ -216,6 +229,19 @@ bool can_reload(void* weapon, uint64_t now) {
         g_can = r.ret < m.ret;
     else
         g_can = true;
+    // 2026-10-20: and rounds to reload WITH. PlayerWeapon.Reload reloads only when the rounds in the gun
+    // differ from both the magazine's size and the rounds the player carries of the pending ammunition
+    // (Holder.GetNumberOfItems) - the headset run's pistol had none spare, and every eject was refused.
+    if (g_can && script::properties_ready(weapon)) {
+        const int32_t ammoOff = script::property_offset(weapon, L"PendingAmmoSelection");
+        void* ammo = nullptr;
+        void* holder = nullptr;
+        if (ammoOff >= 0 && read_n(static_cast<uint8_t*>(weapon) + ammoOff, &ammo, sizeof ammo) && ammo &&
+            read_n(static_cast<uint8_t*>(weapon) + patterns::kWeaponOwnerOffset, &holder, sizeof holder) && holder) {
+            struct { void* cls; int32_t ret; int32_t pad[2]; } n{ammo, 0, {}};
+            if (script::call(holder, "GetNumberOfItems", &n)) g_can = r.ret != n.ret;
+        }
+    }
     return g_can;
 }
 } // namespace
@@ -287,7 +313,21 @@ float reach() {
 bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
     constexpr uint16_t kLB = 0x0100; // the hand without the gun is always the plasmid role
     constexpr uint16_t kX = 0x4000;  // the pad's X: the game's reload (XENON_X)
-    if (pad->buttons & kX) g_reloadButtonMs.store(GetTickCount64(), std::memory_order_relaxed);
+    const bool x = (pad->buttons & kX) != 0;
+    // Fresh only: tick() stops with no weapon in hand (a plasmid), and X is then the game's again.
+    const bool ejectable = g_ejectable.load(std::memory_order_relaxed) &&
+                           GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) < 250;
+    if (g_on.load(std::memory_order_relaxed) && ejectable) {
+        // The reload button ejects: the game never sees it (its own reload would play the whole clip).
+        if (x) {
+            pad->buttons = static_cast<uint16_t>(pad->buttons & ~kX);
+            *changed = true;
+            if (!g_xDown) g_ejectReq.store(true, std::memory_order_relaxed);
+        }
+    } else if (x) {
+        g_reloadButtonMs.store(GetTickCount64(), std::memory_order_relaxed);
+    }
+    g_xDown = x;
     // A squeeze another grab owns (the hand-over, the two-handed grip) is never the reload's: it
     // is not a press here at all, so it cannot start one.
     const bool grip = !locked && (pad->buttons & kLB) != 0;
@@ -316,6 +356,8 @@ void tick(const Frame& f) {
         }
         g_active.store(false, std::memory_order_relaxed);
         g_claim.store(false, std::memory_order_relaxed);
+        g_ejectable.store(false, std::memory_order_relaxed);
+        g_ejectReq.store(false, std::memory_order_relaxed);
         return;
     }
     if (f.weapon != g_weapon) {
@@ -366,9 +408,25 @@ void tick(const Frame& f) {
     // A reload that began without the reload button (the gun ran dry): the game's own, but it waits
     // for the hands. One the button began plays as it always has.
     in.adopt = in.clipNew && f.now - g_reloadButtonMs.load(std::memory_order_relaxed) > 1500;
+    // 2026-10-20: the reload button ejects, on a gun whose program fetches a new magazine (the
+    // pistol, the Tommy Gun; the shotgun's reload starts at the pouch and keeps the game's button).
+    const bool ejectable = in.entryProgram && !in.entryProgram->entryAtPouch && rr::first_fetch(in.entryProgram) >= 0;
+    g_ejectable.store(ejectable, std::memory_order_relaxed);
+    in.eject = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable && !g_machine.active();
+    // And a reload the game begins itself (the gun ran dry) ejects the same way.
+    in.ejectAdopted = ejectable;
 
     const bool wasActive = g_machine.active();
     const rr::Output o = g_machine.update(in, g_cfg);
+    if (o.ejected) {
+        // A Havok copy where the magazine sits, when it has a mesh of its own (the Tommy Gun's drum);
+        // otherwise the gun's own part falls (the pistol's cylinder is part of the gun's mesh).
+        const float still[3] = {0.0f, 0.0f, 0.0f};
+        g_havokCopy = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, still);
+        BVR_LOG("[reload] %S: the spent %s %s", g_cls, o.part ? o.part : "part",
+                g_havokCopy ? "is replaced by a Havok copy, which falls" : "falls out of the gun");
+    }
+    if (!g_machine.active()) g_havokCopy = false;
 
     if (o.act == rr::Act::StartReload) {
         struct { int32_t pad[4]; } none{};
