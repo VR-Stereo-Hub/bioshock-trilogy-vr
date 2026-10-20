@@ -36,6 +36,7 @@ std::atomic<float> g_deadzone{0.10f};
 // thread applies test commands. Copies are 12 bytes - contention is trivial.
 std::mutex g_mutex;
 Gamepad g_xrPad{};
+std::atomic<bool> g_xrPadLeftHanded{false}; // the mapping g_xrPad was composed with
 bool g_xrActive = false;
 uint64_t g_xrLastMs = 0;          // publish staleness guard (session teardown
                                   // stops publishing entirely - expire the slot)
@@ -190,6 +191,7 @@ constexpr int16_t kPitchServoMax = 8000; // ~24% deflection
 std::atomic<float> g_turnScale{1.0f};
 std::atomic<bool> g_snapTurn{false};
 std::atomic<int> g_ammoMod{1}; // AmmoMod::Thumbrest (user's call, session 23)
+std::atomic<bool> g_leftHanded{false}; // weapon role on the LEFT controller (see the header)
 // Session 44: which per-game map the XR composer builds. 0 == PadProfile::
 // Bioshock1, the historical hardcoded semantics, so BS1 and BS2 (which never
 // call the setter) compose exactly what they composed before.
@@ -575,7 +577,8 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         }
     }
     if (StickOverrideFn ov = g_stickOverride.load(std::memory_order_relaxed)) {
-        PadOverride p{out.buttons, out.lt, out.rt, out.lx, out.ly, out.rx, out.ry};
+        PadOverride p{out.buttons, out.lt, out.rt, out.lx, out.ly, out.rx, out.ry,
+                      g_xrPadLeftHanded.load(std::memory_order_relaxed)};
         if (ov(&p)) {
             out.buttons = p.buttons; out.lt = p.lt; out.rt = p.rt;
             out.lx = p.lx; out.ly = p.ly; out.rx = p.rx; out.ry = p.ry;
@@ -882,9 +885,10 @@ void set_enabled(bool on) {
 
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
 
-void publish_xr_state(const Gamepad& pad, bool active) {
+void publish_xr_state(const Gamepad& pad, bool active, bool leftHanded) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_xrPad = pad;
+    g_xrPadLeftHanded = leftHanded;
     g_xrActive = active;
     g_xrLastMs = GetTickCount64();
 }
@@ -965,6 +969,14 @@ void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
 AmmoMod ammo_mod() {
     return static_cast<AmmoMod>(g_ammoMod.load(std::memory_order_relaxed));
 }
+bool left_handed() { return g_leftHanded.load(std::memory_order_relaxed); }
+
+void set_left_handed(bool on) {
+    if (g_leftHanded.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("input: weapon hand -> %s controller (aim, laser, viewmodel, fire trigger, weapon grip, "
+                "swing); plasmids on the %s", on ? "LEFT" : "right", on ? "right" : "left");
+}
+
 void set_ammo_mod(AmmoMod m) {
     g_ammoMod.store(static_cast<int>(m), std::memory_order_relaxed);
 }

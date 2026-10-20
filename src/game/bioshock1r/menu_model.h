@@ -82,6 +82,8 @@ enum class Setting {
     // The weapon and plasmid dial (dial_input.cpp, swap_hold.cpp).
     DialEnabled, DialGripTrigger, DialHoldSwap, DialDirectionOnly, DialNeutral, DialTravel, DialSnap,
     DialEntryTilt, DialEntryYaw, DialWidth, DialDistance,
+    // Grab and hand-over (dial_input.cpp's pad override).
+    GrabEnabled, GrabDistance,
     Count
 };
 struct Spec {

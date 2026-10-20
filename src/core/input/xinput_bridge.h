@@ -30,7 +30,9 @@ bool enabled();
 // XR action layer publishes its composed pad here once per frame (render
 // thread). `active` false means "no data this frame" (no session / not
 // focused); the slot also self-expires if publishing stops entirely.
-void publish_xr_state(const Gamepad& pad, bool active);
+// `leftHanded`: the role mapping the XR composer built this pad with (set_left_handed as
+// it read it); it reaches the pad override with the pad (PadOverride::leftHanded).
+void publish_xr_state(const Gamepad& pad, bool active, bool leftHanded = false);
 
 // The last pad published above + its active flag - what the composer will
 // merge this frame. The session-20 recorder taps it per CalcView so a replay
@@ -130,6 +132,7 @@ struct PadOverride {
     uint16_t buttons;
     uint8_t lt, rt;
     int16_t lx, ly, rx, ry;
+    bool leftHanded; // read only: the role mapping the bumper/trigger bits were composed with
 };
 using StickOverrideFn = bool (*)(PadOverride* pad);
 void set_stick_override(StickOverrideFn fn);
@@ -160,6 +163,16 @@ void set_snap_angle_deg(float d);
 enum class AmmoMod { Click = 0, Thumbrest = 1, Both = 2 };
 AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
+
+// Handedness (2026-10-19, ported from Owloeb's left-handed fork, made live). Swaps ROLES,
+// not bindings: the XR bindings stay physical (A/B, X/Y and menu keep working), and the
+// XR composer routes the LEFT controller's grip/aim pose, trigger and grip into the
+// WEAPON role (hand slot 1) and the right controller into the PLASMID role (slot 0).
+// Every consumer keyed by role follows. Read once per input sync, so it may change at
+// any time (BS1 hands the gun over when one hand grabs it from the other). Default
+// off, never persisted here: a game that never sets it composes exactly as before.
+bool left_handed();
+void set_left_handed(bool on);
 
 // s63 D-PAD MODIFIER, ported from BRVR's ControllerDpadModifier - the state
 // lives in the XR composer (openxr_input.cpp) beside the code that reads it

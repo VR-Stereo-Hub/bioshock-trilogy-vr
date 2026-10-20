@@ -50,6 +50,32 @@ opening and closing so a run shows whether the game opened one. The provider dum
 3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
 (`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
 
+**2026-10-19, headset run 1 of the grab: "the grab isnt working".** The log showed every grab
+swap the hands and swap straight back the same millisecond: the pad's bumper bits are in the
+mapping the pad was composed with, one input sync behind a swap, and the grab read them through
+the live flag. Rebuilt as BRVR's two-handed grab (its CameraHook "M6-S2" state machine, same
+numbers): eligible inside 12 cm, held until 20 cm, the grip's rising edge while eligible takes
+hold, the bumper suppressed whenever eligible (no leaked frame), a steady buzz on the hand without
+the gun while eligible and not holding (60 ms at 0.35 every 50 ms), and a `[grab] hands N cm apart
+... ELIGIBLE` probe twice a second under 25 cm. Core: the pad now carries its composition mapping
+(`PadOverride::leftHanded`), and controllers have haptics (`vr::pulse_hand`, a vibration output
+per physical hand, bound on Touch, Index, Vive and WMR). Headset: bring the hand without the gun
+to the gun hand - it should buzz inside about 12 cm; squeeze its grip - the buzz stops, the gun
+moves to that hand, and the grip opens no wheel until released.
+
+**2026-10-19: grab and hand-over (built, not run in the game).** The grip squeezed with that hand
+within 15 cm of the other hand is a grab (no wheel); a grab by the hand without the gun takes the
+gun - the roles swap live (core `set_left_handed`, the role swap ported from Owloeb's left-handed
+fork; its mirrored viewmodel and recorded grab points are not ported - decision log 2026-10-19).
+F10 > Controls > Grab and hand-over (Grab with the grip, Grab distance); the dial's status shows
+which hand has the gun. Log: `[grab] the left hand grabbed N cm from the other hand - it takes the
+weapon`, `input: weapon hand -> LEFT controller ...`. Headset: with the gun in the right hand,
+bring the left hand to it and squeeze the left grip - the left trigger should now fire and the
+laser leave the left controller (the gun is still the game's right-hand model, drawn at the left
+controller); grab back with the right. Away from the other hand each grip still opens its wheel
+(after a hand-over the LEFT grip opens the weapon wheel). Groundwork: `grab_target()` - the
+two-handed hold will return the game's second-hand spot on the weapon there.
+
 **Headset run 5 (2026-10-16).** Reported: the wheel only took a pick for about half a second
 after it opened, and Equal shares could not be turned off. Cause of the second, and likely of the
 first: the four F10 rows added this session (Hide the blurred backdrop, Open with grip + trigger,

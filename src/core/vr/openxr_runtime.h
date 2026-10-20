@@ -65,6 +65,12 @@ bool peek_head_pose(HeadPose& out);
 // (hand/weapon placement).
 bool get_hand_pose(int hand, bool aimPose, HeadPose& out);
 
+// 2026-10-19: one haptic pulse on a PHYSICAL controller (0 left, 1 right - not the
+// role slot get_hand_pose takes), amplitude 0..1. Any thread: queued and applied at
+// the next input sync. A newer request replaces one not yet applied. Nothing calls it
+// unless a game does (BS1's grab zone).
+void pulse_hand(int physicalHand, float amplitude, int durationMs);
+
 // --- Session 20: vrrec record+replay support ---------------------------------
 // Sim overlay on the hand-pose funnel: while armed, every consumer of
 // get_hand_pose/input_get_hand_pose (fire ray, viewmodel, laser) reads the

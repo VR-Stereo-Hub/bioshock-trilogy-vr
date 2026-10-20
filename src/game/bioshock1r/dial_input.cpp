@@ -77,8 +77,123 @@ bool combine_grip_trigger(bvr::input::PadOverride* pad) {
     return changed;
 }
 
+// ---- Grab: the grip with one hand near the other (2026-10-19) -----------------------------
+//
+// BRVR's two-handed grab (CameraHook "M6-S2", Config "THE TWO-HANDED GRIP" / "HAPTICS"),
+// the same mechanic: the hand is ELIGIBLE inside the grab radius (12 cm) and stays so out
+// to the release radius (20 cm, larger on purpose - hysteresis, so a hand resting on the
+// boundary does not chatter); the grip's RISING edge while eligible takes hold; a held grab
+// lets go when the grip comes up. While eligible, and while a grab is held, that grip never
+// reaches the game as a bumper - BRVR gates the suppression on ELIGIBLE, not on gripped,
+// because gating on gripped leaks one frame of bumper and flickers the wheel open on every
+// grab. While eligible and not holding, the hand that would take the gun buzzes steadily
+// (a 60 ms pulse at 0.35, re-fired every 50 ms, so it reads as continuous): you cannot see
+// where to grab, so the hand is told. The buzz stops the moment you grip.
+//
+// What a grab does here: the hand without the gun takes it - the roles swap live
+// (bvr::input::set_left_handed). A grab by the gun hand only holds (no wheel, no swap).
+//
+// TWO FACTS THE FIRST VERSION GOT WRONG (headset 2026-10-19: "the grab isnt working"):
+// the pad's bumper bits are in the mapping the pad was COMPOSED with, which lags a swap
+// by one input sync - so they are read through PadOverride::leftHanded, never the live
+// flag (reading the live one made the grabbing hand's held grip look like the other hand
+// pressing, and every hand-over swapped straight back the same millisecond); and the grab
+// is tracked by PHYSICAL hand, because after the swap that grip is the other bumper bit.
+//
+// GROUNDWORK for two-handed holding: grab_distance_cm() is the one place that says how
+// far a hand is from what it grabs. Today that is the other hand; the two-handed hold will
+// measure to the spot where the game's own animation puts the second hand on the weapon
+// (BRVR: the engine's off-hand pose, latched), and the same press will take hold there.
+std::atomic<bool> g_grabOn{true};
+std::atomic<float> g_grabCm{12.0f};    // BRVR TwoHandGrabRadius
+constexpr float kReleaseExtraCm = 8.0f; // BRVR TwoHandReleaseRadius 20 = 12 + 8
+constexpr float kBuzzAmp = 0.35f;       // BRVR hapticGrabAmp
+constexpr int kBuzzMs = 60;             // hapticGrabMs
+constexpr uint64_t kBuzzEveryMs = 50;   // hapticGrabEveryMs
+int g_grabPhys = -1;                    // the physical hand (0 left, 1 right) holding a grab
+bool g_eligible = false;
+bool g_physGripWas[2] = {};
+uint64_t g_lastBuzzMs = 0, g_lastProbeMs = 0;
+std::atomic<int> g_handovers{0};
+std::atomic<float> g_liveDistCm{-1.0f};
+
+// The hands' distance, by slot (it is the same both ways round, so the slot mapping the
+// poses were located with does not matter). False while either hand is not tracked.
+bool grab_distance_cm(float* cm) {
+    vr::HeadPose a{}, b{};
+    if (!vr::get_hand_pose(0, false, a) || !vr::get_hand_pose(1, false, b)) return false;
+    const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
+    *cm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
+    return true;
+}
+
+bool grab(bvr::input::PadOverride* pad) {
+    if (!g_grabOn.load(std::memory_order_relaxed)) {
+        g_grabPhys = -1;
+        g_eligible = false;
+        return false;
+    }
+    bool changed = false;
+    const bool lhPad = pad->leftHanded;   // the mapping THESE bits were composed with
+    const int gunPhys = lhPad ? 0 : 1;   // the controller holding the weapon role
+    const bool busy = wheel_state::open_kind() >= 0 || bvr::overlay::visible();
+    float cm = -1.0f;
+    const bool tracked = grab_distance_cm(&cm);
+    const float grabCm = g_grabCm.load(std::memory_order_relaxed);
+    g_eligible = tracked && !busy && cm < (g_grabPhys >= 0 ? grabCm + kReleaseExtraCm : grabCm);
+    g_liveDistCm.store(tracked ? cm : -1.0f, std::memory_order_relaxed);
+    const uint64_t now = GetTickCount64();
+    bool swap = false;
+    for (int phys = 0; phys < 2; ++phys) {
+        const int role = lhPad ? 1 - phys : phys;
+        const uint16_t bump = role ? kRB : kLB;
+        const bool grip = (pad->buttons & bump) != 0;
+        const bool rising = grip && !g_physGripWas[phys];
+        g_physGripWas[phys] = grip;
+        if (g_grabPhys == phys) {
+            if (!grip) {
+                g_grabPhys = -1;
+                BVR_LOG("[grab] let go - the %s grip came up (%.1f cm)", phys ? "right" : "left", cm);
+                continue;
+            }
+            pad->buttons = static_cast<uint16_t>(pad->buttons & ~bump); // a held grab is never a bumper
+            changed = true;
+            continue;
+        }
+        if (!g_eligible) continue;
+        if (grip) {   // eligible: this grip is the grab's, not the wheel's - no leaked frame
+            pad->buttons = static_cast<uint16_t>(pad->buttons & ~bump);
+            changed = true;
+        }
+        if (rising && g_grabPhys < 0) {
+            g_grabPhys = phys;
+            swap = phys != gunPhys;
+            BVR_LOG("[grab] the %s hand grabbed %.1f cm from the other hand (grab %.0f, release %.0f)%s",
+                    phys ? "right" : "left", cm, grabCm, grabCm + kReleaseExtraCm,
+                    swap ? " - it takes the weapon" : " - it already holds the weapon");
+        }
+    }
+    if (swap) {
+        bvr::input::set_left_handed(gunPhys == 1); // the gun goes to the other controller
+        g_handovers.fetch_add(1, std::memory_order_relaxed);
+    }
+    // The buzz means "you could grab here", so it stops once you have.
+    if (g_eligible && g_grabPhys < 0 && now - g_lastBuzzMs >= kBuzzEveryMs) {
+        g_lastBuzzMs = now;
+        vr::pulse_hand(1 - gunPhys, kBuzzAmp, kBuzzMs);
+    }
+    // BRVR's probe: twice a second while the hands are near, so a run shows the distance.
+    if (tracked && cm < 25.0f && now - g_lastProbeMs >= 500) {
+        g_lastProbeMs = now;
+        BVR_LOG("[grab] hands %.1f cm apart (grab %.0f, release %.0f) %s%s", cm, grabCm, grabCm + kReleaseExtraCm,
+                g_eligible ? "ELIGIBLE" : "far", g_grabPhys >= 0 ? " - GRIPPED" : "");
+    }
+    return changed;
+}
+
 bool override_sticks(bvr::input::PadOverride* pad) {
-    bool changed = g_gripTrigger.load(std::memory_order_relaxed) && combine_grip_trigger(pad);
+    bool changed = grab(pad);
+    changed = (g_gripTrigger.load(std::memory_order_relaxed) && combine_grip_trigger(pad)) || changed;
     const uint16_t buttons = pad->buttons;
     const bool on = g_enabled.load(std::memory_order_relaxed) && wheel_state::live();
     dial::Config c;
@@ -215,6 +330,8 @@ float menu_read(menu::Setting id) {
         case S::DialEntryYaw: return g_entryYaw.load() ? 1.0f : 0.0f;
         case S::DialGripTrigger: return g_gripTrigger.load() ? 1.0f : 0.0f;
         case S::DialHoldSwap: return swap_hold::enabled() ? 1.0f : 0.0f;
+        case S::GrabEnabled: return g_grabOn.load() ? 1.0f : 0.0f;
+        case S::GrabDistance: return g_grabCm.load();
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -227,6 +344,11 @@ bool menu_write(menu::Setting id, float value) {
             return true;
         case S::DialDirectionOnly: g_directionOnly.store(value != 0); return true;
         case S::DialHoldSwap: swap_hold::set_enabled(value != 0); return true;
+        case S::GrabEnabled:
+            if (g_grabOn.exchange(value != 0) != (value != 0))
+                BVR_LOG("[grab] grab with the grip %s", value != 0 ? "ON" : "off");
+            return true;
+        case S::GrabDistance: g_grabCm.store(value); return true;
         case S::DialGripTrigger:
             if (g_gripTrigger.exchange(value != 0) != (value != 0))
                 BVR_LOG("[dial] wheels open with %s", value != 0 ? "grip + trigger (the grip alone is free)"
@@ -246,6 +368,8 @@ bool menu_write(menu::Setting id, float value) {
 void draw_panel() {
     if (!menu::theme::section("Weapon and plasmid dial: status")) return;
     wheel_state::draw_status();
+    ImGui::Text("The gun is in your %s hand (%d hand-over(s) this session).",
+                bvr::input::left_handed() ? "LEFT" : "right", g_handovers.load(std::memory_order_relaxed));
     for (int h = 1; h >= 0; --h) {
         if (g_liveSteer[h].load(std::memory_order_relaxed))
             ImGui::Text("%s hand is picking: %s", h ? "Right" : "Left", slot_name(g_liveSlot[h].load()));

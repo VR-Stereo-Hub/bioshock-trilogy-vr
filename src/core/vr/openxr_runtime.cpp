@@ -6077,6 +6077,7 @@ void get_hud_quad(float* d, float* w, float* u) {
 }
 void set_hud_texture_provider(HudTextureProviderFn) {}
 void set_hud_elements_provider(HudElementsProviderFn) {}
+void pulse_hand(int, float, int) {}
 
 } // namespace bvr::vr
 

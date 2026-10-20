@@ -3019,3 +3019,20 @@ menu is up. So BS1 hooks the runner and returns early while a menu the player op
 is up (F10 HUD > Menus > Hide the blurred backdrop, on) - one check per view, the BS1 form of the
 Dishonored VR mod's NoBlur. It also stops any other post effect for as long as a menu is up,
 which is acceptable: the game is paused. Core is untouched.
+
+### 2026-10-19: Handedness is a live role swap; the grip near the other hand grabs
+
+Owloeb's left-handed fork (github.com/Owloeb/bioshock-trilogy-vr-lefthand, branch
+`pr/left-handed`) swaps ROLES at the XR composer: the physical controller that fills hand slot 1
+(the weapon) and slot 0 (the plasmid), and the trigger and grip that go with each, while the
+bindings stay physical. That part is ported to core (`bvr::input::set_left_handed`, read once per
+input sync, default off and not persisted, so a game that never sets it composes exactly as
+before). It is LIVE rather than a setting because BS1 now hands the gun over: a grip squeezed with
+that hand within the grab distance of the other hand is a grab (never a bumper, so no wheel), and a
+grab by the hand without the gun swaps the roles. `dial_input.cpp`'s `grab_target()` is the one
+place that says where a hand grabs - the other hand today, the game's own second-hand spot on the
+weapon when two-handed holding is built, so that press becomes the hold. Not ported: the fork's
+mirrored viewmodel (a renderer-side reflection keyed on draw-call return addresses, on the hands
+code this branch replaced) - the gun is still drawn by the game's right-hand rig, at whichever
+controller holds it. The fork's recorded per-weapon grab points (`twohand.cpp`) are not ported
+either: the target is meant to come from the game's animation, not a recording.
