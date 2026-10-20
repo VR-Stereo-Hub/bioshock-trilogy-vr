@@ -935,6 +935,9 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // 2026-10-14 headset: 0.88, the tester's tune on top of that ("it's working well"), measured
 // against a hands and arms size of 0.81.
 std::atomic<float> g_wScale{0.88f};
+// 2026-10-20: the scale the skeleton lane actually wrote this frame (1.0 = authored: the lane
+// dropped, or the holdable is rigid), for m4_gun_ratio - the gun as drawn against the hands.
+std::atomic<float> g_wDrawnScale{1.0f};
 // s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
 // hand's scale (0.8 by default), so the two sides can never disagree. Declared here
 // because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set
@@ -2625,6 +2628,7 @@ float weapon_scale() {
 
 void wskel_drive() {
     float ws = g_wScale.load(std::memory_order_relaxed);
+    g_wDrawnScale.store(1.0f, std::memory_order_relaxed); // authored, until the skeleton lane writes below
     // s86: `weapon size` is the weapon against a 0.8 hand (BRVR's HandsScale, which the 0.8
     // GunScale default was set beside), so at size 0.8 it is exactly itself.
     if (g_m4On.load(std::memory_order_relaxed) && g_m4WeaponFollows.load(std::memory_order_relaxed))
@@ -2650,7 +2654,7 @@ void wskel_drive() {
             const bool same = hands::current_holdable(&live) && live == g_dsHoldable;
             ds_drop("holdable has a skeleton after all", same);
         }
-        wskel_compose(ws);
+        if (wskel_compose(ws)) g_wDrawnScale.store(ws, std::memory_order_relaxed);
         return;
     }
     // No skeleton to drive: either there is no holdable at all, or it is a
@@ -7586,6 +7590,30 @@ void m4_compose(bool late) {
     float twoHold = 0.0f; // how much the free hand rides the gun for the two-handed grip, this compose
     void* twoGun = nullptr;
     const bool twoGunOk = hands::current_holdable(&twoGun) && two_hand::applicable(twoGun);
+    // 2026-10-20: THE GUN AS DRAWN, NOT AS THE CLIP ASSUMES IT. The game's clip puts the other hand
+    // where the gun's grip is at its authored size against the game's hand (rig DrawScale k). The
+    // drawn gun is scaled about its grip socket (43) by what the skeleton lane wrote, and the hands
+    // by their own size, so the clip's point is off the drawn grip by (1 - ratio) of its distance
+    // from the socket - at Weapon size 0.88 the Tommy Gun's fore-grip sat ~3.5 cm behind the hand.
+    // A point the clip has against the gun maps onto the drawn gun through on_gun (two_hand_math.h).
+    const float gunRatio = two_hand::gun_ratio(g_wDrawnScale.load(std::memory_order_relaxed), k, g_m4.scale);
+    const ik::Vec gunRoot = ik::vec(A[patterns::kBoneWeaponAttach].p);
+    auto on_gun = [&](ik::Vec x) { return two_hand::on_drawn_gun(gunRoot, x, gunRatio); };
+    if (!late && twoGunOk) {
+        // Once per gun, and again whenever a size slider moves it.
+        static const void* s_told = nullptr;
+        static float s_toldRatio = 0.0f;
+        if (s_told != twoGun || std::fabs(gunRatio - s_toldRatio) > 0.005f) {
+            s_told = twoGun;
+            s_toldRatio = gunRatio;
+            const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+            const ik::Vec a = anchor_of(gunHand == 1 ? 0 : 1);
+            BVR_LOG("[twohand] the gun is drawn at %.3f of the size its animation holds it at (weapon %.3f, rig %.3f, "
+                    "hands %.3f): the grip point moves %.1f cm along it to the drawn grip",
+                    gunRatio, g_wDrawnScale.load(std::memory_order_relaxed), k, g_m4.scale,
+                    ik::length(on_gun(a) - a) * g_m4.scale / k * toCm);
+        }
+    }
     for (int hi = 0; hi < 2; ++hi) {
         const int h = hi == 0 ? gunHand : 1 - gunHand;
         const M4Hand& T = g_m4.hand[h];
@@ -7707,7 +7735,7 @@ void m4_compose(bool late) {
                     float op[3];
                     to_comp_p(O.p, op);
                     const ik::Vec real = ik::vec(op);
-                    const ik::Vec authored = hc::place(pinned, palmComp, anchor_of(1 - h));
+                    const ik::Vec authored = hc::place(pinned, palmComp, on_gun(anchor_of(1 - h)));
                     // A shot's recoil is not a pause: the kick plays on this hand and the front
                     // hand rides it (handback::clip_owns, 2026-10-20).
                     const bool paused = handback::clip_owns(hb(h), now) || handback::clip_owns(hb(1 - h), now);
@@ -7758,13 +7786,21 @@ void m4_compose(bool late) {
                 const float c0 = handback::carry(hb(h), now);
                 const palette::HandXform& G = palX[gunHand];
                 const float clipCm = ik::length(palmComp - ik::vec(G.pivot)) * toCmClip;
+                // Carried by the gun hand's final placement to where the clip has this hand on the
+                // DRAWN gun (on_gun): the hand's own bones keep the clip's shape, its anchor moves
+                // with the gun's size.
+                auto carried_on_gun = [&]() {
+                    const hc::Placement gun{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                    hc::Placement c = hc::carried_by(gun, ik::vec(G.pivot), palmComp);
+                    c.at = hc::place(gun, ik::vec(G.pivot), on_gun(palmComp));
+                    return c;
+                };
                 if (c0 > 0.0f) {
                     if (!s_carrying[h]) s_joinMinCm[h] = 1e9f;
                     s_carrying[h] = true;
                     if (clipCm < s_joinMinCm[h]) s_joinMinCm[h] = clipCm;
                     const float c = c0 * handback::join_gate(clipCm);
-                    const hc::Placement gun{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
-                    own = hc::toward(own, hc::carried_by(gun, ik::vec(G.pivot), palmComp), c);
+                    own = hc::toward(own, carried_on_gun(), c);
                 } else if (s_carrying[h]) {
                     s_carrying[h] = false;
                     if (!late)
@@ -7774,10 +7810,7 @@ void m4_compose(bool late) {
                 }
                 // Two hands on the gun: this hand rides it where the game's clip has it (the same
                 // carry, at the hold's weight).
-                if (twoHold > 0.0f) {
-                    const hc::Placement gun{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
-                    own = hc::toward(own, hc::carried_by(gun, ik::vec(G.pivot), palmComp), twoHold);
-                }
+                if (twoHold > 0.0f) own = hc::toward(own, carried_on_gun(), twoHold);
             }
             const palette_math::Blended bl = palette_math::blend_hand(own.q, own.s, palmComp, own.at, wgt);
             const ik::Quat qb = bl.q;

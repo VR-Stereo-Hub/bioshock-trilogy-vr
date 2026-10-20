@@ -97,6 +97,20 @@ inline Quat aim_turn(Vec rearPalm, Vec authoredFront, Vec realFront, float minSp
     return align(a, r);
 }
 
+// The gun as drawn against the hands (2026-10-20). The game's clips place a hand against the gun
+// at the gun's AUTHORED size beside the game's own hand (the rig's DrawScale). The mod draws the
+// hands at `handSize` and the gun's skeleton scaled by `drawnWeaponScale` about its grip socket
+// (1 = authored), so a point the clip has on the gun lies at `ratio` of its clip distance from
+// the socket on the drawn gun. ratio 1: the clip's point is the drawn gun's.
+inline float gun_ratio(float drawnWeaponScale, float rigDrawScale, float handSize) {
+    if (!(handSize > 1e-4f) || !(rigDrawScale > 1e-4f) || !(drawnWeaponScale > 1e-4f)) return 1.0f;
+    return drawnWeaponScale * rigDrawScale / handSize;
+}
+// A point the clip has against the gun (component space), moved onto the drawn gun.
+inline Vec on_drawn_gun(Vec gripSocket, Vec clipPoint, float ratio) {
+    return gripSocket + (clipPoint - gripSocket) * ratio;
+}
+
 // The gunshot kick. BRVR kicks the gun hand when its firing clip jerks the wrist past 6 deg in a
 // frame (Config HapticRecoil*: 45 ms at 1.0), the honest "a shot happened" signal it had - it
 // respects ammo, fire rate and reloads where a trigger watch would kick on a dry click. In this

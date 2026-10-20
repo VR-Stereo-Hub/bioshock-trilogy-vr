@@ -57,7 +57,11 @@
   the hand slide diagonally on every grip - removed, the hand is locked to the game's grip; (3)
   full auto froze the reticle: during recoil `aim.cpp update_barrel` holds the barrel in the gun
   hand's controller frame, which two-handed no longer carries the gun - two-handed it measures the
-  drawn barrel every frame, the kick included. The Tommy Gun in the LEFT hand never offered a grab in that run because
+  drawn barrel every frame, the kick included. A third run: the Tommy Gun's grip hand sat an inch
+  or two ahead of the drawn fore-grip. Root cause: the clip's point is on the AUTHORED gun, and the
+  gun is drawn at Weapon size (0.88) of that about its grip socket - every point the clip has on the
+  gun is now mapped onto the drawn gun (ENGINE_NOTES 2026-10-20, `two_hand_math.h gun_ratio`), for
+  the hold and for the reload's carry, live with every size slider. The Tommy Gun in the LEFT hand never offered a grab in that run because
   the hand-over grip also started a manual reload (the manual-reload branch's pull entry) that held
   for 40 s and paused the hold - a manual-reload fix, not this branch's.
 

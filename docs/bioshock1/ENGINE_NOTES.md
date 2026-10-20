@@ -6581,3 +6581,19 @@ open state (`wheel_mirror.h`). The wheels ignore the stick until their open anim
 5 (`weaponScrollCycling`/`abilityScrollCycling` = false, about 210 ms) and act only when the stick
 crosses into a wedge (`CheckRadialForChange`), so the hand dial holds neutral for 250 ms after the
 wheel shows and then steps to the slot.
+
+## 2026-10-20 - A hand the clip puts on the gun is on the AUTHORED gun
+
+The hands' clips (the two-handed hold, the reload) put the other hand where the gun's parts are at
+the gun's authored size beside the game's own hand - the rig actor's DrawScale (0.8). The mod draws
+the two at different sizes: the hands at the hand size (rig bone translations at size / DrawScale),
+the gun's skeleton scaled about its grip socket (bone 43, the weapon's `R_Grip` at its origin) by
+whatever `wskel_compose` wrote (Weapon size, times hand size / 0.8 while it follows the hands; 1.0
+when the lane is dropped). So a clip point on the gun sits at `ratio = drawn weapon scale x rig
+DrawScale / hand size` of its distance from socket 43 on the DRAWN gun (`two_hand_math.h
+gun_ratio`, `on_drawn_gun`). At Weapon size 0.88 the ratio is 0.88 and the Tommy Gun's fore-grip
+sat ~3.5 cm behind where the clip held the front hand (the tester: "an inch or two forward"); the
+shotgun's long pump hid the same error. `m4_compose` maps the two-handed grab point and both carries
+(the hold, the reload at the gun) through it every frame, so any size slider keeps the hand on the
+drawn grip; `[twohand] the gun is drawn at ...` logs the ratio and the correction per gun and on
+every size change. Derived from `wskel_compose` and the s86/s91 compose; not yet headset-measured.

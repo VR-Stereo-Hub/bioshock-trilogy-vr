@@ -89,6 +89,21 @@ int main() {
         const arm_ik::Quat id = two_hand::aim_turn(rear, authored, rear + Vec{2, 0, 0}, 5.0f);
         check(std::fabs(id.v[3]) > 0.999999f, "hands together (< min span): identity", id.v[3], 1);
     }
+    // ---- the gun as drawn ----
+    {
+        // The tester's set: Weapon size 0.88 following hands of 0.81 (the lane writes 0.88 * 0.81 / 0.8).
+        const float r = two_hand::gun_ratio(0.88f * 0.81f / 0.8f, 0.8f, 0.81f);
+        check(std::fabs(r - 0.88f) < 1e-5f, "weapon size 0.88, following the hands: the gun at 0.88 of the clip's",
+              r, 0.88f);
+        check(std::fabs(two_hand::gun_ratio(1.0f, 0.8f, 0.8f) - 1.0f) < 1e-6f,
+              "the authored gun beside the game's own hand: the clip's point is the gun's");
+        check(two_hand::gun_ratio(1.0f, 0.8f, 0.0f) == 1.0f, "no hand size: unchanged");
+        const Vec sock{10, 0, 0}, fore{40, 0, 5};
+        const Vec d = two_hand::on_drawn_gun(sock, fore, r);
+        check(dist(d, Vec{36.4f, 0, 4.4f}) < 1e-4f, "the fore-grip moves toward the grip socket by the ratio",
+              dist(d, Vec{36.4f, 0, 4.4f}), 0);
+        check(dist(two_hand::on_drawn_gun(sock, sock, r), sock) < 1e-6f, "the grip socket itself stays");
+    }
     // ---- kick ----
     {
         const two_hand::KickConfig k;
