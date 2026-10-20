@@ -181,6 +181,10 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
         in.distCm = s.distCm;
         in.slideCm = s.slideCm;
     }
+    // 2026-10-20: the shotgun's pump IS the fore-end (as Half-Life 2 VR's): while the hand works it, the
+    // hold lets go only when the grip comes up. The 15:37 run lost the hold mid-stroke ("the hand slid off
+    // along the gun") and the gun pumped itself.
+    if (manual_reload::pumping() && g_grip.held()) in.slideCm = 0.0f;
     GripConfig c;
     c.grabCm = g_grabCm.load(std::memory_order_relaxed);
     c.releaseCm = c.grabCm + kReleaseExtraCm;

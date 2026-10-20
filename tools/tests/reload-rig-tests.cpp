@@ -310,48 +310,80 @@ int main() {
         const Vec back = kShotgunPumpBack[2].p - kShotgunPumpBack[0].p;
         const Vec bd = back * (1.0f / bvr::b1r::arm_ik::length(back));
         o = s.step(kShotgunPumpBack[0].p, true);
-        o = s.step(kShotgunPumpBack[0].p + bd * 7.5f, true);
-        check(o.handLock && o.t > 0.43f && o.t < 0.47f, "halfway back: the pump follows, the hand on it", o.t, 0.448);
-        o = s.step(kShotgunPumpBack[0].p + bd * 15.0f, true);
-        check(s.m.phase() == 1, "back: now forward, still held", s.m.phase(), 1);
-        const Vec at = kShotgunPumpBack[0].p + bd * 15.0f;
+        o = s.step(kShotgunPumpBack[0].p + bd * 4.5f, true);
+        check(o.handLock && o.t > 0.42f && o.t < 0.44f, "4.5 cm back: the pump follows 1:1, the hand on it", o.t, 0.432);
+        o = s.step(kShotgunPumpBack[0].p + bd * 6.5f, true);
+        check(s.m.phase() == 1, "6 cm back: caught - now forward, still held", s.m.phase(), 1);
+        const Vec at = kShotgunPumpBack[0].p + bd * 6.5f;
         const Vec fwd = kShotgunPumpFwd[3].p - kShotgunPumpFwd[0].p;
-        o = s.step(at + fwd * (15.0f / bvr::b1r::arm_ik::length(fwd)), true);
-        check(s.m.phase() == 2, "forward: pumped, the clip finishes", s.m.phase(), 2);
+        o = s.step(at + fwd * (6.5f / bvr::b1r::arm_ik::length(fwd)), true);
+        check(s.m.phase() == 2, "6 cm forward: pumped, the clip finishes", s.m.phase(), 2);
     }
-    // ---- the shotgun's pump by hand ----
+    // ---- the shotgun's pump by hand: Half-Life 2 VR's ratchet strokes ----
     {
         Pump pump;
-        const PumpConfig c;
+        const PumpConfig c; // 6 cm strokes; the Sim's 1 unit per cm
         PumpInput in;
         in.fireClip = true;
+        in.clipNew = true;
         in.held = true;
         const Vec d = pump_back_dir();
         Vec h{40, 10, 10};
         in.hand = h;
         in.clipT = 0.3f;
         PumpOutput o = pump.update(in, c);
+        in.clipNew = false;
         check(!o.hold && !o.run, "the shot plays first");
         in.clipT = 0.76f;
         o = pump.update(in, c);
-        check(o.hold && std::fabs(o.t - 0.75f) < 0.01f, "at the pump: the clip waits for the hand", o.t, 0.75);
-        in.hand = h + d * (c.travel * 0.5f);
+        check(o.hold && std::fabs(o.t - 0.75f) < 0.01f && pump.working(), "at the pump: the clip waits for the hand",
+              o.t, 0.75);
+        in.triggerRise = true;
         o = pump.update(in, c);
-        check(o.hold && std::fabs(o.t - 0.80f) < 0.01f, "halfway back: the pump halfway", o.t, 0.80);
-        in.hand = h + d * c.travel;
+        in.triggerRise = false;
+        check(o.deny && o.hold, "the trigger while it waits: a click, nothing fires");
+        in.hand = h - d * 3.0f; // forward first: the ratchet's reference follows it
         o = pump.update(in, c);
-        check(o.hold && std::fabs(o.t - 1.05f) < 0.01f, "all the way back: now forward", o.t, 1.05);
+        in.hand = h + d * 2.0f; // 5 cm back from there
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f && !pump.backDone(),
+              "measured from the farthest forward: 5 cm, not yet", o.strokeCm, 5.0);
+        check(std::fabs(o.t - (0.75f + 0.1f * 5.0f / 17.0f)) < 0.005f, "the clip follows the hand 1:1", o.t, 0.779);
+        in.hand = h + d * 3.2f;
+        o = pump.update(in, c);
+        check(pump.backDone() && std::fabs(o.t - 0.85f) < 0.01f, "6 cm: caught, the clip finishes the stroke", o.t, 0.85);
         const Vec back = in.hand;
-        in.hand = back - d * (c.travel * 0.5f);
+        in.hand = back + d * 2.0f; // further back first
         o = pump.update(in, c);
-        check(o.hold && std::fabs(o.t - 1.10f) < 0.01f, "halfway forward", o.t, 1.10);
-        in.hand = back - d * c.travel;
+        check(std::fabs(o.t - 0.85f) < 0.01f, "held at the rear stop", o.t, 0.85);
+        in.hand = back - d * 3.0f; // 5 cm forward of the farthest back
         o = pump.update(in, c);
-        check(o.run && o.jump && std::fabs(o.t - 1.15f) < 0.01f, "forward: pumped, the clip runs out", o.t, 1.15);
+        check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f, "forward from the farthest back: 5 cm", o.strokeCm, 5.0);
+        in.hand = back - d * 4.1f;
+        o = pump.update(in, c);
+        check(o.run && !o.jump && !pump.working(), "6 cm forward: pumped, the clip plays out");
         o = pump.update(in, c);
         check(!o.hold && !o.run, "then nothing more this shot");
+        in.clipNew = true; // the next shot's clip, no frame between
+        in.clipT = 0.0f;
+        o = pump.update(in, c);
+        in.clipNew = false;
+        in.clipT = 0.76f;
+        o = pump.update(in, c);
+        check(o.hold && pump.working(), "the next shot waits for its own pump");
         in.fireClip = false;
         pump.update(in, c);
+
+        Pump e; // a quick hand: the stroke begins during the recoil
+        in = PumpInput{};
+        in.fireClip = in.clipNew = in.held = true;
+        in.hand = h;
+        in.clipT = 0.1f;
+        e.update(in, c);
+        in.clipNew = false;
+        in.hand = h + d * 2.0f;
+        o = e.update(in, c);
+        check(e.working() && o.hold && o.t >= 0.75f, "2 cm back during the recoil: the pump begins", o.t, 0.75);
 
         Pump q; // not two-handed: the clip pumps itself
         in = PumpInput{};

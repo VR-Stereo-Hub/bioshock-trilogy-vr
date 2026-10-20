@@ -6767,3 +6767,41 @@ show after it be skipped: once in the headset a Tommy Gun fired with no drum on 
 AmmoModel, on TG_AmmoClip's socket) and once any manual reload that ejected has ended, refilled or
 not (`[reload] ...: its magazine shown`). The notify times in each clip are not yet known (the
 glTF export carries no notifies); a run with Weapons logging would list them.
+
+## 2026-10-20 - Half-Life 2 VR's shotgun pump (prior art, concepts only)
+
+Studied for parity with BS1's shotgun pump: Half-Life 2 VR's `hlvr\bin\server.dll` (Steam's
+`Half-Life 2 VR` install), its strings and a headless-IDA decompile of the shotgun's post-frame,
+primary attack and stroke handlers (the databases and output stay in the local IDA workspace; no
+code is copied). What it does, in our words:
+
+- **The pump IS the fore-grip.** The shotgun spawns a separate grabbable entity for its fore-end
+  (`hlvr_shotgun_slide`, model `vr_shotgun_foregrip.mdl`, a kind of its `CBaseVRWeaponForegrip`). The
+  off hand grabbing it is both the two-handed hold and the pump: there is no second grab and no "let
+  go if the hand moves along the gun" - the grip button alone lets go. The hand is drawn on the
+  fore-grip, which rides the gun along its axis.
+- **A stroke is a ratchet, not a path.** The pump's position is one number, the fore-grip's distance
+  from a point on the gun. While a back stroke is wanted, the weapon remembers the farthest-forward
+  position reached and completes the stroke once the pump is `hlvr_shotgun_pump_distance` (default
+  2, inches) behind it; then it remembers the farthest-back position and completes the forward
+  stroke the same distance ahead of it. Going the wrong way only moves the reference. Each stroke's
+  completion plays the weapon's stroke animation and sound and a controller rumble.
+- **The stroke starts at the shot.** Firing sets a "needs a pump" flag and, if the fore-grip is held,
+  sets the ratchet's reference to the pump's position at that moment - the hand can pump the instant
+  the shot is out; nothing waits for an animation.
+- **Fire is gated by the chamber, not queued.** With "needs a pump" set, the trigger plays the empty
+  click and pushes the next-attack time on a little; it fires nothing. The forward stroke clears the
+  flag and sets the next-attack time to the end of the stroke animation.
+- Its pistol slide (`CBaseVRWeaponSlide`) completes a rack the same way: the grabbed slide's
+  displacement toward the muzzle direction from where it was taken, a 0.8 threshold.
+
+**What BS1's shotgun takes from it** (`reload_rig.h` Pump, `manual_reload.cpp`, `two_hand.cpp`): the
+two-handed fore-end hold is the pump; while a stroke is in progress the hold lets go only when the
+grip comes up (the 15:37 run lost it mid-stroke - "the hand slid off along the gun" - and the gun
+pumped itself); strokes are ratchets of 6 cm along the gun's pump axis (from the farthest point the
+other way, re-based at each shot's clip), the clip following the hand 1:1 inside a stroke and playing
+the rest of it at the catch; a hand already 1.5 cm back during the recoil starts the stroke (the clip
+is played on to the pump); a trigger pulled while the pump waits buzzes the gun hand and fires
+nothing (the game is in its Fire clip). The reload's own last pump (two Slides) completes at the same
+6 cm. Not taken: a free-floating fore-grip entity (BS1's pump is a bone in the gun's own clip, so the
+clip's time IS the pump's position).

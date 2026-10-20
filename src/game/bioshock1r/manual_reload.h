@@ -50,6 +50,9 @@ void carry(const HandPlacement& hp);
 
 // A manual reload is in progress (the hands stay on their controllers; the two-handed grip waits).
 bool active();
+// Any thread: the shotgun's pump is mid-stroke (the front hand working it, reload_rig.h Pump). The
+// two-handed grip holds on through it - the pump is the fore-end, so working it is not sliding off.
+bool pumping();
 // Game thread, once per compose: 0..1, how much the free hand is drawn where the clip's own hand is
 // (holding the Tommy Gun's bolt: the hand locked onto it in the game's grip), eased in and out.
 float hand_lock(uint64_t nowMs);

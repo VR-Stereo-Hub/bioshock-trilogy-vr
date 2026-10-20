@@ -3082,3 +3082,17 @@ game's; the mod only decides the clip's TIME, from the player's hand along the c
 same placement that moves the clip's hand onto the controller (back through the gun hand's, on through
 the free hand's), so it stays in the drawn fingers without a per-part offset table. Pure state machine
 in `reload_rig.h` (host suite `reload-rig`); a reload the button begins is never held.
+
+### 2026-10-20: BS1's shotgun pump is a ratchet on the fore-end hold (after Half-Life 2 VR)
+
+The pump between shots first followed the hand along a fixed 17-unit path from wherever the hand was
+when the Fire clip reached its pump, completing at 90% of it, and the two-handed hold let go when the
+hand slid along the gun - so a natural, shorter pump never finished ("stuck between shots") and a
+long one dropped the hold. Half-Life 2 VR's shotgun (ENGINE_NOTES, "Half-Life 2 VR's shotgun pump")
+treats the fore-grip as the pump and each stroke as a ratchet: a short distance (2 in) past the
+farthest point reached the other way, its reference set at the shot, fire gated until the forward
+stroke. BS1 now does the same over the game's own Fire clip: the clip's time is the pump's position
+(1:1 with the hand inside a stroke), a stroke completes 6 cm past the ratchet's reference and the clip
+plays the rest, the stroke may begin during the recoil, the hold cannot slide off mid-stroke, and a
+trigger while the pump waits only buzzes. Rejected: a separate pump grab (two grabs on one fore-end)
+and a free fore-grip object (the pump is a bone the clip animates). Pure logic in `reload_rig.h` Pump.

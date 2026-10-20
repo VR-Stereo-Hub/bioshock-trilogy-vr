@@ -57,6 +57,12 @@ std::atomic<bool> g_ejectable{false};
 std::atomic<bool> g_ejectReq{false};
 bool g_xDown = false; // XInput thread
 bool g_suppressUntilUp = false; // XInput thread
+// The shotgun's pump: the trigger's pulls (XInput thread -> game thread), and whether a stroke is in
+// progress (game thread -> the two-handed grip, which must not let go while the hand works the pump).
+std::atomic<uint32_t> g_triggerPulls{0};
+bool g_triggerWas = false; // XInput thread
+uint32_t g_seenPulls = 0;  // game thread
+std::atomic<bool> g_pumping{false};
 
 // Game thread.
 uint32_t g_seenPresses = 0;
@@ -372,6 +378,7 @@ bool can_reload(void* weapon, uint64_t now) {
 } // namespace
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
+bool pumping() { return g_pumping.load(std::memory_order_relaxed); }
 
 float hand_lock(uint64_t nowMs) {
     // Eased toward the machine's ask: 100 ms onto the part, 200 ms back to the controller.
@@ -472,6 +479,9 @@ bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
         g_reloadButtonMs.store(GetTickCount64(), std::memory_order_relaxed);
     }
     g_xDown = x;
+    const bool trig = pad->rt >= 128; // the weapon hand's trigger, half a pull
+    if (trig && !g_triggerWas) g_triggerPulls.fetch_add(1, std::memory_order_relaxed);
+    g_triggerWas = trig;
     // A squeeze another grab owns (the hand-over, the two-handed grip) is never the reload's: it
     // is not a press here at all, so it cannot start one.
     const bool grip = !locked && (pad->buttons & kLB) != 0;
@@ -554,9 +564,17 @@ void tick(const Frame& f) {
             }
             if (pi.fireClip) script::anim_time(f.weapon, pw, &pi.clipT);
         }
+        static int32_t s_fireHandle = 0;
+        pi.clipNew = pi.fireClip && pw != s_fireHandle;
+        s_fireHandle = pi.fireClip ? pw : 0;
         pi.held = two_hand::held();
         pi.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
+        pi.unitsPerCm = f.unitsPerCm;
+        const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
+        pi.triggerRise = pulls != g_seenPulls;
+        g_seenPulls = pulls;
         const rr::PumpOutput po = g_pump.update(pi, g_pumpCfg);
+        g_pumping.store(g_pump.working(), std::memory_order_relaxed);
         // hold()/run() cover the Hands actor's own clip too (each_hands): the 14:11 run held the gun's
         // only, and the hands kept looping their pump with the front hand on it.
         if (po.hold)
@@ -564,10 +582,27 @@ void tick(const Frame& f) {
         else if (po.run)
             run(f.weapon, f.hands, pw, ph, po.jump, po.t);
         haptic(po.haptic, f);
+        // Fire is gated while the pump waits (Half-Life 2 VR's dry click): the gun hand says so.
+        if (po.deny) {
+            bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
+            BVR_LOG("[reload] Shotgun pump: the trigger while the pump waits - click (%s stroke %.1f cm of %.0f)",
+                    g_pump.backDone() ? "forward" : "back", po.strokeCm, g_pumpCfg.strokeCm);
+        }
         if (po.event) {
             const int32_t h2 = actor_hands_handle(f.hands);
-            BVR_LOG("[reload] Shotgun pump: %s (hands clip %d, the Hands actor's %d)", po.event, ph, h2);
+            BVR_LOG("[reload] Shotgun pump: %s (hands clips %d / %d)", po.event, ph, h2);
         }
+        // Where the stroke is, twice a second while it waits: the 15:37 run's pumps sat for seconds with
+        // nothing in the log to say how far the hand had got.
+        static uint64_t s_strokeMs = 0;
+        if (g_pump.working() && po.strokeCm >= 0.0f && f.now - s_strokeMs >= 500) {
+            s_strokeMs = f.now;
+            BVR_LOG("[reload] Shotgun pump: %s stroke %.1f cm of %.0f (clip %.3f s)%s",
+                    g_pump.backDone() ? "forward" : "back", po.strokeCm, g_pumpCfg.strokeCm, po.t,
+                    pi.held ? "" : " - not two-handed");
+        }
+    } else {
+        g_pumping.store(false, std::memory_order_relaxed);
     }
     in.clipLive = clipName != nullptr;
     in.clip = clipName;

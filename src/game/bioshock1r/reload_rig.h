@@ -68,6 +68,10 @@ struct Phase {
     // the hand as the game holds it, fingers and all. The latch's snap plays on from there.
     float holdT = -1.0f;
     float travel = 0.0f; // Slide: the part's full travel back along the gun (grip-frame units)
+    // Slide: > 0, the stroke completes once the hand has gone this many cm along it (the clip plays the
+    // rest) - the shotgun's pump, as its pump between shots (Pump, after Half-Life 2 VR); <= 0: 95% of
+    // the travel (the Tommy Gun's bolt).
+    float strokeCm = -1.0f;
 };
 inline float hold_t(const Phase& p) { return p.holdT >= 0 ? p.holdT : p.t0; }
 
@@ -152,8 +156,8 @@ inline constexpr Phase kShotgunEnd[] = {
     // Slides (2026-10-20, as the Tommy Gun's bolt): the hand locked on the pump, which follows it one
     // for one - the old pulls mapped the hand onto the clip hand's path ("controlled from far away").
     // About 15 units each way (the reload's pump path; the Fire clip's SG_Pump runs 18).
-    {Kind::Slide, 0.409f, 0.487f, kShotgunPumpBack, 3, nullptr, "pump back", false, false, 1.5f, -1.0f, 15.0f},
-    {Kind::Slide, 0.532f, 0.676f, kShotgunPumpFwd, 4, nullptr, "pump forward", false, false, 1.5f, -1.0f, 15.0f},
+    {Kind::Slide, 0.409f, 0.487f, kShotgunPumpBack, 3, nullptr, "pump back", false, false, 1.5f, -1.0f, 15.0f, 6.0f},
+    {Kind::Slide, 0.532f, 0.676f, kShotgunPumpFwd, 4, nullptr, "pump forward", false, false, 1.5f, -1.0f, 15.0f, 6.0f},
     {Kind::Finish, 0.90f, 0.95f, nullptr, 0, nullptr, "done"}};
 
 inline constexpr Program kPrograms[] = {
@@ -585,14 +589,16 @@ private:
                 }
                 // Held: the part is where the hand has moved it along the stroke's own direction (its
                 // path's, the sideways axis left out for a two-sided part), both ways.
-                float prog = p.travel > 1e-3f ? arm_ik::dot(in.hand - grab_, slide_axis(p)) / p.travel : 1.0f;
+                const float moved = arm_ik::dot(in.hand - grab_, slide_axis(p));
+                float prog = p.travel > 1e-3f ? moved / p.travel : 1.0f;
                 prog = prog < 0 ? 0 : prog > 1 ? 1 : prog;
                 if (prog - lastProgress_ > 0.25f) o.haptic = Haptic::Tick;
                 lastProgress_ = prog;
                 o.t = T(p.t0 + (p.t1 - p.t0) * prog);
                 o.handLock = true;
                 o.chase = true; // played forward: its sounds fire
-                if (prog >= 0.95f) {
+                const bool caught = p.strokeCm > 0.0f && moved >= p.strokeCm * in.unitsPerCm;
+                if (prog >= 0.95f || caught) {
                     o.haptic = Haptic::Seat;
                     o.event = p.say;
                     o.t = T(p.t1);
@@ -769,23 +775,38 @@ private:
     }
 };
 
-// ---- the shotgun's pump, by hand (2026-10-20) ------------------------------------------------------
+// ---- the shotgun's pump, by hand (2026-10-20, redesigned the same evening) ------------------------
 // Every shot's 'Fire' clip pumps the gun itself: SG_Pump runs 18 units back 0.75-0.85 s, waits, and
-// forward 1.05-1.15 s (tools\blender\reload_pose.py). Held two-handed, the clip WAITS at the pump and
-// the front hand works it: back along the gun (the pump's own direction, from the reload's pump path),
-// then forward; the clip follows the hand both ways inside each stroke, and the next shot is ready only
-// once it is done (the game fires again when the clip ends). Not two-handed (or let go mid-way): the
+// forward 1.05-1.15 s (tools\blender\reload_pose.py). Held two-handed - the front hand on the fore-end,
+// which IS the pump - the clip WAITS at the pump for the hand to work it, and the next shot is ready
+// only once it has (the game fires again when the clip ends). Not two-handed (or let go mid-way): the
 // clip runs on and pumps itself, as before.
+//
+// THE STROKE, AFTER HALF-LIFE 2 VR (docs/bioshock1/ENGINE_NOTES.md, "Half-Life 2 VR's shotgun pump",
+// concepts only). Its pump is the gun's fore-grip itself, and a stroke is a RATCHET: it counts from
+// the farthest point the pump has reached the other way since the stroke began, and completes once the
+// hand is a short distance (its default is 2 inches) past it - not a fixed path from where the hand
+// happened to be when the clip got there. Ours: back along the gun's own pump axis (the reload's pump
+// path) measured from the farthest-forward point since the stroke began, 6 cm completes it; then
+// forward from the farthest-back point, 6 cm. Inside a stroke the clip follows the hand 1:1 (the drawn
+// hand rides the pump); at the catch the clip plays the rest of the stroke itself. A stroke undone
+// (the hand going back the other way) is never lost: the ratchet's reference only ever moves with it.
+// And as there, firing is GATED, not queued: a trigger pulled while the pump waits clicks (a buzz on
+// the gun hand) and does nothing else.
 struct PumpConfig {
     float backT0 = 0.75f, backT1 = 0.85f, fwdT0 = 1.05f, fwdT1 = 1.15f;
-    float travel = 17.0f;  // grip-frame units of hand travel for a full stroke
-    float done = 0.9f;     // a stroke this far completes
+    float travel = 17.0f;   // grip-frame units: the pump's full stroke, where the clip follows the hand 1:1
+    float strokeCm = 6.0f;  // hand travel past the ratchet's reference that completes a stroke
+    float earlyCm = 1.5f;   // during the recoil: this much back and the stroke has begun
 };
 struct PumpInput {
     bool fireClip = false; // the shotgun's 'Fire' clip is playing
+    bool clipNew = false;  // a new 'Fire' clip (the next shot) began this frame
     float clipT = 0;       // its time (seconds)
     bool held = false;     // two hands on the gun
     Vec hand{};            // the front hand, grip frame
+    float unitsPerCm = 1;  // grip-frame units per centimetre
+    bool triggerRise = false; // the trigger was pulled this frame
 };
 struct PumpOutput {
     bool hold = false;     // hold the clip at t
@@ -794,6 +815,8 @@ struct PumpOutput {
     float t = 0;
     bool chase = false;    // played forward to t (its sounds fire)
     Haptic haptic = Haptic::None;
+    bool deny = false;     // the trigger was pulled while the pump waits: click (the gun hand)
+    float strokeCm = -1;   // the stroke so far, cm past the ratchet's reference (-1 not pumping)
     const char* event = nullptr;
 };
 // The pump's direction in the grip frame: back along the gun, as the reload's pump stroke goes.
@@ -810,7 +833,9 @@ public:
             stage_ = Stage::Off;
             return o;
         }
-        if (stage_ == Stage::Off) stage_ = Stage::Firing;
+        // Each shot's clip is its own pump: the next shot's clip can begin without a frame in between
+        // (the 15:37 run: a pump left Done never came back for the shot after it).
+        if (stage_ == Stage::Off || in.clipNew) stage_ = Stage::Firing;
         if (stage_ == Stage::Done) return o;
         if (!in.held) {
             // Not (or no longer) two-handed: the clip pumps itself. (Before the pump a hand may still
@@ -824,39 +849,55 @@ public:
             }
             return o;
         }
-        const Vec d = pump_back_dir();
+        const float along = arm_ik::dot(in.hand, pump_back_dir()); // + is back along the gun
+        const float strokeU = c.strokeCm * (in.unitsPerCm > 1e-4f ? in.unitsPerCm : 1.0f);
+        const float follow = c.travel > 1e-3f ? c.travel : 1.0f;
         switch (stage_) {
             case Stage::Firing:
-                if (in.clipT < c.backT0) return o; // the shot and its recoil play
+                // The shot and its recoil play - unless the hand is already pumping: Half-Life 2 VR starts
+                // the stroke's reference AT the shot, so a quick hand never waits out the clip's 0.75 s of
+                // recoil (the clip is played on to the pump at up to 4x, its sounds and all).
+                if (in.clipNew || !refSet_) {
+                    ref_ = along;
+                    refSet_ = true;
+                }
+                if (along < ref_) ref_ = along;
+                if (in.clipT < c.backT0 && along - ref_ < c.earlyCm * strokeU / c.strokeCm) return o;
                 stage_ = Stage::Back;
-                grab_ = in.hand;
-                o.event = "pump it: back";
+                refSet_ = false;
+                o.event = in.clipT < c.backT0 ? "pump it: back (begun during the recoil)" : "pump it: back";
                 [[fallthrough]];
             case Stage::Back: {
-                float p = arm_ik::dot(in.hand - grab_, d) / c.travel;
-                p = p < 0 ? 0 : p > 1 ? 1 : p;
+                if (along < ref_) ref_ = along; // the ratchet: the farthest forward it has been
+                const float d = along - ref_;
                 o.hold = true;
-                o.t = c.backT0 + (c.backT1 - c.backT0) * p;
                 o.chase = true;
-                if (p >= c.done) {
+                o.t = c.backT0 + (c.backT1 - c.backT0) * (d / follow < 1.0f ? d / follow : 1.0f);
+                o.strokeCm = d / (strokeU / c.strokeCm);
+                o.deny = in.triggerRise;
+                if (d >= strokeU) {
                     stage_ = Stage::Fwd;
-                    grab_ = in.hand;
+                    ref_ = along;
                     o.haptic = Haptic::Tick;
-                    o.t = c.fwdT0;
+                    o.t = c.backT1; // the catch: the clip finishes the stroke
                     o.event = "pump it: forward";
                 }
                 return o;
             }
             case Stage::Fwd: {
-                float p = -arm_ik::dot(in.hand - grab_, d) / c.travel;
-                p = p < 0 ? 0 : p > 1 ? 1 : p;
+                if (along > ref_) ref_ = along; // the farthest back it has been
+                const float d = ref_ - along;
                 o.hold = true;
-                o.t = c.fwdT0 + (c.fwdT1 - c.fwdT0) * p;
                 o.chase = true;
-                if (p >= c.done) {
+                // Back at the pump's rear stop until the hand starts it forward.
+                o.t = d > 0.5f ? c.fwdT0 + (c.fwdT1 - c.fwdT0) * (d / follow < 1.0f ? d / follow : 1.0f) : c.backT1;
+                o.strokeCm = d / (strokeU / c.strokeCm);
+                o.deny = in.triggerRise;
+                if (d >= strokeU) {
                     stage_ = Stage::Done;
                     o.hold = false;
-                    o.run = o.jump = true;
+                    o.run = true;
+                    o.jump = false; // played on from where it is: the forward stroke's sound fires
                     o.t = c.fwdT1;
                     o.haptic = Haptic::Seat;
                     o.event = "pumped: the next shell is in";
@@ -867,11 +908,13 @@ public:
         }
     }
     bool working() const { return stage_ == Stage::Back || stage_ == Stage::Fwd; }
+    bool backDone() const { return stage_ == Stage::Fwd; }
 
 private:
     enum class Stage : uint8_t { Off, Firing, Back, Fwd, Done };
     Stage stage_ = Stage::Off;
-    Vec grab_{};
+    float ref_ = 0;
+    bool refSet_ = false;
 };
 
 } // namespace bvr::b1r::reload_rig

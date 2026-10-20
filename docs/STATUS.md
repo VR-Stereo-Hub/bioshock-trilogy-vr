@@ -2,6 +2,54 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-20 (evening) - BS1: the 15:33 headset run's four issues, the shotgun pump after HL2VR
+
+**Branch `claude/bs1-manual-reload`**, local commits only (the cylinder, the drum and the pump).
+Built, host-tested (14 suites), lint clean, installed. NOT run in the simulator or the headset.
+
+### Current state
+
+- **The right grip is the game's bumper again, taps and all.** The 15:33 "switched to the pistol at
+  boot" was a quick right-grip squeeze (117 ms): the HUD turns a bumper tap into "next weapon", which
+  the stuck virtual RB had hidden until 6ebbff2. A 250 ms hold-back tried that evening blocked every
+  real squeeze (the tester's are ~100 ms: "the grip doesn't work at all") and was dropped. Open:
+  whether a tap should cycle at all - the tester decides.
+- **Wrench, open:** in the 19:24 run every attack came from the TRIGGER (`[handback] melee attack
+  source=TRIGGER ... swing pulse never`; no `[swing] FIRE` in the run), so the hand-back gave the right
+  arm to the game's swing clip - "the arm went four feet in front". Not yet diagnosed.
+- **The pistol's carried cylinder sat 5-12 cm off the fingers and jumped** (captures afw-...153433 /
+  153712, Stereo too): the carry's weapon-space scale was measured from GetBoneCoords, which reads
+  the skeleton before or after the size write - 0.800 / 0.708 frame to frame. It is now DrawScale x
+  the written weapon size (`bones::weapon_written_scale`); `[reload] the gun's space: N bone read(s)
+  disagreed` counts the bad reads. The 0.53 s hold was checked in Blender and stays (the clip's hand
+  wraps the cylinder). Reload event lines name both hands clips (`hands clips A / B`).
+- **The cylinder as a falling world object: not possible from game data.** `ShockGame.U` has no
+  cylinder mesh (only `WP_PistolMesh`'s DrumParent/drum bones); the route is a spawned world actor
+  drawing the pistol mesh with every other bone collapsed (ENGINE_NOTES). Not built. The pistol still
+  drops its rounds as the world prop.
+- **Tommy Gun: a drum let go short of the well falls** (`reload_rig.h` Insert): a guided part let go
+  before half way used to stay guided with no hand on it and could still be seated by a bare hand.
+  Now: let go past half way - seated; short of it - it falls (a Havok copy of the drum) and the
+  reload waits at the pouch. The clip's own AnimNotify_SetAmmoVisible shows/hides the drum and a set
+  clip time can skip the show: `ShowAmmoModel` is now called on a fetch and when any ejecting
+  reload ends (`[reload] ...: its magazine shown`).
+- **Shotgun pump redesigned after Half-Life 2 VR** (studied with headless IDA; ENGINE_NOTES "Half-Life
+  2 VR's shotgun pump", ARCHITECTURE decision log). The fore-end hold is the pump and cannot slide off
+  mid-stroke; each stroke is a ratchet - 6 cm past the farthest point the other way - the clip
+  following the hand 1:1 and finishing the stroke at the catch; a stroke can begin during the recoil
+  (1.5 cm back); each shot's clip gets its own pump even with no frame between; the trigger while
+  the pump waits buzzes the gun hand and fires nothing. The reload's last pump completes at 6 cm too.
+  `[reload] Shotgun pump: back stroke N cm of 6` twice a second while it waits.
+
+### Next steps
+
+- Headset: the four items above (tester instructions in the session's report).
+- If the 6 cm stroke feels wrong, it is `PumpConfig::strokeCm` (and the Slides' 6.0 in kShotgunEnd);
+  the log's stroke lines give the distances the tester actually used.
+- The pistol cylinder as a world object: the spawned skeletal-actor route, if wanted.
+- The clips' AnimNotify_SetAmmoVisible times are unknown; listing them would let the eject keep the
+  game's own visibility instead of forcing it.
+
 ## Session 2026-10-20 (afternoon) - BS1: one grip owner, the wrench mirrored, reloads eased, cheats
 
 **Branch `claude/bs1-manual-reload`**, rebased onto `claude/bs1-two-hand-grip` abf36c6 (the old tip is
@@ -11709,6 +11757,15 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-10-20 (evening) - BS1 manual reload: the 15:33 run's fixes, the shotgun pump after HL2VR
+
+From the 15:33-15:38 headset log and two AFW captures: a 250 ms grip-tap hold-back was tried and
+dropped (it blocked real squeezes); the pistol's carried cylinder's oscillation traced to a GetBoneCoords scale read flipping
+0.800/0.708 and fixed; no cylinder mesh exists in ShockGame.U (documented, not built); a Tommy Gun
+drum let go short of the well now falls and the drum is re-shown by ShowAmmoModel; the shotgun pump
+rebuilt as Half-Life 2 VR's ratchet on the fore-end hold (headless IDA on its server.dll, concepts
+only). Host suite reload-rig 83 checks. Not run in the game.
 
 ### Session 62f (same day) - **v0.8.2 RELEASED**: BS1 load-save crash root-caused and fixed
 
