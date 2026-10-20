@@ -35,6 +35,8 @@
 #include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/palette_math.h"
 #include "game/bioshock1r/mirror_math.h"
+#include "game/bioshock1r/two_hand.h"
+#include "game/bioshock1r/two_hand_math.h"
 #include "core/input/xinput_bridge.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
@@ -6876,6 +6878,13 @@ void mirror_into(const mirror::Aff& a, Qts& q) {
 
 bool weapon_socket_axes(float axes[3][3]); // below, beside the socket cache
 
+// The physical controller (0 left, 1 right) hand mesh h is drawn on, for its haptics: hands.cpp
+// gives mesh h the role slot (mirrored ? 1 - h : h), and a slot's controller swaps with the gun.
+int m4_phys(int h) {
+    const int slot = g_m4.mirror ? 1 - h : h;
+    return bvr::input::left_handed() ? 1 - slot : slot;
+}
+
 // The evaluated pose as the drive reads it: the game's, or with the gun in the left hand the
 // mirrored one (each hand the other's layout; 43/44, the gun's grip and tip, at their mirror).
 const Qts* m4_pose(const Qts* A, int n) {
@@ -7552,6 +7561,31 @@ void m4_compose(bool late) {
     static bool s_gunRestValid[2] = {false, false};
     static float s_joinMinCm[2] = {1e9f, 1e9f};
     static bool s_carrying[2] = {false, false};
+    // 2026-10-19: the two-handed grip (two_hand.h). The gun hand's branch needs the FREE hand's
+    // anchor in the clip - where the game's animation has that hand against the gun - derived as
+    // the loop below derives every hand's: the palm centre, rigid on the palette route, the fist
+    // centre when that is on.
+    auto anchor_of = [&](int hh) {
+        const int ww = m4_wrist(hh);
+        const int* pbb = hh == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
+        ik::Bone wb;
+        memcpy(wb.p, A[ww].p, 12);
+        memcpy(wb.q, A[ww].q, 16);
+        ik::Vec pc{};
+        for (int j = 0; j < 5; ++j) pc = pc + ik::vec(A[pbb[j]].p) * 0.2f;
+        float pl[3];
+        if (usePalette && palette::rigid_palm_local(hh, pl)) pc = hc::apply(hc::frame_of(wb), ik::vec(pl));
+        if (g_fistAnchor.load(std::memory_order_relaxed)) {
+            hand_grip::Frame fr;
+            if (hand_grip::head_frame(ik::vec(A[ww].p), ik::vec(A[pbb[1]].p), ik::vec(A[pbb[2]].p),
+                                      ik::vec(A[pbb[4]].p), hh == 1 ? 1.0f : -1.0f, &fr))
+                pc = hand_grip::point(fr, hand_grip::kFistCentre);
+        }
+        return pc;
+    };
+    float twoHold = 0.0f; // how much the free hand rides the gun for the two-handed grip, this compose
+    void* twoGun = nullptr;
+    const bool twoGunOk = hands::current_holdable(&twoGun) && two_hand::applicable(twoGun);
     for (int hi = 0; hi < 2; ++hi) {
         const int h = hi == 0 ? gunHand : 1 - gunHand;
         const M4Hand& T = g_m4.hand[h];
@@ -7657,6 +7691,60 @@ void m4_compose(bool late) {
                 }
                 if (g > 0.0f && s_gunRestValid[h])
                     own = hc::toward(own, hc::from_rest(target, s_gunRest[h], palmLocal, palmComp, sPos), g);
+                // ---- 2026-10-19: TWO HANDS ON THE GUN (two_hand.h) ------------------------------
+                // Where the drawn gun has the other hand (its anchor in the clip, carried by this
+                // hand's placement) against where that hand really is (its own target). Unheld, the
+                // distance between them is the grab test; held, the gun turns about this palm until
+                // that point lies on the line to the real hand - its roll stays this hand's - and
+                // the other hand rides it there (the free hand's branch). A clip that owns either
+                // hand (a reload) pauses it: the carry above already puts the hand on the gun.
+                const M4Hand& O = g_m4.hand[1 - h];
+                if (twoGunOk && O.valid && toCmClip > 0.0f) {
+                    float op[3];
+                    to_comp_p(O.p, op);
+                    const ik::Vec real = ik::vec(op);
+                    const ik::Vec authored = hc::place(own, palmComp, anchor_of(1 - h));
+                    const bool paused = handback::active(hb(h), now) || handback::active(hb(1 - h), now);
+                    const float distCm = ik::length(real - authored) * toCmClip;
+                    const float slideCm =
+                        std::fabs(ik::length(real - own.at) - ik::length(authored - own.at)) * toCmClip;
+                    // From the real hand to that point in the body's frame (PIVOTPROBE's), for the probe.
+                    float toward[3] = {};
+                    {
+                        float dc[3], dw[3];
+                        ik::put((authored - real) * k, dc);
+                        qts_rotate(qa, dc, dw);
+                        const float toCm = g_m4.uuPerCm > 1e-4f ? 1.0f / g_m4.uuPerCm : 0.0f;
+                        toward[0] = (dw[0] * g_m4.F[0] + dw[1] * g_m4.F[1] + dw[2] * g_m4.F[2]) * toCm;
+                        toward[1] = (dw[0] * g_m4.R[0] + dw[1] * g_m4.R[1] + dw[2] * g_m4.R[2]) * toCm;
+                        toward[2] = dw[2] * toCm;
+                    }
+                    two_hand::publish(distCm, slideCm, paused, toward, now);
+                    const float tw = paused ? 0.0f : two_hand::hold_weight(now);
+                    if (tw > 0.0f) {
+                        const ik::Quat turn = two_hand::aim_turn(own.at, authored, real, 5.0f / toCmClip);
+                        const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
+                        own = hc::toward(own, aimed, tw);
+                        twoHold = tw;
+                    }
+                } else {
+                    two_hand::publish_none(now);
+                }
+                // ---- 2026-10-19: THE GUNSHOT KICK -------------------------------------------------
+                // A shot is the player's fire seam running (aim.h player_shots: one per bullet,
+                // pellet volley or cast - two_hand_math.h Kick says why not BRVR's wrist jerk); the
+                // wrench, which never reaches a seam, kicks once as each swing begins (the hands'
+                // firing state). Read once per evaluation, not again at the scene build.
+                if (!late) {
+                    static uint32_t s_shots = aim::player_shots();
+                    static bool s_firing = false;
+                    const uint32_t shots = aim::player_shots();
+                    const bool firing = hands_state::current(g_m4.actor) == hands_state::State::Firing;
+                    const bool swing = firing && !s_firing && two_hand::melee(twoGun);
+                    s_firing = firing;
+                    two_hand::shot(m4_phys(h), m4_phys(1 - h), shots != s_shots || swing, now);
+                    s_shots = shots;
+                }
             } else if (palX[gunHand].valid) {
                 const float c0 = handback::carry(hb(h), now);
                 const palette::HandXform& G = palX[gunHand];
@@ -7674,6 +7762,12 @@ void m4_compose(bool late) {
                         BVR_LOG("[handback] at the gun: the clip brought the %s palm within %.1f cm of the gun hand's "
                                 "(join distance %.0f cm)",
                                 h ? "right" : "left", s_joinMinCm[h], handback::join_cm());
+                }
+                // Two hands on the gun: this hand rides it where the game's clip has it (the same
+                // carry, at the hold's weight).
+                if (twoHold > 0.0f) {
+                    const hc::Placement gun{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                    own = hc::toward(own, hc::carried_by(gun, ik::vec(G.pivot), palmComp), twoHold);
                 }
             }
             const palette_math::Blended bl = palette_math::blend_hand(own.q, own.s, palmComp, own.at, wgt);

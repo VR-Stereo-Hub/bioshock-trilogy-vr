@@ -3052,3 +3052,20 @@ arms and the hand-back all agree with what is skinned; each hand goes to its own
 the gun's grip and tip (43/44, no twin) go to their mirror image as a solid object (the bone-local axis flipped is the one sideways in the live pose), and the arms are mirrored with the hands so each arm's IK reaches its own hand. Palette route
 only; refused, with a log line, if the rig does not measure as mirror-symmetric. Host suite
 `mirror-math` proves the algebra on a synthetic mirrored rig.
+
+### 2026-10-19: BS1's two-handed grip uses the clip's own off hand, at the compose
+
+The grab point is where the game's firing clip already holds the two-handed guns with the off
+hand (BRVR M6-S2: "the grab point costs nothing"), not a point the player records per weapon (the
+left-hand fork). The decision is made inside `m4_compose`, where both are known: the gun hand's
+placement carries the free hand's clip anchor to where the drawn gun has it, and that is compared
+with the free hand's own target. Holding reuses two existing pieces instead of a new pose path:
+the gun hand's placement is turned about its palm (a shortest-arc rotation onto the real
+rear->front line, roll kept), and the free hand takes the reload's `carried_by` at the hold's
+weight. The grip itself stays on the XInput thread with the hand-over grab (it owns the bumper
+bits and the haptics), fed by a seqlocked snapshot; a stale snapshot is no grab point. The
+gunshot kick is an EVENT, not BRVR's signal: BRVR reads the firing clip's wrist jerk, which the
+simulator showed too small on the Tommy Gun (one kick per burst) and too large on a wrench swing
+(eight per swing); the player's fire seam (one call per shot, aim.cpp) and, for the wrench, the
+hands' firing state beginning give one kick per shot and still follow fire rate and ammo without
+a trigger watch. Pure logic in `two_hand_math.h`.

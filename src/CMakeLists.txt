@@ -102,6 +102,9 @@ add_library(bioshockvr SHARED
     game/bioshock1r/wheel_dial.h
     game/bioshock1r/dial_input.cpp
     game/bioshock1r/dial_input.h
+    game/bioshock1r/two_hand.cpp
+    game/bioshock1r/two_hand.h
+    game/bioshock1r/two_hand_math.h
     game/bioshock1r/attach_census.cpp
     game/bioshock1r/muzzle.cpp
     game/bioshock1r/muzzle.h

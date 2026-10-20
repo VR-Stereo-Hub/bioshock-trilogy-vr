@@ -284,6 +284,10 @@ struct Slot {
     int32_t dumpLeft = 0;
     uint64_t lastWatchMs = 0; // rate gate for the session-30 watch line
 };
+// 2026-10-19: the PLAYER's shots through either seam - one per bullet, pellet volley or cast -
+// for the gunshot kick (two_hand.h): per shot, where the firing clip's wrist jerk is too small
+// on the Tommy Gun to see one shot from the next.
+std::atomic<uint32_t> g_playerShots{0};
 Slot g_weaponFire{"weapon"};  // AWeapon::GetPerfectFireStart impl
 Slot g_abilityFire{"ability"}; // UAttackAbility::GetPerfectFireStart impl
 
@@ -611,6 +615,7 @@ void __fastcall WeaponFireDetour(void* self, void* edx, float* outA, float* outB
     using WeaponFireFn = void(__fastcall*)(void*, void*, float*, float*, float*);
     reinterpret_cast<WeaponFireFn>(g_weaponFire.original)(self, edx, outA, outB, outC);
     g_weaponFire.calls.fetch_add(1, std::memory_order_relaxed);
+    if (owner_is_player_pawn(self)) g_playerShots.fetch_add(1, std::memory_order_relaxed);
 
     float a[3] = {0, 0, 0}, b[3] = {0, 0, 0}, c[3] = {0, 0, 0};
     read12(outA, a);
@@ -640,6 +645,7 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
     reinterpret_cast<AbilityFireFn>(g_abilityFire.original)(self, edx, instigator, outA, outB,
                                                            outC);
     g_abilityFire.calls.fetch_add(1, std::memory_order_relaxed);
+    if (is_player_pawn(instigator)) g_playerShots.fetch_add(1, std::memory_order_relaxed);
 
     float a[3] = {0, 0, 0}, b[3] = {0, 0, 0}, c[3] = {0, 0, 0};
     read12(outA, a);
@@ -2614,6 +2620,8 @@ bool laser_enabled() { return g_laser.load(std::memory_order_relaxed); }
 bool dot_enabled() { return g_dot.load(std::memory_order_relaxed); }
 float dot_dist_m() { return g_dotDistM.load(std::memory_order_relaxed); }
 float dot_size_deg() { return g_dotSizeDeg.load(std::memory_order_relaxed); }
+
+uint32_t player_shots() { return g_playerShots.load(std::memory_order_relaxed); }
 
 void weapon_scan_rearm(const char* why) {
     g_weaponScanMisses = 0;

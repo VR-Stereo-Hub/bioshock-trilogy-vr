@@ -2,6 +2,7 @@
 #include "wheel_dial.h"
 #include "wheel_state.h"
 #include "swap_hold.h"
+#include "two_hand.h"
 #include "bones.h"
 #include "menu_theme.h"
 #include "core/input/xinput_bridge.h"
@@ -129,15 +130,19 @@ bool grab_distance_cm(float* cm) {
 }
 
 bool grab(bvr::input::PadOverride* pad) {
-    if (!g_grabOn.load(std::memory_order_relaxed)) {
-        g_grabPhys = -1;
-        g_eligible = false;
-        return false;
-    }
     bool changed = false;
     const bool lhPad = pad->leftHanded;   // the mapping THESE bits were composed with
     const int gunPhys = lhPad ? 0 : 1;   // the controller holding the weapon role
     const bool busy = wheel_state::open_kind() >= 0 || bvr::overlay::visible();
+    // 2026-10-19: the two-handed grip goes first (its own F10 switch). While the hand without
+    // the gun is at the gun's second grip (or holding it), that grip is the two-handed grip's and
+    // the hand-over leaves it alone - reaching for a fore-end cannot hand the gun over.
+    const int freeClaimedPhys = two_hand::pad(pad, gunPhys, busy, &changed) ? 1 - gunPhys : -1;
+    if (!g_grabOn.load(std::memory_order_relaxed)) {
+        g_grabPhys = -1;
+        g_eligible = false;
+        return changed;
+    }
     float cm = -1.0f;
     const bool tracked = grab_distance_cm(&cm);
     const float grabCm = g_grabCm.load(std::memory_order_relaxed);
@@ -151,6 +156,7 @@ bool grab(bvr::input::PadOverride* pad) {
         const bool grip = (pad->buttons & bump) != 0;
         const bool rising = grip && !g_physGripWas[phys];
         g_physGripWas[phys] = grip;
+        if (phys == freeClaimedPhys && g_grabPhys != phys) continue;
         if (g_grabPhys == phys) {
             if (!grip) {
                 g_grabPhys = -1;
@@ -179,7 +185,7 @@ bool grab(bvr::input::PadOverride* pad) {
         g_handovers.fetch_add(1, std::memory_order_relaxed);
     }
     // The buzz means "you could grab here", so it stops once you have.
-    if (g_eligible && g_grabPhys < 0 && now - g_lastBuzzMs >= kBuzzEveryMs) {
+    if (g_eligible && g_grabPhys < 0 && freeClaimedPhys < 0 && now - g_lastBuzzMs >= kBuzzEveryMs) {
         g_lastBuzzMs = now;
         vr::pulse_hand(1 - gunPhys, kBuzzAmp, kBuzzMs);
     }
@@ -334,7 +340,7 @@ float menu_read(menu::Setting id) {
         case S::GrabEnabled: return g_grabOn.load() ? 1.0f : 0.0f;
         case S::GrabDistance: return g_grabCm.load();
         case S::GrabMirror: return bones::mirror_hands_enabled() ? 1.0f : 0.0f;
-        default: return std::numeric_limits<float>::quiet_NaN();
+        default: return two_hand::menu_read(id);
     }
 }
 
@@ -364,7 +370,7 @@ bool menu_write(menu::Setting id, float value) {
         case S::DialSnap: g_snap.store(value != 0); return true;
         case S::DialEntryTilt: g_entryTilt.store(value != 0); return true;
         case S::DialEntryYaw: g_entryYaw.store(value != 0); return true;
-        default: return false;
+        default: return two_hand::menu_write(id, value);
     }
 }
 
@@ -379,6 +385,7 @@ void draw_panel() {
     }
     menu::theme::note("The game's own lists, read as the HUD receives them. A wheel opens only with two or more "
                       "items; with one, the grip equips it.");
+    two_hand::draw_status();
 }
 
 } // namespace bvr::b1r::dial_input

@@ -2,6 +2,58 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-19 - BS1: two hands on the gun, and the shots in the hand
+
+**Branch `claude/bs1-two-hand-grip`** (off `claude/bs1-hud-overhaul` 33c2022). Local commits only.
+
+### Current state
+
+- **The two-handed grip (built, host-tested, installed; simulator-checked, not yet in the
+  headset).** BRVR's M6-S2,
+  rebuilt on this rig: on the Tommy Gun, shotgun, grenade launcher, chemical thrower and
+  crossbow (by class) the game's own clip puts the off hand on the gun, and THAT is the grab
+  point - no recording (the left-hand fork records one per weapon; BRVR's "costs nothing" wins).
+  The compose carries the free hand's clip anchor by the gun hand's placement and measures it
+  against the free hand's own target: within 12 cm the hand without the gun buzzes exactly as
+  the hand-over grab does (60 ms at 0.35 every 50 ms) and its grip never reaches the game (no
+  plasmid wheel); the grip's rising edge takes hold. Held, the gun turns about the rear palm
+  until that point lies on the line to the real front hand (roll stays the rear hand's; BRVR
+  substitutes pitch/yaw the same way, the fork aims rear -> front), the free hand rides it with
+  the reload's carry at full weight, eased in 120 ms / out 150 ms. Let go: the grip comes up, or
+  the hand slides 20 cm along the gun (the fork's measure - the gun turns to meet the hand, so
+  only sliding can take it off). A reload pauses a hold (the clip's carry already has the hand
+  on the gun) and it resumes after. The barrel-locked aim follows the drawn gun on its own.
+  `[twohand]` logs the class verdict, the grab, the let-go and BRVR's 0.5 s distance probe (with
+  the direction to the grab point, fwd/right/up cm, and while holding how far the hand slid).
+- **The gunshot kick.** A 45 ms pulse at full strength (BRVR's) on every shot: the player's fire
+  seam running (aim.h `player_shots`, one per bullet, pellet volley or cast), and for the wrench
+  (no seam) each swing's firing state beginning; an 80 ms quiet period folds one shot's events into
+  one kick. The front hand gets 0.6 of it while two-handing. BRVR's own signal - the firing clip's
+  wrist jerk past 6 deg - failed both ways in the simulator: 1.8 deg a frame on the Tommy Gun (one
+  kick for a burst), 96 deg on a wrench swing (eight kicks for one swing).
+- **Simulator (2026-10-19, tester's go-ahead, mirrored controller poses):** Tommy Gun - the probe
+  falls to 0.1 cm with the left controller on the drawn barrel grip, ELIGIBLE there; the held hand
+  matches the game's own pose (`vrhands handback force both`: the left hand on the barrel just ahead
+  of the drum); held, moving the front hand turned the barrel from fwd 0.90 / right 0.24 / up -0.37
+  to 0.98 / -0.17 / -0.06 with the hand on the gun; a 10 cm slide kept it, a 33 cm slide let go
+  ("slid off"), the grip coming up let go; no plasmid wheel while the left grip was the grip's.
+  Kicks: wrench 1 per swing, pistol 3 for 3, Tommy Gun 32 for 32 seam shots (all 32 on the front
+  hand too), shotgun 2 for 2. Gun in the LEFT hand (mirrored): the right hand's grab point landed
+  1.5 cm from the exact mirror, the hold mirrored the right-handed one, 2 shots 2 kicks. One crash
+  during a save load (BioshockHD.exe+0x785955, no mod frame on that thread's stack, minidump
+  `crash\bvr_20261019_233054.dmp`); the relaunch loaded and ran clean. User INIs unchanged.
+- **F10 > Controls > Two-handed grip:** Hold two-handed guns with both hands (on), Two-handed
+  grab distance (12 cm), Feel the shots (on), Shot kick strength (1.0). Pure logic in
+  `two_hand_math.h`, host suite `two-hand` (26 checks). No `src/core/` change.
+
+### Next steps
+
+- Headset: the feel - the buzz at the fore-end, the hold, the kick's strength (F10 Shot kick
+  strength). The simulator cannot say which controller a pulse reached (`m4_phys` maps the mesh to
+  the controller by the same rule hands.cpp places it); a run that feels a kick in the wrong hand
+  points there. The grenade launcher, chemical thrower and crossbow are untested (not in the save).
+- The load crash above: if it recurs, the dump's thread is the game's own.
+
 ## Session 2026-10-15 - BS1 HUD overhaul: the HUD in pieces, the Dishonored VR way
 
 **Branch `claude/bs1-hud-overhaul`** (off `staging` 2954c26). Local commits only; not pushed.
