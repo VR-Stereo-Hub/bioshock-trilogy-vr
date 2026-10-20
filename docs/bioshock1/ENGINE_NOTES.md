@@ -6751,3 +6751,19 @@ world actor that draws `WP_PistolMesh` with every bone but DrumParent/drum colla
 mesh on a spawned actor, its own SkeletonInstance resolved and written like the held weapon's - and a
 fall the mod moves itself (or Havok on a box around it). Not built: it is new engine work that cannot
 be checked without a run. Until then the pistol's world prop is its rounds.
+
+## 2026-10-20 - The reload clip shows and hides the magazine itself
+
+`ShockGame.AnimNotify_SetAmmoVisible` (an AnimNotify_Scripted with one bool, `Show`) calls
+`Weapon.ShowAmmoModel` or `Weapon.HideAmmoModel` on the clip's owner. `ShowAmmoModel` sets the
+AmmoModel's static mesh to the pending ammunition's `VisualAmmoModel`, triggers its `AmmoUnHidden`
+effect event and `SetHidden(false)`; `HideAmmoModel` is `SetHidden(true)` (Weapon.uc; only
+`ShouldShowAmmoModel` is overridden, by the crossbow and the grenade launcher). So the gun's visible
+magazine during a reload is the clip's notifies - and a notify fires only when the clip PLAYS across
+it. The manual reload sets the clip's time as well as playing it (backward to the pouch after a
+drop, forward over the stretch between the drum seating and the bolt), so a hide could fire and the
+show after it be skipped: once in the headset a Tommy Gun fired with no drum on it. The mod now calls
+`ShowAmmoModel` by name itself when a new part is taken from the pouch (the drum in the hand is the
+AmmoModel, on TG_AmmoClip's socket) and once any manual reload that ejected has ended, refilled or
+not (`[reload] ...: its magazine shown`). The notify times in each clip are not yet known (the
+glTF export carries no notifies); a run with Weapons logging would list them.

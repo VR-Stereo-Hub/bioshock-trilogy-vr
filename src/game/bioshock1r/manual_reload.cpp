@@ -259,6 +259,8 @@ float g_floorZ = -1e9f;
 const char* g_carryPart = nullptr;
 void* g_carryWeapon = nullptr;
 bool g_carryAtPalm = false;
+bool g_ejectedThis = false;     // this manual reload ejected its magazine
+void* g_showAmmoFor = nullptr;  // ...and it is over: show the magazine on this weapon once it is in hand
 
 template <typename Fn>
 void for_parts(const char* part, Fn fn) {
@@ -495,7 +497,9 @@ void tick(const Frame& f) {
         if (g_machine.active()) {
             let_go(g_weapon, f.hands);
             g_machine.reset();
+            if (g_ejectedThis) g_showAmmoFor = g_weapon; // shown when it is back in hand
         }
+        g_ejectedThis = false;
         g_active.store(false, std::memory_order_relaxed);
         g_claim.store(false, std::memory_order_relaxed);
         g_ejectable.store(false, std::memory_order_relaxed);
@@ -506,6 +510,8 @@ void tick(const Frame& f) {
     if (f.weapon != g_weapon) script::warm_names();
     if (f.weapon != g_weapon) {
         if (g_machine.active()) BVR_LOG("[reload] the weapon changed - manual reload dropped");
+        if (g_machine.active() && g_ejectedThis) g_showAmmoFor = g_weapon; // shown when it is back in hand
+        g_ejectedThis = false;
         let_go(nullptr, nullptr);
         g_machine.reset();
         g_weapon = f.weapon;
@@ -629,6 +635,39 @@ void tick(const Frame& f) {
     if (!g_machine.active()) {
         g_havokCopy = false;
         g_seatValid = false;
+    }
+
+    // 2026-10-20 THE VISIBLE MAGAZINE FOLLOWS THE HANDS. The clip hides and shows the gun's AmmoModel
+    // itself (AnimNotify_SetAmmoVisible), and a manual reload sets the clip's time as often as it plays
+    // it - backward to the pouch after a drop, forward over stretches it never plays - so the notify that
+    // shows it again can be skipped: once a Tommy Gun fired with no drum on it. A new part taken from the
+    // pouch shows it (the drum in the hand IS the AmmoModel, on TG_AmmoClip), and so does any manual
+    // reload of a gun that ejects, once it has ended - refilled or not, the gun has rounds in it.
+    const rr::Program* prog = g_machine.program();
+    const bool ejects = prog && prog->ejectT >= 0;
+    if (o.fetched && ejects) {
+        struct { int32_t pad[4]; } none{};
+        const bool ok = script::call(f.weapon, "ShowAmmoModel", &none);
+        BVR_LOG("[reload] %S: a new %s from the pouch - its magazine shown (%s)", g_cls, o.part ? o.part : "part",
+                ok ? "ShowAmmoModel" : "ShowAmmoModel FAILED");
+    }
+    if (wasActive && !g_machine.active() && g_ejectedThis) g_showAmmoFor = f.weapon;
+    if (!g_machine.active()) g_ejectedThis = false;
+    if (o.ejected) g_ejectedThis = true;
+    // The new part let go short of its seat falls as the spent one did: a Havok copy for a gun whose copy
+    // is the part (the Tommy Gun's drum); the pistol's falls out of the gun as before (carry 2).
+    if (o.dropped && g_havokCopy && !g_copyRounds) {
+        const float still[3] = {0.0f, 0.0f, 0.0f};
+        const bool ok = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, still);
+        BVR_LOG("[reload] %S: the new %s was let go short of its seat - %s", g_cls, o.part ? o.part : "part",
+                ok ? "a Havok copy falls" : "no copy (it is simply gone)");
+    }
+    if (g_showAmmoFor == f.weapon && !g_machine.active() && st != hands_state::State::Reloading) {
+        struct { int32_t pad[4]; } none{};
+        const bool ok = script::call(f.weapon, "ShowAmmoModel", &none);
+        BVR_LOG("[reload] %S: the reload is over - its magazine shown (%s)", g_cls,
+                ok ? "ShowAmmoModel" : "ShowAmmoModel FAILED");
+        g_showAmmoFor = nullptr;
     }
 
     if (o.act == rr::Act::StartReload) {

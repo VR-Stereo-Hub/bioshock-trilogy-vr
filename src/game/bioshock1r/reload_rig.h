@@ -276,6 +276,9 @@ struct Output {
     bool ejected = false;       // this frame the spent part starts to fall (`part` names it)
     bool handLock = false;      // the free hand is drawn where the clip's own hand is (on the bolt)
     bool chase = false;         // `t` follows the hand forward: PLAY the clip there (its sounds fire)
+    bool fetched = false;       // this frame a new part was taken from the pouch (`part` names it)
+    bool dropped = false;       // this frame the carried new part was let go short of its seat: it falls,
+                                // and the reload waits at the pouch again (`part` names it)
 };
 
 // The first Fetch of a program (where an eject starts), -1 when it has none.
@@ -629,6 +632,7 @@ private:
                     carrying_ = true;
                     o.haptic = Haptic::Grab;
                     o.event = p.say;
+                    o.fetched = true;
                     next(in);
                 }
                 break;
@@ -659,12 +663,23 @@ private:
                     }
                     break;
                 }
-                if (!in.grip && sub_ != Sub::Guided) {
-                    // Let go away from the gun: the part falls; take another.
+                // Let go before it latched: the part falls; take another. 2026-10-20 (Tommy Gun, once: a drum
+                // being inserted fell out and the gun still fired with no drum): a GUIDED part let go short of
+                // half way used to stay guided with no hand on it - drawn where the clip had it at the guide's
+                // time (the clip's own new drum, tossed in the air below the gun) and still pushed home by a
+                // hand passing along the path. Now the grip decides alone: past half way it is seated (below),
+                // short of it it falls, guided or not.
+                const bool guidedFar = sub_ == Sub::Guided && lastProgress_ < 0.5f && pr.progress < 0.5f;
+                if (!in.grip && (sub_ != Sub::Guided || guidedFar)) {
                     o.carry = 2;
                     o.t = T(hold_t(p));
                     o.haptic = Haptic::Drop;
+                    o.dropped = true;
+                    o.event = "let go short of the seat: it falls - take another from the pouch";
                     carrying_ = false;
+                    sub_ = Sub::Wait;
+                    lastProgress_ = 0;
+                    lastT_ = p.t0;
                     if (phase_ > 0 && prog_->phases[phase_ - 1].kind == Kind::Fetch) {
                         --phase_;
                         enter(in);

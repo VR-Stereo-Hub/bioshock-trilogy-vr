@@ -125,6 +125,36 @@ int main() {
         o = s.step(Vec{40, 7, 2}, false);
         check(!s.m.active(), "the reload ended: idle");
     }
+    // ---- the new drum let go short of its seat (2026-10-20: it fell out, the gun still fired) ----
+    {
+        Sim s;
+        s.in.eject = true;
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.eject = false;
+        check(o.act == Act::StartReload, "eject: the game is asked to reload");
+        s.clip(L"Reload", 3.33f);
+        o = s.step(Vec{10, 0, -90}, false);
+        check(o.ejected, "the clip starts: the drum drops");
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
+        check(s.m.phase() == 2, "then the reload waits at the pouch", s.m.phase(), 2);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(o.fetched && s.m.phase() == 3, "a drum from the pouch: fetched", s.m.phase(), 3);
+        o = s.step(kTommyDrumIn[0].p + Vec{0, 2, 0}, true);
+        o = s.step(kTommyDrumIn[0].p, true);
+        check(o.carry == 0, "at the well's mouth: guided");
+        o = s.step(kTommyDrumIn[0].p, false);
+        check(o.dropped && o.carry == 2 && s.m.phase() == 2, "guided but let go short: it falls, back to the pouch",
+              s.m.phase(), 2);
+        o = s.step(kTommyDrumIn[2].p, false);
+        o = s.step(kTommyDrumIn[3].p, false);
+        check(s.m.phase() == 2 && !o.dropped, "no part, no seat: a bare hand along the path does nothing",
+              s.m.phase(), 2);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        o = s.step(kTommyDrumIn[0].p, true);
+        o = s.step(kTommyDrumIn[2].p, true);
+        o = s.step(kTommyDrumIn[2].p, false);
+        check(s.m.phase() == 4, "past half way and let go: it is seated", s.m.phase(), 4);
+    }
     // ---- timeout ----
     {
         Sim s;
