@@ -229,6 +229,14 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
                      const FRotator& gripFrameRot);
 void set_off_hand_tracked(bool on);
 bool off_hand_tracked();
+// 2026-10-19: with the gun in the left hand (bvr::input::left_handed), each hand takes the
+// other's bone layout mirrored across the rig, each on its own controller (mirror_math.h).
+// True while that is in effect: the switch on, the gun in the left hand, the palette route up
+// and the rig measured as mirror-symmetric. hands.cpp then places each hand on its own
+// controller and passes the LEFT hand as the one holding the gun.
+bool mirror_hands();
+bool mirror_hands_enabled();
+void set_mirror_hands(bool on);
 void off_hand_cm(int hand, float* fwd, float* right, float* up);
 void set_off_hand_cm(int hand, float fwd, float right, float up);
 void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll);

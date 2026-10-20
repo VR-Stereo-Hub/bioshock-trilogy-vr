@@ -50,6 +50,58 @@ opening and closing so a run shows whether the game opened one. The provider dum
 3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
 (`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
 
+**2026-10-19, mirror run 4: "I think its doubly off, but the animation is correct now".** The
+latched axis held (local axis 1 for every weapon). A solid gun keeps its sideways axis, so its
+sideways error is twice the distance from the pin to the gun model's centre plane: pinned at the
+grip bone it sat d to the left, at the right palm 2d to the left - so the centre plane lies as far
+from the grip as the palm, on the other side. The pin's sideways part is now the palm's, negated
+(`[bones] mirror: the held weapon is pinned N sideways of its grip`). This rests on reading
+"doubly off" as twice as far the SAME way; if the gun now sits off to the RIGHT, it was the other
+way and the pin is (palm sideways) / 3.
+
+**2026-10-19, mirror run 3: "the offset is still off; reload almost works, but it turns the guns
+upside down when reloading".** The log showed every weapon's socket offset is 0.00 (Pistol,
+TommyGun, Launcher): the engine hangs the weapon exactly at its grip, and the sideways shift is the
+gun MODEL's own - its handle sits off its origin, and a solid mirror keeps that on the old side. The
+grip is now pinned at the right palm's centre: the point of the gun that sat in the right palm lands
+in the mirrored palm, whatever the model; the tip (44, the muzzle effects) rides the gun rigidly as
+placed. The upside-down reload: the flipped axis was picked every frame, and a reload's tilt handed
+the choice to another axis - it is now latched per weapon from the first mirrored frame (`[bones]
+mirror: the held weapon's grip flips its local axis N`). Both host-tested (`mirror-math`, 24 checks,
+incl. a 60 degree reload roll). The socket-offset read below was removed (the offsets are zero).
+
+**2026-10-19, mirror run 2: "almost right; the pistol sat to the left, inside the left hand;
+reloads need mirroring too".** The engine hangs the weapon off its grip bone at the socket offset
+(the hands mesh's socket record named by the weapon's attach name); mirroring the bone alone left
+that offset's sideways part on the old side. The grip is now placed so the hang point lands on its
+mirror image (`mirror::mirrored_solid` with an offset, host-tested; `[bones] mirror: the gun hangs
+... off its grip (socket 'Pistol')` once per weapon). The one reload taken while mirrored ran in
+"reload at the gun" mode, and the hand-back was told the LEFT mesh held the gun while it times the
+GAME's hands (whose gun hand is still the right) - so the reload motion was layered on the wrong
+hand; it now gets the game's hand. The fork (Owloeb's) mirrored the whole picture at the renderer,
+so its reloads mirrored for free and its offsets were a per-weapon manual plane shift; nothing of it
+transfers here. Not yet mirrored: the gun's own animated parts (a magazine, a cylinder) still move
+on their unmirrored side of the gun - the gun is moved as a solid, never reflected.
+
+**2026-10-19, mirror run 1: "the hands were right, but the weapon was upside down and the arms
+were stretched super far".** The basis measured perfectly (plane y = 0, residual 0.000, every Mb a
+reflection). Two faults, both fixed: the gun's grip (no twin) flipped the bone-local axis that was
+sideways in the REST pose, not in the hand - now the sideways axis of the live pose
+(`mirror::mirrored_solid`, host-tested to keep the barrel forward and the top up for every axis
+order); and only the hands were mirrored, so each arm's IK measured its forearm from its own elbow
+to the other side's mirrored wrist - the arms (clavicle, upper arm, elbow, two twists; left
+3/4/5/22/23 with right 24/25/26/45/46) are now mirrored with the hands.
+
+**2026-10-19: the grab works (headset); the hands mirror with the gun in the left hand (built,
+not run in the game).** After a hand-over the game's right hand was drawn on the left controller.
+Now each hand takes the other's bone layout mirrored across the rig, each on its own controller,
+the gun at the mirrored grip (decision log 2026-10-19, `mirror_math.h`, host suite `mirror-math`).
+F10 > Controls > Grab and hand-over > Mirror the hands with the gun in the left hand (on). Log:
+`[palette] mirror basis MEASURED ...` once (or REFUSED with why), `[bones] hands MIRRORED ...` on
+each hand-over. Headset: hand the gun to the left hand - the left hand should hold it the way the
+right one did, the right hand should look like a left plasmid hand mirrored; check the gun sits in
+the left palm and fires along the laser; hand it back and both return to normal.
+
 **2026-10-19, headset run 1 of the grab: "the grab isnt working".** The log showed every grab
 swap the hands and swap straight back the same millisecond: the pad's bumper bits are in the
 mapping the pad was composed with, one input sync behind a swap, and the grab read them through

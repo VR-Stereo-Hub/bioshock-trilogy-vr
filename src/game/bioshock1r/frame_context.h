@@ -257,6 +257,28 @@ inline void xr_local_trim_angles(const float q[4], float* pitchRad, float* yawRa
     *rollRad = -atan2f(R10, R11);
 }
 
+// A hand's rotation trim mirrored: the trim that makes the OTHER hand the mirror image of a hand
+// with this one. The trim takes the controller's frame to the hand model's, and the two mirror
+// across DIFFERENT planes - the controller's left-right plane (XR x = 0) and the model's own - so
+// the mirrored trim is  Mx * T * Mx  (quaternion (x, y, z, w) -> (x, -y, -z, w)) times a half
+// turn about the model's z. Measured, not assumed: that is exactly what takes the right hand's
+// geometric grip calibration to the left's (R 68.5 -80.9 87.7, L 68.5 80.9 92.3; a plain
+// negation of the angles, or either reflection alone, does not). Degrees in and out.
+// 2026-10-19: the hand trims follow the hand layouts when the hands are mirrored.
+inline void mirror_trim_deg(float pitchDeg, float yawDeg, float rollDeg, float* mp, float* my, float* mr) {
+    float q[4];
+    xr_local_trim_quat(pitchDeg / kRadToDeg, yawDeg / kRadToDeg, rollDeg / kRadToDeg, q);
+    const float c[4] = {q[0], -q[1], -q[2], q[3]};
+    const float halfZ[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    float m[4];
+    quat_mul(c, halfZ, m);
+    float p, y, r;
+    xr_local_trim_angles(m, &p, &y, &r);
+    *mp = p * kRadToDeg;
+    *my = y * kRadToDeg;
+    *mr = r * kRadToDeg;
+}
+
 // A rotation step of `deg` about view axis (0 yaw: + turns right; 1 pitch: + nose up;
 // 2 roll: + tips the top to the right), applied to a hand whose controller XR quaternion
 // is `ctrlXr` and whose trim is (pitch, yaw, roll) degrees. Rewrites the trim so that

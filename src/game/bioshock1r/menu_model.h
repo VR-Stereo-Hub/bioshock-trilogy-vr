@@ -83,7 +83,7 @@ enum class Setting {
     DialEnabled, DialGripTrigger, DialHoldSwap, DialDirectionOnly, DialNeutral, DialTravel, DialSnap,
     DialEntryTilt, DialEntryYaw, DialWidth, DialDistance,
     // Grab and hand-over (dial_input.cpp's pad override).
-    GrabEnabled, GrabDistance,
+    GrabEnabled, GrabDistance, GrabMirror,
     Count
 };
 struct Spec {

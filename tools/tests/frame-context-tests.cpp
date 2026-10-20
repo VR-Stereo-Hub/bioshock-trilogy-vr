@@ -59,6 +59,24 @@ int main() {
         check(dist(head(mono),origin)==0,"mono/SR context has no shift removed",dist(head(mono),origin),0);
         ++poses;
     }
+    // mirror_trim_deg: the hands' own geometric grip calibrations are mirror images (the
+    // headset log, 2026-10-19: R 68.5 -80.9 87.7, L 68.5 80.9 92.3), so mirroring the right's
+    // must give the left's - as a rotation, which the raw angles show is not plain negation.
+    {
+        float p, y, r;
+        mirror_trim_deg(68.5f, -80.9f, 87.7f, &p, &y, &r);
+        float a[4], b[4];
+        xr_local_trim_quat(p / kRadToDeg, y / kRadToDeg, r / kRadToDeg, a);
+        xr_local_trim_quat(68.5f / kRadToDeg, 80.9f / kRadToDeg, 92.3f / kRadToDeg, b);
+        const float d = fabsf(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+        check(d > 0.999f, "the right hand's grip calibration mirrors to the left's", d, 1.0f);
+        float p2, y2, r2;
+        mirror_trim_deg(p, y, r, &p2, &y2, &r2);
+        xr_local_trim_quat(p2 / kRadToDeg, y2 / kRadToDeg, r2 / kRadToDeg, a);
+        xr_local_trim_quat(68.5f / kRadToDeg, -80.9f / kRadToDeg, 87.7f / kRadToDeg, b);
+        const float d2 = fabsf(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+        check(d2 > 0.9999f, "mirroring a trim twice gives it back", d2, 1.0f);
+    }
     printf("frame-context: %d checks over %d poses, %d failed (body %.6f uu, wrists %.6f, old shoulders >= %.3f)\n",
         checks,poses,failed,maxBodyError,maxWristDelta,minBadShoulderShift);
     return failed?1:0;

@@ -34,6 +34,8 @@
 #include "game/bioshock1r/handback.h"
 #include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/palette_math.h"
+#include "game/bioshock1r/mirror_math.h"
+#include "core/input/xinput_bridge.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
 
@@ -43,10 +45,12 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace bvr::b1r::bones {
 namespace {
@@ -6814,6 +6818,7 @@ struct M4State {
     uint64_t ms = 0;             // when the targets were set (CalcView)
     void* actor = nullptr;
     int held = 1;
+    bool mirror = false;         // 2026-10-19: the gun in the left hand, each hand mirrored (mirror_math.h)
     M4Hand hand[2];
     // Arms: the shoulders and body axes, WORLD, from the same formula solve_arm uses.
     float shoulder[2][3] = {};
@@ -6833,6 +6838,160 @@ struct M4State {
     float camWorld[3] = {};
 };
 M4State g_m4;
+
+// ---- 2026-10-19: the hands mirrored with the gun in the left hand (mirror_math.h) ------------
+// When the grab hands the gun to the left controller, the game's rig still holds it in the RIGHT
+// hand. So each hand takes the other's bone layout, mirrored across the rig: the left hand shows
+// the right hand's grip on the gun, the right hand what the left was doing, each on its own
+// controller, the gun moved to the mirrored grip. The pose here (what the placement, the grip
+// calibration and the arms read) and the skin matrices in the palette gather are mirrored the
+// same way, so they agree. Palette route only; the basis is measured once from the rig's rest
+// pose and refused (logged) if the rig is not mirror-symmetric.
+std::atomic<bool> g_mirrorHands{true};
+// `vrbones mirrorpin <v>|auto`: the held gun's centre plane along its flipped axis, in the grip's
+// frame, instead of the one read from its skeleton (NaN = read it). For checking the reading.
+std::atomic<float> g_mirrorPinOverride{std::numeric_limits<float>::quiet_NaN()};
+Qts g_evMirror[kMaxBones];
+
+bool mirror_wanted() {
+    return g_mirrorHands.load(std::memory_order_relaxed) && bvr::input::left_handed() && palette::active() &&
+           palette::mirror_basis() != nullptr;
+}
+
+int mirror_twin(int b) {
+    for (int k = 0; k < mirror::kPairs; ++k) {
+        if (mirror::kPairLeft[k] == b) return mirror::kPairRight[k];
+        if (mirror::kPairRight[k] == b) return mirror::kPairLeft[k];
+    }
+    return b;
+}
+
+void mirror_into(const mirror::Aff& a, Qts& q) {
+    float qq[4], p[3], s[3];
+    if (!mirror::to_frame(a, qq, p, s)) return; // keep the game's bone rather than a broken one
+    memcpy(q.p, p, 12);
+    memcpy(q.q, qq, 16);
+    memcpy(q.s, s, 12);
+}
+
+bool weapon_socket_axes(float axes[3][3]); // below, beside the socket cache
+
+// The evaluated pose as the drive reads it: the game's, or with the gun in the left hand the
+// mirrored one (each hand the other's layout; 43/44, the gun's grip and tip, at their mirror).
+const Qts* m4_pose(const Qts* A, int n) {
+    if (!g_m4.mirror || n < patterns::kHandsRigBoneCount) return A;
+    const mirror::Basis* b = palette::mirror_basis();
+    if (!b) return A;
+    memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
+    auto aff = [&](int i) { return mirror::from_frame(A[i].q, A[i].p, A[i].s); };
+    for (int k = 0; k < mirror::kPairs; ++k) {   // the hands AND the arms
+        const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+        mirror_into(mirror::mirrored_pose(*b, aff(R), b->mbLeft[k]), g_evMirror[L]);
+        mirror_into(mirror::mirrored_pose(*b, aff(L), b->mbRight[k]), g_evMirror[R]);
+    }
+    // The gun's grip and tip, as a solid. Each flips ONE bone-local axis, the gun's sideways one,
+    // LATCHED per weapon from the first mirrored frame (a resting hold) - picked every frame, a
+    // reload's tilt handed the choice to another axis and turned the gun upside down. The flip is
+    // about the gun's own centre plane (below), which is not always through its grip.
+    // THE PLANE FLIPPED IS THE GUN'S. The weapon hangs off the grip through its socket, whose
+    // rotation (the socket record's axes) turns the gun's own frame against the bone's - so the
+    // sideways axis is the SOCKET axis that lies most along the mirror's normal, in the grip's
+    // frame, not a bone axis (flipping the bone's left the gun tilted by twice the socket's turn:
+    // "the gun angle isnt quite right"). Latched per weapon from the first mirrored frame.
+    static void* s_axisWeapon = nullptr;
+    static bool s_haveU = false;
+    static float s_u[3] = {};
+    static int s_uAxis = 1; // which of the socket's axes u is (the weapon skeleton's coordinate along it)
+    void* weapon = nullptr;
+    if (!hands::current_holdable(&weapon)) weapon = nullptr;
+    if (weapon != s_axisWeapon) {
+        s_axisWeapon = weapon;
+        s_haveU = false;
+    }
+    const mirror::Aff grip = aff(patterns::kBoneWeaponAttach);
+    if (!s_haveU) {
+        float ax[3][3];
+        const bool fromSocket = weapon_socket_axes(ax);
+        if (!fromSocket)
+            for (int a = 0; a < 3; ++a)
+                for (int c = 0; c < 3; ++c) ax[a][c] = a == c ? 1.0f : 0.0f; // the bone's own axes
+        const arm_ik::Vec n{b->n[0], b->n[1], b->n[2]};
+        int best = 0;
+        float bestDot = -1.0f;
+        for (int a = 0; a < 3; ++a) {
+            const arm_ik::Vec v = arm_ik::vec(ax[a]);
+            const float l = arm_ik::length(v);
+            if (!(l > 1e-6f)) continue;
+            mirror::Aff r = grip;
+            r.t[0] = r.t[1] = r.t[2] = 0.0f;
+            const arm_ik::Vec w = mirror::apply(r, v * (1.0f / l));
+            const float wl = arm_ik::length(w);
+            const float d = wl > 1e-6f ? std::fabs(arm_ik::dot(w * (1.0f / wl), n)) : 0.0f;
+            if (d > bestDot) { bestDot = d; best = a; }
+        }
+        const arm_ik::Vec v = arm_ik::vec(ax[best]);
+        const float l = arm_ik::length(v);
+        if (!(l > 1e-6f)) return g_evMirror;
+        arm_ik::put(v * (1.0f / l), s_u);
+        s_uAxis = best;
+        s_haveU = true;
+        BVR_LOG("[bones] mirror: the held weapon flips its %s axis %c (in the grip's frame %.3f %.3f %.3f, %.2f along "
+                "the mirror's normal; latched until the weapon changes)",
+                fromSocket ? "SOCKET" : "grip bone's", "XYZ"[best], s_u[0], s_u[1], s_u[2], bestDot);
+    }
+    mirror::Aff gripInv;
+    if (!mirror::inverse(grip, &gripInv)) return g_evMirror;
+    // The pin: the gun's OWN centre plane. Flipping u mirrors the gun about the plane through the
+    // grip's origin, which is the model's centre only if the model is built about its grip. The
+    // pistol is not: its own skeleton (wskel GRIP HUNT) puts every centre-line bone - body,
+    // hammer, trigger, barrel - 1.4-2.2 UU off its R_Grip root along its sideways axis, so a flip
+    // about the root moved it twice that, into the back of the left hand (simulator, 2026-10-19,
+    // against the flipped right-hand capture; the wrench has no skeleton, no offset, and was right
+    // all along). The plane is the median sideways position of those bones, taken from the
+    // weapon's space to the grip's by the two DrawScales; no skeleton, no pin.
+    float plane = 0.0f; // along u, in the grip's frame (rig units)
+    const char* planeFrom = "no weapon skeleton: the grip's own origin";
+    if (weapon && weapon == g_wHoldable && g_wBoneCount > 2 && g_wBoneCount <= kMaxBones) {
+        float ys[kMaxBones];
+        int m = 0;
+        for (int i = 0; i < g_wBoneCount; ++i) {
+            // A root AT the grip (the pistol's R_Grip, the Tommy Gun's) is the grip, not the
+            // gun's centre line; a root elsewhere (the shotgun's SG_Body) is part of the gun.
+            const float* p = g_wRef[i].p;
+            if (i == 0 && p[0] * p[0] + p[1] * p[1] + p[2] * p[2] < 0.25f) continue;
+            ys[m++] = p[s_uAxis];
+        }
+        std::sort(ys, ys + m);
+        const float med = (m % 2) ? ys[m / 2] : 0.5f * (ys[m / 2 - 1] + ys[m / 2]);
+        float kw = 1.0f, kh = 1.0f;
+        if (!ds_read(weapon, &kw) || !(kw > 0.01f)) kw = 1.0f;
+        if (!g_m4.actor || !ds_read(g_m4.actor, &kh) || !(kh > 0.01f)) kh = 1.0f;
+        plane = med * kw / kh;
+        planeFrom = "the weapon skeleton's centre line";
+    }
+    const float ovr = g_mirrorPinOverride.load(std::memory_order_relaxed);
+    if (ovr == ovr) { plane = ovr; planeFrom = "OVERRIDE (vrbones mirrorpin)"; }
+    // u is the socket's axis as the record signs it, so the skeleton's coordinate along it is the
+    // plane's distance along u.
+    const float off[3] = {s_u[0] * plane, s_u[1] * plane, s_u[2] * plane};
+    static void* s_pinLogged = nullptr;
+    static float s_pinLoggedV = 0.0f;
+    if (s_pinLogged != weapon || s_pinLoggedV != plane) {
+        s_pinLogged = weapon;
+        s_pinLoggedV = plane;
+        BVR_LOG("[bones] mirror: the held weapon flips about its centre plane, %.2f along that axis (%s)", plane,
+                planeFrom);
+    }
+    const mirror::Aff grip2 = mirror::mirrored_solid_u(*b, grip, s_u, off);
+    mirror_into(grip2, g_evMirror[patterns::kBoneWeaponAttach]);
+    // The tip (44: the muzzle effects) rides the gun as it is now placed: rigid with the grip.
+    for (int j = 0; j < mirror::kSockets; ++j) {
+        const int s = mirror::kSocketBone[j];
+        if (s == patterns::kBoneWeaponAttach) continue;
+        mirror_into(mirror::mul(grip2, mirror::mul(gripInv, aff(s))), g_evMirror[s]);
+    }
+    return g_evMirror;
+}
 std::atomic<bool> g_pivotProbe{false};
 // s86: per side, the solved upper-arm head, body cm (fwd, right, up) from the bar centre,
 // and the wrist's distance from its shoulder as a fraction of the arm. For the HANDS line.
@@ -6991,6 +7150,25 @@ struct SockCache {
 };
 SockCache g_sock;
 std::atomic<uint32_t> g_sockDriven{0};
+
+// The held weapon's socket on its grip (43): the hands mesh's socket record named by the weapon's
+// attach name (weapon +0xF0, AActor::AttachToBone - 'Pistol', 'TommyGun', ...). Floats 3-11 are
+// the socket's X, Y and Z axes in the bone's frame (socket_follow reads them the same way): the
+// weapon's own frame on the bone. False when the record is not found.
+bool weapon_socket_axes(float axes[3][3]) {
+    void* weapon = nullptr;
+    if (!hands::current_holdable(&weapon) || !weapon || !g_sock.coords) return false;
+    int32_t nm[2] = {};
+    if (!read_n(static_cast<uint8_t*>(weapon) + patterns::kActorAttachBoneNameOffset, nm, 8)) return false;
+    for (int i = 0; i < g_sock.count; ++i) {
+        if (g_sock.bone[i] != patterns::kBoneWeaponAttach || memcmp(g_sock.name[i], nm, 8)) continue;
+        float rec[12];
+        if (!read_n(g_sock.coords + 12 * i, rec, 48)) return false;
+        for (int a = 0; a < 3; ++a) memcpy(axes[a], rec + 3 + 3 * a, 12);
+        return true;
+    }
+    return false;
+}
 
 bool socket_is_written(int bone) {
     if (!g_socketWrite.load(std::memory_order_relaxed)) return false;
@@ -7206,9 +7384,16 @@ void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) 
                 g_attachOriginComp.x, g_attachOriginComp.y, g_attachOriginComp.z);
     }
     const arm_ik::Vec tAttach = g_attachOriginComp;
+    // Mirrored (the gun in the left hand, A the mirrored pose): a hand's socket follows the OTHER
+    // hand, at its twin bone - a plasmid's palm effect leaves the right hand, which now shows
+    // what the left hand was doing. Its offset is the game's, unmirrored (a small error on an
+    // effect's origin, never on the hands).
+    const bool mir = g_m4.mirror && A != g_evCopy;
     for (int i = 0; i < g_sock.count; ++i) {
-        const int b = g_sock.bone[i], h = g_sock.hand[i];
-        if (h < 0 || b < 0 || b >= n || socket_is_written(b)) continue;
+        const int b0 = g_sock.bone[i], h0 = g_sock.hand[i];
+        if (h0 < 0 || b0 < 0 || b0 >= n || socket_is_written(b0)) continue;
+        const int h = mir ? 1 - h0 : h0;
+        const int b = mir ? mirror_twin(b0) : b0;
         float cur[12];
         if (!read_n(coords + 12 * i, cur, 48)) continue;
         if (!X[h].valid) { // that hand is not tracked this frame: the game's own offset back
@@ -7339,7 +7524,10 @@ void m4_compose(bool late) {
         for (int i = 0; i < 3; ++i) out[i] /= k;
     };
     auto to_comp_v = [&](const float w[3], float out[3]) { qts_rotate(qaInv, w, out); };
-    const Qts* A = g_evCopy;
+    // The game's own pose to the palette until it has measured the mirror from it; then, with
+    // the gun in the left hand, the drive reads the mirrored pose (each hand the other's layout).
+    palette::publish_pose(g_evCopy[0].p, n, static_cast<int>(sizeof(Qts) / sizeof(float)));
+    const Qts* A = m4_pose(g_evCopy, n);
     namespace hc = hand_compose;
     namespace ik = arm_ik;
     const uint64_t now = GetTickCount64();
@@ -7347,7 +7535,11 @@ void m4_compose(bool late) {
     bool haveWrist[2] = {false, false};
     // s87: the palette route (palette.h). Off, or the hook refused: the bone writes below.
     const bool usePalette = palette::active();
-    float hbWeight[2] = {handback::weight(0, now), handback::weight(1, now)};
+    // Mirrored, hand h shows the OTHER hand's animation, so the game's hand-back for that
+    // animation is the other hand's (a reload played on the right hand now plays on the left).
+    const bool mir = g_m4.mirror && A != g_evCopy;
+    auto hb = [&](int h) { return mir ? 1 - h : h; };
+    float hbWeight[2] = {handback::weight(hb(0), now), handback::weight(hb(1), now)};
     palette::HandXform palX[2];
     float palmComposed[2][3] = {};
     bool socketsWritten[2] = {false, false};
@@ -7457,8 +7649,8 @@ void m4_compose(bool late) {
             hc::Placement own{D.q, target.t, sPos};
             const float toCmClip = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
             if (h == gunHand) {
-                const float g = handback::gun_motion(h, now);
-                if (!handback::active(h, now)) {
+                const float g = handback::gun_motion(hb(h), now);
+                if (!handback::active(hb(h), now)) {
                     memcpy(s_gunRest[h].p, A[w].p, 12);
                     memcpy(s_gunRest[h].q, A[w].q, 16);
                     s_gunRestValid[h] = true;
@@ -7466,7 +7658,7 @@ void m4_compose(bool late) {
                 if (g > 0.0f && s_gunRestValid[h])
                     own = hc::toward(own, hc::from_rest(target, s_gunRest[h], palmLocal, palmComp, sPos), g);
             } else if (palX[gunHand].valid) {
-                const float c0 = handback::carry(h, now);
+                const float c0 = handback::carry(hb(h), now);
                 const palette::HandXform& G = palX[gunHand];
                 const float clipCm = ik::length(palmComp - ik::vec(G.pivot)) * toCmClip;
                 if (c0 > 0.0f) {
@@ -7506,7 +7698,7 @@ void m4_compose(bool late) {
             {
                 static uint64_t s_tr[2] = {0, 0}, s_t0[2] = {0, 0};
                 static ik::Vec s_start[2];
-                const bool on = handback::active(h, now);
+                const bool on = handback::active(hb(h), now);
                 if (on && !s_t0[h]) {
                     s_t0[h] = now;
                     s_start[h] = palmComp;
@@ -7535,7 +7727,9 @@ void m4_compose(bool late) {
             // channel is consumed by the attachment math (ENGINE_NOTES s16).
             if (g_socketWrite.load(std::memory_order_relaxed) && g_bones) {
                 for (int j = 0; j < kMaxSockets; ++j) {
-                    const int i = g_sockets[h][j].load(std::memory_order_relaxed);
+                    // Mirrored, the other hand's sockets ride this hand: the gun's grip (43) goes
+                    // with the left hand that now shows the grip on it.
+                    const int i = g_sockets[mir ? 1 - h : h][j].load(std::memory_order_relaxed);
                     if (i < 0 || i >= n) continue;
                     const ik::Vec sp = palmAt + ik::rotate(qb, (ik::vec(A[i].p) - palmComp) * sb);
                     const ik::Quat sq = ik::normalized(ik::mul(qb, ik::normalized(ik::quat(A[i].q))));
@@ -7734,7 +7928,8 @@ void m4_compose(bool late) {
         void* weapon = nullptr;
         // s91: with the weapon's socket written engine-side the engine already draws it on the hand;
         // composing the correction onto its draw as well would move it twice.
-        const bool weaponOnSocket = socketsWritten[held] && held == 1 && g_sockets[1][0].load() == patterns::kBoneWeaponAttach;
+        const int heldSockets = mir ? 1 - held : held; // whose socket list the held hand carried
+        const bool weaponOnSocket = socketsWritten[held] && heldSockets == 1 && g_sockets[1][0].load() == patterns::kBoneWeaponAttach;
         if (palX[held].valid && !weaponOnSocket && hands::current_holdable(&weapon) && weapon) {
             float wLoc[3];
             int32_t wRot[3];
@@ -7763,7 +7958,8 @@ void m4_compose(bool late) {
             }
         }
         socket_follow(palX, A, n, k); // s91: the effects' sockets onto the drawn hands
-        palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx);
+        palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx,
+                         mir);
         palette::set_link_probe(g_m4.actor, g_skelInst);
         (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
     }
@@ -7912,10 +8108,22 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
     g_m4On.store(true, std::memory_order_relaxed);
     g_m4.actor = handsActor;
     g_m4.held = held == 1 ? 1 : 0;
+    // The gun in the left hand (hands.cpp already passes the LEFT hand as held and each hand its
+    // own controller): each hand takes the other's layout, mirrored.
+    {
+        const bool m = mirror_wanted();
+        if (m != g_m4.mirror)
+            BVR_LOG("[bones] hands %s", m ? "MIRRORED - the gun in the left hand: each hand shows the other's "
+                                            "layout, mirrored across the rig, on its own controller"
+                                          : "as the game draws them (the gun in the right hand)");
+        g_m4.mirror = m;
+    }
     const uint64_t now = GetTickCount64();
     g_m4.ms = now;
     // s88: which hands the game's animation owns this frame, and the blend toward it.
-    handback::tick(handsActor, g_m4.held, now);
+    // The hand-back reads the GAME's hands: mirrored, the game's gun hand is still its right hand
+    // (headset 2026-10-19: passing the left mesh here timed the reload on the wrong hand).
+    handback::tick(handsActor, g_m4.mirror ? 1 - g_m4.held : g_m4.held, now);
     const float uuPerCm = ctx.worldScale / 100.0f;
 
     // ---- both hands: the wrist on the controller (s86, Dishonored's placement) ----------
@@ -7967,7 +8175,7 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
         // (zero by default since s89). Without it the hand's handle axis met the controller's only
         // as far as eye-tuned trims got it, and the fist pivot above would sit on a tilted axis.
         if (g_evCopyValid && g_evCopyInst == g_skelInst && g_evCopyCount >= patterns::kHandsRigBoneCount) {
-            const Qts* A = g_evCopy;
+            const Qts* A = m4_pose(g_evCopy, g_evCopyCount); // mirrored with the gun in the left hand
             const int w = m4_wrist(h);
             const int* pb = h == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
             const float side = h == 1 ? 1.0f : -1.0f;
@@ -8022,9 +8230,13 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
         // s86b controller-frame placement lane (`offHandView*`) is no longer applied: its
         // axes were the grip pose's, which tilt up the handle, and the rows do its job.
         (void)rf; (void)rr; (void)ru;
-        const float o0 = g_offHandPosCm[h][0].load(std::memory_order_relaxed) * uuPerCm;
-        const float o1 = g_offHandPosCm[h][1].load(std::memory_order_relaxed) * uuPerCm;
-        const float o2 = g_offHandPosCm[h][2].load(std::memory_order_relaxed) * uuPerCm;
+        // Mirrored: the OTHER hand's offset, mirrored. The hand model mirrors across its own
+        // local up in this (trimmed) frame - the same reflection mirror_trim_deg measured from the
+        // two hands' grip calibrations - so forward and right carry over and up changes sign.
+        const int oh = g_m4.mirror ? 1 - h : h;
+        const float o0 = g_offHandPosCm[oh][0].load(std::memory_order_relaxed) * uuPerCm;
+        const float o1 = g_offHandPosCm[oh][1].load(std::memory_order_relaxed) * uuPerCm;
+        const float o2 = g_offHandPosCm[oh][2].load(std::memory_order_relaxed) * uuPerCm * (g_m4.mirror ? -1.0f : 1.0f);
         for (int i = 0; i < 3; ++i) p[i] += tf[i] * o0 + tbr[i] * o1 + tu[i] * o2;
         memcpy(H.p, p, 12);
     }
@@ -8224,6 +8436,17 @@ void handle_command(const char* args) {
     const char* rest = args + consumed;
     while (*rest == ' ' || *rest == '\t') ++rest;
 
+    if (strcmp(verb, "mirrorpin") == 0) {
+        float v = 0.0f;
+        if (sscanf_s(rest, "%f", &v) == 1) {
+            g_mirrorPinOverride.store(v, std::memory_order_relaxed);
+            BVR_LOG("[bones] mirrorpin: the held gun flips about %.2f along its axis (override)", v);
+        } else {
+            g_mirrorPinOverride.store(std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
+            BVR_LOG("[bones] mirrorpin: auto (the weapon skeleton's centre line)");
+        }
+        return;
+    }
     if (strcmp(verb, "status") == 0) {
         BVR_LOG("[bones] inst=%p bones=%p count=%d writes=%u lastHand=%d refValid=%d "
                 "collapse=%d hideinactive=%d hiddenHand=%d",
@@ -9191,6 +9414,13 @@ void draw_debug_ui() {
                 g_lockSolves.load(std::memory_order_relaxed),
                 g_lockSkips.load(std::memory_order_relaxed));
     (void)g_status;
+}
+
+bool mirror_hands() { return mirror_wanted(); }
+bool mirror_hands_enabled() { return g_mirrorHands.load(std::memory_order_relaxed); }
+void set_mirror_hands(bool on) {
+    if (g_mirrorHands.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[bones] mirror the hands with the gun in the left hand: %s", on ? "ON" : "off");
 }
 
 } // namespace bvr::b1r::bones

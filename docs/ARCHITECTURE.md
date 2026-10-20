@@ -3036,3 +3036,19 @@ mirrored viewmodel (a renderer-side reflection keyed on draw-call return address
 code this branch replaced) - the gun is still drawn by the game's right-hand rig, at whichever
 controller holds it. The fork's recorded per-weapon grab points (`twohand.cpp`) are not ported
 either: the target is meant to come from the game's animation, not a recording.
+
+### 2026-10-19: With the gun in the left hand, the hands are mirrored on the skin palette
+
+The game's rig only ever holds the gun in its RIGHT hand, so after a hand-over the right hand was
+drawn on the left controller. Each hand now takes the other hand's bone layout, mirrored across
+the rig (`mirror_math.h`): the two hands' 16 bones pair up one to one (left 6+k, right 27+k), the
+mirror is measured once from the rig's own rest pose (bind = inverse(skin) * pose, the plane
+halfway between each bone and its twin), and the skin matrix a mirrored bone gets is
+`Mx * P_twin * Mx` - a rotation, because the reflection appears on both sides, so the mesh is not
+turned inside out and no cull state changes (the fork's mirrored viewmodel reflected the whole
+draw and flipped the winding instead). The drive reads the mirrored POSE `Mx * A_twin * Mb`
+(Mb the constant bone-local fix-up from the binds), so the placement, the grip calibration, the
+arms and the hand-back all agree with what is skinned; each hand goes to its own controller, and
+the gun's grip and tip (43/44, no twin) go to their mirror image as a solid object (the bone-local axis flipped is the one sideways in the live pose), and the arms are mirrored with the hands so each arm's IK reaches its own hand. Palette route
+only; refused, with a log line, if the rig does not measure as mirror-symmetric. Host suite
+`mirror-math` proves the algebra on a synthetic mirrored rig.

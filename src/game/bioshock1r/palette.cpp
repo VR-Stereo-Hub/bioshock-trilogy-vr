@@ -3,6 +3,7 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/arm_ik.h"
+#include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -42,9 +43,62 @@ struct Published {
     HandXform hand[2];
     WeaponXform weapon;
     bool hideArms = false;
+    bool mirror = false; // each hand shows the other's layout, mirrored (mirror_math.h)
     uint64_t ms = 0;
 };
 Published g_pub;
+
+// ---- 2026-10-19: the hands mirrored (mirror_math.h) ------------------------------------------
+// The engine's evaluated pose, published by the drive each frame, so the gather can measure the
+// rig's binds (bind = inverse(skin) * pose) against the skin matrices of the same evaluation.
+// The basis is measured once and then never changes (binds are constant); `g_mirrorState` says
+// which: 0 not yet, 1 valid, -1 refused (logged).
+std::mutex g_poseMutex;
+mirror::Aff g_pose[patterns::kHandsRigBoneCount];
+bool g_poseValid = false;
+mirror::Basis g_basis;
+std::atomic<int> g_mirrorState{0};
+int g_mirrorTries = 0;
+std::atomic<uint32_t> g_mirrored{0};
+
+void measure_mirror(const float* engine, int count) {
+    if (g_mirrorState.load(std::memory_order_relaxed) != 0 || count != patterns::kHandsRigBoneCount) return;
+    mirror::Aff bind[patterns::kHandsRigBoneCount];
+    {
+        std::lock_guard<std::mutex> lock(g_poseMutex);
+        if (!g_poseValid) return;
+        for (int i = 0; i < count; ++i) {
+            mirror::Aff inv;
+            if (!mirror::inverse(mirror::from_palette(engine + i * 16), &inv)) return;
+            bind[i] = mirror::mul(inv, g_pose[i]);
+        }
+    }
+    mirror::Basis b;
+    const bool ok = mirror::measure(bind, count, &b);
+    // A pose and a palette from different evaluations would read as asymmetric; give it a few
+    // gathers before calling the rig asymmetric.
+    if (!ok && ++g_mirrorTries < 60) return;
+    g_basis = b;
+    g_mirrorState.store(ok ? 1 : -1, std::memory_order_release);
+    BVR_LOG("[palette] mirror basis %s: plane normal %.3f %.3f %.3f through %.2f %.2f %.2f | the twins' rest "
+            "positions mirror to %.3f (%.1f%% of the hand's size), worst Mb determinant %.3f%s",
+            ok ? "MEASURED" : "REFUSED", b.mx.R[0] < 1.0f ? std::sqrt((1.0f - b.mx.R[0]) * 0.5f) : 0.0f,
+            b.mx.R[4] < 1.0f ? std::sqrt((1.0f - b.mx.R[4]) * 0.5f) : 0.0f,
+            b.mx.R[8] < 1.0f ? std::sqrt((1.0f - b.mx.R[8]) * 0.5f) : 0.0f, b.mx.t[0] * 0.5f, b.mx.t[1] * 0.5f,
+            b.mx.t[2] * 0.5f, b.residual, b.span > 0 ? 100.0f * b.residual / b.span : 0.0f, b.worstDet,
+            ok ? "" : " - the rig is not mirror-symmetric enough; the hands are not mirrored");
+}
+
+// Each hand's bones take the other hand's skin matrices, mirrored (mx * P * mx - a rotation).
+void mirror_skins(const float* engine, float* out, int count) {
+    if (count != patterns::kHandsRigBoneCount) return;
+    for (int k = 0; k < mirror::kPairs; ++k) {   // the hands and the arms
+        const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(engine + R * 16)), out + L * 16);
+        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(engine + L * 16)), out + R * 16);
+    }
+    g_mirrored.fetch_add(1, std::memory_order_relaxed);
+}
 
 std::atomic<uint32_t> g_calls{0}, g_composed{0}, g_refused{0};
 std::atomic<void*> g_linkActor{nullptr}, g_linkSkel{nullptr};
@@ -434,6 +488,10 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
         return g_orig(self, inst, lod, out, a5);
     }
     memcpy(g_copy, engine, static_cast<size_t>(count) * patterns::kSkinnedVertexStride);
+    measure_mirror(engine, count); // once; nothing after it is measured
+    // The gun in the left hand: each hand's skin matrices become the other's, mirrored, BEFORE
+    // the placement below - which the drive computed from the mirrored pose, so the two agree.
+    if (p.mirror && g_mirrorState.load(std::memory_order_acquire) == 1) mirror_skins(engine, g_copy, count);
     for (int h = 0; h < 2; ++h) {
         const HandXform& x = p.hand[h];
         if (!x.valid) continue;
@@ -629,14 +687,29 @@ void set_enabled(bool on) {
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
 bool active() { return g_installed && enabled(); }
 
-void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon) {
+void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_pub.instance = meshInstance;
     g_pub.weapon = weapon;
     g_pub.hand[0] = hands[0];
     g_pub.hand[1] = hands[1];
     g_pub.hideArms = hideArms;
+    g_pub.mirror = mirrored;
     g_pub.ms = GetTickCount64();
+}
+
+void publish_pose(const float* frames, int count, int stride) {
+    if (g_mirrorState.load(std::memory_order_relaxed) != 0 || count != patterns::kHandsRigBoneCount) return;
+    std::lock_guard<std::mutex> lock(g_poseMutex);
+    for (int i = 0; i < count; ++i) {
+        const float* f = frames + i * stride; // p[4] q[4] s[4] (bones.cpp Qts)
+        g_pose[i] = mirror::from_frame(f + 4, f, f + 8);
+    }
+    g_poseValid = true;
+}
+
+const mirror::Basis* mirror_basis() {
+    return g_mirrorState.load(std::memory_order_acquire) == 1 ? &g_basis : nullptr;
 }
 
 Sim sim_world(const Sim& L, const Sim& S) { return palette_math::sim_world(L, S); }

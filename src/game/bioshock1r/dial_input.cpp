@@ -2,6 +2,7 @@
 #include "wheel_dial.h"
 #include "wheel_state.h"
 #include "swap_hold.h"
+#include "bones.h"
 #include "menu_theme.h"
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
@@ -332,6 +333,7 @@ float menu_read(menu::Setting id) {
         case S::DialHoldSwap: return swap_hold::enabled() ? 1.0f : 0.0f;
         case S::GrabEnabled: return g_grabOn.load() ? 1.0f : 0.0f;
         case S::GrabDistance: return g_grabCm.load();
+        case S::GrabMirror: return bones::mirror_hands_enabled() ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -349,6 +351,7 @@ bool menu_write(menu::Setting id, float value) {
                 BVR_LOG("[grab] grab with the grip %s", value != 0 ? "ON" : "off");
             return true;
         case S::GrabDistance: g_grabCm.store(value); return true;
+        case S::GrabMirror: bones::set_mirror_hands(value != 0); return true;
         case S::DialGripTrigger:
             if (g_gripTrigger.exchange(value != 0) != (value != 0))
                 BVR_LOG("[dial] wheels open with %s", value != 0 ? "grip + trigger (the grip alone is free)"
