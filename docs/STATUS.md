@@ -50,6 +50,48 @@ opening and closing so a run shows whether the game opened one. The provider dum
 3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
 (`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
 
+**2026-10-19, mirror runs 7-9 and a simulator measurement: the gun flips about ITS OWN centre
+plane.** Headset runs pinning at the palm, its reflection and nothing gave "doubly off", "half as
+much" and "normally off" - no pin along the palm fits all three, and the tester then noted the
+wrench never had the problem. The pistol's own skeleton (`wskel GRIP HUNT`) says why: its root
+R_Grip is at 0 but every centre-line bone (body, hammer, trigger, barrel) sits 1.4-2.2 UU along its
+sideways Y, so a flip about the grip moved the pistol twice that; the wrench has no skeleton and is
+built about its grip. The flip is now about the median of those bones along the flipped axis
+(`[bones] mirror: the held weapon flips about its centre plane, N along that axis (...)`; -1.73 for
+the pistol, 0 without a skeleton). Simulator check (mirrored controller poses, `vraim barrel` and
+PIVOTPROBE): palm on the controller fwd 3.62 right +7.86 / -7.86 up -3.27 / -3.28 cm; muzzle from
+the ray right +3.0 (right hand) / -3.2 (left) cm, against -6.0 with no plane - the 3 cm the tester
+saw; barrel direction right component -0.109 / +0.074 (~2 deg). Images mislead here: the scene's
+light is not mirrored, so the left hand shows the pistol's shadowed face. `vrbones mirrorpin
+<v>|auto` overrides the plane for checking. Same check on the other guns: Tommy Gun (plane -3.54)
+muzzle +0.7 / -0.7 cm; shotgun (-3.55; its root SG_Body is part of the gun, not a grip, so a root
+off the origin now counts) +1.0 / -1.2 cm. Every gun's barrel direction is off its mirror by the
+same ~-0.033 sideways (~2 deg yaw) - the hand's, not the gun's; open. Not yet confirmed in the
+headset.
+
+**2026-10-19, mirror run 6: "aim is perfect and model is almost perfect; the gun angle isnt quite
+right".** The weapon hangs off its grip bone through its SOCKET, whose record carries the
+socket's axes in the bone's frame - the gun's own frame is turned against the bone's. The mirror
+flipped a grip-bone axis, so the gun came out tilted by twice that turn. It now flips the socket
+axis that lies most along the mirror's normal (`mirror::mirrored_solid_u`, host-tested against a
+20 degree socket turn; `[bones] mirror: the held weapon flips its SOCKET axis ...` per weapon), and
+the sideways pin follows that axis.
+
+**2026-10-19, mirror run 5: "centred now and almost perfect"; the model position and crosshair
+settings did not carry over to the other hand, the crosshair position "accumulated" over
+hand-overs, and the aim should just be hard-locked to the barrel (as the Darkness II mod does).**
+Built, not run in the game:
+- Hand trims follow the layouts: mirrored, each hand takes the OTHER hand's rotation and position
+  trim, mirrored (`frame_context.h mirror_trim_deg`: the controller's left-right reflection plus a
+  half turn about the model's z - measured from the two hands' own grip calibrations, host-tested;
+  the position offset keeps forward/right and negates up in the same frame). The F10 step rows are
+  ignored while mirrored (logged).
+- Aim hard-locked to the barrel (`aim.cpp barrel_locked`, on while "Shots leave the barrel" and
+  "Aim along the barrel" are on - the defaults): the per-hand tilt/turn/origin trims never apply
+  (the five sliders are debug-only now), the barrel measurement is unsmoothed, a lapse holds this
+  hand's last barrel instead of dropping to the trims, and a hand-over starts clean. The trims were
+  per controller and swapped between hands with the weapon profiles - the "accumulating".
+
 **2026-10-19, mirror run 4: "I think its doubly off, but the animation is correct now".** The
 latched axis held (local axis 1 for every weapon). A solid gun keeps its sideways axis, so its
 sideways error is twice the distance from the pin to the gun model's centre plane: pinned at the

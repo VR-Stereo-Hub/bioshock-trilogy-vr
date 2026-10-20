@@ -42,11 +42,13 @@ constexpr Spec kSpecs[] = {
     {S::GameCrosshair,"GameCrosshair",T::Aim,"Reticle visibility",L::Advanced,"Show the game's crosshair",K::Toggle,0,1},
     {S::HideUnarmedReticle,"HideUnarmedReticle",T::Aim,"Reticle visibility",L::Advanced,"Hide reticle with empty hands",K::Toggle,0,1},
     {S::HideSceneReticle,"HideSceneReticle",T::Aim,"Reticle visibility",L::Advanced,"Hide reticle during cutscenes",K::Toggle,0,1},
-    {S::AimPitch,"AimPitch",T::Aim,"Aim alignment",L::Advanced,"Tilt",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
-    {S::AimYaw,"AimYaw",T::Aim,"Aim alignment",L::Advanced,"Turn",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
-    {S::AimForward,"AimForward",T::Aim,"Aim origin",L::Advanced,"Forward / backward",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
-    {S::AimRight,"AimRight",T::Aim,"Aim origin",L::Advanced,"Right / left",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
-    {S::AimUp,"AimUp",T::Aim,"Aim origin",L::Advanced,"Up / down",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
+    // 2026-10-19: the aim is locked to the barrel (aim.cpp barrel_locked) - these trims apply only
+    // with "Shots leave the barrel" or "Aim along the barrel" turned off, so they are debug-only.
+    {S::AimPitch,"AimPitch",T::Aim,"Aim alignment",L::Debug,"Tilt",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
+    {S::AimYaw,"AimYaw",T::Aim,"Aim alignment",L::Debug,"Turn",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
+    {S::AimForward,"AimForward",T::Aim,"Aim origin",L::Debug,"Forward / backward",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
+    {S::AimRight,"AimRight",T::Aim,"Aim origin",L::Debug,"Right / left",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
+    {S::AimUp,"AimUp",T::Aim,"Aim origin",L::Debug,"Up / down",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
     {S::SnapTurn,"SnapTurn",T::Controls,"Turning",L::Basic,"Turn style",K::Choice,0,1,nullptr,"Smooth\0Snap\0"},
     {S::SnapAngle,"SnapAngle",T::Controls,"Turning",L::Basic,"Turn angle",K::Slider,15,90,"%.0f deg",nullptr,P::Global,C::Snap},
     {S::TurnSpeed,"TurnSpeed",T::Controls,"Turning",L::Basic,"Turn speed",K::Slider,.2f,3,"%.2fx",nullptr,P::Global,C::Smooth},
