@@ -46,6 +46,21 @@
   grab distance (12 cm), Feel the shots (on), Shot kick strength (1.0). Pure logic in
   `two_hand_math.h`, host suite `two-hand` (26 checks). No `src/core/` change.
 
+- **Headset run 2026-10-20 08:43 (manual-reload build) and the fixes after it.** Every shot dropped
+  the front hand: the hold paused while `handback::active` was true, and the recoil's gun motion
+  keeps it true for ~1 s per shot, so the hand left the gun and the tester let go. The pause is now
+  `handback::clip_owns` (owned, carried or moved by a reload - not the recoil). A second run found
+  three more: (1) the two-hand turn was measured from the KICKED gun, so it turned the kick back out
+  for the front hand (floaty, no recoil in the grip hand) and the kick read as a slide (the shotgun
+  let go while firing) - it is now measured from the gun as held before the kick and the kick
+  layered after, so both hands kick together; (2) a trial "front hand follows along the gun" let
+  the hand slide diagonally on every grip - removed, the hand is locked to the game's grip; (3)
+  full auto froze the reticle: during recoil `aim.cpp update_barrel` holds the barrel in the gun
+  hand's controller frame, which two-handed no longer carries the gun - two-handed it measures the
+  drawn barrel every frame, the kick included. The Tommy Gun in the LEFT hand never offered a grab in that run because
+  the hand-over grip also started a manual reload (the manual-reload branch's pull entry) that held
+  for 40 s and paused the hold - a manual-reload fix, not this branch's.
+
 ### Next steps
 
 - Headset: the feel - the buzz at the fore-end, the hold, the kick's strength (F10 Shot kick

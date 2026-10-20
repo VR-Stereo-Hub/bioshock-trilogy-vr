@@ -62,6 +62,10 @@ float tracked(int hand, uint64_t nowMs);
 // True while any part of the hand-back is in effect for that hand (owned, releasing,
 // blending, carried or moving with the clip) - the arms follow the same weight.
 bool active(int hand, uint64_t nowMs);
+// active() less the recoil: a clip owns or carries the hand, or a reload moves it. A shot's kick
+// alone is not - the two-handed grip holds through it (2026-10-20: pausing it for the ~1 s of
+// every shot's recoil took the front hand off the gun on each shot).
+bool clip_owns(int hand, uint64_t nowMs);
 
 // F10 (menu_backend): the reload's place, the gun's share of the clip, the join distance.
 int reload_place();

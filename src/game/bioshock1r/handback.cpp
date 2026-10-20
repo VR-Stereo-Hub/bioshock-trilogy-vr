@@ -171,6 +171,13 @@ bool active(int hand, uint64_t now) {
     return h.game || h.weight(now) < 1.0f || carry(hand, now) > 0.0f || gun_motion(hand, now) > 0.0f;
 }
 
+bool clip_owns(int hand, uint64_t now) {
+    const int i = hand ? 1 : 0;
+    const hc::Handoff& h = g_hand[i];
+    const float reload = (1.0f - g_gun[i].weight(now)) * g_gunMotion.load(std::memory_order_relaxed);
+    return h.game || h.weight(now) < 1.0f || carry(hand, now) > 0.0f || reload > 0.0f;
+}
+
 int reload_place() { return g_reload.load(std::memory_order_relaxed); }
 void set_reload_place(int place) { g_reload.store(place < 0 ? 0 : place > 2 ? 2 : place, std::memory_order_relaxed); }
 float gun_motion_amount() { return g_gunMotion.load(std::memory_order_relaxed); }

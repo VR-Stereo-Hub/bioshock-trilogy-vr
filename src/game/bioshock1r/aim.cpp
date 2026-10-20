@@ -26,6 +26,7 @@
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/muzzle.h"
 #include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/two_hand.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -1827,18 +1828,24 @@ static void update_barrel_direction(const RayBase& b, const float socketAxes[3][
 // recoil, the reload's gun motion - handback::gun_motion) the offset is HELD for as long as it
 // lasts: the shot leaves along the barrel as it was before the kick, where the player points,
 // and a full-auto burst longer than the miss window does not drop to the old origin.
+// 2026-10-20: NOT while two hands are on the gun. The hold keeps the barrel in the weapon hand's
+// controller frame, and two-handed the gun turns with the front hand too - so a full-auto burst
+// froze the reticle where the burst began while the drawn gun moved. Two-handed the barrel is
+// measured every frame, the kick included: the shot leaves along the drawn barrel.
 static void update_barrel(const FrameContext& ctx, uint64_t now) {
     const RayBase& b = g_prevBase;
     const int hand = hands::active_hand() == 0 ? 0 : 1;
-    if (g_barrel.valid && g_barrel.hand == hand && handback::gun_motion(hand, now) > 0.0f &&
+    const bool twoHanded = two_hand::held();
+    if (!twoHanded && g_barrel.valid && g_barrel.hand == hand && handback::gun_motion(hand, now) > 0.0f &&
         handback::weight(hand, now) >= 1.0f && handback::carry(hand, now) <= 0.0f) {
         g_barrel.stampMs = now;
         return;
     }
     void* weapon = nullptr;
     bool ok = (g_barrelOrigin.load(std::memory_order_relaxed) || g_barrelAim.load(std::memory_order_relaxed)) &&
-              g_gameplayView && b.valid && b.hand == hand &&
-              hands::active() && !handback::active(hand, now) && hands::current_holdable(&weapon) && weapon;
+              g_gameplayView && b.valid && b.hand == hand && hands::active() &&
+              !(twoHanded ? handback::clip_owns(hand, now) : handback::active(hand, now)) &&
+              hands::current_holdable(&weapon) && weapon;
     if (ok && weapon != g_barrel.weapon) {
         g_barrel.valid = false; // a new weapon: no smoothing across the switch
         g_barrel.weapon = weapon;

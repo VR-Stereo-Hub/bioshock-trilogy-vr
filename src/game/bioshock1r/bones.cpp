@@ -7689,6 +7689,10 @@ void m4_compose(bool late) {
                     memcpy(s_gunRest[h].q, A[w].q, 16);
                     s_gunRestValid[h] = true;
                 }
+                // The gun as held, before the clip's own motion (the recoil's kick): the two-handed
+                // grip measures and aims from this, so a kick neither reads as the hand sliding off
+                // nor gets turned back out of the gun (2026-10-20).
+                const hc::Placement pinned = own;
                 if (g > 0.0f && s_gunRestValid[h])
                     own = hc::toward(own, hc::from_rest(target, s_gunRest[h], palmLocal, palmComp, sPos), g);
                 // ---- 2026-10-19: TWO HANDS ON THE GUN (two_hand.h) ------------------------------
@@ -7703,11 +7707,13 @@ void m4_compose(bool late) {
                     float op[3];
                     to_comp_p(O.p, op);
                     const ik::Vec real = ik::vec(op);
-                    const ik::Vec authored = hc::place(own, palmComp, anchor_of(1 - h));
-                    const bool paused = handback::active(hb(h), now) || handback::active(hb(1 - h), now);
+                    const ik::Vec authored = hc::place(pinned, palmComp, anchor_of(1 - h));
+                    // A shot's recoil is not a pause: the kick plays on this hand and the front
+                    // hand rides it (handback::clip_owns, 2026-10-20).
+                    const bool paused = handback::clip_owns(hb(h), now) || handback::clip_owns(hb(1 - h), now);
                     const float distCm = ik::length(real - authored) * toCmClip;
                     const float slideCm =
-                        std::fabs(ik::length(real - own.at) - ik::length(authored - own.at)) * toCmClip;
+                        std::fabs(ik::length(real - pinned.at) - ik::length(authored - pinned.at)) * toCmClip;
                     // From the real hand to that point in the body's frame (PIVOTPROBE's), for the probe.
                     float toward[3] = {};
                     {
@@ -7722,7 +7728,10 @@ void m4_compose(bool late) {
                     two_hand::publish(distCm, slideCm, paused, toward, now);
                     const float tw = paused ? 0.0f : two_hand::hold_weight(now);
                     if (tw > 0.0f) {
-                        const ik::Quat turn = two_hand::aim_turn(own.at, authored, real, 5.0f / toCmClip);
+                        // The turn from the gun as held; applied to the kicked gun it keeps the kick
+                        // in the gun's own frame (turn * pinned.q * (pinned.q^-1 * own.q)), and the
+                        // front hand, carried by this placement, kicks with it.
+                        const ik::Quat turn = two_hand::aim_turn(pinned.at, authored, real, 5.0f / toCmClip);
                         const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
                         own = hc::toward(own, aimed, tw);
                         twoHold = tw;
