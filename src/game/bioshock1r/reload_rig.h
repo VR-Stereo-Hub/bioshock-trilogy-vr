@@ -59,7 +59,13 @@ struct Phase {
     // position does not count, only along and above the gun, and it is grabbed from this much further.
     bool bothSides = false;
     float grabScale = 1.0f;
+    // 2026-10-20: where the clip is held while a Fetch waits and an Insert carries (< 0: t0) - the
+    // moment the clip's own hand grips the new part at the gun (tools\blender\reload_pose.py: at the
+    // fetch's t0 the game's hand has tossed it, 70-78 units off the palm), so a carried part sits in
+    // the hand as the game holds it, fingers and all. The latch's snap plays on from there.
+    float holdT = -1.0f;
 };
+inline float hold_t(const Phase& p) { return p.holdT >= 0 ? p.holdT : p.t0; }
 
 struct Program {
     const wchar_t* weaponClass;
@@ -87,8 +93,9 @@ inline constexpr Pt kTommyBolt[] = {
 inline constexpr Phase kTommy[] = {
     {Kind::Pull, 0.267f, 0.567f, kTommyDrumOut, 4, "TG_AmmoClip", "pull the drum out"},
     {Kind::Carry, 0.567f, 0.567f, nullptr, 0, "TG_AmmoClip", "drop the spent drum"},
-    {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch"},
-    {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum"},
+    // Held at 1.113 s while carrying: the clip's hand on the new drum at the well (17.6 units off the palm).
+    {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch", false, false, 1.0f, 1.113f},
+    {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum", false, false, 1.0f, 1.113f},
     {Kind::Pull, 2.058f, 2.244f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 1.5f},
     {Kind::Play, 2.244f, 2.80f, nullptr, 0, nullptr, "the bolt runs home"},
     {Kind::Finish, 3.20f, 3.33f, nullptr, 0, nullptr, "done"}};
@@ -109,8 +116,10 @@ inline constexpr Phase kPistol[] = {
     {Kind::Pull, 0.189f, 0.377f, kPistolOpen, 3, nullptr, "fold the barrel down"},
     {Kind::Pull, 0.466f, 0.657f, kPistolCylOut, 3, nullptr, "pull the cylinder out"},
     {Kind::Carry, 0.657f, 0.657f, nullptr, 0, "DrumParent+drum", "drop the spent cylinder"},
-    {Kind::Fetch, 0.756f, 0.756f, nullptr, 0, "DrumParent+drum", "take a cylinder from the pouch"},
-    {Kind::Insert, 0.756f, 0.934f, kPistolCylIn, 3, "DrumParent+drum", "seat the cylinder"},
+    // Held at 0.89 s while carrying: the clip's hand gripping the new cylinder into the open frame
+    // (at 0.756 it has tossed it, 70.6 units off the palm).
+    {Kind::Fetch, 0.756f, 0.756f, nullptr, 0, "DrumParent+drum", "take a cylinder from the pouch", false, false, 1.0f, 0.89f},
+    {Kind::Insert, 0.756f, 0.934f, kPistolCylIn, 3, "DrumParent+drum", "seat the cylinder", false, false, 1.0f, 0.89f},
     {Kind::Flick, 1.40f, 1.55f, kPistolClose, 3, nullptr, "flick it shut"},
     {Kind::Finish, 1.70f, 1.80f, nullptr, 0, nullptr, "done"}};
 
@@ -545,7 +554,7 @@ private:
             }
             case Kind::Fetch: {
                 o.hold = true;
-                o.t = T(p.t0);
+                o.t = T(hold_t(p));
                 o.part = p.part;
                 o.carry = 2;
                 if (lying_) {
@@ -571,7 +580,7 @@ private:
                 // home - the clip plays its last stretch on its own.
                 if (!snap_ && in.partSeatCm >= 0 && in.partSeatCm <= c.seatCm) {
                     snap_ = true;
-                    playT_ = T(p.n > 1 ? p.path[p.n - 2].t : p.t0);
+                    playT_ = T(p.holdT >= 0 ? p.holdT : p.n > 1 ? p.path[p.n - 2].t : p.t0);
                     o.haptic = Haptic::Tick;
                 }
                 if (snap_) {
@@ -590,7 +599,7 @@ private:
                 if (!in.grip && sub_ != Sub::Guided) {
                     // Let go away from the gun: the part falls; take another.
                     o.carry = 2;
-                    o.t = T(p.t0);
+                    o.t = T(hold_t(p));
                     o.haptic = Haptic::Drop;
                     carrying_ = false;
                     if (phase_ > 0 && prog_->phases[phase_ - 1].kind == Kind::Fetch) {
@@ -601,7 +610,7 @@ private:
                 }
                 if (sub_ != Sub::Guided) {
                     o.carry = 1;
-                    o.t = T(p.t0);
+                    o.t = T(hold_t(p));
                     o.carryFrom = p.path[0].p;
                     if (pr.dist <= c.insertCm * in.unitsPerCm) {
                         sub_ = Sub::Guided;
@@ -615,7 +624,7 @@ private:
                     lastProgress_ = 0;
                     lastT_ = p.t0;
                     o.carry = 1;
-                    o.t = T(p.t0);
+                    o.t = T(hold_t(p));
                     o.carryFrom = p.path[0].p;
                     break;
                 }

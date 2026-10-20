@@ -43,6 +43,15 @@ NOT run in the simulator or the headset.
   maps; UModel lists the script package): `PI_AmmoType` is the pistol's six ROUNDS, not its cylinder
   (the cylinder is `WP_PistolMesh`'s own `DrumParent`/`drum` bones); `TG_AmmoModel` is the Tommy Gun's
   drum; `SpentShell` is a casing - a later "the rounds tumble out" can spawn those.
+- **Second headset run (12:21) and the fixes after it.** The Havok copy never spawned (`Spawn returned
+  nothing`): the mags seen were the gun's own part bones, through the floor. Now: two classes and two
+  spawn routes (ENGINE_NOTES), 90 s lifespan to pile up; the gun's own part, when it is the one that
+  falls, falls in the world and stops at the player's feet, lying there until a new one is taken. A new
+  drum/cylinder LATCHES by the part's own distance from where the spent one sat in the open gun
+  (10 cm, any hand orientation; `reload_rig` Input `partSeatCm`), then the clip seats it. The Tommy
+  Gun's bolt is grabbed from either side (Phase `bothSides`, 1.5x reach). The carried part is held as
+  the clip's own hand holds it at the gun (Phase `holdT`: Tommy 1.113 s, pistol 0.89 s; found with
+  `tools\blender\reload_pose.py` - at the old hold times the game's hand had tossed the part).
 - **The hands stay on the controllers through a weapon swap** (`hands_state.cpp`): the swap passes
   through ProceduralLoweringHands, classed Scripted, so the hand-back gave both hands to the game for
   its release - the left hand flew to the next gun's grip and back. It is Offscreen now.

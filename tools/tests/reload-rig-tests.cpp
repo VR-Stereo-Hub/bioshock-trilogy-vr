@@ -97,8 +97,8 @@ int main() {
         o = s.step(Vec{10, 0, -90}, false);
         check(o.carry == 2 && s.m.phase() == 2, "let go: dropped, fetch next", s.m.phase(), 2);
         o = s.step(Vec{10, 0, -90}, false, true);
-        check(o.buzz && o.carry == 2 && std::fabs(o.t - 0.933f) < 0.01f, "at the pouch: buzz, clip at the insert start", o.t,
-              0.933);
+        check(o.buzz && o.carry == 2 && std::fabs(o.t - 1.113f) < 0.01f, "at the pouch: buzz, clip where its hand holds the drum", o.t,
+              1.113);
         o = s.step(Vec{10, 0, -90}, true, true);
         check(s.m.phase() == 3, "a grip at the pouch takes a drum", s.m.phase(), 3);
         o = s.step(Vec{10, 0, -90}, true);
@@ -197,8 +197,8 @@ int main() {
         o = s.step(Vec{40, 7, 2}, false);
         check(!o.ejected && o.carry == 3 && o.fallS > 0.0f, "the drop is once; the fall goes on", o.fallS, 0.011);
         for (int i = 0; i < 70; ++i) o = s.step(Vec{40, 7, 2}, false);
-        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 0.933f) < 0.01f && o.carry == 3,
-              "after the fall: the fetch, the gun open, the old drum lying where it fell", o.t, 0.933);
+        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 1.113f) < 0.01f && o.carry == 3,
+              "after the fall: the fetch, the gun open, the old drum lying where it fell", o.t, 1.113);
         o = s.step(Vec{0, 0, -40}, true, true);
         check(s.m.phase() == 3, "a new drum from the pouch", s.m.phase(), 3);
 
@@ -212,7 +212,7 @@ int main() {
         check(o.ejected && o.carry == 3 && std::fabs(o.t - 0.466f) < 0.01f, "pistol: open, the cylinder falls", o.t,
               0.466);
         for (int i = 0; i < 70; ++i) o = p.step(Vec{40, 7, 2}, false);
-        check(p.m.phase() == 3 && std::fabs(o.t - 0.756f) < 0.01f, "then take a new one", o.t, 0.756);
+        check(p.m.phase() == 3 && std::fabs(o.t - 0.89f) < 0.01f, "then take a new one", o.t, 0.89);
 
         // The latch: the carried drum within 10 cm of its seat snaps home, wherever the palm is.
         s.in.partSeatCm = 30.0f;

@@ -6693,3 +6693,31 @@ parameters), `SetStaticMesh`, `SetDrawScale`, `SetPhysics` (EPhysics: PHYS_None 
 PhysicalReactiveActor", Class)`, the class of classes being any class's own class. `dropped_part.cpp`
 turns physics off before the mesh and size change and back on after, so the Havok body is built for
 the magazine and not for the class's default cube.
+
+**Live (12:21 headset run): `Spawn(PhysicalReactiveActor)` returned nothing every time**, though other
+natives called by name work (GetRenderBoundingBox, the animation API). Unexplained; the game itself
+spawns `NonPhysicalReactiveActor` at runtime (`SecurityCamera.OnKilled`, then `SetStaticMesh`), so the
+drop now tries that class too, and `Hands.ApplyScriptedHandAttachment(class, bone)` - a SCRIPT function
+whose bytecode calls Spawn itself, the spawned actor left in `Hands.ScriptedAttachment` - as the last
+resort (cleared there, detached, `DrawPriority` 0 so it leaves the hands' foreground layer).
+
+## 2026-10-20 - The first-person weapons, and how the reload clips hold their parts
+
+The player's weapon meshes are NOT in the maps: they are in the script package
+`Build\Final\BakedScripts\pc\ShockGame.U` (`ShockGame.WP_Pistol.WP_PistolMesh`,
+`WP_TommyGun.TommyGunMESH`, every other gun, the ammo and upgrade static meshes, `SpentShell`).
+UModel lists it (`-path=<BakedScripts\pc> ShockGame.U`) and exports its static meshes; our
+`tools\bsmesh\bs2gltf.py --bsm <ShockGame.U>` reads its skeletal meshes and their clips (TommyGunMESH:
+6 bones R_grip, TG_TommyGunBody, TG_AmmoClip, TG_PistonSOCKET, TG_Trigger, TG_Bolt, clip `Reload`;
+WP_PistolMesh: 8 bones R_grip, pistol_body, hammer, trigger, barrel, over, DrumParent, drum, clip
+`FastReload`). `PI_AmmoType` is the pistol's six ROUNDS (its cylinder is the gun's own bones);
+`TG_AmmoModel` is the Tommy Gun's drum (the gun mesh itself has no drum).
+
+`tools\blender\reload_pose.py` puts a gun's glb on the hands' `R_grip` and poses both by their reload
+clips (hands `TommyGun__ReloadTommyGun`, `Pistol__FastReloadPistol`). The part bone's distance from
+`Bip01_L_Hand`, units: Tommy Gun TG_AmmoClip 25 (0.267, the hand at the seated drum), 95 (0.567), 78
+(0.933, the fetch - the clip has tossed the new drum), 50 (1.023), 18 (1.113, the hand pushing it into
+the well), 20 (1.222, seated); pistol DrumParent 26 (0.466), 71 (0.756, the fetch - the new cylinder in
+the air above the gun), 52, 36, 30 (0.89, the hand gripping it into the open frame), 30 (0.934). The
+manual reload carries a part as the clip's hand holds it at the clip time it is held at, so the fetch
+and insert now hold the clip at 1.113 (Tommy) / 0.89 (pistol) instead of the fetch time.
