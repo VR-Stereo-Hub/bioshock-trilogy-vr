@@ -6721,3 +6721,33 @@ the well), 20 (1.222, seated); pistol DrumParent 26 (0.466), 71 (0.756, the fetc
 the air above the gun), 52, 36, 30 (0.89, the hand gripping it into the open frame), 30 (0.934). The
 manual reload carries a part as the clip's hand holds it at the clip time it is held at, so the fetch
 and insert now hold the clip at 1.113 (Tommy) / 0.89 (pistol) instead of the fetch time.
+
+## 2026-10-20 - The held weapon's bone reads land before or after the size write
+
+`manual_reload.cpp weapon_space` turns weapon space into the world from two bones of the held gun,
+read with GetBoneCoords (`muzzle::bone_coords`), and their clip poses (`bones::weapon_bone_pose`, the
+engine's own, before the weapon size). The factor between the two was measured every frame - and in
+the 15:33 headset run it FLIPPED between 0.800 (the rig's DrawScale) and 0.708 (DrawScale x the
+written weapon size 0.886), frame to frame, on the pistol (the Tommy Gun's reads were steady at
+0.708). GetBoneCoords reads the skeleton instance's matrices, and those are sometimes the engine's
+fresh evaluation and sometimes the skeleton lane's scaled write (`wskel_compose`). The drawn gun is
+always the written one, so every carried part placed through the 0.800 frames sat ~11% of its
+distance from the grip toward the grip - the pistol's carried cylinder "oscillated" between two
+places, with Stereo as well as AFW, and never sat in the fingers (the captures afw-...153433 /
+153712 show it 5-12 cm off the hand). The factor is now DrawScale (Actor +0x2AC) x
+`bones::weapon_written_scale()` (what the lane last wrote); a disagreeing read is counted and logged
+(`[reload] the gun's space: N bone read(s) disagreed with the drawn scale ...`). The hold time was
+not the fault: `reload_pose.py` at 0.53 s shows the clip's left hand wrapped round the cylinder
+(thumb over, fingers under), and the carry log puts the part ~14 units from the palm there.
+
+**No separate cylinder mesh exists.** UModel's listing of `BakedScripts\pc\ShockGame.U` has these
+static meshes for the guns: `TG_AmmoModel`, `shotgun_shell`, `PI_AmmoType` (the six rounds),
+`SpentShell`, the upgrade attachments (`PI_UpgradeA/B/Balt`, `TG_upgradeA/B`, ...), `WP_WrenchMesh`,
+`WP_RPG_Projectile`, ammo pickups - and no cylinder: it exists only as `WP_PistolMesh`'s own
+`DrumParent`/`drum` bones. The UnrealScript corpus names no other pistol mesh
+(`ShockGame.WP_Pistol.*` only). So a cylinder that falls as a WORLD object (out of the hands'
+foreground layer, where the gun's own bones flicker and float on the floor - the 12:49 run) needs a
+world actor that draws `WP_PistolMesh` with every bone but DrumParent/drum collapsed - a skeletal
+mesh on a spawned actor, its own SkeletonInstance resolved and written like the held weapon's - and a
+fall the mod moves itself (or Havok on a box around it). Not built: it is new engine work that cannot
+be checked without a run. Until then the pistol's world prop is its rounds.

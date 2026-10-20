@@ -200,6 +200,28 @@ bool weapon_space(void* weapon, const char* exclude, float m[3][3], float* s, fl
                                (orf[2] - o0[2]) * (orf[2] - o0[2]));
     if (!(dw > 1e-3f)) return false;
     *s = dw / best;
+    // 2026-10-20 (15:33 run): the measured factor flipped frame to frame between DrawScale (0.800) and
+    // DrawScale x weapon size (0.708) - GetBoneCoords reads the skeleton's matrices, which land before or
+    // after the lane writes the scaled pose - and the pistol's carried cylinder jumped between two places
+    // (with Stereo too). The drawn gun is always the written one: use that factor; the measurement only
+    // checks it.
+    float ds = 0.0f;
+    if (read_n(static_cast<uint8_t*>(weapon) + patterns::kActorDrawScaleOffset, &ds, sizeof ds) && ds > 0.05f &&
+        ds < 20.0f) {
+        const float drawn = ds * bones::weapon_written_scale();
+        static uint32_t s_flips = 0;
+        static uint64_t s_ms = 0;
+        if (std::fabs(*s / drawn - 1.0f) > 0.02f) ++s_flips;
+        const uint64_t now = GetTickCount64();
+        if (s_flips && now - s_ms >= 5000) {
+            s_ms = now;
+            BVR_LOG("[reload] the gun's space: %u bone read(s) disagreed with the drawn scale %.3f (this one %.3f) - "
+                    "the drawn one is used",
+                    s_flips, drawn, *s);
+            s_flips = 0;
+        }
+        *s = drawn;
+    }
     if (o0Out) memcpy(o0Out, o0, 12);
     if (p0Out) memcpy(p0Out, p0, 12);
     // world = M * weapon; the bone's world axes are M * R(q0), so M^T = R(q0) * A0^T: row a of the
@@ -670,8 +692,10 @@ void tick(const Frame& f) {
     }
     if (o.event) {
         const rr::Program* p = g_machine.program();
-        BVR_LOG("[reload] %S %S phase %d %s at %.3f s: %s", g_cls, p ? p->clip : L"-", g_machine.phase(),
-                p && g_machine.phase() < p->n ? kind_name(p->phases[g_machine.phase()].kind) : "-", o.t, o.event);
+        // Both hands clips a hold covers (each_hands): the weapon's and the Hands actor's own.
+        BVR_LOG("[reload] %S %S phase %d %s at %.3f s: %s (hands clips %d / %d)", g_cls, p ? p->clip : L"-",
+                g_machine.phase(), p && g_machine.phase() < p->n ? kind_name(p->phases[g_machine.phase()].kind) : "-",
+                o.t, o.event, hh, actor_hands_handle(f.hands));
     }
 }
 

@@ -941,6 +941,7 @@ std::atomic<float> g_wScale{0.88f};
 // 2026-10-20: the scale the skeleton lane actually wrote this frame (1.0 = authored: the lane
 // dropped, or the holdable is rigid), for m4_gun_ratio - the gun as drawn against the hands.
 std::atomic<float> g_wDrawnScale{1.0f};
+float g_wWrittenScale = 1.0f; // the ws wskel_compose last wrote (game thread), for weapon_written_scale
 // s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
 // hand's scale (0.8 by default), so the two sides can never disagree. Declared here
 // because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set
@@ -2371,6 +2372,7 @@ bool wskel_compose(float ws) {
         memcpy(g_wWritten[i].s, sv, 12);
     }
     g_wWrittenValid = true;
+    g_wWrittenScale = ws;
     ++g_wDrives;
     wskel_set_dirty(0); // render-side evaluate-if-dirty must not rebuild over us
     return true;
@@ -9850,6 +9852,7 @@ void set_weapon_part_pose(int i, const float p[3], const float q[4]) {
     g_wPartPose[i] = true;
     g_wPartAny = true;
 }
+float weapon_written_scale() { return g_wHoldable && g_wWrittenValid ? g_wWrittenScale : 1.0f; }
 void clear_weapon_part_offsets() {
     memset(g_wPartOn, 0, sizeof g_wPartOn);
     memset(g_wPartPose, 0, sizeof g_wPartPose);
