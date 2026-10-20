@@ -52,8 +52,12 @@ void carry(const HandPlacement& hp);
 bool active();
 
 // XInput thread: the free hand's grip. Records it for the game thread, and withholds its bumper while
-// the reload claims it. True when claimed this frame.
-bool pad(bvr::input::PadOverride* pad, bool* changed);
+// the reload claims it. True when claimed this frame. `locked`: the grip arbiter gave this squeeze
+// to another grab - it is no press here.
+bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked);
+// For the grip arbiter (XInput thread): how near the free hand is to what starts a reload, over the
+// grab radius (<= 1 in reach); 0 while a reload in progress wants the grip; -1 nothing.
+float reach();
 
 // The handle of the weapon's own animation (Weapon.AnimationHandle, which the reload waits on), 0
 // when unreadable. Game thread.

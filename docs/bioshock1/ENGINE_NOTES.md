@@ -6640,3 +6640,15 @@ automatic reload and the reload button both reach the same reload; the bound `XE
 The parts are model space (the root at 0 for the pistol and the Tommy Gun; the shotgun's root
 `SG_Body` is not at the grip), and the visible magazine is the weapon's `AmmoModel`, attached to a
 socket on that part - moving the part moves it.
+
+## 2026-10-20 - A rigid holdable's centre, from its render bounds
+
+The wrench has no skeleton (holdable +0x3FC null), so the gun-in-the-left-hand mirror had no centre
+line to flip it about and used the grip socket's origin - and every weapon socket aliases bone 43 with
+no offset (Session 91), so a mesh built off its own origin moved sideways by twice that offset into the
+left hand. `Actor.GetRenderBoundingBox()` (native final, called by name; its FBox return is the parms
+block's first 25 bytes: Min, Max, IsValid) is the drawn mesh's world bounds; taken back into the
+actor's own frame through its Location (+0x1D8) and Rotation (+0x1E4, an FRotator) its centre is a
+constant of the mesh, mirrored or not, since the engine draws the mesh with that rotation.
+`bones.cpp rigid_centre` averages 16 frames per actor; the plane is its coordinate along the socket
+axis the mirror flips, over the rig's DrawScale. Derived statically; not yet measured live.

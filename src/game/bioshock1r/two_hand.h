@@ -48,7 +48,11 @@ void shot(int gunPhys, int offPhys, bool shotEvent, uint64_t nowMs);
 // The grip of the hand WITHOUT the gun (`gunPhys` the physical hand with it): grabs, lets go,
 // withholds its bumper while it is the grip's, buzzes while it could grab. True when this frame
 // the free hand's grip belongs to the two-handed grip (the hand-over grab then leaves it alone).
-bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed);
+// `locked`: the grip arbiter gave this squeeze to another grab - the grip reads as up here.
+bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bool locked);
+// For the grip arbiter: the free hand's distance to the grab point over the grab radius (<= 1 in
+// reach), 0 while holding, -1 no grab point.
+float reach(bool busy);
 bool held();
 
 // F10 (dial_input routes these): the grip on/off and its distance, the gunshot kick and its strength.

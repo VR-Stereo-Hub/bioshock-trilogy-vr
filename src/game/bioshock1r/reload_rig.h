@@ -226,6 +226,9 @@ struct Output {
     bool atPalm = false;        // carried at the palm, not where the clip's hand holds it
     Vec carryFrom{};            // the clip's palm where the carried part sits on it (grip frame)
     bool claim = false;         // the free hand's grip is the reload's (no bumper reaches the game)
+    float reach = -1;           // idle: the free hand's distance to what starts a reload, over the grab
+                                // radius (<= 1 in reach; the grip arbiter compares it with the other
+                                // grabs'); -1 nothing to start
     bool buzz = false;          // the hand is within reach of what it should take next
     Haptic haptic = Haptic::None;
     const char* event = nullptr;// a transition worth a log line
@@ -294,10 +297,12 @@ private:
         if (e->entryAtPouch) {
             o.claim = in.inPouch;
             o.buzz = in.inPouch;
+            o.reach = in.inPouch ? 0.5f : -1.0f; // a zone, not a point: mid-reach
             go = in.inPouch && in.gripRise;
             carriedFromEntry_ = go;
         } else if (first.kind == Kind::Pull) {
             const bool near = within(first.path, first.n, in.hand, grabU);
+            if (first.n > 0 && grabU > 0) o.reach = arm_ik::length(in.hand - first.path[0].p) / grabU;
             o.claim = near;
             o.buzz = near;
             go = near && in.gripRise;

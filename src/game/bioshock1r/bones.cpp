@@ -6994,6 +6994,47 @@ int m4_phys(int h) {
     return bvr::input::left_handed() ? 1 - slot : slot;
 }
 
+// A rigid holdable's mesh centre in its own actor frame (world units: fwd, right, up), from the
+// engine's render bounds - the average of 16 frames, latched per actor (2026-10-20, the mirror's
+// pin for a holdable with no skeleton). False until latched or when the engine refuses.
+bool rigid_centre(void* actor, float out[3]) {
+    static void* s_actor = nullptr;
+    static int s_n = 0;
+    static float s_sum[3] = {};
+    if (actor != s_actor) {
+        s_actor = actor;
+        s_n = 0;
+        s_sum[0] = s_sum[1] = s_sum[2] = 0.0f;
+    }
+    constexpr int kSamples = 16;
+    if (s_n < kSamples) {
+        struct {
+            float mn[3], mx[3];
+            uint8_t valid;
+            uint8_t pad[39];
+        } box{}; // Actor.GetRenderBoundingBox's return value (FBox), at the parms block's start
+        float loc[3];
+        FRotator rot{};
+        if (!script::ready() || !script::call(actor, "GetRenderBoundingBox", &box) || !box.valid ||
+            !read_n(static_cast<uint8_t*>(actor) + patterns::kActorLocOffset, loc, 12) ||
+            !read_n(static_cast<uint8_t*>(actor) + patterns::kActorLocOffset + 12, &rot, 12))
+            return false;
+        float f[3], r[3], u[3];
+        ue_rot_basis(rot, f, r, u);
+        const float d[3] = {0.5f * (box.mn[0] + box.mx[0]) - loc[0], 0.5f * (box.mn[1] + box.mx[1]) - loc[1],
+                            0.5f * (box.mn[2] + box.mx[2]) - loc[2]};
+        s_sum[0] += d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+        s_sum[1] += d[0] * r[0] + d[1] * r[1] + d[2] * r[2];
+        s_sum[2] += d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+        if (++s_n < kSamples) return false;
+        BVR_LOG("[bones] rigid holdable %p: its mesh's centre is %.2f %.2f %.2f (fwd right up, world units) from its "
+                "origin, from the engine's render bounds",
+                actor, s_sum[0] / kSamples, s_sum[1] / kSamples, s_sum[2] / kSamples);
+    }
+    for (int i = 0; i < 3; ++i) out[i] = s_sum[i] / kSamples;
+    return true;
+}
+
 // The evaluated pose as the drive reads it: the game's, or with the gun in the left hand the
 // mirrored one (each hand the other's layout; 43/44, the gun's grip and tip, at their mirror).
 const Qts* m4_pose(const Qts* A, int n) {
@@ -7086,6 +7127,20 @@ const Qts* m4_pose(const Qts* A, int n) {
         if (!g_m4.actor || !ds_read(g_m4.actor, &kh) || !(kh > 0.01f)) kh = 1.0f;
         plane = med * kw / kh;
         planeFrom = "the weapon skeleton's centre line";
+    } else if (weapon) {
+        // 2026-10-20: NO SKELETON (the wrench, any rigid holdable): its mesh's own centre. A flip
+        // about the grip's origin moves a mesh built off its origin by twice that offset - the
+        // wrench went sideways into the left hand. The engine's render bounds (Actor
+        // GetRenderBoundingBox, world) taken back into the actor's own frame (Location +0x1D8,
+        // Rotation +0x1E4) are a constant of the mesh: the engine draws it with that rotation,
+        // mirrored or not. Its coordinate along the socket axis u, in the grip's component units.
+        float local[3];
+        if (rigid_centre(weapon, local)) {
+            float kh = 1.0f;
+            if (!g_m4.actor || !ds_read(g_m4.actor, &kh) || !(kh > 0.01f)) kh = 1.0f;
+            plane = local[s_uAxis] / kh;
+            planeFrom = "the rigid mesh's own centre (its render bounds)";
+        }
     }
     const float ovr = g_mirrorPinOverride.load(std::memory_order_relaxed);
     if (ovr == ovr) { plane = ovr; planeFrom = "OVERRIDE (vrbones mirrorpin)"; }
@@ -7962,16 +8017,18 @@ void m4_compose(bool late) {
                     float hp[3];
                     ik::put(handGrip, hp);
                     if (mir) unmirror_grip_point(hp);
-                    handGrip = ik::vec(hp);
+                    // The paths were recorded on the AUTHORED gun; the drawn one is gunRatio of it about
+                    // this socket (on_gun), so the hand is read back onto the authored gun.
+                    handGrip = ik::vec(hp) * (1.0f / gunRatio);
                 }
                 ik::put(handGrip, mf.hand);
-                mf.unitsPerCm = toCmClip > 0.0f && sb > 1e-4f ? 1.0f / (toCmClip * sb) : 1.0f;
+                mf.unitsPerCm = toCmClip > 0.0f && sb > 1e-4f ? 1.0f / (toCmClip * sb * gunRatio) : 1.0f;
                 float spk[3] = {sp.x * k, sp.y * k, sp.z * k}, spw[3];
                 qts_rotate(qa, spk, spw);
                 for (int c = 0; c < 3; ++c) mf.gripO[c] = aLoc[c] + spw[c];
                 const ik::Quat gq = ik::normalized(ik::mul(ik::quat(qa), sq));
                 for (int c = 0; c < 4; ++c) mf.gripQ[c] = gq.v[c];
-                mf.gripScale = k * sb;
+                mf.gripScale = k * sb * gunRatio;
                 if (F.valid) {
                     const float uu = g_m4.uuPerCm > 1e-4f ? g_m4.uuPerCm : 1.0f;
                     const float dz = (g_m4.camWorld[2] - F.p[2]) / uu;

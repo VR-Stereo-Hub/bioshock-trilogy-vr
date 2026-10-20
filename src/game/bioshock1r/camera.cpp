@@ -1912,7 +1912,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // Deliberately NOT gated on vrDrove: hand samples only exist with a live
         // XR session anyway, and leaving it out is what lets `vrinput swing sim`
         // exercise the whole decision path flat.
-        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench"));
+        // 2026-10-20: and shut for 400 ms after the gun changes hands. The detector samples the
+        // weapon hand's slot; a hand-over moves that slot to the other controller, and the jump
+        // between the two read as a swing ("the wrench swings when switching hands").
+        static bool s_swingLh = bvr::input::left_handed();
+        static uint64_t s_swingFlipMs = 0;
+        const uint64_t swingNow = GetTickCount64();
+        if (bvr::input::left_handed() != s_swingLh) {
+            s_swingLh = bvr::input::left_handed();
+            s_swingFlipMs = swingNow;
+        }
+        const bool swingSettled = !s_swingFlipMs || swingNow - s_swingFlipMs > 400;
+        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench") && swingSettled);
 
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;

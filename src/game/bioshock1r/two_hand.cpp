@@ -154,9 +154,19 @@ void shot(int gunPhys, int offPhys, bool shotEvent, uint64_t nowMs) {
     }
 }
 
-bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed) {
+float reach(bool busy) {
+    if (g_held.load(std::memory_order_relaxed)) return 0.0f;
+    const uint64_t now = GetTickCount64();
+    const Snap s = get_snap();
+    if (!s.ms || now - s.ms >= kStaleMs || busy || s.paused || !(s.distCm >= 0.0f)) return -1.0f;
+    const float r = g_grabCm.load(std::memory_order_relaxed);
+    return r > 0.0f ? s.distCm / r : -1.0f;
+}
+
+bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bool locked) {
     constexpr uint16_t kLB = 0x0100; // the hand without the gun is always the plasmid role: LB
-    const bool grip = (pad->buttons & kLB) != 0;
+    // A squeeze another grab owns reads as up: nothing is grabbed, and it is not stripped here.
+    const bool grip = !locked && (pad->buttons & kLB) != 0;
     const uint64_t now = GetTickCount64();
     const Snap s = get_snap();
     const bool fresh = s.ms && now - s.ms < kStaleMs && !busy;

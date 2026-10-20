@@ -43,6 +43,7 @@ rr::Config g_cfg;
 std::atomic<bool> g_gripDown{false};
 std::atomic<uint32_t> g_gripPresses{0};
 std::atomic<bool> g_claim{false};
+std::atomic<float> g_reach{-1.0f}; // Output::reach, for the grip arbiter
 std::atomic<uint64_t> g_claimMs{0};
 std::atomic<bool> g_active{false};
 std::atomic<uint64_t> g_reloadButtonMs{0}; // the last time the reload button was down
@@ -276,11 +277,20 @@ void carry(const HandPlacement& hp) {
     });
 }
 
-bool pad(bvr::input::PadOverride* pad, bool* changed) {
+float reach() {
+    if (!g_on.load(std::memory_order_relaxed) ||
+        GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) >= 250)
+        return -1.0f;
+    return g_reach.load(std::memory_order_relaxed);
+}
+
+bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
     constexpr uint16_t kLB = 0x0100; // the hand without the gun is always the plasmid role
     constexpr uint16_t kX = 0x4000;  // the pad's X: the game's reload (XENON_X)
     if (pad->buttons & kX) g_reloadButtonMs.store(GetTickCount64(), std::memory_order_relaxed);
-    const bool grip = (pad->buttons & kLB) != 0;
+    // A squeeze another grab owns (the hand-over, the two-handed grip) is never the reload's: it
+    // is not a press here at all, so it cannot start one.
+    const bool grip = !locked && (pad->buttons & kLB) != 0;
     if (grip && !g_gripDown.exchange(true, std::memory_order_relaxed))
         g_gripPresses.fetch_add(1, std::memory_order_relaxed);
     if (!grip) g_gripDown.store(false, std::memory_order_relaxed);
@@ -385,6 +395,8 @@ void tick(const Frame& f) {
         bvr::vr::pulse_hand(f.freePhys, kBuzzAmp, kBuzzMs);
     }
     g_claim.store(o.claim, std::memory_order_relaxed);
+    // For the grip arbiter (dial_input): a reload in progress that wants the grip owns it outright.
+    g_reach.store(o.active ? (o.claim ? 0.0f : -1.0f) : o.reach, std::memory_order_relaxed);
     g_claimMs.store(f.now, std::memory_order_relaxed);
     g_active.store(o.active, std::memory_order_relaxed);
     // `vrreload watch on`: twice a second, where the free hand should go next - the current phase's
