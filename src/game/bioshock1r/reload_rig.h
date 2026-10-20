@@ -55,6 +55,10 @@ struct Phase {
     const char* say;   // for the log
     bool atPalm = false; // carried at the palm (the clip's hand does not hold it at this time: the
                          // shotgun's shell is by the port when its loop begins)
+    // 2026-10-20: a part with a handle on BOTH sides (the Tommy Gun's bolt): the hand's sideways
+    // position does not count, only along and above the gun, and it is grabbed from this much further.
+    bool bothSides = false;
+    float grabScale = 1.0f;
 };
 
 struct Program {
@@ -85,7 +89,7 @@ inline constexpr Phase kTommy[] = {
     {Kind::Carry, 0.567f, 0.567f, nullptr, 0, "TG_AmmoClip", "drop the spent drum"},
     {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch"},
     {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum"},
-    {Kind::Pull, 2.058f, 2.244f, kTommyBolt, 3, nullptr, "rack the bolt"},
+    {Kind::Pull, 2.058f, 2.244f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 1.5f},
     {Kind::Play, 2.244f, 2.80f, nullptr, 0, nullptr, "the bolt runs home"},
     {Kind::Finish, 3.20f, 3.33f, nullptr, 0, nullptr, "done"}};
 
@@ -198,6 +202,7 @@ struct Config {
     float startTimeoutS = 0.6f; // the game must begin its reload within this, or there is none
     float settleProgress = 0.85f;// let go past this and a pull completes itself
     float dropS = 0.7f;         // the eject: how long the spent part falls before it is gone
+    float seatCm = 10.0f;       // the latch: a carried part this near where it sits snaps home
 };
 
 struct Input {
@@ -221,6 +226,8 @@ struct Input {
                                 // opens and its magazine drops, then the reload waits at the
                                 // program's first Fetch (a new one from the pouch)
     bool ejectAdopted = false;  // and a reload the game began (the gun ran dry) ejects the same way
+    float partSeatCm = -1;      // the carried part's distance from where it sits in the gun (cm), -1
+                                // unknown (no eject recorded the seat): the palm's path decides
 };
 
 enum class Act : uint8_t { None, StartReload, Abort };
@@ -312,6 +319,8 @@ private:
     bool carriedFromEntry_ = false;
     bool ejecting_ = false;     // the reload button started this one: it ejects when the clip starts
     bool dropping_ = false;     // the spent part is falling; then the first Fetch
+    bool lying_ = false;        // and lies where it fell through that Fetch
+    bool snap_ = false;         // an Insert's part reached its latch: the clip seats it
     float dropAt_ = 0;
 
     // The eject: hold the clip open with the spent part seated while it falls, then wait at the first
@@ -329,6 +338,25 @@ private:
     float T(float recorded) const { return recorded * scale_; }
 
     static bool within(const Pt* path, int n, Vec p, float r) { return n > 0 && arm_ik::length(p - path[0].p) <= r; }
+    // A phase's own reach and path, for a part with handles on both sides (Phase::bothSides): the
+    // sideways axis (y, the grip frame's) does not count, and the reach is grabScale times further.
+    static bool near_phase(const Phase& p, Vec h, float r) {
+        if (!p.path || p.n <= 0) return false;
+        Vec a = p.path[0].p;
+        if (p.bothSides) a.y = h.y = 0;
+        return arm_ik::length(h - a) <= r * p.grabScale;
+    }
+    static Projection project_phase(const Phase& p, Vec h) {
+        if (!p.bothSides) return project(p.path, p.n, h);
+        Pt flat[8];
+        const int n = p.n < 8 ? p.n : 8;
+        for (int i = 0; i < n; ++i) {
+            flat[i] = p.path[i];
+            flat[i].p.y = 0;
+        }
+        h.y = 0;
+        return project(flat, n, h);
+    }
 
     void idle(const Input& in, const Config&, float grabU, Output& o) {
         const Program* e = in.entryProgram;
@@ -397,6 +425,8 @@ private:
         prog_ = p;
         phase_ = 0;
         dropping_ = false;
+        lying_ = false;
+        snap_ = false;
         state_ = State::Running;
         scale_ = (p->clipLen > 1e-4f && in.clipLen > 1e-4f) ? in.clipLen / p->clipLen : 1.0f;
         enter(in);
@@ -410,7 +440,7 @@ private:
         lastNow_ = in.now;
         // A pull the hand is already holding at its start - the reload's own first pull, or the next
         // stroke of the same part (the pump back, then forward) - is already being dragged.
-        if (ph().kind == Kind::Pull && in.grip && within(ph().path, ph().n, in.hand, grabU_)) sub_ = Sub::Drag;
+        if (ph().kind == Kind::Pull && in.grip && near_phase(ph(), in.hand, grabU_)) sub_ = Sub::Drag;
         if (ph().kind == Kind::Fetch && carriedFromEntry_ && in.grip) {
             carrying_ = true; // the shell taken at the pouch to start the reload
             carriedFromEntry_ = false;
@@ -452,9 +482,10 @@ private:
             o.t = T(prog_->ejectT);
             o.part = prog_->ejectPart;
             o.fallS = in.now - dropAt_;
-            o.carry = o.fallS < c.dropS ? 3 : 2;
+            o.carry = 3;
             if (o.fallS >= c.dropS) {
                 dropping_ = false;
+                lying_ = true; // the spent part lies where it fell until a new one is taken
                 phase_ = first_fetch(prog_);
                 enter(in);
             }
@@ -466,9 +497,9 @@ private:
         o.claim = true;
         switch (p.kind) {
             case Kind::Pull: {
-                const Projection pr = project(p.path, p.n, in.hand);
+                const Projection pr = project_phase(p, in.hand);
                 if (sub_ == Sub::Wait) {
-                    const bool near = within(p.path, p.n, in.hand, grabU);
+                    const bool near = near_phase(p, in.hand, grabU);
                     o.buzz = near;
                     o.hold = true;
                     o.t = T(p.t0);
@@ -517,8 +548,13 @@ private:
                 o.t = T(p.t0);
                 o.part = p.part;
                 o.carry = 2;
+                if (lying_) {
+                    o.carry = 3;
+                    o.fallS = in.now - dropAt_;
+                }
                 o.buzz = in.inPouch;
                 if (in.inPouch && in.gripRise) {
+                    lying_ = false;
                     carrying_ = true;
                     o.haptic = Haptic::Grab;
                     o.event = p.say;
@@ -530,6 +566,27 @@ private:
                 const Projection pr = project(p.path, p.n, in.hand);
                 o.part = p.part;
                 o.hold = true;
+                // 2026-10-20 THE LATCH: the carried PART brought within reach of where it sits in the
+                // gun (in.partSeatCm, measured on the part, so the hand's turn does not matter) snaps
+                // home - the clip plays its last stretch on its own.
+                if (!snap_ && in.partSeatCm >= 0 && in.partSeatCm <= c.seatCm) {
+                    snap_ = true;
+                    playT_ = T(p.n > 1 ? p.path[p.n - 2].t : p.t0);
+                    o.haptic = Haptic::Tick;
+                }
+                if (snap_) {
+                    playT_ += dt;
+                    o.carry = 0; // the clip has it again, sliding it in
+                    o.t = playT_ < T(p.t1) ? playT_ : T(p.t1);
+                    if (playT_ >= T(p.t1)) {
+                        snap_ = false;
+                        o.haptic = Haptic::Seat;
+                        o.event = p.say;
+                        carrying_ = false;
+                        next(in);
+                    }
+                    break;
+                }
                 if (!in.grip && sub_ != Sub::Guided) {
                     // Let go away from the gun: the part falls; take another.
                     o.carry = 2;

@@ -161,6 +161,17 @@ bool weapon_space(void* weapon, const char* exclude, float m[3][3], float* s, fl
 // What the free hand carries this frame (set by tick, applied by carry() from the hand's placement).
 int g_carryMode = 0;            // 0 nothing, 1 the part rides the hand, 2 the part is gone
 bool g_havokCopy = false;       // this eject's spent part fell as a Havok copy (dropped_part.h)
+// The latch: the spent part's first bone where it sat in the gun (weapon space, at the eject), and
+// the carried new one's distance from there (carry(), read by the next tick).
+bool g_seatValid = false;
+int g_seatBone = -1;
+float g_seatP[3] = {};
+float g_partSeatCm = -1.0f;
+uint64_t g_partSeatMs = 0;
+float g_uuPerCm = 1.0f;
+bool g_fallInit = false;        // the gun's own part falling: where it let go (world), and the floor
+Vec g_fallStart{};
+float g_floorZ = -1e9f;
 const char* g_carryPart = nullptr;
 void* g_carryWeapon = nullptr;
 bool g_carryAtPalm = false;
@@ -189,11 +200,32 @@ void apply_parts(const rr::Output& o, const Frame& f) {
     const bool falling = o.carry == 3 && !g_havokCopy;
     if (o.carry == 3 && g_havokCopy) g_carryMode = 2;
     if (g_carryMode != 2 && !falling) return;
-    float m[3][3], s = 1;
-    if (!weapon_space(f.weapon, o.part, m, &s) || !(s > 1e-6f)) return;
+    float m[3][3], s = 1, o0[3], p0[3];
+    if (!weapon_space(f.weapon, o.part, m, &s, o0, p0) || !(s > 1e-6f)) return;
     const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
-    const Vec w = falling ? Vec{0, 0, -0.5f * 980.0f * uu * o.fallS * o.fallS} : Vec{0, 0, -4000.0f};
-    if (falling) g_carryMode = 0; // the clip still has it; it is only moved
+    Vec w{0, 0, -4000.0f};
+    if (falling) {
+        g_carryMode = 0; // the clip still has it; it is only moved
+        // Fixed in the WORLD, not riding the gun: where the part was when it let go, falling, and
+        // stopped at the floor under the player (12:21 headset run: it fell through the floor).
+        int first = -1;
+        for_parts(o.part, [&](int i) { if (first < 0) first = i; });
+        float p[3], q[4];
+        if (first < 0 || !bones::weapon_bone_pose(first, p, q)) return;
+        const Vec d{p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
+        // weapon -> world is m's transpose
+        const Vec cur{o0[0] + (m[0][0] * d.x + m[1][0] * d.y + m[2][0] * d.z) * s,
+                      o0[1] + (m[0][1] * d.x + m[1][1] * d.y + m[2][1] * d.z) * s,
+                      o0[2] + (m[0][2] * d.x + m[1][2] * d.y + m[2][2] * d.z) * s};
+        if (!g_fallInit) {
+            g_fallStart = cur;
+            g_fallInit = true;
+        }
+        Vec target = g_fallStart;
+        target.z -= 0.5f * 980.0f * uu * o.fallS * o.fallS;
+        if (g_floorZ > -1e8f && target.z < g_floorZ + 2.0f * uu) target.z = g_floorZ + 2.0f * uu;
+        w = target - cur;
+    }
     const float dw[3] = {(m[0][0] * w.x + m[0][1] * w.y + m[0][2] * w.z) / s,
                          (m[1][0] * w.x + m[1][1] * w.y + m[1][2] * w.z) / s,
                          (m[2][0] * w.x + m[2][1] * w.y + m[2][2] * w.z) / s};
@@ -281,6 +313,15 @@ void carry(const HandPlacement& hp) {
         // palm itself (the clip's hand is not holding it now).
         const Vec moved = g_carryAtPalm ? palmAt : palmAt + arm_ik::rotate(qh, (comp - palm) * hp.s);
         const Vec world2 = aLoc + arm_ik::rotate(qa, moved * hp.actorScale);
+        // 2026-10-20 the latch: how far the carried part is from where it sits in the gun (recorded at
+        // the eject, the gun's own frame), for the Insert - the PART is measured, not the palm, so the
+        // hand's orientation does not matter.
+        if (i == g_seatBone && g_seatValid) {
+            const Vec seatW = arm_ik::vec(o0) + arm_ik::rotate(mq, arm_ik::vec(g_seatP) - arm_ik::vec(p0)) * s;
+            const float uu = g_uuPerCm > 1e-4f ? g_uuPerCm : 1.0f;
+            g_partSeatCm = arm_ik::length(world2 - seatW) / uu;
+            g_partSeatMs = GetTickCount64();
+        }
         const Vec back = arm_ik::rotate(mT, world2 - arm_ik::vec(o0)) * (1.0f / s);
         const float np[3] = {p0[0] + back.x, p0[1] + back.y, p0[2] + back.z};
         if (g_watch.load(std::memory_order_relaxed)) {
@@ -415,6 +456,8 @@ void tick(const Frame& f) {
     in.eject = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable && !g_machine.active();
     // And a reload the game begins itself (the gun ran dry) ejects the same way.
     in.ejectAdopted = ejectable;
+    // The carried part's distance from its latch (carry(), last frame), while one is known.
+    in.partSeatCm = g_seatValid && f.now - g_partSeatMs < 150 ? g_partSeatCm : -1.0f;
 
     const bool wasActive = g_machine.active();
     const rr::Output o = g_machine.update(in, g_cfg);
@@ -422,11 +465,37 @@ void tick(const Frame& f) {
         // A Havok copy where the magazine sits, when it has a mesh of its own (the Tommy Gun's drum);
         // otherwise the gun's own part falls (the pistol's cylinder is part of the gun's mesh).
         const float still[3] = {0.0f, 0.0f, 0.0f};
-        g_havokCopy = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, still);
+        g_havokCopy = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, still);
+        g_seatValid = false; // the latch is read below, once the clip holds the gun open
+        // The floor for the gun's own part, if it falls: the player's feet (Location minus the
+        // collision cylinder's half height).
+        g_fallInit = false;
+        g_floorZ = -1e9f;
+        void* pawn = nullptr;
+        float loc[3], half = 0.0f;
+        if (read_n(static_cast<uint8_t*>(f.weapon) + patterns::kWeaponOwnerOffset, &pawn, sizeof pawn) && pawn &&
+            read_n(static_cast<uint8_t*>(pawn) + patterns::kActorLocOffset, loc, sizeof loc)) {
+            const int32_t hOff = script::property_offset(pawn, L"CollisionHeight");
+            if (hOff >= 0 && read_n(static_cast<uint8_t*>(pawn) + hOff, &half, sizeof half) && half > 1.0f)
+                g_floorZ = loc[2] - half;
+        }
         BVR_LOG("[reload] %S: the spent %s %s", g_cls, o.part ? o.part : "part",
                 g_havokCopy ? "is replaced by a Havok copy, which falls" : "falls out of the gun");
     }
-    if (!g_machine.active()) g_havokCopy = false;
+    // The latch: where the spent part sits in the OPEN gun (the clip held at the eject time a few frames;
+    // the pistol's cylinder seats with the barrel folded, not where it sat closed). The pose read is
+    // the clip's own, without the fall's offset.
+    if (o.carry == 3 && !g_seatValid && o.fallS > 0.06f && o.part) {
+        g_seatBone = -1;
+        for_parts(o.part, [&](int i) { if (g_seatBone < 0) g_seatBone = i; });
+        float sq[4];
+        g_seatValid = g_seatBone >= 0 && bones::weapon_bone_pose(g_seatBone, g_seatP, sq);
+    }
+    g_uuPerCm = f.uuPerCm;
+    if (!g_machine.active()) {
+        g_havokCopy = false;
+        g_seatValid = false;
+    }
 
     if (o.act == rr::Act::StartReload) {
         struct { int32_t pad[4]; } none{};

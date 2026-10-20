@@ -20,6 +20,7 @@ bool capture(void* weapon);
 // Game thread. Drop the remembered magazine as a physics prop (once; the capture is spent).
 // `velocity` (world units per second) is added to a short fall. False when nothing was captured or
 // the engine refused; the log says which step.
-bool drop(void* weapon, const float velocity[3]);
+// `hands` (the Hands actor) is the last-resort spawner.
+bool drop(void* weapon, void* hands, const float velocity[3]);
 
 } // namespace bvr::b1r::dropped_part

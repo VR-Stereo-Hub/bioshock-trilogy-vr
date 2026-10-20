@@ -12,9 +12,9 @@
 namespace bvr::b1r::dropped_part {
 namespace {
 
-constexpr float kLifeSpanS = 30.0f;   // the prop removes itself after this
+constexpr float kLifeSpanS = 90.0f;   // the prop removes itself after this (long enough to pile up)
 constexpr float kFallUu = 60.0f;      // a short downward start, world units per second
-constexpr wchar_t kPropClass[] = L"ShockGame.PhysicalReactiveActor";
+const wchar_t* const kPropClasses[] = {L"ShockGame.PhysicalReactiveActor", L"ShockGame.NonPhysicalReactiveActor"};
 
 struct FStr {
     const wchar_t* data;
@@ -120,16 +120,8 @@ bool capture(void* weapon) {
     return true;
 }
 
-bool drop(void* weapon, const float velocity[3]) {
-    if (!g_cap.valid || !weapon) return false;
-    const Captured c = g_cap;
-    g_cap.valid = false;
-    void* cls = load_class(weapon, kPropClass);
-    if (!cls) {
-        BVR_LOG("[drop] REFUSED: %S did not load", kPropClass);
-        return false;
-    }
-    // Actor.Spawn(class, owner, tag, location, rotation, bNoCollisionFail, label) -> Actor.
+// Actor.Spawn(class, owner, tag, location, rotation, bNoCollisionFail, label) -> Actor, on `on`.
+static void* spawn(void* on, void* cls, const Captured& c) {
     struct {
         void* cls;
         void* owner;
@@ -141,11 +133,69 @@ bool drop(void* weapon, const float velocity[3]) {
         void* ret;
         int32_t pad[4];
     } sp{cls, nullptr, {0, 0}, {c.loc[0], c.loc[1], c.loc[2]}, {c.rot[0], c.rot[1], c.rot[2]}, 1, {0, 0}, nullptr, {}};
-    if (!script::call(weapon, "Spawn", &sp) || !sp.ret) {
-        BVR_LOG("[drop] REFUSED: Spawn returned nothing");
-        return false;
+    return script::call(on, "Spawn", &sp) ? sp.ret : nullptr;
+}
+
+// The hands' own script spawn (Hands.ApplyScriptedHandAttachment: the game's bytecode calls Spawn
+// itself), then the actor taken back off the hands: Hands.ScriptedAttachment cleared so the hands
+// never destroy it, detached, put where the magazine was and out of the foreground (DrawPriority 0).
+static void* spawn_through_hands(void* hands, void* cls, const Captured& c) {
+    if (!hands) return nullptr;
+    struct {
+        void* cls;
+        int32_t bone[2];
+        int32_t pad[5];
+    } ap{cls, {0, 0}, {}};
+    if (!script::call(hands, "ApplyScriptedHandAttachment", &ap)) return nullptr;
+    const int32_t off = script::property_offset(hands, L"ScriptedAttachment");
+    void* a = nullptr;
+    if (off < 0 || !rd(static_cast<uint8_t*>(hands) + off, &a) || !a) return nullptr;
+    wr(static_cast<uint8_t*>(hands) + off, static_cast<void*>(nullptr));
+    struct {
+        void* actor;
+        uint32_t ret;
+        int32_t pad[4];
+    } dp{a, 0, {}};
+    script::call(hands, "DetachFromBone", &dp);
+    const int32_t prio = script::property_offset(a, L"DrawPriority");
+    if (prio >= 0) wr(static_cast<uint8_t*>(a) + prio, uint8_t{0}); // 1 = the hands' foreground layer
+    struct {
+        float loc[3];
+        uint32_t noTest;
+        uint32_t ret;
+        int32_t pad[3];
+    } sl{{c.loc[0], c.loc[1], c.loc[2]}, 1, 0, {}};
+    script::call(a, "SetLocation", &sl);
+    struct {
+        int32_t rot[3];
+        uint32_t ret;
+        int32_t pad[3];
+    } sr{{c.rot[0], c.rot[1], c.rot[2]}, 0, {}};
+    script::call(a, "SetRotation", &sr);
+    return a;
+}
+
+bool drop(void* weapon, void* hands, const float velocity[3]) {
+    if (!g_cap.valid || !weapon) return false;
+    const Captured c = g_cap;
+    g_cap.valid = false;
+    // The 12:21 headset run: Spawn(PhysicalReactiveActor) returned nothing every time. The game spawns
+    // NonPhysicalReactiveActor at runtime itself (SecurityCamera.OnKilled) - the same prop with its
+    // physics off, turned on below - and the hands' script spawn is the last resort.
+    void* a = nullptr;
+    const char* how = nullptr;
+    for (const wchar_t* path : kPropClasses) {
+        void* cls = load_class(weapon, path);
+        if (!cls) {
+            BVR_LOG("[drop] %S did not load", path);
+            continue;
+        }
+        if ((a = spawn(weapon, cls, c))) { how = "Spawn"; }
+        else if ((a = spawn_through_hands(hands, cls, c))) { how = "the hands' script spawn"; }
+        BVR_LOG("[drop] %S: %s", path, a ? how : "Spawn and the hands' script spawn both returned nothing");
+        if (a) break;
     }
-    void* a = sp.ret;
+    if (!a) return false;
     // Its physics is built for the mesh it has, so: off, the magazine's mesh and size, then Havok.
     set_physics(a, 0);
     struct {

@@ -197,8 +197,8 @@ int main() {
         o = s.step(Vec{40, 7, 2}, false);
         check(!o.ejected && o.carry == 3 && o.fallS > 0.0f, "the drop is once; the fall goes on", o.fallS, 0.011);
         for (int i = 0; i < 70; ++i) o = s.step(Vec{40, 7, 2}, false);
-        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 0.933f) < 0.01f && o.carry == 2,
-              "after the fall: the fetch, the gun open and empty", o.t, 0.933);
+        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 0.933f) < 0.01f && o.carry == 3,
+              "after the fall: the fetch, the gun open, the old drum lying where it fell", o.t, 0.933);
         o = s.step(Vec{0, 0, -40}, true, true);
         check(s.m.phase() == 3, "a new drum from the pouch", s.m.phase(), 3);
 
@@ -213,6 +213,25 @@ int main() {
               0.466);
         for (int i = 0; i < 70; ++i) o = p.step(Vec{40, 7, 2}, false);
         check(p.m.phase() == 3 && std::fabs(o.t - 0.756f) < 0.01f, "then take a new one", o.t, 0.756);
+
+        // The latch: the carried drum within 10 cm of its seat snaps home, wherever the palm is.
+        s.in.partSeatCm = 30.0f;
+        o = s.step(Vec{90, -40, 60}, true); // far off the recorded palm path
+        check(s.m.phase() == 3, "far from the latch: still carrying", s.m.phase(), 3);
+        s.in.partSeatCm = 8.0f;
+        o = s.step(Vec{90, -40, 60}, true);
+        for (int i = 0; i < 40 && s.m.phase() == 3; ++i) o = s.step(Vec{90, -40, 60}, true);
+        check(s.m.phase() == 4, "within 10 cm of the latch: seated by the clip", s.m.phase(), 4);
+        s.in.partSeatCm = -1.0f;
+        // The bolt (phase 4) from the OTHER side of the gun: the sideways axis does not count.
+        Vec boltOther = kTommyBolt[0].p;
+        boltOther.y = -boltOther.y - 10.0f;
+        o = s.step(boltOther, false);
+        o = s.step(boltOther, true);
+        Vec boltEnd = kTommyBolt[2].p;
+        boltEnd.y = -boltEnd.y - 10.0f;
+        for (int i = 0; i < 5; ++i) o = s.step(boltEnd, true);
+        check(s.m.phase() == 5, "the bolt racked from the other side", s.m.phase(), 5);
 
         Sim d; // the gun ran dry: the game's own reload ejects the same way
         d.in.ejectAdopted = true;
