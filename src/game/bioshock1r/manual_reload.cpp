@@ -82,34 +82,89 @@ void hands_handle(void* weapon, int32_t* out) {
     read_n(static_cast<uint8_t*>(weapon) + patterns::kWeaponHandsAnimationHandleOffset, out, sizeof *out);
 }
 
-// Hold both reload clips (the weapon's and the hands') at `t`, paused.
-void hold(void* weapon, void* hands, int32_t hw, int32_t hh, float t) {
-    if (!g_paused || hw != g_heldW || hh != g_heldH) {
-        script::pause_anim(weapon, hw);
-        if (hh > 0 && hands) script::pause_anim(hands, hh);
-        g_paused = true;
+// Every hands clip a hold must cover: the one the weapon names (PlayerWeapon.HandsAnimationHandle) and,
+// when it is another, the Hands actor's own (Hands.HandsAnimationHandle). 2026-10-20: holding only the
+// first, the shotgun's hands kept looping their pump after a shot, and the pistol's carried cylinder
+// oscillated with Stereo too - a hand still animating under a part placed against it.
+int32_t actor_hands_handle(void* hands) {
+    int32_t h = 0;
+    const int32_t off = hands ? script::property_offset(hands, L"HandsAnimationHandle") : -1;
+    if (off >= 0) read_n(static_cast<uint8_t*>(hands) + off, &h, sizeof h);
+    return h;
+}
+template <typename Fn>
+void each_hands(void* hands, int32_t hh, Fn fn) {
+    if (!hands) return;
+    if (hh > 0) fn(hh);
+    const int32_t h2 = actor_hands_handle(hands);
+    if (h2 > 0 && h2 != hh) fn(h2);
+}
+
+// The clips' own rate before a chase sped them up (restored when the chase ends).
+float g_rateW = 1.0f, g_rateH = 1.0f;
+bool g_chasing = false;
+void chase_rate(void* weapon, void* hands, int32_t hw, int32_t hh, float rate) {
+    if (!g_chasing) {
+        if (!script::anim_rate(weapon, hw, &g_rateW) || !(g_rateW > 0.0f)) g_rateW = 1.0f;
+        if (!(hh > 0 && hands && script::anim_rate(hands, hh, &g_rateH)) || !(g_rateH > 0.0f)) g_rateH = 1.0f;
+        g_chasing = true;
+    }
+    script::set_anim_rate(weapon, hw, rate);
+    each_hands(hands, hh, [&](int32_t h) { script::set_anim_rate(hands, h, rate); });
+}
+void end_chase(void* weapon, void* hands, int32_t hw, int32_t hh) {
+    if (!g_chasing) return;
+    script::set_anim_rate(weapon, hw, g_rateW);
+    each_hands(hands, hh, [&](int32_t h) { script::set_anim_rate(hands, h, g_rateH); });
+    g_chasing = false;
+}
+
+// Hold both reload clips (the weapon's and the hands') at `t`, paused. `chase` (2026-10-20): a time
+// the hand moved FORWARD is reached by PLAYING the clips there (1-4x their speed), not by setting it,
+// so the clips' own sound cues (AnimNotify_EffectEvent: the drum seating, the bolt, the pump) fire -
+// a set time skips them ("no reload or slide sounds"). Backward or still: set, as before.
+void hold(void* weapon, void* hands, int32_t hw, int32_t hh, float t, bool chase = false) {
+    float cur = t;
+    if (chase && script::anim_time(weapon, hw, &cur) && t > cur + 0.004f) {
+        const float rate = (t - cur) / 0.05f; // there within about 50 ms
+        chase_rate(weapon, hands, hw, hh, rate < 1.0f ? 1.0f : rate > 4.0f ? 4.0f : rate);
+        if (g_paused) {
+            script::resume_anim(weapon, hw);
+            each_hands(hands, hh, [&](int32_t h) { script::resume_anim(hands, h); });
+            g_paused = false;
+        }
         g_heldW = hw;
         g_heldH = hh;
+        return;
     }
+    end_chase(weapon, hands, hw, hh);
+    // Paused EVERY frame, not once: a hands clip the game starts on its own handle meanwhile is held too.
+    script::pause_anim(weapon, hw);
+    each_hands(hands, hh, [&](int32_t h) { script::pause_anim(hands, h); });
+    g_paused = true;
+    g_heldW = hw;
+    g_heldH = hh;
     script::set_anim_time(weapon, hw, t);
-    if (hh > 0 && hands) script::set_anim_time(hands, hh, t);
+    each_hands(hands, hh, [&](int32_t h) { script::set_anim_time(hands, h, t); });
 }
 void run(void* weapon, void* hands, int32_t hw, int32_t hh, bool jump, float t) {
+    end_chase(weapon, hands, hw, hh);
     if (jump) {
         script::set_anim_time(weapon, hw, t);
-        if (hh > 0 && hands) script::set_anim_time(hands, hh, t);
+        each_hands(hands, hh, [&](int32_t h) { script::set_anim_time(hands, h, t); });
     }
     if (g_paused || jump) {
         script::resume_anim(weapon, hw);
-        if (hh > 0 && hands) script::resume_anim(hands, hh);
+        each_hands(hands, hh, [&](int32_t h) { script::resume_anim(hands, h); });
     }
     g_paused = false;
 }
 // Let go of whatever is held (the reload ended, was refused, or the feature was switched off).
 void let_go(void* weapon, void* hands) {
+    if (weapon) end_chase(weapon, hands, g_heldW, g_heldH);
     if (g_paused && weapon) {
         script::resume_anim(weapon, g_heldW);
-        if (g_heldH > 0 && hands) script::resume_anim(hands, g_heldH);
+        each_hands(hands, g_heldH, [&](int32_t h) { script::resume_anim(hands, h); });
     }
     g_paused = false;
     bones::clear_weapon_part_offsets();
@@ -209,7 +264,7 @@ void apply_parts(const rr::Output& o, const Frame& f) {
     // only falls out of the gun briefly, then is gone; a world prop (dropped_part) is what stays.
     // The Tommy Gun's drum IS its own world copy: gone at once. The pistol's copy is its rounds: the
     // cylinder still falls out first.
-    constexpr float kOwnFallS = 0.2f; // ~20 cm: out of the gun, never far enough to meet the floor
+    constexpr float kOwnFallS = 0.12f; // ~7 cm: out of the gun, never near the floor (drawn over it)
     const bool copyIsPart = g_havokCopy && !g_copyRounds;
     const bool falling = o.carry == 3 && !copyIsPart && o.fallS < kOwnFallS;
     if (o.carry == 3 && !falling) g_carryMode = 2;
@@ -474,12 +529,17 @@ void tick(const Frame& f) {
         pi.held = two_hand::held();
         pi.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
         const rr::PumpOutput po = g_pump.update(pi, g_pumpCfg);
+        // hold()/run() cover the Hands actor's own clip too (each_hands): the 14:11 run held the gun's
+        // only, and the hands kept looping their pump with the front hand on it.
         if (po.hold)
-            hold(f.weapon, f.hands, pw, ph, po.t);
+            hold(f.weapon, f.hands, pw, ph, po.t, po.chase);
         else if (po.run)
             run(f.weapon, f.hands, pw, ph, po.jump, po.t);
         haptic(po.haptic, f);
-        if (po.event) BVR_LOG("[reload] Shotgun pump: %s", po.event);
+        if (po.event) {
+            const int32_t h2 = actor_hands_handle(f.hands);
+            BVR_LOG("[reload] Shotgun pump: %s (hands clip %d, the Hands actor's %d)", po.event, ph, h2);
+        }
     }
     in.clipLive = clipName != nullptr;
     in.clip = clipName;
@@ -558,7 +618,7 @@ void tick(const Frame& f) {
     if (o.act == rr::Act::Abort) ++g_aborts;
     if (in.clipLive && g_machine.active()) {
         if (o.hold)
-            hold(f.weapon, f.hands, hw, hh, o.t);
+            hold(f.weapon, f.hands, hw, hh, o.t, o.chase);
         else if (o.run)
             run(f.weapon, f.hands, hw, hh, o.jump, o.t);
     }

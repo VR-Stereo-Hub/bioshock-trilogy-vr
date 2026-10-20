@@ -7728,6 +7728,8 @@ void m4_compose(bool late) {
     static bool s_gunRestValid[2] = {false, false};
     static float s_joinMinCm[2] = {1e9f, 1e9f};
     static bool s_carrying[2] = {false, false};
+    static ik::Quat s_twoTurnLocal[2]; // the two-handed turn, in the gun hand's frame, and its weight
+    static float s_twoTurnW[2] = {0.0f, 0.0f};
     // 2026-10-19: the two-handed grip (two_hand.h). The gun hand's branch needs the FREE hand's
     // anchor in the clip - where the game's animation has that hand against the gun - derived as
     // the loop below derives every hand's: the palm centre, rigid on the palette route, the fist
@@ -7928,8 +7930,22 @@ void m4_compose(bool late) {
                         const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
                         own = hc::toward(own, aimed, tw);
                         twoHold = tw;
+                        // Kept in this hand's own frame, for a manual reload to hold the gun's angle by.
+                        s_twoTurnLocal[h] = ik::normalized(ik::mul(ik::conj(pinned.q), ik::mul(turn, pinned.q)));
+                        s_twoTurnW[h] = tw;
+                    } else {
+                        s_twoTurnW[h] = 0.0f;
                     }
+                } else if (twoGunOk && manual_reload::active() && s_twoTurnW[h] > 0.0f) {
+                    // 2026-10-20: a manual reload takes the front hand off the gun, and the gun used to
+                    // swing back from its two-handed angle to the one-handed one - the shotgun's
+                    // reload "tilting the gun up". It keeps the angle it had, in this hand's frame,
+                    // until the reload is done (the front hand is the reload's meanwhile).
+                    const hc::Placement kept{ik::normalized(ik::mul(own.q, s_twoTurnLocal[h])), own.at, own.s};
+                    own = hc::toward(own, kept, s_twoTurnW[h]);
+                    two_hand::publish_none(now);
                 } else {
+                    s_twoTurnW[h] = 0.0f;
                     two_hand::publish_none(now);
                 }
                 // ---- 2026-10-19: THE GUNSHOT KICK -------------------------------------------------

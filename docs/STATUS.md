@@ -84,6 +84,19 @@ NOT run in the simulator or the headset.
   go, or one-handed, and it pumps itself. `[reload] Shotgun pump: ...` logs each stroke. A reload that
   ends under the fore-end squeeze (the last pump) hands the squeeze on to the two-handed grip
   (`two_hand::take_held_grip`), so the hand stays on the fore-end.
+- **Fifth headset run (14:09) and the fixes after it.** Tommy Gun perfect, no reload or slide SOUNDS:
+  the clips' sound cues (AnimNotify_EffectEvent) fire only when a clip PLAYS, and the manual reload set
+  the clip's time - now a hold the hand moves forward is reached by playing the clips there at 1-4x
+  their speed (`hold(..., chase)`; Pull and Slide drags, the latch's snap, Flick, Play, the shotgun's
+  pump). The shotgun's pump looped: the mod held the gun's Fire clip, the hands' clip ran on its own
+  handle - every hold and run now covers the Hands actor's HandsAnimationHandle too (`each_hands`),
+  paused every frame; the same is the likely cause of the pistol's oscillating carried cylinder. The
+  reload's last pump is two Slides with the hand locked on it (as the bolt; the stroke's direction
+  is its own path's, the forward stroke continuing from the back one under the same squeeze). The
+  shotgun's reload "tilting the gun up" was the two-handed aim letting go: during a manual reload the
+  gun keeps its two-handed angle, in the gun hand's frame. The pistol's rounds: by name they never
+  load - now read from the ammunition class's defaults (`script::class_defaults`, UClass Defaults at
+  +0x54C, from the console's GET); its own cylinder falls only ~7 cm.
 - **The hands stay on the controllers through a weapon swap** (`hands_state.cpp`): the swap passes
   through ProceduralLoweringHands, classed Scripted, so the hand-back gave both hands to the game for
   its release - the left hand flew to the next gun's grip and back. It is Offscreen now.

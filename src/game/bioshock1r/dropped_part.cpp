@@ -111,13 +111,18 @@ bool capture(void* weapon) {
         // (ShockGame.U, the six cartridges) - they fall instead, where the ammo model sits.
         const wchar_t* cls = patterns::object_class_name(weapon);
         if (cls && !_wcsicmp(cls, L"Pistol")) {
-            // The StaticMesh class: by name, else any static mesh's own class (the wrench's, ...).
-            void* smClass = load_class(weapon, L"Engine.StaticMesh");
-            if (smClass) g_cap.mesh = load_object(weapon, L"ShockGame.WP_Pistol.PI_AmmoType", smClass);
-            if (!g_cap.mesh && smClass) g_cap.mesh = load_object(weapon, L"ShockGame.PI_AmmoType", smClass);
+            // The current ammunition's own VisualAmmoModel, from its class's defaults (Weapon.uc
+            // ShowAmmoModel reads `PendingAmmoSelection.default.VisualAmmoModel`). By name it would not
+            // load (14:09 run: DynamicLoadObject("ShockGame.WP_Pistol.PI_AmmoType") gave nothing).
+            void* ammoCls = nullptr;
+            const int32_t sel = script::property_offset(weapon, L"PendingAmmoSelection");
+            if (sel >= 0) rd(static_cast<uint8_t*>(weapon) + sel, &ammoCls);
+            void* defs = script::class_defaults(ammoCls);
+            const int32_t vam = script::class_property_offset(ammoCls, L"VisualAmmoModel");
+            if (defs && vam >= 0) rd(static_cast<uint8_t*>(defs) + vam, &g_cap.mesh);
             g_cap.byName = g_cap.mesh != nullptr;
-            BVR_LOG("[drop] the pistol's rounds: StaticMesh class %s, PI_AmmoType %s", smClass ? "loaded" : "NOT loaded",
-                    g_cap.mesh ? "loaded" : "NOT loaded");
+            BVR_LOG("[drop] the pistol's rounds: ammo class %s, its VisualAmmoModel %s", ammoCls ? "read" : "NOT read",
+                    g_cap.mesh ? "read" : "NOT read");
         }
         if (!g_cap.mesh) {
             BVR_LOG("[drop] the visible magazine has no static mesh");

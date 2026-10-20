@@ -249,6 +249,18 @@ bool grab(bvr::input::PadOverride* pad) {
 }
 
 bool override_sticks(bvr::input::PadOverride* pad) {
+    // 2026-10-20: each grip's press and release AS IT ARRIVES (before anything here withholds it) -
+    // "the right grip does nothing" with no trace of it anywhere: this says whether it reaches the mod.
+    {
+        static bool s_was[2] = {false, false};
+        for (int r = 0; r < 2; ++r) {
+            const bool down = (pad->buttons & (r ? kRB : kLB)) != 0;
+            if (down != s_was[r])
+                BVR_LOG("[grip] %s grip %s (as the runtime sends it; the weapon role is %s)", r ? "right-role (RB)" : "left-role (LB)",
+                        down ? "DOWN" : "up", pad->leftHanded ? "LEFT" : "RIGHT");
+            s_was[r] = down;
+        }
+    }
     bool changed = grab(pad);
     changed = (g_gripTrigger.load(std::memory_order_relaxed) && combine_grip_trigger(pad)) || changed;
     const uint16_t buttons = pad->buttons;

@@ -268,6 +268,27 @@ int main() {
         o = f.step(Vec{40, 7, 2}, false);
         check(o.act != Act::StartReload && o.haptic == Haptic::Deny, "a full gun does not eject: it buzzes no");
     }
+    // ---- the shotgun reload's last pump: two slides, the hand held through both ----
+    {
+        Sim s;
+        s.cls = L"Shotgun";
+        s.in.adopt = true;
+        s.clip(L"Reload", 0.95f);
+        Output o = s.step(kShotgunPumpBack[0].p, false);
+        s.in.adopt = false;
+        check(s.m.active() && s.m.phase() == 0, "the end clip: waiting at the pump", s.m.phase(), 0);
+        const Vec back = kShotgunPumpBack[2].p - kShotgunPumpBack[0].p;
+        const Vec bd = back * (1.0f / bvr::b1r::arm_ik::length(back));
+        o = s.step(kShotgunPumpBack[0].p, true);
+        o = s.step(kShotgunPumpBack[0].p + bd * 7.5f, true);
+        check(o.handLock && o.t > 0.43f && o.t < 0.47f, "halfway back: the pump follows, the hand on it", o.t, 0.448);
+        o = s.step(kShotgunPumpBack[0].p + bd * 15.0f, true);
+        check(s.m.phase() == 1, "back: now forward, still held", s.m.phase(), 1);
+        const Vec at = kShotgunPumpBack[0].p + bd * 15.0f;
+        const Vec fwd = kShotgunPumpFwd[3].p - kShotgunPumpFwd[0].p;
+        o = s.step(at + fwd * (15.0f / bvr::b1r::arm_ik::length(fwd)), true);
+        check(s.m.phase() == 2, "forward: pumped, the clip finishes", s.m.phase(), 2);
+    }
     // ---- the shotgun's pump by hand ----
     {
         Pump pump;

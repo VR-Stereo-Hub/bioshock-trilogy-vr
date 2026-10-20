@@ -149,8 +149,11 @@ inline constexpr Pt kShotgunPumpFwd[] = {
     {0.532f, {38.4f, 13.0f, 10.9f}}, {0.588f, {39.2f, 13.2f, 11.2f}}, {0.634f, {44.1f, 15.1f, 13.3f}},
     {0.676f, {51.1f, 17.7f, 16.4f}}};
 inline constexpr Phase kShotgunEnd[] = {
-    {Kind::Pull, 0.409f, 0.487f, kShotgunPumpBack, 3, nullptr, "pump back"},
-    {Kind::Pull, 0.532f, 0.676f, kShotgunPumpFwd, 4, nullptr, "pump forward"},
+    // Slides (2026-10-20, as the Tommy Gun's bolt): the hand locked on the pump, which follows it one
+    // for one - the old pulls mapped the hand onto the clip hand's path ("controlled from far away").
+    // About 15 units each way (the reload's pump path; the Fire clip's SG_Pump runs 18).
+    {Kind::Slide, 0.409f, 0.487f, kShotgunPumpBack, 3, nullptr, "pump back", false, false, 1.5f, -1.0f, 15.0f},
+    {Kind::Slide, 0.532f, 0.676f, kShotgunPumpFwd, 4, nullptr, "pump forward", false, false, 1.5f, -1.0f, 15.0f},
     {Kind::Finish, 0.90f, 0.95f, nullptr, 0, nullptr, "done"}};
 
 inline constexpr Program kPrograms[] = {
@@ -272,6 +275,7 @@ struct Output {
     bool active = false;        // a manual reload is in progress
     bool ejected = false;       // this frame the spent part starts to fall (`part` names it)
     bool handLock = false;      // the free hand is drawn where the clip's own hand is (on the bolt)
+    bool chase = false;         // `t` follows the hand forward: PLAY the clip there (its sounds fire)
 };
 
 // The first Fetch of a program (where an eject starts), -1 when it has none.
@@ -339,7 +343,15 @@ private:
     bool dropping_ = false;     // the spent part is falling; then the first Fetch
     bool lying_ = false;        // and lies where it fell through that Fetch
     bool snap_ = false;         // an Insert's part reached its latch: the clip seats it
-    float grabX_ = 0;           // a Slide: where along the gun the hand took hold
+    Vec grab_{};                // a Slide: where the hand took hold
+    // A Slide's direction: its path's, start to end (the sideways axis out for a two-sided part).
+    static Vec slide_axis(const Phase& p) {
+        if (!p.path || p.n < 2) return Vec{-1, 0, 0};
+        Vec d = p.path[p.n - 1].p - p.path[0].p;
+        if (p.bothSides) d.y = 0;
+        const float l = arm_ik::length(d);
+        return l > 1e-6f ? d * (1.0f / l) : Vec{-1, 0, 0};
+    }
     float dropAt_ = 0;
 
     // The eject: hold the clip open with the spent part seated while it falls, then wait at the first
@@ -460,6 +472,12 @@ private:
         // A pull the hand is already holding at its start - the reload's own first pull, or the next
         // stroke of the same part (the pump back, then forward) - is already being dragged.
         if (ph().kind == Kind::Pull && in.grip && near_phase(ph(), in.hand, grabU_)) sub_ = Sub::Drag;
+        // The next stroke of a slide the hand is still holding (the pump back, then forward) goes on
+        // from where the hand is.
+        if (ph().kind == Kind::Slide && in.grip && phase_ > 0 && prog_->phases[phase_ - 1].kind == Kind::Slide) {
+            sub_ = Sub::Drag;
+            grab_ = in.hand;
+        }
         if (ph().kind == Kind::Fetch && carriedFromEntry_ && in.grip) {
             carrying_ = true; // the shell taken at the pouch to start the reload
             carriedFromEntry_ = false;
@@ -536,6 +554,7 @@ private:
                 if (pr.t > lastT_) lastT_ = pr.t;
                 o.hold = true;
                 o.t = T(lastT_);
+                o.chase = true; // played forward: its sounds fire
                 if (prog >= 0.98f || (!in.grip && prog >= c.settleProgress)) {
                     o.haptic = Haptic::Seat;
                     o.event = p.say;
@@ -556,18 +575,20 @@ private:
                     o.t = T(p.t0);
                     if (near && in.gripRise) {
                         sub_ = Sub::Drag;
-                        grabX_ = in.hand.x;
+                        grab_ = in.hand;
                         o.haptic = Haptic::Grab;
                     }
                     break;
                 }
-                // Held: the part is where the hand has pulled it, back along the gun (-x), both ways.
-                float prog = p.travel > 1e-3f ? (grabX_ - in.hand.x) / p.travel : 1.0f;
+                // Held: the part is where the hand has moved it along the stroke's own direction (its
+                // path's, the sideways axis left out for a two-sided part), both ways.
+                float prog = p.travel > 1e-3f ? arm_ik::dot(in.hand - grab_, slide_axis(p)) / p.travel : 1.0f;
                 prog = prog < 0 ? 0 : prog > 1 ? 1 : prog;
                 if (prog - lastProgress_ > 0.25f) o.haptic = Haptic::Tick;
                 lastProgress_ = prog;
                 o.t = T(p.t0 + (p.t1 - p.t0) * prog);
                 o.handLock = true;
+                o.chase = true; // played forward: its sounds fire
                 if (prog >= 0.95f) {
                     o.haptic = Haptic::Seat;
                     o.event = p.say;
@@ -628,6 +649,7 @@ private:
                     playT_ += dt;
                     o.carry = 0; // the clip has it again, sliding it in
                     o.t = playT_ < T(p.t1) ? playT_ : T(p.t1);
+                o.chase = true; // played forward: its sounds fire
                     if (playT_ >= T(p.t1)) {
                         snap_ = false;
                         o.haptic = Haptic::Seat;
@@ -673,6 +695,7 @@ private:
                 lastProgress_ = prog;
                 if (pr.t > lastT_) lastT_ = pr.t;
                 o.t = T(lastT_);
+                o.chase = true; // played forward: its sounds fire
                 if (prog >= 0.97f || (!in.grip && prog >= 0.5f)) {
                     o.t = T(p.t1);
                     o.haptic = Haptic::Seat;
@@ -697,6 +720,7 @@ private:
                         lastProgress_ = pr.progress > lastProgress_ ? pr.progress : lastProgress_;
                         if (pr.t > lastT_) lastT_ = pr.t;
                         o.t = T(lastT_);
+                o.chase = true; // played forward: its sounds fire
                         done = lastProgress_ >= 0.95f;
                         if (!in.grip && !done) sub_ = Sub::Wait;
                     }
@@ -713,6 +737,7 @@ private:
                 playT_ += dt;
                 o.hold = true;
                 o.t = playT_ < T(p.t1) ? playT_ : T(p.t1);
+                o.chase = true; // played forward: its sounds fire
                 if (playT_ >= T(p.t1)) next(in);
                 break;
             }
@@ -752,6 +777,7 @@ struct PumpOutput {
     bool run = false;      // let it run (with jump: from t)
     bool jump = false;
     float t = 0;
+    bool chase = false;    // played forward to t (its sounds fire)
     Haptic haptic = Haptic::None;
     const char* event = nullptr;
 };
@@ -796,6 +822,7 @@ public:
                 p = p < 0 ? 0 : p > 1 ? 1 : p;
                 o.hold = true;
                 o.t = c.backT0 + (c.backT1 - c.backT0) * p;
+                o.chase = true;
                 if (p >= c.done) {
                     stage_ = Stage::Fwd;
                     grab_ = in.hand;
@@ -810,6 +837,7 @@ public:
                 p = p < 0 ? 0 : p > 1 ? 1 : p;
                 o.hold = true;
                 o.t = c.fwdT0 + (c.fwdT1 - c.fwdT0) * p;
+                o.chase = true;
                 if (p >= c.done) {
                     stage_ = Stage::Done;
                     o.hold = false;

@@ -24,6 +24,10 @@ int32_t property_offset(void* obj, const wchar_t* name);
 // Once: the property offsets this build reports must reproduce Actor Location and DrawScale, which
 // were derived independently. False forever if they do not (no property is then trusted).
 bool properties_ready(void* anyActor);
+// A property's offset in a CLASS's layout (FindField on that class), and the class's default values
+// (UClass Defaults, patterns.h kClassDefaultsOffset): a default value is defaults + offset.
+int32_t class_property_offset(void* cls, const wchar_t* name);
+void* class_defaults(void* cls);
 
 // GNames index of `text` (exact, case-insensitive), -1 when absent. Scans once per text.
 int32_t name_index(const char* text);

@@ -548,6 +548,9 @@ inline constexpr uint8_t kFindFieldPrologue[6] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF, 
 inline constexpr uint32_t kFindFieldBodyOffset = 0x18;
 inline constexpr uint8_t kFindFieldBody[9] = {0x83, 0xEC, 0x20, 0x89, 0x4D, 0xE8, 0x53, 0x8B, 0xDA};
 inline constexpr uint32_t kPropertyOffsetOffset = 0x74; // UProperty::Offset (checked live, script_call.cpp)
+// UClass::Defaults (TArray<BYTE>) data pointer: the console's GET exports a class's DEFAULT value from
+// `*(class + 0x54C)` (count at +0x550) at the property's offset (tools\ida\rf3, RVA 0x6FAC20).
+inline constexpr uint32_t kClassDefaultsOffset = 0x54C;
 // ---- 2026-10-15: THE HUD MOVIE'S CALLS (the weapon/plasmid dial's stage seam) ----------------
 // Every call into a gameswf movie BY NAME goes through one routine, tools\ida\fw1/fw2:
 //   void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)

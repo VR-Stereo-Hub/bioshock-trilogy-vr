@@ -109,6 +109,20 @@ int32_t property_offset(void* obj, const wchar_t* name) {
     return off;
 }
 
+int32_t class_property_offset(void* cls, const wchar_t* name) {
+    if (!g_findField || !cls || !name) return -1;
+    void* prop = find_field_guarded(cls, name);
+    void* raw = nullptr;
+    if (!prop || !read_ptr(static_cast<uint8_t*>(prop) + patterns::kPropertyOffsetOffset, &raw)) return -1;
+    const int32_t off = static_cast<int32_t>(reinterpret_cast<intptr_t>(raw));
+    return off >= 0 && off <= 0x10000 ? off : -1;
+}
+
+void* class_defaults(void* cls) {
+    void* data = nullptr;
+    return cls && read_ptr(static_cast<uint8_t*>(cls) + patterns::kClassDefaultsOffset, &data) ? data : nullptr;
+}
+
 bool properties_ready(void* anyActor) {
     static int s_state = 0; // 0 unchecked, 1 good, -1 refused
     if (s_state || !anyActor) return s_state > 0;
