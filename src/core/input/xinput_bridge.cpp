@@ -57,6 +57,7 @@ constexpr uint64_t kVrGameplayStaleMs = 500;
 // semantics). Infinite opts out - see the header note. Default preserves the
 // historical behaviour bit-for-bit for games that never call the setter.
 std::atomic<bool> g_pitchLiftOnBumpers{true};
+std::atomic<bool> g_ignoreRealButtonsInVr{false}; // set_ignore_real_buttons_in_vr (opt-in per game)
 
 // s52 (Infinite I9): head-relative locomotion - the published head-vs-body
 // yaw residual the composer rotates the movement stick by. Same self-expiring
@@ -267,6 +268,7 @@ Gamepad g_lastComposed{};
 // the game thread never has to take g_mutex.
 std::atomic<uint16_t> g_lastTriggers{0};
 std::atomic<uint16_t> g_lastButtons{0}; // composed button bits, same contract
+std::atomic<uint16_t> g_lastRealButtons{0}; // the real pad's bits before the merge (diagnostic)
 uint32_t g_packet = 0;            // bridge-owned monotonic dwPacketNumber
 bool g_packetBump = false;        // forced bump on enable/disable edges
 
@@ -431,13 +433,25 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     Gamepad real{};
     if (*result == ERROR_SUCCESS) {
         memcpy(&real, &xs->Gamepad, sizeof real);
+        g_lastRealButtons.store(real.buttons, std::memory_order_relaxed);
     } else {
+        g_lastRealButtons.store(0, std::memory_order_relaxed);
         // Failed real call leaves the buffer unspecified - never merge it.
         memset(xs, 0, sizeof(XINPUT_STATE));
     }
 
     uint64_t now = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_ignoreRealButtonsInVr.load(std::memory_order_relaxed) && g_xrActive && now - g_xrLastMs <= kXrStaleMs &&
+        real.buttons) {
+        static uint16_t s_told = 0;
+        if (real.buttons != s_told) {
+            s_told = real.buttons;
+            BVR_LOG("input: a real/virtual XInput pad reports buttons 0x%04X - left out while the VR controllers "
+                    "drive (set_ignore_real_buttons_in_vr)", real.buttons);
+        }
+        real.buttons = 0;
+    }
     Gamepad out = merge(real, compose_synthetic(now));
     // Stick-pitch kill: yaw (rx) deliberately stays - stick turn composes
     // with the M7.5 body transfer; only pitch belongs to the HMD. The kill
@@ -909,6 +923,11 @@ void publish_pitch_error(float headMinusEngineDeg) {
     g_pitchErrMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
+void set_ignore_real_buttons_in_vr(bool on) {
+    if (g_ignoreRealButtonsInVr.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("input: a real pad's buttons are %s while the VR controllers drive", on ? "LEFT OUT" : "merged");
+}
+
 void set_pitch_kill_lift_on_bumpers(bool lift) {
     bool was = g_pitchLiftOnBumpers.exchange(lift, std::memory_order_relaxed);
     if (was != lift)
@@ -948,6 +967,8 @@ void last_composed_bumpers(bool* lb, bool* rb) {
     if (lb) *lb = (b & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
     if (rb) *rb = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
 }
+
+uint16_t last_real_buttons() { return g_lastRealButtons.load(std::memory_order_relaxed); }
 
 void last_composed_buttons(uint16_t* buttons) {
     // The whole wButtons word as the game last saw it - stored on both the

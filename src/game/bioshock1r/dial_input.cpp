@@ -255,9 +255,15 @@ bool override_sticks(bvr::input::PadOverride* pad) {
         static bool s_was[2] = {false, false};
         for (int r = 0; r < 2; ++r) {
             const bool down = (pad->buttons & (r ? kRB : kLB)) != 0;
-            if (down != s_was[r])
-                BVR_LOG("[grip] %s grip %s (as the runtime sends it; the weapon role is %s)", r ? "right-role (RB)" : "left-role (LB)",
-                        down ? "DOWN" : "up", pad->leftHanded ? "LEFT" : "RIGHT");
+            if (down != s_was[r]) {
+                const uint16_t real = bvr::input::last_real_buttons();
+                BVR_LOG("[grip] %s grip %s (as the runtime sends it; the weapon role is %s) - a real XInput pad %s "
+                        "(its buttons 0x%04X)",
+                        r ? "right-role (RB)" : "left-role (LB)", down ? "DOWN" : "up",
+                        pad->leftHanded ? "LEFT" : "RIGHT",
+                        (real & (r ? kRB : kLB)) ? "HAS THIS BIT TOO: it comes from that pad" : "does not have it",
+                        real);
+            }
             s_was[r] = down;
         }
     }
@@ -359,6 +365,9 @@ bool override_sticks(bvr::input::PadOverride* pad) {
 
 void init() {
     bvr::input::set_stick_override(&override_sticks);
+    // 2026-10-20: a virtual XInput pad reporting RB held (0x0200 from the first packet) kept the weapon
+    // grip down all session - the right grip "did nothing". BS1 takes its buttons from the VR controllers.
+    bvr::input::set_ignore_real_buttons_in_vr(true);
     BVR_LOG("[dial] hand dial ready (F10 > Controls > Weapon and plasmid dial; %s)",
             g_enabled.load() ? "on" : "off until enabled");
 }

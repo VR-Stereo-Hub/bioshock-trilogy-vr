@@ -73,6 +73,12 @@ bool pitch_kill();
 // true = the historical semantics; BS1 and BS2 never call the setter, so
 // their composed pad is byte-identical.
 void set_pitch_kill_lift_on_bumpers(bool lift);
+// 2026-10-20, opt-in per game (default off: the real pad's buttons are merged as before). On: while the
+// VR controllers drive the pad, a real/virtual XInput pad's BUTTONS are left out - a virtual pad with a
+// bumper stuck down (Virtual Desktop / Steam Input / ViGEm emulation; BS1's headset run reported 0x0200,
+// RB, from the first packet) held the weapon grip down for the whole session. Its sticks and triggers
+// still merge; with no VR input live the real pad is merged in full.
+void set_ignore_real_buttons_in_vr(bool on);
 
 // s52 (Infinite I9): head-relative locomotion. The game adapter publishes the
 // head-vs-body yaw residual (degrees) once per view dispatch; while fresh and
@@ -104,6 +110,9 @@ void last_composed_bumpers(bool* lb, bool* rb);
 // The full wButtons word the game last saw (composed or real pad). Additive,
 // read-only; session 42 consumer is BS2's menukey lane (pad-A -> Enter).
 void last_composed_buttons(uint16_t* buttons);
+// Diagnostic, read only: the REAL pad's buttons as XInputGetState last returned them (0 with no pad),
+// before any synthetic input is merged in - so a stuck bit can be told apart from the VR compose.
+uint16_t last_real_buttons();
 
 // s50 (Infinite): the FLOURISH CHORD - left thumbrest touched + A pressed.
 // arm_flourish_chord(true) makes the XR composer consume A while the left
