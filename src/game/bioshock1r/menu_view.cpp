@@ -242,7 +242,7 @@ void draw_page(Backend& backend,ViewState& state,Level level,const Context& cont
         }
         ImGui::PopID();
     }
-    if(state.tab==Tab::Runtime || state.tab==Tab::Diagnostics)
+    if(state.tab==Tab::Cheats || state.tab==Tab::Runtime || state.tab==Tab::Diagnostics)
         backend.diagnostics(state.tab);
     if(level==Level::Debug && state.tab==Tab::Diagnostics) {
         theme::note("Debug changes last for this session unless explicitly saved.");
@@ -336,7 +336,7 @@ void draw(Backend& backend,ViewState& state,const ViewOptions& options) {
             }
             ImGui::EndTable();
         }
-        const int tabCount=level==Level::Debug?9:7;
+        const int tabCount=level==Level::Debug?10:8;
         // A native single-line tab strip. Narrow windows scroll horizontally;
         // navigation never turns into a second row of action buttons.
         const bool selectRequested=!state.tabsInitialized || state.tab!=state.renderedTab;

@@ -536,6 +536,18 @@ inline constexpr uint8_t kFindFunctionPrologue[8] = {0x55, 0x8B, 0xEC, 0x83, 0xE
 // UObject::ProcessEvent outer (kNativeConstantAnchorRva): (UFunction*, void* parms, void* result),
 // ret 0xC. Head: push ebp; mov ebp,esp; mov eax,[ecx+0xF8].
 inline constexpr uint8_t kProcessEventPrologue[9] = {0x55, 0x8B, 0xEC, 0x8B, 0x81, 0xF8, 0x00, 0x00, 0x00};
+// ---- 2026-10-20: SCRIPT PROPERTIES BY NAME (the cheats, script_call.h) ----------------------------
+// FindField(UStruct*, const TCHAR* name) -> UProperty*, __fastcall (ecx struct, edx name): the
+// console's GET/SET look a property up with it (tools\ida\rf2/rf3: "Unrecognized property %s" in
+// RVA 0x6FAC20; SET passes its result's +0x74 to GlobalSetProperty as the value's offset). It walks
+// UStruct::Children (+0x5C) by UField::Next (+0x44), names at +0x28, up the super chain, and returns
+// only UProperty fields. Head: push ebp; mov ebp,esp; push -1; push <seh>; and at +0x18
+// sub esp,0x20; mov [ebp-0x18],ecx; push ebx; mov ebx,edx.
+inline constexpr uint32_t kFindFieldRva = 0x1AE5A0;
+inline constexpr uint8_t kFindFieldPrologue[6] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68};
+inline constexpr uint32_t kFindFieldBodyOffset = 0x18;
+inline constexpr uint8_t kFindFieldBody[9] = {0x83, 0xEC, 0x20, 0x89, 0x4D, 0xE8, 0x53, 0x8B, 0xDA};
+inline constexpr uint32_t kPropertyOffsetOffset = 0x74; // UProperty::Offset (checked live, script_call.cpp)
 // ---- 2026-10-15: THE HUD MOVIE'S CALLS (the weapon/plasmid dial's stage seam) ----------------
 // Every call into a gameswf movie BY NAME goes through one routine, tools\ida\fw1/fw2:
 //   void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)
@@ -923,6 +935,7 @@ struct Symbols {
     void* actorGetBoneCoords = nullptr; // AActor::GetBoneCoords (the weapon's muzzle socket)
     void* findFunction = nullptr;       // UObject::FindFunction (script_call.h)
     void* processEvent = nullptr;       // UObject::ProcessEvent outer (script_call.h)
+    void* findField = nullptr;          // FindField (script_call.h property_offset)
 };
 
 // Runs all scans, logging each stage. False if anything failed to resolve.

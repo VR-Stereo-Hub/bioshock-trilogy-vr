@@ -31,7 +31,7 @@
 #define BVR_HUD_ENUM_PLACE(n, label, help) HudX##n, HudY##n, HudScale##n,
 
 namespace bvr::b1r::menu {
-enum class Tab { Hands, IK, Aim, Controls, Comfort, HUD, Display, Runtime, Diagnostics };
+enum class Tab { Hands, IK, Aim, Controls, Comfort, HUD, Display, Cheats, Runtime, Diagnostics };
 enum class Level { Basic, Advanced, Debug };
 enum class Kind { Toggle, Slider, Choice };
 enum class Scope { Global, Hand, Profile };

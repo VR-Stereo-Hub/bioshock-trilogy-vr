@@ -13,6 +13,7 @@
 #include "hands.h"
 #include "hud_elements.h"
 #include "dial_input.h"
+#include "cheats.h"
 #include "resize.h"
 #include "scripted.h"
 #include "temporal.h"
@@ -345,6 +346,7 @@ public:
     void diagnostics(Tab tab) override {
         if(tab==Tab::HUD) hud_elements::draw_panel();
         if(tab==Tab::Controls) dial_input::draw_panel();
+        if(tab==Tab::Cheats) cheats::draw_panel();
         if(tab==Tab::Runtime && theme::section("Runtime status")) {
             ImGui::Text("%.1f fps  /  %.2f ms",ImGui::GetIO().Framerate,1000.f/std::max(ImGui::GetIO().Framerate,1.f));
             ImGui::Text("OpenXR session: %s",vr::session_live()?"active":"unavailable");

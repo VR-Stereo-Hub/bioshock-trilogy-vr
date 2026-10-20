@@ -105,6 +105,7 @@ add_library(bioshockvr SHARED
     game/bioshock1r/manual_reload.cpp
     game/bioshock1r/manual_reload.h
     game/bioshock1r/script_call.cpp
+    game/bioshock1r/cheats.cpp
     game/bioshock1r/script_call.h
     game/bioshock1r/two_hand.cpp
     game/bioshock1r/two_hand.h

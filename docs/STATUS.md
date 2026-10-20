@@ -2,6 +2,47 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-20 (afternoon) - BS1: one grip owner, the wrench mirrored, reloads eased, cheats
+
+**Branch `claude/bs1-manual-reload`**, rebased onto `claude/bs1-two-hand-grip` abf36c6 (the old tip is
+`claude/bs1-manual-reload-pre-rebase-20261020`). Local commits only. Built, host-tested and installed;
+NOT run in the simulator or the headset.
+
+### Current state
+
+- **One owner per squeeze of the free hand's grip** (`dial_input.cpp grab`). The hand-over, the
+  two-handed grip and the manual reload each read the same press, so the morning's hand-over also
+  started a Tommy Gun reload that held 40 s. Now, as the grip goes down, each reports its reach - its
+  distance over its own radius (`two_hand::reach`, `manual_reload::reach` from `reload_rig` Output
+  `reach`) - and the nearest within reach owns the whole squeeze; to the others it is no press.
+  `[grab] the free grip goes to ...` logs each decision with the three reaches.
+- **The manual reload on the drawn gun.** Its paths were recorded on the authored gun; the hand is read
+  back onto it through the drawn ratio (`gun_ratio`, the morning's two-hand fix), so Weapon size no
+  longer moves every reload target.
+- **The wrench mirrored about its own centre** (`bones.cpp rigid_centre`). A rigid holdable has no
+  skeleton for the mirror's pin; its mesh's centre comes from the engine's render bounds
+  (`Actor.GetRenderBoundingBox`) taken into its own frame (Location/Rotation), averaged over 16
+  frames and latched. `[bones] rigid holdable ...: its mesh's centre is ...` logs it.
+- **Reloads ease in and out** (`handback::depart_gate`, F10 Hands > Reload animation > Ease in and
+  out over, 8 cm): the free hand follows the at-the-gun clip only as far as the clip moves it from
+  where it began, against the gun hand, so the clip's return to the grip never plays on the hand.
+  The `[handback] at the gun` line now also says how far the clip took it.
+- **F10 > Cheats** (`cheats.cpp`): Give all weapons / Give all weapons, upgraded. The game's own
+  developer functions by name (ShockCheatManager.GiveAll's lists): UnlockInventorySlots, GiveWeapon
+  for each weapon not yet held, GiveItem 999 of every ammunition. Upgraded does New Game Plus's own
+  spawn step (PlayerWeapon.PostBeginPlay): every UpgradeStats entry PointsAllocated = 1 and the two
+  attachments shown (GiveAltFireMod, GiveStrictlySuperiorMod). Needs script properties by name: the
+  engine's FindField (ENGINE_NOTES 2026-10-20 "Script properties by name"), refused unless it
+  reproduces Actor Location 0x1D8 and DrawScale 0x2AC (`[script] properties by name CHECKED`).
+- No `src/core/` change.
+
+### Next steps
+
+- Headset (or a simulator run, if the tester allows one): Cheats > both buttons (watch `[cheats]`);
+  the wrench in the left hand; a crossbow / grenade launcher / chemical thrower reload (the eased
+  carry); a hand-over with the Tommy Gun in hand (must not start a reload).
+- Not checked: whether the upgrade attachments show at once on a weapon already in hand.
+
 ## Session 2026-10-20 - BS1: the manual reload
 
 **Branch `claude/bs1-manual-reload`** (off `claude/bs1-two-hand-grip` d517367). Local commits only.

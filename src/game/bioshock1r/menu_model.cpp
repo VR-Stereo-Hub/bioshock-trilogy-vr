@@ -223,7 +223,7 @@ const Spec& spec(Setting id) {
     return kSpecs[index];
 }
 const char* tab_name(Tab tab) {
-    const char* names[] = {"Hands","IK","Aim","Controls","Comfort","HUD","Display","Runtime","Diagnostics"};
+    const char* names[] = {"Hands","IK","Aim","Controls","Comfort","HUD","Display","Cheats","Runtime","Diagnostics"};
     return names[static_cast<int>(tab)];
 }
 bool is_player_setting(Setting id) { return spec(id).level != Level::Debug; }

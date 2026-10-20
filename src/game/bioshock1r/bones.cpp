@@ -36,6 +36,7 @@
 #include "game/bioshock1r/palette_math.h"
 #include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/manual_reload.h"
+#include "game/bioshock1r/cheats.h"
 #include "game/bioshock1r/script_call.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/two_hand_math.h"
@@ -8051,6 +8052,7 @@ void m4_compose(bool late) {
                 memcpy(mf.bodyR, g_m4.R, 12);
                 mf.uuPerCm = g_m4.uuPerCm;
                 manual_reload::tick(mf);
+                cheats::tick(twoGun); // F10 > Cheats: a queued request runs here, on the game thread
             } else if (h != gunHand && !late && mrGun) {
                 // The free hand is placed: a part it carries moves with it (manual_reload.h carry).
                 manual_reload::HandPlacement hp = mrPlace;

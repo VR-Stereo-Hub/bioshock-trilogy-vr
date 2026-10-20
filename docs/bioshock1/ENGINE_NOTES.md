@@ -6652,3 +6652,25 @@ actor's own frame through its Location (+0x1D8) and Rotation (+0x1E4, an FRotato
 constant of the mesh, mirrored or not, since the engine draws the mesh with that rotation.
 `bones.cpp rigid_centre` averages 16 frames per actor; the plane is its coordinate along the socket
 axis the mirror flips, over the rig's DrawScale. Derived statically; not yet measured live.
+
+## 2026-10-20 - Script properties by name
+
+`UObject::FindFunction` (tools\ida\rf1) does not walk a class's fields: it looks the name up in a
+256-bucket function hash on the class (+0xC8 + 4 x low byte of the name), chained by +0x48, names at
++0x28/+0x2C, and checks the function flags at Class (+0x30) +0x4C8. Properties come from the console's
+GET/SET (RVA 0x6FAC20, "Unrecognized property %s", tools\ida\rf2/rf3): `FindField` at **RVA 0x1AE5A0**,
+`__fastcall (UStruct* ecx, const TCHAR* edx) -> UProperty*`, walks UStruct::Children (+0x5C) by
+UField::Next (+0x44), compares names case-insensitively, climbs the super chain through a virtual
+(+0xFC), and returns only UProperty fields; SET hands its result's **+0x74** to GlobalSetProperty as
+the value's byte offset. `script_call.cpp property_offset` calls it and trusts it only after it
+reproduces two offsets derived independently (Actor Location 0x1D8, DrawScale 0x2AC); the log says
+`[script] properties by name CHECKED` or REFUSED. Used by the cheats: `Weapon.UpgradeStats` (a travel
+TArray of UpgradeableWeaponStat) and `UpgradeableWeaponStat.PointsAllocated` (int).
+
+The upgrade path the cheats follow is the game's own New Game Plus spawn step (PlayerWeapon
+PostBeginPlay): each upgrade stat's PointsAllocated set to 1, and the first stat's attachment shown by
+`GiveAltFireMod`, the second's by `GiveStrictlySuperiorMod`. `ShockPlayer.AddWeaponStatUpgrade` is a
+dead developer function here: it calls `Weapon.AddStatUpgrade`, whose body is empty in this build.
+`ShockCheatManager.GiveAll` lists eight weapons (Wrench, Pistol, Shotgun, Crossbow, GrenadeLauncher,
+MachineGun, ChemicalThrower, ResearchCamera) and every ammunition class; the cheat manager itself needs
+cheats enabled, so the mod calls the same ShockPlayer/ShockPawn functions on the pawn directly.

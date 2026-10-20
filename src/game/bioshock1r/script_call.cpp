@@ -17,8 +17,11 @@ namespace {
 
 using FindFunctionFn = void*(__thiscall*)(void* obj, int32_t nameIndex, int32_t nameNumber, int32_t global);
 using ProcessEventFn = void(__thiscall*)(void* obj, void* fn, void* parms, void* result);
+using FindFieldFn = void*(__fastcall*)(void* strct, const wchar_t* name);
 FindFunctionFn g_find = nullptr;
 ProcessEventFn g_process = nullptr;
+FindFieldFn g_findField = nullptr;
+std::map<std::pair<const void*, std::wstring>, int32_t> g_props; // (class, name) -> offset, -1 absent
 std::atomic<uint32_t> g_calls{0}, g_failures{0};
 
 // Game thread only (every caller is), so plain maps.
@@ -37,6 +40,14 @@ bool read_ptr(const void* p, void** out) {
 void* find_guarded(void* obj, int32_t name) {
     __try {
         return g_find(obj, name, 0, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+void* find_field_guarded(void* cls, const wchar_t* name) {
+    __try {
+        return g_findField(cls, name);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return nullptr;
     }
@@ -68,13 +79,48 @@ void* function_of(void* obj, const char* fname) {
 struct HandleOnly { int32_t handle; int32_t ret[4]; };
 } // namespace
 
-void init(void* findFunction, void* processEvent) {
+void init(void* findFunction, void* processEvent, void* findField) {
     g_find = reinterpret_cast<FindFunctionFn>(findFunction);
     g_process = reinterpret_cast<ProcessEventFn>(processEvent);
-    BVR_LOG("[script] calls by name %s", ready() ? "ready" : "UNAVAILABLE (a prologue did not match)");
+    g_findField = reinterpret_cast<FindFieldFn>(findField);
+    BVR_LOG("[script] calls by name %s, properties by name %s", ready() ? "ready" : "UNAVAILABLE (a prologue did not match)",
+            g_findField ? "pending the live check" : "UNAVAILABLE (FindField did not match)");
 }
 
 bool ready() { return g_find && g_process; }
+
+int32_t property_offset(void* obj, const wchar_t* name) {
+    if (!g_findField || !obj || !name) return -1;
+    void* cls = nullptr;
+    if (!read_ptr(static_cast<uint8_t*>(obj) + patterns::kUObjectClassOffset, &cls) || !cls) return -1;
+    const auto key = std::make_pair(static_cast<const void*>(cls), std::wstring(name));
+    const auto it = g_props.find(key);
+    if (it != g_props.end()) return it->second;
+    int32_t off = -1;
+    void* prop = find_field_guarded(cls, name);
+    void* raw = nullptr;
+    if (prop && read_ptr(static_cast<uint8_t*>(prop) + patterns::kPropertyOffsetOffset, &raw))
+        off = static_cast<int32_t>(reinterpret_cast<intptr_t>(raw));
+    if (off < 0 || off > 0x10000) off = -1;
+    g_props[key] = off;
+    if (off < 0) BVR_LOG("[script] property %S: not found on this object's class (%p)", name, cls);
+    return off;
+}
+
+bool properties_ready(void* anyActor) {
+    static int s_state = 0; // 0 unchecked, 1 good, -1 refused
+    if (s_state || !anyActor) return s_state > 0;
+    // Two answers known independently (ENGINE_NOTES: Location +0x1D8 from the viewmodel actor, DrawScale
+    // +0x2AC from AActor::SetDrawScale) - the property offset field must reproduce both.
+    const int32_t loc = property_offset(anyActor, L"Location"), ds = property_offset(anyActor, L"DrawScale");
+    s_state = loc == static_cast<int32_t>(patterns::kActorLocOffset) &&
+                      ds == static_cast<int32_t>(patterns::kActorDrawScaleOffset)
+                  ? 1
+                  : -1;
+    BVR_LOG("[script] properties by name %s: Actor.Location at +0x%X (want 0x%X), DrawScale at +0x%X (want 0x%X)",
+            s_state > 0 ? "CHECKED" : "REFUSED", loc, patterns::kActorLocOffset, ds, patterns::kActorDrawScaleOffset);
+    return s_state > 0;
+}
 
 int32_t name_index(const char* text) {
     const auto it = g_names.find(text);

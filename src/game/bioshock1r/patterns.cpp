@@ -409,6 +409,17 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
     } else {
         BVR_LOG("[b1r] FindFunction/ProcessEvent prologue mismatch - script calls (the manual reload) unavailable");
     }
+    // 2026-10-20: script properties by name (the cheats), gated on two pieces of its body.
+    const uint8_t* findField = image.base + kFindFieldRva;
+    if (is_memory_valid(findField, kFindFieldBodyOffset + sizeof kFindFieldBody) &&
+        memcmp(findField, kFindFieldPrologue, sizeof kFindFieldPrologue) == 0 &&
+        memcmp(findField + kFindFieldBodyOffset, kFindFieldBody, sizeof kFindFieldBody) == 0) {
+        out.findField = const_cast<uint8_t*>(findField);
+        BVR_LOG("[b1r] FindField = %p (script properties by name)", findField);
+    } else {
+        BVR_LOG("[b1r] FindField prologue mismatch at RVA 0x%X - script properties (the cheats) unavailable",
+                kFindFieldRva);
+    }
 }
 
 const wchar_t* fname_text(int32_t index) {

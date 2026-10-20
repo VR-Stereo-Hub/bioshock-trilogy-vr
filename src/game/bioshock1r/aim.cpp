@@ -1607,7 +1607,7 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     seed_default_profiles();
     load_weapon_profiles(); // a user's weapons.ini overrides the seeds key by key
     muzzle::init(g_syms.actorGetBoneCoords);
-    script::init(g_syms.findFunction, g_syms.processEvent);
+    script::init(g_syms.findFunction, g_syms.processEvent, g_syms.findField);
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
 }

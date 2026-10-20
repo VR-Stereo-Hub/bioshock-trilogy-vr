@@ -15,8 +15,15 @@
 
 namespace bvr::b1r::script {
 
-void init(void* findFunction, void* processEvent);
+void init(void* findFunction, void* processEvent, void* findField);
 bool ready();
+
+// 2026-10-20 (the cheats): a script property's byte offset in `obj`, by name (FindField, patterns.h),
+// cached per class; -1 when absent. Use only after properties_ready() said yes.
+int32_t property_offset(void* obj, const wchar_t* name);
+// Once: the property offsets this build reports must reproduce Actor Location and DrawScale, which
+// were derived independently. False forever if they do not (no property is then trusted).
+bool properties_ready(void* anyActor);
 
 // GNames index of `text` (exact, case-insensitive), -1 when absent. Scans once per text.
 int32_t name_index(const char* text);
