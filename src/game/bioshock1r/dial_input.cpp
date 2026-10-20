@@ -171,6 +171,16 @@ bool grab(bvr::input::PadOverride* pad) {
                 kNames[s_owner], scores[kHandOver], scores[kTwoHand], scores[kReload]);
     }
     if (!freeGrip) s_owner = kNone;
+    // A reload that ended under a squeeze (the shotgun's last pump) hands it on to the two-handed grip
+    // when the hand is at the fore-end: the hand stays on the gun, as it was before the reload.
+    if (freeGrip && s_owner == kReload && !manual_reload::active()) {
+        const float r = two_hand::reach(busy);
+        if (r >= 0.0f && r <= 1.0f) {
+            s_owner = kTwoHand;
+            two_hand::take_held_grip();
+            BVR_LOG("[grab] the reload ended under the squeeze: it goes to the two-handed grip (reach %.2f)", r);
+        }
+    }
     s_freeWas = freeGrip;
     const bool reloadClaim = manual_reload::pad(pad, &changed, freeGrip && s_owner != kReload);
     const int freeClaimedPhys =

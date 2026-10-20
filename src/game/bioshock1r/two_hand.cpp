@@ -60,6 +60,7 @@ Grip g_grip;
 bool g_suppressUntilUp = false;
 uint64_t g_lastBuzzMs = 0, g_lastProbeMs = 0;
 std::atomic<bool> g_held{false};
+std::atomic<bool> g_takeHeld{false}; // take_held_grip: the next pad() counts a squeeze already down as a press
 std::atomic<int> g_grabs{0};
 std::atomic<float> g_liveDistCm{-1.0f};
 
@@ -172,6 +173,7 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
     const bool fresh = s.ms && now - s.ms < kStaleMs && !busy;
     GripInput in;
     in.grip = grip;
+    in.takeHeld = g_takeHeld.exchange(false, std::memory_order_relaxed);
     if (fresh && s.paused) {
         in.distCm = -1.0f; // a clip owns the hands: a hold waits it out, nothing new is grabbed
         in.slideCm = 0.0f;
@@ -222,6 +224,7 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
 }
 
 bool held() { return g_held.load(std::memory_order_relaxed); }
+void take_held_grip() { g_takeHeld.store(true, std::memory_order_relaxed); }
 
 float menu_read(menu::Setting id) {
     switch (id) {

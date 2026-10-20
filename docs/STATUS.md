@@ -67,6 +67,23 @@ NOT run in the simulator or the headset.
   Open: the pistol's carried new cylinder "flickers and oscillates" - unexplained; it is held next to
   the gun hand, where the hand motion vectors of the two grips meet, so it may be AFW (worth one look
   with Stereo instead of AFW).
+- **Fourth headset run (13:25) and the fixes after it.** Tommy Gun good, but a quarter-second freeze on
+  the first drop: each new script name was a full GNames scan, about ten on that drop - now one pass
+  builds an index (`[script] name index: N names in M ms`), warmed on every weapon change. The pistol's
+  rounds never spawned (no log said why: `[drop] the pistol's rounds: ...` now does), and its own
+  cylinder's fall, drawn in the hands' layer, showed through the floor - cut to about 20 cm. The
+  captures (dumps\afw-...132607 / 132704, `afw-replay.ps1`) show both carried parts at the fingertips
+  of an OPEN hand: the hold times now come from where the clip's hand GRIPS the part - Tommy Gun
+  0.30 s (thumb and fingers on the drum's rim to pull it), pistol 0.53 s (wrapped round the cylinder
+  from below) - checked with the drum on its socket in `reload_pose.py` (`--attach`). Open: the
+  pistol's carried cylinder oscillates (with Stereo too) - not explained by the code read; one
+  simulator run would show it frame by frame.
+- **The shotgun's pump by hand** (`reload_rig.h` Pump, `manual_reload.cpp`): held two-handed, each
+  shot's 'Fire' clip waits at its pump (SG_Pump 18 units back 0.75-0.85 s, forward 1.05-1.15 s, from
+  `reload_pose.py`) and the front hand works it back, then forward, the clip following both ways; let
+  go, or one-handed, and it pumps itself. `[reload] Shotgun pump: ...` logs each stroke. A reload that
+  ends under the fore-end squeeze (the last pump) hands the squeeze on to the two-handed grip
+  (`two_hand::take_held_grip`), so the hand stays on the fore-end.
 - **The hands stay on the controllers through a weapon swap** (`hands_state.cpp`): the swap passes
   through ProceduralLoweringHands, classed Scripted, so the hand-back gave both hands to the game for
   its release - the left hand flew to the next gun's grip and back. It is Offscreen now.

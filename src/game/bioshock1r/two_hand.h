@@ -54,6 +54,9 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
 // reach), 0 while holding, -1 no grab point.
 float reach(bool busy);
 bool held();
+// The grip arbiter hands this squeeze on (a reload ended under it): the next pad() takes the grip
+// already down as the grab's press, if the hand is in reach.
+void take_held_grip();
 
 // F10 (dial_input routes these): the grip on/off and its distance, the gunshot kick and its strength.
 float menu_read(menu::Setting id); // NaN = not this module's

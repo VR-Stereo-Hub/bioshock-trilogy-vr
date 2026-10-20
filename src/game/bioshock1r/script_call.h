@@ -27,6 +27,8 @@ bool properties_ready(void* anyActor);
 
 // GNames index of `text` (exact, case-insensitive), -1 when absent. Scans once per text.
 int32_t name_index(const char* text);
+// Builds the name index now (one pass over GNames, tens of ms) so the first lookups during play do not.
+void warm_names();
 
 // Run `fn` on `obj` with a parameter block (at least the function's ParmsSize; zero-filled by the
 // caller). False when unresolved, not found on that class, or the call faulted.

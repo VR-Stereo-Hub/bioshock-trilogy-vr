@@ -97,9 +97,11 @@ inline constexpr Pt kTommyBolt[] = {
 inline constexpr Phase kTommy[] = {
     {Kind::Pull, 0.267f, 0.567f, kTommyDrumOut, 4, "TG_AmmoClip", "pull the drum out"},
     {Kind::Carry, 0.567f, 0.567f, nullptr, 0, "TG_AmmoClip", "drop the spent drum"},
-    // Held at 1.113 s while carrying: the clip's hand on the new drum at the well (17.6 units off the palm).
-    {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch", false, false, 1.0f, 1.113f},
-    {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum", false, false, 1.0f, 1.113f},
+    // Held at 0.30 s while carrying: the clip's hand closing thumb and fingers on the drum's rim to
+    // pull it (reload_pose.py with the drum on its socket; at 1.113 it only pushes it in with the
+    // fingertips, the headset's "held at the fingertips").
+    {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch", false, false, 1.0f, 0.30f},
+    {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum", false, false, 1.0f, 0.30f},
     // The bolt (tools\blender\reload_pose.py): TG_Bolt runs 16.4 units straight back between 2.10 and
     // 2.20 s, the clip's hand on it. Grabbed near the clip's hand from either side, 2x the reach.
     {Kind::Slide, 2.10f, 2.20f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 2.0f, -1.0f, 16.4f},
@@ -122,10 +124,10 @@ inline constexpr Phase kPistol[] = {
     {Kind::Pull, 0.189f, 0.377f, kPistolOpen, 3, nullptr, "fold the barrel down"},
     {Kind::Pull, 0.466f, 0.657f, kPistolCylOut, 3, nullptr, "pull the cylinder out"},
     {Kind::Carry, 0.657f, 0.657f, nullptr, 0, "DrumParent+drum", "drop the spent cylinder"},
-    // Held at 0.89 s while carrying: the clip's hand gripping the new cylinder into the open frame
-    // (at 0.756 it has tossed it, 70.6 units off the palm).
-    {Kind::Fetch, 0.756f, 0.756f, nullptr, 0, "DrumParent+drum", "take a cylinder from the pouch", false, false, 1.0f, 0.89f},
-    {Kind::Insert, 0.756f, 0.934f, kPistolCylIn, 3, "DrumParent+drum", "seat the cylinder", false, false, 1.0f, 0.89f},
+    // Held at 0.53 s while carrying: the clip's hand wrapped round the cylinder from below, pulling it
+    // out (reload_pose.py; at 0.89 the fingers only steer it into the frame, at 0.756 it is tossed).
+    {Kind::Fetch, 0.756f, 0.756f, nullptr, 0, "DrumParent+drum", "take a cylinder from the pouch", false, false, 1.0f, 0.53f},
+    {Kind::Insert, 0.756f, 0.934f, kPistolCylIn, 3, "DrumParent+drum", "seat the cylinder", false, false, 1.0f, 0.53f},
     {Kind::Flick, 1.40f, 1.55f, kPistolClose, 3, nullptr, "flick it shut"},
     {Kind::Finish, 1.70f, 1.80f, nullptr, 0, nullptr, "done"}};
 
@@ -619,7 +621,7 @@ private:
                 // home - the clip plays its last stretch on its own.
                 if (!snap_ && in.partSeatCm >= 0 && in.partSeatCm <= c.seatCm) {
                     snap_ = true;
-                    playT_ = T(p.holdT >= 0 ? p.holdT : p.n > 1 ? p.path[p.n - 2].t : p.t0);
+                    playT_ = T(p.n > 1 ? p.path[p.n - 2].t : p.t0); // the insert's own last stretch
                     o.haptic = Haptic::Tick;
                 }
                 if (snap_) {
@@ -725,6 +727,108 @@ private:
             }
         }
     }
+};
+
+// ---- the shotgun's pump, by hand (2026-10-20) ------------------------------------------------------
+// Every shot's 'Fire' clip pumps the gun itself: SG_Pump runs 18 units back 0.75-0.85 s, waits, and
+// forward 1.05-1.15 s (tools\blender\reload_pose.py). Held two-handed, the clip WAITS at the pump and
+// the front hand works it: back along the gun (the pump's own direction, from the reload's pump path),
+// then forward; the clip follows the hand both ways inside each stroke, and the next shot is ready only
+// once it is done (the game fires again when the clip ends). Not two-handed (or let go mid-way): the
+// clip runs on and pumps itself, as before.
+struct PumpConfig {
+    float backT0 = 0.75f, backT1 = 0.85f, fwdT0 = 1.05f, fwdT1 = 1.15f;
+    float travel = 17.0f;  // grip-frame units of hand travel for a full stroke
+    float done = 0.9f;     // a stroke this far completes
+};
+struct PumpInput {
+    bool fireClip = false; // the shotgun's 'Fire' clip is playing
+    float clipT = 0;       // its time (seconds)
+    bool held = false;     // two hands on the gun
+    Vec hand{};            // the front hand, grip frame
+};
+struct PumpOutput {
+    bool hold = false;     // hold the clip at t
+    bool run = false;      // let it run (with jump: from t)
+    bool jump = false;
+    float t = 0;
+    Haptic haptic = Haptic::None;
+    const char* event = nullptr;
+};
+// The pump's direction in the grip frame: back along the gun, as the reload's pump stroke goes.
+inline Vec pump_back_dir() {
+    const Vec d = kShotgunPumpBack[2].p - kShotgunPumpBack[0].p;
+    const float l = arm_ik::length(d);
+    return l > 1e-6f ? d * (1.0f / l) : Vec{-1, 0, 0};
+}
+class Pump {
+public:
+    PumpOutput update(const PumpInput& in, const PumpConfig& c) {
+        PumpOutput o;
+        if (!in.fireClip) {
+            stage_ = Stage::Off;
+            return o;
+        }
+        if (stage_ == Stage::Off) stage_ = Stage::Firing;
+        if (stage_ == Stage::Done) return o;
+        if (!in.held) {
+            // Not (or no longer) two-handed: the clip pumps itself. (Before the pump a hand may still
+            // take hold.)
+            if (stage_ == Stage::Firing && in.clipT < c.backT0) return o;
+            const bool wasHeld = stage_ == Stage::Back || stage_ == Stage::Fwd;
+            stage_ = Stage::Done;
+            if (wasHeld) {
+                o.run = true;
+                o.event = "let go: the shotgun pumps itself";
+            }
+            return o;
+        }
+        const Vec d = pump_back_dir();
+        switch (stage_) {
+            case Stage::Firing:
+                if (in.clipT < c.backT0) return o; // the shot and its recoil play
+                stage_ = Stage::Back;
+                grab_ = in.hand;
+                o.event = "pump it: back";
+                [[fallthrough]];
+            case Stage::Back: {
+                float p = arm_ik::dot(in.hand - grab_, d) / c.travel;
+                p = p < 0 ? 0 : p > 1 ? 1 : p;
+                o.hold = true;
+                o.t = c.backT0 + (c.backT1 - c.backT0) * p;
+                if (p >= c.done) {
+                    stage_ = Stage::Fwd;
+                    grab_ = in.hand;
+                    o.haptic = Haptic::Tick;
+                    o.t = c.fwdT0;
+                    o.event = "pump it: forward";
+                }
+                return o;
+            }
+            case Stage::Fwd: {
+                float p = -arm_ik::dot(in.hand - grab_, d) / c.travel;
+                p = p < 0 ? 0 : p > 1 ? 1 : p;
+                o.hold = true;
+                o.t = c.fwdT0 + (c.fwdT1 - c.fwdT0) * p;
+                if (p >= c.done) {
+                    stage_ = Stage::Done;
+                    o.hold = false;
+                    o.run = o.jump = true;
+                    o.t = c.fwdT1;
+                    o.haptic = Haptic::Seat;
+                    o.event = "pumped: the next shell is in";
+                }
+                return o;
+            }
+            default: return o;
+        }
+    }
+    bool working() const { return stage_ == Stage::Back || stage_ == Stage::Fwd; }
+
+private:
+    enum class Stage : uint8_t { Off, Firing, Back, Fwd, Done };
+    Stage stage_ = Stage::Off;
+    Vec grab_{};
 };
 
 } // namespace bvr::b1r::reload_rig

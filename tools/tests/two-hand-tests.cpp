@@ -63,6 +63,15 @@ int main() {
         h.update({13.0f, -1.0f, false}, c);
         o = h.update({13.0f, -1.0f, true}, c);
         check(!o.held && !o.eligible, "13 cm is outside the 12 cm radius");
+        // a squeeze already down, handed on (a reload ended under it): taken without a new press
+        two_hand::Grip k;
+        k.update({30.0f, -1.0f, true}, c);         // squeezed far away (the reload's)
+        o = k.update({5.0f, -1.0f, true}, c);      // at the fore-end, still squeezed: no new press
+        check(!o.held, "a held squeeze is not a grab on its own");
+        two_hand::GripInput hand_on{5.0f, -1.0f, true};
+        hand_on.takeHeld = true;
+        o = k.update(hand_on, c);
+        check(o.held && o.grabbed, "handed on: the held squeeze takes hold");
     }
     // ---- align ----
     {

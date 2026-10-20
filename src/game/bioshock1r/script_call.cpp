@@ -8,7 +8,9 @@
 #include <atomic>
 #include <cstring>
 #include <cwchar>
+#include <cctype>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <utility>
 
@@ -122,23 +124,50 @@ bool properties_ready(void* anyActor) {
     return s_state > 0;
 }
 
+// 2026-10-20: the whole name table in ONE pass, lower-cased (the first headset eject froze a quarter
+// of a second: each new name was a full scan of GNames, and the first drop needs about ten). Rebuilt
+// when a name is missing and the table has grown since (a level load adds names).
+static std::unordered_map<std::string, int32_t> g_index;
+static int32_t g_indexedCount = 0;
+static void build_index() {
+    const uint64_t t0 = GetTickCount64();
+    const int32_t n = patterns::fname_count();
+    g_index.clear();
+    g_index.reserve(static_cast<size_t>(n > 0 ? n : 0));
+    std::string key;
+    for (int32_t i = 0; i < n; ++i) {
+        const wchar_t* t = patterns::fname_text(i);
+        if (!t || !*t) continue;
+        key.clear();
+        for (const wchar_t* c = t; *c && key.size() < 128; ++c)
+            key.push_back(static_cast<char>(*c < 128 ? tolower(static_cast<int>(*c)) : '?'));
+        g_index.emplace(key, i); // the first index of a name wins, as the scan's did
+    }
+    g_indexedCount = n;
+    BVR_LOG("[script] name index: %d names in %llu ms", n, static_cast<unsigned long long>(GetTickCount64() - t0));
+}
+
 int32_t name_index(const char* text) {
     const auto it = g_names.find(text);
     if (it != g_names.end()) return it->second;
-    int32_t found = -1;
     const int32_t n = patterns::fname_count();
-    wchar_t want[96] = {};
-    for (int i = 0; i < 95 && text[i]; ++i) want[i] = static_cast<wchar_t>(text[i]);
-    for (int32_t i = 0; i < n; ++i) {
-        const wchar_t* t = patterns::fname_text(i);
-        if (t && _wcsicmp(t, want) == 0) {
-            found = i;
-            break;
-        }
+    if (n <= 0) return -1; // too early: nothing is cached as "absent"
+    std::string key(text);
+    for (char& c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    if (g_index.empty() || g_indexedCount <= 0) build_index();
+    auto hit = g_index.find(key);
+    if (hit == g_index.end() && n > g_indexedCount) {
+        build_index();
+        hit = g_index.find(key);
     }
-    if (n > 0) g_names[text] = found; // an empty table (too early) is not cached as "absent"
+    const int32_t found = hit != g_index.end() ? hit->second : -1;
+    g_names[text] = found;
     if (found < 0) BVR_LOG("[script] name '%s' not in GNames (%d names)", text, n);
     return found;
+}
+
+void warm_names() {
+    if (patterns::fname_count() > 0 && g_index.empty()) build_index();
 }
 
 bool call(void* obj, const char* fname, void* parms) {

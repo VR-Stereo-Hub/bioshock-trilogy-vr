@@ -28,6 +28,9 @@ ap.add_argument("--palm", default="Bip01_L_Hand")
 ap.add_argument("--render", default="reload-pose")
 ap.add_argument("--out", default="reload-pose.json")
 ap.add_argument("--list", action="store_true")
+ap.add_argument("--attach", help="a static mesh (UModel .pskx) hung on a gun socket: the ammo model the gun mesh lacks")
+ap.add_argument("--attach-socket", default="SOCKET_AmmoDummySocket")
+ap.add_argument("--attach-mirror", action="store_true", help="flip the attached mesh's Y (UModel's PSK handedness)")
 args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 place = lambda p: p if os.path.isabs(p) else os.path.join(ws, "verification", p)
@@ -88,6 +91,28 @@ else:
     c = ga.constraints.new("CHILD_OF")
     c.target, c.subtarget = ha, args.socket
     c.inverse_matrix.identity()
+
+if args.attach:
+    sock = bpy.data.objects.get(args.attach_socket)
+    before = set(bpy.data.objects)
+    bpy.ops.psk.import_file(filepath=os.path.abspath(args.attach)) if hasattr(bpy.ops, "psk") and hasattr(bpy.ops.psk, "import_file") \
+        else bpy.ops.import_scene.psk(filepath=os.path.abspath(args.attach))
+    for o in [o for o in bpy.data.objects if o not in before]:
+        if o.type == "ARMATURE":
+            o.hide_render = True
+            continue
+        if o.parent and o.parent.type == "ARMATURE":
+            mw = o.matrix_world.copy()
+            o.parent = None
+            o.matrix_world = mw
+        o.parent = sock
+        o.matrix_parent_inverse.identity()
+        o.location = (0, 0, 0)
+        o.scale = (1, -1 if args.attach_mirror else 1, 1)
+        o.color = (0.3, 0.6, 0.95, 1.0)  # the attached ammo in blue
+        gm.append(o)
+    if not sock:
+        R["problems"].append("no socket %r to attach to" % args.attach_socket)
 
 scn = bpy.context.scene
 fps = scn.render.fps / scn.render.fps_base

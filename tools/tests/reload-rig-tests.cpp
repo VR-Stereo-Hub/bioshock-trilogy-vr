@@ -97,8 +97,8 @@ int main() {
         o = s.step(Vec{10, 0, -90}, false);
         check(o.carry == 2 && s.m.phase() == 2, "let go: dropped, fetch next", s.m.phase(), 2);
         o = s.step(Vec{10, 0, -90}, false, true);
-        check(o.buzz && o.carry == 2 && std::fabs(o.t - 1.113f) < 0.01f, "at the pouch: buzz, clip where its hand holds the drum", o.t,
-              1.113);
+        check(o.buzz && o.carry == 2 && std::fabs(o.t - 0.30f) < 0.01f, "at the pouch: buzz, clip where its hand holds the drum", o.t,
+              0.30);
         o = s.step(Vec{10, 0, -90}, true, true);
         check(s.m.phase() == 3, "a grip at the pouch takes a drum", s.m.phase(), 3);
         o = s.step(Vec{10, 0, -90}, true);
@@ -202,8 +202,8 @@ int main() {
         o = s.step(Vec{40, 7, 2}, false);
         check(!o.ejected && o.carry == 3 && o.fallS > 0.0f, "the drop is once; the fall goes on", o.fallS, 0.011);
         for (int i = 0; i < 70; ++i) o = s.step(Vec{40, 7, 2}, false);
-        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 1.113f) < 0.01f && o.carry == 3,
-              "after the fall: the fetch, the gun open, the old drum lying where it fell", o.t, 1.113);
+        check(s.m.phase() == 2 && o.hold && std::fabs(o.t - 0.30f) < 0.01f && o.carry == 3,
+              "after the fall: the fetch, the gun open, the old drum lying where it fell", o.t, 0.30);
         o = s.step(Vec{0, 0, -40}, true, true);
         check(s.m.phase() == 3, "a new drum from the pouch", s.m.phase(), 3);
 
@@ -217,7 +217,7 @@ int main() {
         check(o.ejected && o.carry == 3 && std::fabs(o.t - 0.466f) < 0.01f, "pistol: open, the cylinder falls", o.t,
               0.466);
         for (int i = 0; i < 70; ++i) o = p.step(Vec{40, 7, 2}, false);
-        check(p.m.phase() == 3 && std::fabs(o.t - 0.89f) < 0.01f, "then take a new one", o.t, 0.89);
+        check(p.m.phase() == 3 && std::fabs(o.t - 0.53f) < 0.01f, "then take a new one", o.t, 0.53);
 
         // The latch: the carried drum within 10 cm of its seat snaps home, wherever the palm is.
         s.in.partSeatCm = 30.0f;
@@ -267,6 +267,54 @@ int main() {
         f.in.canReload = false;
         o = f.step(Vec{40, 7, 2}, false);
         check(o.act != Act::StartReload && o.haptic == Haptic::Deny, "a full gun does not eject: it buzzes no");
+    }
+    // ---- the shotgun's pump by hand ----
+    {
+        Pump pump;
+        const PumpConfig c;
+        PumpInput in;
+        in.fireClip = true;
+        in.held = true;
+        const Vec d = pump_back_dir();
+        Vec h{40, 10, 10};
+        in.hand = h;
+        in.clipT = 0.3f;
+        PumpOutput o = pump.update(in, c);
+        check(!o.hold && !o.run, "the shot plays first");
+        in.clipT = 0.76f;
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.t - 0.75f) < 0.01f, "at the pump: the clip waits for the hand", o.t, 0.75);
+        in.hand = h + d * (c.travel * 0.5f);
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.t - 0.80f) < 0.01f, "halfway back: the pump halfway", o.t, 0.80);
+        in.hand = h + d * c.travel;
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.t - 1.05f) < 0.01f, "all the way back: now forward", o.t, 1.05);
+        const Vec back = in.hand;
+        in.hand = back - d * (c.travel * 0.5f);
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.t - 1.10f) < 0.01f, "halfway forward", o.t, 1.10);
+        in.hand = back - d * c.travel;
+        o = pump.update(in, c);
+        check(o.run && o.jump && std::fabs(o.t - 1.15f) < 0.01f, "forward: pumped, the clip runs out", o.t, 1.15);
+        o = pump.update(in, c);
+        check(!o.hold && !o.run, "then nothing more this shot");
+        in.fireClip = false;
+        pump.update(in, c);
+
+        Pump q; // not two-handed: the clip pumps itself
+        in = PumpInput{};
+        in.fireClip = true;
+        in.clipT = 0.8f;
+        o = q.update(in, c);
+        check(!o.hold, "one-handed: never held");
+        Pump r; // let go mid-pump: it runs on
+        in.held = true;
+        in.clipT = 0.76f;
+        r.update(in, c);
+        in.held = false;
+        o = r.update(in, c);
+        check(o.run && !o.hold, "let go mid-pump: the shotgun pumps itself");
     }
     // ---- scale ----
     {

@@ -35,6 +35,8 @@ struct GripInput {
     float distCm = -1.0f;
     float slideCm = -1.0f;
     bool grip = false;
+    bool takeHeld = false; // 2026-10-20: a squeeze already down counts as the grab's press (a reload
+                           // that ended under it hands the squeeze on: the hand back on the fore-end)
 };
 
 struct GripOutput {
@@ -49,7 +51,7 @@ class Grip {
 public:
     GripOutput update(const GripInput& in, const GripConfig& c) {
         GripOutput o;
-        const bool rising = in.grip && !gripWas_;
+        const bool rising = in.grip && (!gripWas_ || in.takeHeld);
         gripWas_ = in.grip;
         if (held_) {
             const bool off = !(in.slideCm >= 0.0f) || in.slideCm > c.releaseCm;

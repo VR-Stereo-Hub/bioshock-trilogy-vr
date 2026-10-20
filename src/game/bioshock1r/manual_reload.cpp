@@ -5,6 +5,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/dropped_part.h"
+#include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
 #include "game/bioshock1r/muzzle.h"
@@ -39,6 +40,8 @@ bool read_n(const void* src, void* dst, size_t n) {
 std::atomic<bool> g_on{true};
 rr::Machine g_machine;
 rr::Config g_cfg;
+rr::Pump g_pump;          // the shotgun's pump by hand
+rr::PumpConfig g_pumpCfg;
 
 // XInput thread <-> game thread.
 std::atomic<bool> g_gripDown{false};
@@ -206,7 +209,7 @@ void apply_parts(const rr::Output& o, const Frame& f) {
     // only falls out of the gun briefly, then is gone; a world prop (dropped_part) is what stays.
     // The Tommy Gun's drum IS its own world copy: gone at once. The pistol's copy is its rounds: the
     // cylinder still falls out first.
-    constexpr float kOwnFallS = 0.45f;
+    constexpr float kOwnFallS = 0.2f; // ~20 cm: out of the gun, never far enough to meet the floor
     const bool copyIsPart = g_havokCopy && !g_copyRounds;
     const bool falling = o.carry == 3 && !copyIsPart && o.fallS < kOwnFallS;
     if (o.carry == 3 && !falling) g_carryMode = 2;
@@ -422,6 +425,8 @@ void tick(const Frame& f) {
         g_ejectReq.store(false, std::memory_order_relaxed);
         return;
     }
+    // The script name index, built on a weapon change rather than mid-reload (the first eject's hitch).
+    if (f.weapon != g_weapon) script::warm_names();
     if (f.weapon != g_weapon) {
         if (g_machine.active()) BVR_LOG("[reload] the weapon changed - manual reload dropped");
         let_go(nullptr, nullptr);
@@ -450,6 +455,31 @@ void tick(const Frame& f) {
                 script::anim_length(f.weapon, nm, &g_len);
             }
         }
+    }
+    // 2026-10-20 THE SHOTGUN'S PUMP BY HAND (reload_rig.h Pump): held two-handed, each shot's 'Fire'
+    // clip waits at its pump for the front hand to work it, back then forward.
+    if (!_wcsicmp(g_cls, L"Shotgun") || g_pump.working()) {
+        rr::PumpInput pi;
+        int32_t pw = 0, ph = 0;
+        if (st == hands_state::State::Firing || st == hands_state::State::PostFiring || g_pump.working()) {
+            pw = weapon_clip_handle(f.weapon);
+            hands_handle(f.weapon, &ph);
+            int32_t nm = -1;
+            if (pw > 0 && script::anim_name(f.weapon, pw, &nm) && nm >= 0) {
+                const wchar_t* cn = patterns::fname_text(nm);
+                pi.fireClip = cn && !_wcsicmp(cn, L"Fire");
+            }
+            if (pi.fireClip) script::anim_time(f.weapon, pw, &pi.clipT);
+        }
+        pi.held = two_hand::held();
+        pi.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
+        const rr::PumpOutput po = g_pump.update(pi, g_pumpCfg);
+        if (po.hold)
+            hold(f.weapon, f.hands, pw, ph, po.t);
+        else if (po.run)
+            run(f.weapon, f.hands, pw, ph, po.jump, po.t);
+        haptic(po.haptic, f);
+        if (po.event) BVR_LOG("[reload] Shotgun pump: %s", po.event);
     }
     in.clipLive = clipName != nullptr;
     in.clip = clipName;

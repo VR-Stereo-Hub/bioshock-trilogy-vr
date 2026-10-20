@@ -111,9 +111,13 @@ bool capture(void* weapon) {
         // (ShockGame.U, the six cartridges) - they fall instead, where the ammo model sits.
         const wchar_t* cls = patterns::object_class_name(weapon);
         if (cls && !_wcsicmp(cls, L"Pistol")) {
+            // The StaticMesh class: by name, else any static mesh's own class (the wrench's, ...).
             void* smClass = load_class(weapon, L"Engine.StaticMesh");
             if (smClass) g_cap.mesh = load_object(weapon, L"ShockGame.WP_Pistol.PI_AmmoType", smClass);
+            if (!g_cap.mesh && smClass) g_cap.mesh = load_object(weapon, L"ShockGame.PI_AmmoType", smClass);
             g_cap.byName = g_cap.mesh != nullptr;
+            BVR_LOG("[drop] the pistol's rounds: StaticMesh class %s, PI_AmmoType %s", smClass ? "loaded" : "NOT loaded",
+                    g_cap.mesh ? "loaded" : "NOT loaded");
         }
         if (!g_cap.mesh) {
             BVR_LOG("[drop] the visible magazine has no static mesh");
