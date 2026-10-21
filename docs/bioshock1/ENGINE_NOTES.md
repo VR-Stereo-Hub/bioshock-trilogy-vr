@@ -6893,3 +6893,20 @@ back there, so the hold and the drawn hand are unchanged until the grip is let g
 leaves the grip to the two-handed grip, and the same Pump ratchet works the end clip's pump (0.409-0.487
 back, 0.532-0.676 forward), waiting for the hands instead of pumping itself. The recoil the gun hand
 plays from the Fire clip is halved.
+
+## 2026-10-20 - From the 21:07 run's recording: the grab lost after each pump; the grip pose
+
+The shotgun recording (`poserec-20261020-211137`, 1567 frames, replayed with `pose_capture.py --record`)
+puts the drawn free palm 5-6 units from `SG_Pump` through every shot and stroke (the hand IS on the
+pump), and 26-35 units from it within 0.1 s after each pump completes - the log's "let go - the hand
+slid off along the gun" each time: the hold's slide-off test came back on at the catch while the clip
+was still returning the pump. The whole Fire clip (and 0.4 s after) now counts as the pump's.
+
+The free hand's fingers are the clip's, and a clip can open them on the gun (the reload's end clip puts a
+flat hand on the pump). Whenever the two-handed grip holds, the fingers are now the curl that grip had on
+that gun at rest (latched while it idles held, per gun, on the free wrist) - "gripping should always make
+it the grip pose". The replay also takes the IK arms now (each sleeve's palette affine is in the capture;
+older captures carry the arm with the hand), so its wrists are no longer torn.
+
+A dry Tommy Gun's reload waits at the drum; switching ammunition then (PendingAmmoSelection changing)
+drops the drum as X does, and the game loads the new type when the clip ends.

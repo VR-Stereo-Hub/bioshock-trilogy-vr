@@ -36,6 +36,9 @@ ap.add_argument("--render", default="")
 ap.add_argument("--save", default="")
 ap.add_argument("--csv", default="")
 ap.add_argument("--out", default="")
+ap.add_argument("--focus", default="grip", help="grip | palm | a gun bone: what the renders look at")
+ap.add_argument("--size", type=float, default=45.0, help="the renders' camera distance scale (rig units)")
+ap.add_argument("--hide-arms", action="store_true", help="hide the arm meshes' sleeves (not rebuilt: IK)")
 args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 exports = os.path.join(ws, "exports", "bs1")
@@ -79,6 +82,11 @@ def parse(path):
                 elif k == "handfix":
                     v = [float(x) for x in tok[3:]]
                     cap["handfix"][int(tok[1])] = (int(tok[2]) == 1, v[0:4], v[4:7], v[7:10], v[10])
+                elif k == "sleeves":
+                    cap["sleeves"] = {0: [int(x) for x in tok[2:7]], 1: [int(x) for x in tok[8:13]]}
+                elif k == "arm":
+                    cap.setdefault("arm", {})[(int(tok[1]), int(tok[2]))] = (int(tok[3]) == 1,
+                                                                             [float(x) for x in tok[4:16]])
                 elif k == "b":
                     v = [float(x) for x in tok[2:]]
                     cap["bones"][int(tok[1])] = (v[0:3], v[3:7], v[7:10])
@@ -159,11 +167,37 @@ def fixed(cap, i, p, q, s):
     return p, q, s
 
 
+F4 = Matrix.Diagonal((1.0, -1.0, 1.0, 1.0))
+SLEEVES = {0: [3, 4, 5, 22, 23], 1: [24, 25, 26, 45, 46]}  # patterns.h kBoneLSleeve / kBoneRSleeve
+
+
+def arm_matrix(cap, i, p, q, s):
+    """A sleeve bone as the game draws it: the IK's affine on the game's bone when the capture has it,
+    else carried rigidly with its hand (older captures) - never left behind to tear the wrist."""
+    sleeves = cap.get("sleeves", SLEEVES)
+    for h in (0, 1):
+        if i in sleeves[h]:
+            j = sleeves[h].index(i)
+            valid, T = cap.get("arm", {}).get((h, j), (False, None))
+            m = ue_matrix(p, q, s)
+            if valid:
+                T4 = Matrix(((T[0], T[1], T[2], T[3]), (T[4], T[5], T[6], T[7]), (T[8], T[9], T[10], T[11]),
+                             (0, 0, 0, 1)))
+                return F4 @ T4 @ F4 @ m
+            fv, fq, ft, fp, fs = cap["handfix"].get(h, (False, None, None, None, None))
+            if fv:
+                fix = ue_matrix(ft, fq, (fs,) * 3) @ ue_matrix([-c for c in fp], [0, 0, 0, 1])
+                return fix @ m
+            return m
+    return None
+
+
 def pose_frame(cap):
     hf = {}
     for i, (p, q, s) in cap["bones"].items():
         if i < len(order):
-            hf[order[i]] = ue_matrix(*fixed(cap, i, p, q, s))
+            am = arm_matrix(cap, i, p, q, s)
+            hf[order[i]] = am if am is not None else ue_matrix(*fixed(cap, i, p, q, s))
     for name in depth_order(ha, hf):
         set_game_frame(ha, HC, name, hf[name])
         bpy.context.view_layer.update()
@@ -276,8 +310,14 @@ for m in gm:
         m.color = (0.85, 0.55, 0.2, 1.0)
 if args.render:
     scn.frame_set(0)
-    focus = game_frame(ha, HC, order[43]).to_translation()
-    size = 45.0
+    if args.focus == "palm":  # the free hand (what it carries)
+        held = frames[0].get("held", 1)
+        focus = (game_frame(ha, HC, "Bip01_L_Hand" if held == 1 else "Bip01_R_Hand") @ ue_local(PALM[1 - held]))
+    elif args.focus in ga.pose.bones if ga else False:
+        focus = game_frame(ga, GC, args.focus).to_translation()
+    else:
+        focus = game_frame(ha, HC, order[43]).to_translation()
+    size = args.size
     R["renders"] = []
     for name, off in (("eye", Vector((-size * 1.2, 0.0, size * 0.3))), ("left", Vector((0.0, size * 1.4, size * 0.2))),
                       ("under", Vector((size * 0.6, size * 0.3, -size * 1.0)))):

@@ -7029,6 +7029,17 @@ void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float q
         fprintf(f, "handfix %d %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g %.6g %.6g  %.6g\n", h, X.valid ? 1 : 0, X.q[0],
                 X.q[1], X.q[2], X.q[3], X.t[0], X.t[1], X.t[2], X.pivot[0], X.pivot[1], X.pivot[2], X.s);
     }
+    // The arms as the IK draws them: per sleeve bone, the affine (row-major 3x4 [R | t], component space)
+    // the palette applies to the game's bone - so a replay's wrist is not torn between hand and forearm.
+    fprintf(f, "sleeves L %d %d %d %d %d R %d %d %d %d %d\n", patterns::kBoneLSleeve[0], patterns::kBoneLSleeve[1],
+            patterns::kBoneLSleeve[2], patterns::kBoneLSleeve[3], patterns::kBoneLSleeve[4], patterns::kBoneRSleeve[0],
+            patterns::kBoneRSleeve[1], patterns::kBoneRSleeve[2], patterns::kBoneRSleeve[3], patterns::kBoneRSleeve[4]);
+    for (int h = 0; h < 2; ++h)
+        for (int j = 0; j < 5; ++j) {
+            const float* m = palX[h].arm[j];
+            fprintf(f, "arm %d %d %d  %.8g %.8g %.8g %.8g  %.8g %.8g %.8g %.8g  %.8g %.8g %.8g %.8g\n", h, j,
+                    palX[h].armValid ? 1 : 0, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+        }
     fprintf(f, "bones %d\n", n);
     for (int i = 0; i < n; ++i)
         fprintf(f, "b %d  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g\n", i, A[i].p[0], A[i].p[1], A[i].p[2],
@@ -7896,6 +7907,42 @@ void m4_compose(bool late) {
             const ik::Quat gq = ik::normalized(ik::quat(A[gw].q));
             const ik::Vec gp = ik::vec(A[gw].p);
             const bool keep = manual_reload::active() && two_hand::held() && !manual_reload::pump_wait();
+            // THE GRIP POSE WHENEVER THE GRIP HOLDS (the tester: "gripping should always make it the grip
+            // pose"). The fingers, on their own wrist, are the curl the two-handed grip has on the gun at
+            // rest - latched per gun while it idles held - through every clip that would open them: a shot,
+            // the shotgun reload's last pump ("the hand when cocking after reloading is flat").
+            static Qts s_fingerRel[kMaxBones];
+            static bool s_fingerRelValid = false;
+            static const void* s_fingerGun = nullptr;
+            void* curGun = nullptr;
+            hands::current_holdable(&curGun);
+            if (curGun != s_fingerGun) {
+                s_fingerGun = curGun;
+                s_fingerRelValid = false;
+            }
+            const int fw = m4_wrist(fh);
+            const ik::Quat fq = ik::normalized(ik::quat(A[fw].q));
+            const ik::Vec fp = ik::vec(A[fw].p);
+            if (!manual_reload::active() && two_hand::held() &&
+                hands_state::current(g_m4.actor) == hands_state::State::Idling) {
+                for (int i = lo; i <= hi; ++i) {
+                    if (i == fw) continue;
+                    ik::put(ik::rotate(ik::conj(fq), ik::vec(A[i].p) - fp), s_fingerRel[i].p);
+                    const ik::Quat rq = ik::normalized(ik::mul(ik::conj(fq), ik::quat(A[i].q)));
+                    memcpy(s_fingerRel[i].q, rq.v, 16);
+                }
+                s_fingerRelValid = true;
+            }
+            if (two_hand::held() && s_fingerRelValid) {
+                if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                for (int i = lo; i <= hi; ++i) {
+                    if (i == fw) continue;
+                    ik::put(fp + ik::rotate(fq, ik::vec(s_fingerRel[i].p)), s_sub[i].p);
+                    const ik::Quat q = ik::normalized(ik::mul(fq, ik::quat(s_fingerRel[i].q)));
+                    memcpy(s_sub[i].q, q.v, 16);
+                }
+                A = s_sub;
+            }
             if (!manual_reload::active()) {
                 for (int i = lo; i <= hi; ++i) {
                     const ik::Vec rp = ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp);
@@ -7906,7 +7953,7 @@ void m4_compose(bool late) {
                 }
                 s_freeRelValid = true;
             } else if (keep && s_freeRelValid) {
-                memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
                 for (int i = lo; i <= hi; ++i) {
                     ik::put(gp + ik::rotate(gq, ik::vec(s_freeRel[i].p)), s_sub[i].p);
                     const ik::Quat q = ik::normalized(ik::mul(gq, ik::quat(s_freeRel[i].q)));

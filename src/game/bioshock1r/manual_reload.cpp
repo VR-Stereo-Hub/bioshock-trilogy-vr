@@ -59,6 +59,7 @@ rr::PumpConfig end_pump_cfg() {
 bool g_endPumpDone = false;
 bool g_endPumpWas = false;
 std::atomic<bool> g_pumpWait{false}; // game thread -> bones/two-hand: the grip is the two-handed grip's now
+std::atomic<uint64_t> g_fireClipMs{0}; // the shotgun's Fire clip was last seen playing
 
 // XInput thread <-> game thread.
 std::atomic<bool> g_gripDown{false};
@@ -445,7 +446,10 @@ bool can_reload(void* weapon, uint64_t now) {
 } // namespace
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
-bool pumping() { return g_pumping.load(std::memory_order_relaxed) || (g_pumpWait.load(std::memory_order_relaxed) && g_endPump.working()); }
+bool pumping() {
+    return g_pumping.load(std::memory_order_relaxed) || (g_pumpWait.load(std::memory_order_relaxed) && g_endPump.working()) ||
+           GetTickCount64() - g_fireClipMs.load(std::memory_order_relaxed) < 400;
+}
 bool pump_wait() { return g_pumpWait.load(std::memory_order_relaxed); }
 bool two_hand_allowed() {
     // A manual reload leaves the two-handed grip on: at its last pump (the grip IS the pump), and through
@@ -675,6 +679,9 @@ void tick(const Frame& f) {
         g_seenPulls = pulls;
         const rr::PumpOutput po = g_pump.update(pi, g_pumpCfg);
         g_pumping.store(g_pump.working(), std::memory_order_relaxed);
+        // 21:11 recording: the hold let go ("slid off") ~0.1 s after each pump - the clip still returning
+        // the pump, the hand where the stroke left it. The whole Fire clip, and a moment after, is the pump's.
+        if (pi.fireClip) g_fireClipMs.store(f.now, std::memory_order_relaxed);
         // hold()/run() cover the Hands actor's own clip too (each_hands): the 14:11 run held the gun's
         // only, and the hands kept looping their pump with the front hand on it.
         if (po.hold)
@@ -731,6 +738,22 @@ void tick(const Frame& f) {
     const bool xPressed = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable;
     in.eject = xPressed && !g_machine.active();
     in.ejectNow = xPressed && g_machine.active(); // a reload waiting at its first pull drops the magazine
+    // 21:11 run: a dry Tommy Gun's reload waited at the drum and the tester switched ammunition - the game
+    // took the switch (PendingAmmoSelection) but the reload went on waiting: "completely blocked". A switch
+    // while it waits drops the drum as X does; the game loads the new ammunition when the clip ends.
+    static bool s_switchSeen = false;
+    if (!g_machine.active()) s_switchSeen = false;
+    if (g_machine.active() && ejectable && !s_switchSeen && script::properties_ready(f.weapon)) {
+        const int32_t po = script::property_offset(f.weapon, L"PendingAmmoSelection");
+        const int32_t co = script::property_offset(f.weapon, L"CurrentAmmoSelection");
+        void *pend = nullptr, *cur = nullptr;
+        if (po >= 0 && co >= 0 && read_n(static_cast<uint8_t*>(f.weapon) + po, &pend, sizeof pend) &&
+            read_n(static_cast<uint8_t*>(f.weapon) + co, &cur, sizeof cur) && pend && cur && pend != cur) {
+            BVR_LOG("[reload] %S: the ammunition was switched while the reload waits - the drum drops", g_cls);
+            in.ejectNow = true;
+            s_switchSeen = true;
+        }
+    }
     in.pumpDone = g_endPumpDone;
     g_endPumpDone = false;
     // And a reload the game begins itself (the gun ran dry) ejects the same way.
