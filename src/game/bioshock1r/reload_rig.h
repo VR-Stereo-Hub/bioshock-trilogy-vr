@@ -436,7 +436,10 @@ private:
         }
         if (!in.spareOk || !in.inPouch || !spare_free()) return;
         o.buzz = true; // the pouch has one (22:55 run: "the rumble doesn't show up")
-        if (state_ == State::Idle && o.reach < 0) o.reach = 0.5f; // a zone, not a point: mid-reach
+        // A zone, not a point: well within reach - and NEARER than the gun's own drum, whose reach idle() set
+        // first (00:18-00:20 run: "reload 1.71" out of reach while the hand was at the pouch, the squeeze went to
+        // the game and no spare came out, ever).
+        if (state_ == State::Idle && (o.reach < 0 || o.reach > 0.25f)) o.reach = 0.25f;
         if (state_ == State::Idle) o.claim = true;
         if (in.gripRise) {
             o.spareTake = true;

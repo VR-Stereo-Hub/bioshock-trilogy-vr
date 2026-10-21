@@ -184,6 +184,7 @@ int main() {
         s.in.spareOk = true;
         Output o = s.step(Vec{10, 0, -90}, false, true);
         check(!s.m.active() && o.claim && o.reach > 0 && o.buzz, "idle, at the pouch: the grip would take a spare (it buzzes)");
+        check(o.reach <= 0.25f, "and the pouch outranks the gun's own drum (the arbiter takes the nearest)", o.reach, 0.25);
         o = s.step(Vec{10, 0, -90}, true, true);
         check(o.spareTake && !s.m.active() && o.act == Act::None, "a grip at the pouch takes a spare - no reload starts");
         s.in.spareInHand = true;
