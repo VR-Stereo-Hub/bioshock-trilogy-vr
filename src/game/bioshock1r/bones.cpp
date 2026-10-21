@@ -7913,7 +7913,13 @@ void m4_compose(bool late) {
             const int gAttach = patterns::kBoneWeaponAttach < n ? patterns::kBoneWeaponAttach : gw;
             const ik::Quat gq = ik::normalized(ik::quat(A[gAttach].q));
             const ik::Vec gp = ik::vec(A[gAttach].p);
-            const bool keep = manual_reload::active() && two_hand::held() && !manual_reload::pump_wait();
+            // 2026-10-21 (the 00:20 recording: the shotgun emptied with the grip held, the palm jumped 49 units off
+            // the pump on the reload's first frame and stayed there): the game's reload clip is live a frame
+            // before the manual reload says so (it starts in the gun hand's tick, after this), and that frame
+            // re-recorded the kept hand FROM the reload clip. The hands' own state decides: no rest is recorded
+            // while the game reloads, and the hand is kept from its first frame.
+            const bool reloading = hands_state::current(g_m4.actor) == hands_state::State::Reloading;
+            const bool keep = (manual_reload::active() || reloading) && two_hand::held() && !manual_reload::pump_wait();
             // THE GRIP POSE WHENEVER THE GRIP HOLDS (the tester: "gripping should always make it the grip
             // pose"). The fingers, on their own wrist, are the curl the two-handed grip has on the gun at
             // rest - latched per gun while it idles held - through every clip that would open them: a shot,
@@ -8014,7 +8020,7 @@ void m4_compose(bool late) {
                 }
                 A = s_sub;
             }
-            if (!manual_reload::active()) {
+            if (!manual_reload::active() && !reloading) {
                 for (int i = lo; i <= hi; ++i) {
                     const ik::Vec rp = ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp);
                     const ik::Quat rq = ik::normalized(ik::mul(ik::conj(gq), ik::quat(A[i].q)));
