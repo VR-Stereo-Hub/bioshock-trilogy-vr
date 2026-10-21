@@ -459,7 +459,7 @@ int main() {
         c.backT1 = 0.487f;
         c.fwdT0 = 0.532f;
         c.fwdT1 = 0.676f;
-        c.earlyCm = 1e6f;
+        c.earlyCm = 2.5f;
         c.waitForHands = true;
         Pump p;
         PumpInput in;
@@ -516,7 +516,7 @@ int main() {
         check(!o.hold && !o.run, "the shot plays first");
         in.clipT = 0.76f;
         o = pump.update(in, c);
-        check(o.hold && std::fabs(o.t - 0.75f) < 0.01f && pump.working(), "at the pump: the clip waits for the hand",
+        check(o.hold && std::fabs(o.t - 0.75f) < 0.01f && !pump.working(), "at the pump: the clip waits for the hand",
               o.t, 0.75);
         in.triggerRise = true;
         o = pump.update(in, c);
@@ -550,7 +550,7 @@ int main() {
         in.clipNew = false;
         in.clipT = 0.76f;
         o = pump.update(in, c);
-        check(o.hold && pump.working(), "the next shot waits for its own pump");
+        check(o.hold && std::fabs(o.t - 0.75f) < 0.01f, "the next shot waits for its own pump");
         in.fireClip = false;
         pump.update(in, c);
 
@@ -576,9 +576,33 @@ int main() {
         in.spanCm = 40.0f;
         in.clipT = 0.76f;
         r.update(in, c);
+        in.spanCm = 36.0f; // a stroke begun
+        r.update(in, c);
         in.held = false;
         o = r.update(in, c);
-        check(o.run && !o.hold, "let go mid-pump: the shotgun pumps itself");
+        check(o.run && !o.hold, "let go mid-pump: the shotgun pumps itself (the default, no waitForHands)");
+        // 2026-10-21: the shot pump the game uses - waits after the recoil (0.45), for the hands, held or not.
+        PumpConfig sc;
+        sc.waitT = 0.45f;
+        sc.waitForHands = true;
+        Pump w;
+        in = PumpInput{};
+        in.fireClip = in.clipNew = in.spanOk = true;
+        in.spanCm = 40.0f;
+        in.clipT = 0.3f;
+        o = w.update(in, sc);
+        in.clipNew = false;
+        check(!o.hold && !o.run, "the recoil plays");
+        in.clipT = 0.46f;
+        o = w.update(in, sc);
+        check(o.hold && std::fabs(o.t - 0.45f) < 0.01f, "one-handed: it waits after the recoil, before the pump", o.t, 0.45);
+        for (int i = 0; i < 5; ++i) o = w.update(in, sc);
+        check(o.hold && !o.run, "and never pumps itself");
+        in.held = true;
+        o = w.update(in, sc);
+        in.spanCm = 36.0f;
+        o = w.update(in, sc);
+        check(o.chase && o.t > 0.75f, "a stroke begun: played on from the wait through the pump (its sound with it)", o.t, 0.79);
     }
     // ---- scale ----
     {

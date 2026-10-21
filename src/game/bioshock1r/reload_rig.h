@@ -989,6 +989,10 @@ struct PumpConfig {
     // taken hold of inside the grab radius and its last 6 cm of approach, then its settling, were the two
     // strokes: grab to pumped in 0.33 s): a fresh hold counts no stroke for this long.
     float settleS = 0.30f;
+    // 2026-10-21 (the tester: "it always plays the cocking sound after shooting even if you haven't cocked yet"):
+    // the clip waits HERE, before the pump and its sound (< 0: at backT0), and plays on through them only once a
+    // stroke has begun - played, not set, so the sound fires with the player's pump and never without it.
+    float waitT = -1.0f;
 };
 struct PumpInput {
     bool fireClip = false; // the shotgun's 'Fire' clip is playing
@@ -1023,13 +1027,15 @@ public:
         // (the 15:37 run: a pump left Done never came back for the shot after it).
         if (stage_ == Stage::Off || in.clipNew) stage_ = Stage::Firing;
         if (stage_ == Stage::Done) return o;
+        const float waitT = c.waitT >= 0.0f ? c.waitT : c.backT0;
         if (!in.held && c.waitForHands) {
-            // The reload's last pump waits for the hands at the stroke it is on.
-            if (stage_ == Stage::Firing && in.clipT < c.backT0) return o;
-            if (stage_ == Stage::Firing) stage_ = Stage::Back;
+            // It waits for the hands at the stroke it is on - before the pump if none has begun.
+            if (stage_ == Stage::Firing && in.clipT < waitT) return o;
             o.hold = true;
-            o.t = stage_ == Stage::Fwd ? c.backT1 : c.backT0;
+            o.t = stage_ == Stage::Fwd ? c.backT1 : stage_ == Stage::Back ? c.backT0 : waitT;
+            o.deny = in.triggerRise;
             rebase_ = true; // a new grab starts the ratchet afresh
+            refSet_ = false;
             return o;
         }
         if (!in.held) {
@@ -1047,9 +1053,10 @@ public:
         if (in.heldS < c.settleS) { // a fresh grab settles: its reference is taken once it has
             rebase_ = true;
             refSet_ = false;
-            if (stage_ == Stage::Firing) return o;
+            if (stage_ == Stage::Firing && in.clipT < waitT) return o;
             o.hold = true;
-            o.t = stage_ == Stage::Fwd ? c.backT1 : c.backT0;
+            o.t = stage_ == Stage::Fwd ? c.backT1 : stage_ == Stage::Back ? c.backT0 : waitT;
+            o.deny = in.triggerRise;
             return o;
         }
         if (!in.spanOk) { // a controller lost: hold where it is, measure nothing
@@ -1075,10 +1082,16 @@ public:
                     refSet_ = true;
                 }
                 if (along < ref_) ref_ = along;
-                if (in.clipT < c.backT0 && along - ref_ < c.earlyCm) return o;
+                if (along - ref_ < c.earlyCm) {
+                    if (in.clipT < waitT) return o; // the shot and its recoil play
+                    o.hold = true;                  // then it waits, before the pump and its sound
+                    o.t = waitT;
+                    o.deny = in.triggerRise;
+                    return o;
+                }
                 stage_ = Stage::Back;
                 refSet_ = false;
-                o.event = in.clipT < c.backT0 ? "pump it: back (begun during the recoil)" : "pump it: back";
+                o.event = in.clipT < waitT ? "pump it: back (begun during the recoil)" : "pump it: back";
                 [[fallthrough]];
             case Stage::Back: {
                 if (along < ref_) ref_ = along; // the ratchet: the farthest forward it has been

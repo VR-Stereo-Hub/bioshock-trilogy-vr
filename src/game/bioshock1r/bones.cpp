@@ -7936,7 +7936,15 @@ void m4_compose(bool late) {
             // the lowering) with the grip held.
             const hands_state::State hs = hands_state::current(g_m4.actor);
             const bool reloading = hs == hands_state::State::Reloading || hs == hands_state::State::Offscreen;
-            const bool keep = (manual_reload::active() || reloading) && two_hand::held() && !manual_reload::pump_wait();
+            // 2026-10-21: and the shotgun's free hand whenever the clip has taken it off its rest on the gun (the
+            // empty gun's idle, EmptyFidgetShotgun, holds it away from the pump) - held, it stays on the pump.
+            bool offRest = false;
+            if (manual_reload::sticky_grip() && s_freeRelValid && hs != hands_state::State::Firing) {
+                const int fw0 = m4_wrist(fh);
+                offRest = ik::length(ik::rotate(ik::conj(gq), ik::vec(A[fw0].p) - gp) - ik::vec(s_freeRel[fw0].p)) > 4.0f;
+            }
+            const bool keep = (manual_reload::active() || reloading || offRest) && two_hand::held() &&
+                              !manual_reload::pump_wait();
             // THE GRIP POSE WHENEVER THE GRIP HOLDS (the tester: "gripping should always make it the grip
             // pose"). The fingers, on their own wrist, are the curl the two-handed grip has on the gun at
             // rest - latched per gun while it idles held - through every clip that would open them: a shot,
@@ -8039,7 +8047,8 @@ void m4_compose(bool late) {
                 A = s_sub;
             }
             // Held, or the first idle seen (an idle fidget's pose is not the grab).
-            if (!manual_reload::active() && hs == hands_state::State::Idling && (two_hand::held() || !s_freeRelValid)) {
+            if (!manual_reload::active() && hs == hands_state::State::Idling && !offRest &&
+                (two_hand::held() || !s_freeRelValid)) {
                 for (int i = lo; i <= hi; ++i) {
                     const ik::Vec rp = ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp);
                     const ik::Quat rq = ik::normalized(ik::mul(ik::conj(gq), ik::quat(A[i].q)));
@@ -8079,6 +8088,54 @@ void m4_compose(bool late) {
                 }
                 s_lastRelValid = true;
             }
+        }
+    }
+    // 2026-10-21 (the tester: "completely running out of ammo within an ammo type causes the tilt up animation for a
+    // split second"): the shotgun stays in the gun hand exactly as it rests there - its grip and tip sockets (43,
+    // 44, which carry the drawn gun) against the gun hand's wrist as at idle - through every clip but a shot's: the
+    // empty gun's idle, the lowering of an ammunition switch and the reloads can no longer turn it in the hand.
+    if (manual_reload::sticky_grip() && patterns::kBoneWeaponAttach < n && 44 < n) {
+        static Qts s_gunRel[2];
+        static bool s_gunRelOk = false;
+        static void* s_gunRelGun = nullptr;
+        void* g = nullptr;
+        hands::current_holdable(&g);
+        if (g != s_gunRelGun) {
+            s_gunRelGun = g;
+            s_gunRelOk = false;
+        }
+        const int gw = m4_wrist(gunHand);
+        const ik::Quat wq = ik::normalized(ik::quat(A[gw].q));
+        const ik::Vec wp = ik::vec(A[gw].p);
+        const int sockets[2] = {patterns::kBoneWeaponAttach, 44};
+        const hands_state::State hs = hands_state::current(g_m4.actor);
+        Qts now[2];
+        for (int j = 0; j < 2; ++j) {
+            const int i = sockets[j];
+            ik::put(ik::rotate(ik::conj(wq), ik::vec(A[i].p) - wp), now[j].p);
+            const ik::Quat rq = ik::normalized(ik::mul(ik::conj(wq), ik::quat(A[i].q)));
+            memcpy(now[j].q, rq.v, 16);
+        }
+        // Recorded at idle, and only near the rest it has (an empty idle that tilts the gun is not a rest).
+        float dev = 0.0f;
+        if (s_gunRelOk) {
+            float d = 0.0f;
+            for (int c = 0; c < 4; ++c) d += now[0].q[c] * s_gunRel[0].q[c];
+            dev = 2.0f * std::acos(std::fmin(1.0f, std::fabs(d))) * 57.29578f;
+        }
+        if (hs == hands_state::State::Idling && (!s_gunRelOk || dev < 3.0f)) {
+            memcpy(s_gunRel, now, sizeof s_gunRel);
+            s_gunRelOk = true;
+        } else if (s_gunRelOk && hs != hands_state::State::Firing) {
+            static Qts s_gsub[kMaxBones];
+            if (A != s_gsub) memcpy(s_gsub, A, sizeof(Qts) * static_cast<size_t>(n));
+            for (int j = 0; j < 2; ++j) {
+                const int i = sockets[j];
+                ik::put(wp + ik::rotate(wq, ik::vec(s_gunRel[j].p)), s_gsub[i].p);
+                const ik::Quat q = ik::normalized(ik::mul(wq, ik::quat(s_gunRel[j].q)));
+                memcpy(s_gsub[i].q, q.v, 16);
+            }
+            A = s_gsub;
         }
     }
     // The skin follows the substitution (palette.h HandXform::fix*): each free-hand bone drawn other than the
@@ -8281,7 +8338,29 @@ void m4_compose(bool late) {
                     float op[3];
                     to_comp_p(O.p, op);
                     const ik::Vec real = ik::vec(op);
-                    const ik::Vec authored = hc::place(pinned, palmComp, on_gun(anchor_of(1 - h)));
+                    // 2026-10-21 (12:54 run: "it still doesn't let me grip when it's empty" - every squeeze at the
+                    // pump measured ~3.5 grab radii off): the empty shotgun's idle clip (EmptyFidgetShotgun) holds
+                    // the free hand away from the pump, and the grab's target followed it. For the shotgun the
+                    // target is where that hand is on the gun when it holds it, against the gun.
+                    ik::Vec anc = anchor_of(1 - h);
+                    if (manual_reload::sticky_grip() && patterns::kBoneWeaponAttach < n) {
+                        static ik::Vec s_ancRel;
+                        static bool s_ancOk = false;
+                        static void* s_ancGun = nullptr;
+                        if (twoGun != s_ancGun) {
+                            s_ancGun = twoGun;
+                            s_ancOk = false;
+                        }
+                        const ik::Quat aq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
+                        const ik::Vec ap = ik::vec(A[patterns::kBoneWeaponAttach].p);
+                        const bool idle = hands_state::current(g_m4.actor) == hands_state::State::Idling;
+                        if (idle && (two_hand::held() || !s_ancOk)) {
+                            s_ancRel = ik::rotate(ik::conj(aq), anc - ap);
+                            s_ancOk = true;
+                        }
+                        if (s_ancOk) anc = ap + ik::rotate(aq, s_ancRel);
+                    }
+                    const ik::Vec authored = hc::place(pinned, palmComp, on_gun(anc));
                     // A shot's recoil is not a pause: the kick plays on this hand and the front
                     // hand rides it (handback::clip_owns, 2026-10-20).
                     const bool paused = handback::clip_owns(hb(h), now) || handback::clip_owns(hb(1 - h), now);

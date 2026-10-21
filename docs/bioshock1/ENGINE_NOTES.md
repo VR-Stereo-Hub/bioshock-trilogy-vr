@@ -7150,3 +7150,23 @@ held in the hand it stood under the player, and a jump launched him into the cei
   from the pouch was taken hold of inside the 12 cm grab radius, and its last centimetres of approach and its
   settle were read as the two 6 cm strokes. A fresh hold counts no stroke for 0.30 s (`PumpConfig::settleS`,
   PumpInput::heldS), its reference taken once it has settled - between shots too.
+
+## 2026-10-21 - The shotgun cocked only by hand; the empty gun's idle
+
+- **The cock and its sound.** Between shots the Fire clip now waits right after the recoil (0.45 s) - before
+  the pump - for the hands, held or not (`shot_pump_cfg`: waitT 0.45, waitForHands), and plays on through the
+  pump only once a stroke has begun, so the clip's own pump sound (its notify lies between 0.45 and 0.75:
+  "it always plays the cocking sound after shooting even if you haven't cocked") fires with the player's pump.
+  It never pumps itself. The notify times are not exported; that bracket is from the tester's report.
+- **Firing during a reload.** The game cuts a shotgun reload short and fires the shell it just took when the
+  trigger is pulled ("it lets you shoot the first bullet without cocking"). The trigger reaches the game
+  nothing while the shotgun reloads, nor while it waits to be cocked: a reload begun from empty leaves the gun
+  uncocked until its last pump is worked by hand; cut short, the hands cock it dry - the same Pump with no
+  clip, SG_Pump drawn moving with the strokes (18 units along the gun's -X) - `[reload] Shotgun: cocked dry`.
+  (A dry cock plays no sound: no clip plays it.)
+- **The empty gun's idle (EmptyFidgetShotgun)** holds the free hand away from the pump - the grab's target
+  followed it ("it doesn't let me grip when it's empty", 12:54: every squeeze ~3.5 grab radii off) and a held
+  hand rode it away. The grab's target is the hand's place on the gun when it holds it; held, the free hand
+  keeps its rest whenever a clip has taken it more than 4 units off (a shot's pump stroke aside). The gun's
+  grip and tip sockets (43, 44) stay against the gun hand's wrist as at idle through every clip but a shot's
+  ("the tilt-up for a split second" on running out of an ammunition type).

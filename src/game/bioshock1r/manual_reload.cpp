@@ -46,7 +46,21 @@ std::atomic<bool> g_on{true};
 rr::Machine g_machine;
 rr::Config g_cfg;
 rr::Pump g_pump;          // the shotgun's pump by hand
-rr::PumpConfig g_pumpCfg;
+// 2026-10-21 (the tester: "you can always cock it", never by itself; the cocking sound only when the player cocks):
+// between shots the Fire clip waits after its recoil (0.45 s) - before the pump and its sound - for the hands,
+// held or not, and plays on through them only as a stroke begins.
+rr::PumpConfig shot_pump_cfg() {
+    rr::PumpConfig c;
+    c.waitT = 0.45f;
+    c.waitForHands = true;
+    return c;
+}
+rr::PumpConfig g_pumpCfg = shot_pump_cfg();
+// A dry cock: the shotgun loaded from empty and not yet pumped (the reload ended before its last pump) - the
+// trigger fires nothing until the hands pump it, the pump drawn moving with them.
+rr::Pump g_dryPump;
+bool g_needCock = false;
+std::atomic<bool> g_blockFire{false};
 // The shotgun reload's last pump (reload_rig.h Kind::PumpHand): the same Pump over the end clip's own pump
 // times, waiting for the hands instead of pumping itself.
 rr::Pump g_endPump;
@@ -56,7 +70,7 @@ rr::PumpConfig end_pump_cfg() {
     c.backT1 = 0.487f;
     c.fwdT0 = 0.532f;
     c.fwdT1 = 0.676f;
-    c.earlyCm = 1e6f; // no early start: the clip is already at the pump
+    c.earlyCm = 2.5f; // a stroke begun moves it off the wait (a fresh grab settles first: settleS)
     c.waitForHands = true;
     return c;
 }
@@ -716,6 +730,13 @@ bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
     const bool trig = pad->rt >= 128; // the weapon hand's trigger, half a pull
     if (trig && !g_triggerWas) g_triggerPulls.fetch_add(1, std::memory_order_relaxed);
     g_triggerWas = trig;
+    // The shotgun fires nothing while it reloads (the game would cut the reload short and fire the shell it just
+    // took - "it lets you shoot the first bullet without cocking") or while it waits to be cocked.
+    if (g_blockFire.load(std::memory_order_relaxed) && GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) < 250 &&
+        pad->rt) {
+        pad->rt = 0;
+        *changed = true;
+    }
     // A squeeze another grab owns (the hand-over, the two-handed grip) is never the reload's: it
     // is not a press here at all, so it cannot start one.
     const bool grip = !locked && (pad->buttons & kLB) != 0;
@@ -1216,6 +1237,7 @@ void tick(const Frame& f) {
         else if (po.run) {
             run(f.weapon, f.hands, hw, hh, po.jump, po.t);
             g_endPumpDone = true;
+            g_needCock = false; // cocked by hand
         }
         haptic(po.haptic, f);
         if (po.event) BVR_LOG("[reload] Shotgun reload's last pump: %s", po.event);
@@ -1234,6 +1256,56 @@ void tick(const Frame& f) {
     }
     if (g_machine.active()) apply_parts(o, f);
     else bones::clear_weapon_part_offsets();
+    // 2026-10-21 THE COCK. A shotgun reload begun from empty leaves the gun uncocked until its last pump is worked
+    // by hand; a reload cut short before it (a weapon change, the wheel) leaves it uncocked, and then the hands
+    // cock it dry - the same pump, the pump bone drawn moving with the strokes. Until then the trigger is dead.
+    const bool shotgun = !_wcsicmp(g_cls, L"Shotgun");
+    if (shotgun && !wasActive && g_machine.active() && !g_chambered) g_needCock = true;
+    if (!shotgun) g_needCock = false;
+    static bool s_dryWas = false;
+    const bool dry = shotgun && g_needCock && !g_machine.active() && st != hands_state::State::Reloading &&
+                     st != hands_state::State::Firing;
+    if (dry) {
+        rr::PumpInput pi;
+        pi.fireClip = true;
+        pi.clipNew = !s_dryWas;
+        pi.clipT = 2.0f; // at the wait: no clip, only the hands
+        pi.held = two_hand::held();
+        pi.heldS = held_seconds(f.now);
+        bvr::vr::HeadPose a{}, b{};
+        pi.spanOk = bvr::vr::get_hand_pose(0, false, a) && bvr::vr::get_hand_pose(1, false, b);
+        if (pi.spanOk) {
+            const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
+            pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
+        }
+        const rr::PumpOutput po = g_dryPump.update(pi, g_pumpCfg);
+        // The pump along the gun as the strokes go: back over backT0..backT1, forward over fwdT0..fwdT1.
+        const rr::PumpConfig& c = g_pumpCfg;
+        float back = 0.0f;
+        if (g_dryPump.working()) {
+            if (!g_dryPump.backDone())
+                back = po.t > c.backT0 ? (po.t - c.backT0) / (c.backT1 - c.backT0) : 0.0f;
+            else
+                back = po.t >= c.fwdT0 ? 1.0f - (po.t - c.fwdT0) / (c.fwdT1 - c.fwdT0) : 1.0f;
+        }
+        back = back < 0 ? 0 : back > 1 ? 1 : back;
+        const int pump = bones::weapon_bone_index("SG_Pump");
+        if (pump >= 0 && back > 0.0f) {
+            constexpr float kPumpTravel = 18.0f; // SG_Pump's stroke in the Fire clip (reload_pose.py)
+            const float dw[3] = {-kPumpTravel * back, 0.0f, 0.0f};
+            bones::set_weapon_part_offset(pump, dw);
+        }
+        if (po.run) {
+            g_needCock = false;
+            BVR_LOG("[reload] Shotgun: cocked dry by hand - it fires again");
+        }
+        if (po.deny) bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
+    } else if (s_dryWas) {
+        rr::PumpInput off;
+        g_dryPump.update(off, g_pumpCfg);
+    }
+    s_dryWas = dry;
+    g_blockFire.store(shotgun && (g_machine.active() || g_needCock), std::memory_order_relaxed);
     haptic(o.haptic, f);
     if (o.buzz && f.now - g_lastBuzzMs >= kBuzzEveryMs) {
         g_lastBuzzMs = f.now;
