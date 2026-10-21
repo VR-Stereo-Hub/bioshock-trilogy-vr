@@ -236,6 +236,11 @@ bool off_hand_tracked();
 // controller and passes the LEFT hand as the one holding the gun.
 bool mirror_hands();
 bool mirror_hands_enabled();
+// 2026-10-20: a pose against the LEFT wrist (a designed grip's part, the spare drum's hold), mirrored to the
+// same pose against the RIGHT wrist of the mirrored hands (the free hand with the gun in the left hand):
+// inverse(Mb wrist) * rel * a flip of the part's local Y (a part symmetric about it - a cylinder, a drum).
+// False when the hands are not mirrored now.
+bool mirror_free_rel(const float p[3], const float q[4], float outP[3], float outQ[4]);
 void set_mirror_hands(bool on);
 
 // ---- 2026-10-20: the held weapon's own skeleton, for the manual reload (manual_reload.h) ----

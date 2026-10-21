@@ -534,8 +534,11 @@ static void place_spare(const HandPlacement& hp) {
     }
     const arm_ik::Quat qa = arm_ik::normalized(arm_ik::quat(hp.actorQ)), qh = arm_ik::normalized(arm_ik::quat(hp.q));
     const arm_ik::Quat wq = arm_ik::normalized(arm_ik::quat(hp.wristQ));
-    const Vec comp = arm_ik::vec(hp.wristP) + arm_ik::rotate(wq, arm_ik::vec(kSpareWristP));
-    const arm_ik::Quat compQ = arm_ik::normalized(arm_ik::mul(wq, arm_ik::normalized(arm_ik::quat(kSpareWristQ))));
+    float relP[3] = {kSpareWristP[0], kSpareWristP[1], kSpareWristP[2]};
+    float relQ[4] = {kSpareWristQ[0], kSpareWristQ[1], kSpareWristQ[2], kSpareWristQ[3]};
+    bones::mirror_free_rel(kSpareWristP, kSpareWristQ, relP, relQ); // the gun in the left hand: the right wrist
+    const Vec comp = arm_ik::vec(hp.wristP) + arm_ik::rotate(wq, arm_ik::vec(relP));
+    const arm_ik::Quat compQ = arm_ik::normalized(arm_ik::mul(wq, arm_ik::normalized(arm_ik::quat(relQ))));
     const Vec moved = arm_ik::vec(hp.palmAt) + arm_ik::rotate(qh, (comp - arm_ik::vec(hp.palm)) * hp.s);
     const Vec boneW = arm_ik::vec(hp.actorLoc) + arm_ik::rotate(qa, moved * hp.actorScale);
     const arm_ik::Quat boneQ = arm_ik::normalized(arm_ik::mul(qa, arm_ik::mul(qh, compQ)));
@@ -592,9 +595,12 @@ void carry(const HandPlacement& hp) {
                 if (!_stricmp(g->parts[k].bone, bones::weapon_bone_name(i))) gp = &g->parts[k];
         arm_ik::Quat compQ{};
         if (gp) {
+            // Mirrored (the gun in the left hand), against the right wrist as the left one's mirror.
+            float relP[3] = {gp->p[0], gp->p[1], gp->p[2]}, relQ[4] = {gp->q[0], gp->q[1], gp->q[2], gp->q[3]};
+            bones::mirror_free_rel(gp->p, gp->q, relP, relQ);
             const arm_ik::Quat wq = arm_ik::normalized(arm_ik::quat(hp.wristQ));
-            comp = arm_ik::vec(hp.wristP) + arm_ik::rotate(wq, Vec{gp->p[0], gp->p[1], gp->p[2]});
-            compQ = arm_ik::normalized(arm_ik::mul(wq, arm_ik::normalized(arm_ik::quat(gp->q))));
+            comp = arm_ik::vec(hp.wristP) + arm_ik::rotate(wq, arm_ik::vec(relP));
+            compQ = arm_ik::normalized(arm_ik::mul(wq, arm_ik::normalized(arm_ik::quat(relQ))));
         }
         // ... and on through the free hand's, which carries it. At the palm: the part's pivot in the
         // palm itself (the clip's hand is not holding it now).

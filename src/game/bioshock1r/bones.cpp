@@ -7907,8 +7907,12 @@ void m4_compose(bool late) {
         const int hi = fh ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
         const int gw = m4_wrist(gunHand);
         if (n > hi && n <= kMaxBones && gw < n) {
-            const ik::Quat gq = ik::normalized(ik::quat(A[gw].q));
-            const ik::Vec gp = ik::vec(A[gw].p);
+            // Kept against the GUN (its attach bone), not the gun hand's wrist: the 23:21 capture had the
+            // shotgun's reload clip move the gun in that hand, and the free hand kept against the wrist landed
+            // 27 units off the pump, past the muzzle - 20 cm from the controller, the arm stretched to it.
+            const int gAttach = patterns::kBoneWeaponAttach < n ? patterns::kBoneWeaponAttach : gw;
+            const ik::Quat gq = ik::normalized(ik::quat(A[gAttach].q));
+            const ik::Vec gp = ik::vec(A[gAttach].p);
             const bool keep = manual_reload::active() && two_hand::held() && !manual_reload::pump_wait();
             // THE GRIP POSE WHENEVER THE GRIP HOLDS (the tester: "gripping should always make it the grip
             // pose"). The fingers, on their own wrist, are the curl the two-handed grip has on the gun at
@@ -7979,6 +7983,34 @@ void m4_compose(bool late) {
                     ik::put(ik::vec(s_sub[J.parent].p) + ik::rotate(pq, off), s_sub[J.bone].p);
                     const ik::Quat q = ik::normalized(ik::mul(pq, ik::normalized(ik::quat(J.q))));
                     memcpy(s_sub[J.bone].q, q.v, 16);
+                }
+                A = s_sub;
+            } else if (const manual_reload::GripTable* gm = manual_reload::carry_grip();
+                       gm && fh == 1 && g_m4.mirror && palette::mirror_basis() && n >= patterns::kHandsRigBoneCount) {
+                // 2026-10-20 (23:2x run, left-hand mode: "the same old position"): mirrored, the free hand is the
+                // RIGHT mesh drawing the left hand's clip pose mirrored (m4_pose). The grip was solved for the
+                // left hand: applied to the game's unmirrored left fingers, then mirrored into the right ones as
+                // m4_pose mirrors every pair.
+                const mirror::Basis& mb = *palette::mirror_basis();
+                static Qts s_left[kMaxBones];
+                memcpy(s_left, g_evCopy, sizeof(Qts) * static_cast<size_t>(n));
+                for (int j = 0; j < gm->jointCount; ++j) {
+                    const grips::GripJoint& J = gm->joints[j];
+                    if (J.bone < 0 || J.bone >= n || J.parent < 0 || J.parent >= n) continue;
+                    const ik::Quat cpq = ik::normalized(ik::quat(g_evCopy[J.parent].q));
+                    const ik::Vec off =
+                        ik::rotate(ik::conj(cpq), ik::vec(g_evCopy[J.bone].p) - ik::vec(g_evCopy[J.parent].p));
+                    const ik::Quat pq = ik::normalized(ik::quat(s_left[J.parent].q));
+                    ik::put(ik::vec(s_left[J.parent].p) + ik::rotate(pq, off), s_left[J.bone].p);
+                    const ik::Quat q = ik::normalized(ik::mul(pq, ik::normalized(ik::quat(J.q))));
+                    memcpy(s_left[J.bone].q, q.v, 16);
+                }
+                if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                for (int k = 1; k < mirror::kHandPairs; ++k) {
+                    const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+                    mirror_into(mirror::mirrored_pose(mb, mirror::from_frame(s_left[L].q, s_left[L].p, s_left[L].s),
+                                                      mb.mbRight[k]),
+                                s_sub[R]);
                 }
                 A = s_sub;
             }
@@ -10132,6 +10164,18 @@ void draw_debug_ui() {
 }
 
 bool mirror_hands() { return mirror_wanted(); }
+bool mirror_free_rel(const float p[3], const float q[4], float outP[3], float outQ[4]) {
+    const mirror::Basis* b = palette::mirror_basis();
+    if (!g_m4.mirror || !b) return false;
+    // W_R = mx W_L Mb, P_R = mx W_L rel F  =>  W_R^-1 P_R = Mb^-1 rel F (the mirror itself cancels).
+    mirror::Aff mbInv;
+    if (!mirror::inverse(b->mbRight[0], &mbInv)) return false;
+    const float one[3] = {1, 1, 1};
+    mirror::Aff flip;
+    flip.R[4] = -1.0f;
+    float s[3];
+    return mirror::to_frame(mirror::mul(mbInv, mirror::mul(mirror::from_frame(q, p, one), flip)), outQ, outP, s);
+}
 bool mirror_hands_enabled() { return g_mirrorHands.load(std::memory_order_relaxed); }
 
 int weapon_bone_count() { return g_wHoldable ? g_wBoneCount : 0; }

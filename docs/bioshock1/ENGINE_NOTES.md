@@ -7004,3 +7004,21 @@ bones.cpp fills them for every free-hand bone the substitution changed (`A` agai
   units down, LifeSpan 0.1, then Destroy (`[drop] prop ... removed (Destroy ok|REFUSED ...)`).
 - After an ammunition switch the game ends its reload and begins another for the new type; with the gun
   dry that one waited at the drum. A reload begun while Pending != Current ammunition now drops the drum.
+
+## 2026-10-20 - The 23:21 run: the barrel axis, the kept free hand, the mirrored grip
+
+- **The reticle 90 degrees left (Tommy Gun):** the aim's barrel axis is chosen once per weapon as the gun
+  bone axis nearest the aim ray. At 23:21:57 it was chosen mid equip (`gun body -Y (0.77 with the aim
+  ray)`) and kept until the weapon changed. It is now chosen only from a gun lined up with the ray (dot
+  >= 0.9); until then the direction stays the controller's and the next frame tries again.
+- **The shotgun's left arm stretched as it emptied:** the free hand kept on the gun through a reload's
+  start was kept against the gun hand's WRIST, and the reload clip moves the gun in that hand - the kept
+  palm landed 27 units off the pump, past the muzzle (capture afw-...232138: palm in the grip frame 59.6
+  19.1 -9.4 for the pump's ~45 14 15), 20 cm from the controller. It is kept against the gun's attach
+  bone now.
+- **Left-hand mode (mirrored hands):** the designed grip was solved for the left hand and only applied
+  to it. Mirrored, the free hand is the right mesh drawing the left clip pose mirrored (m4_pose); the
+  grip's joints are applied to the game's unmirrored left fingers and mirrored into the right ones, and a
+  part pose against the left wrist becomes Mb^-1 * rel * F against the right one (W_R = mx W_L Mb, the
+  mirror cancels; F flips the part's local Y, a symmetry of a cylinder or a drum) - the pistol cylinder
+  and the Tommy Gun's spare alike.
