@@ -7040,3 +7040,22 @@ bones.cpp fills them for every free-hand bone the substitution changed (`A` agai
   (`grip_shotgun_shell.h`, grip_solve.py `--part-mesh`): across the fingers, middle and ring on its side,
   the thumb over its end, nothing deeper than 0.16. The shell is 8.21 long, about the knuckle span (8.39),
   so the index and pinky pass its ends.
+
+## 2026-10-21 - The 00:43 run: the hand-back's own "at the gun" carry, the spare's draw layer
+
+- **The shotgun's free hand at the waist as it empties, still:** the earlier fix kept the substituted
+  pose, but a second path draws the free hand: the hand-back's "reload at the gun" carry, which puts it
+  where the clip has it against the gun - the clip's hand at the pouch. It stands down for a manual
+  reload, by `manual_reload::active()`, which is a frame late on every reload's start (it begins in the
+  gun hand's tick) and false between the clips of an ammunition switch's restarted reloads (00:45:27 and
+  00:45:36: "the reload ended", a new SingleFrame the next frame). Each time the carry blended in (250 ms).
+  `manual_reload::handles_reloads()` - the gun in hand has a manual-reload program - now stands it down
+  from the first frame.
+- **The Tommy Gun's spare invisible in the hand:** it took the gun magazine's DrawPriority (the hands'
+  foreground layer), and an actor of its own there is not drawn; every drop that shows is in the world's
+  layer. The spare is in the world's layer, its collision off while held, and moved by SetLocation and
+  SetRotation (its zone and render bounds follow).
+- **The shotgun shell:** the 00:45 recording has the gun's SG_Shell bone in the solved grip. If the shell
+  still shows elsewhere, the shell actor is not following that bone; the pose files now carry the
+  engine's own placement of the visible magazine (`ammo` line) and the replay reports its distance from
+  every gun bone (`ammo_from_*`, `ammo_nearest_bone`).

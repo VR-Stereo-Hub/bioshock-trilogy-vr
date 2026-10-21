@@ -98,6 +98,9 @@ def parse(path):
                     v = [float(x) for x in tok[4:12]]
                     cap["weapon"] = {"class": tok[1], "onsocket": int(tok[3]) == 1, "loc": v[0:3], "q": v[3:7],
                                      "ds": v[7], "size": float(tok[-1])}
+                elif k == "ammo":
+                    v = [float(x) for x in tok[1:]]
+                    cap["ammo"] = (v[0:3], v[3:6], v[6])
                 elif k == "w":
                     v = [float(x) for x in tok[3:]]
                     cap["wbones"][int(tok[1])] = (tok[2], v[0:3], v[3:7], v[7:10])
@@ -323,6 +326,17 @@ def measure(cap):
             m["%s_from_palm" % name] = (f.to_translation() - palm).length
             lp = ue_local(grip.inverted() @ f.to_translation())
             m["%s_in_grip_x" % name], m["%s_in_grip_y" % name], m["%s_in_grip_z" % name] = lp
+    # The visible magazine where the ENGINE put it (a separate actor on a gun socket), against the bones: how far
+    # it is from each, the nearest named - a part drawn away from the bone the mod moved shows here.
+    if ga and cap.get("ammo"):
+        al, aq, ak = cap["actor"]
+        am = ue_matrix(al, aq, (ak,) * 3).inverted() @ ue_local(cap["ammo"][0])
+        m["ammo_from_palm"] = (am - palm).length
+        ds = {name: (game_frame(ga, GC, name).to_translation() - am).length for name in ga.pose.bones.keys()}
+        near = min(ds, key=ds.get)
+        m["ammo_nearest_bone"], m["ammo_from_nearest"] = near, ds[near]
+        for name, d in ds.items():
+            m["ammo_from_%s" % name] = d
     return m
 
 

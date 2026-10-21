@@ -17,6 +17,7 @@
 //    its own pose - no restore bookkeeping of ours can go stale.
 
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/dropped_part.h"
 
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/arm_ik.h"
@@ -7082,6 +7083,13 @@ void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float q
             fprintf(f, "w %d %s  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g\n", i, g_wName[i][0] ? g_wName[i] : "-",
                     w.p[0], w.p[1], w.p[2], w.q[0], w.q[1], w.q[2], w.q[3], w.s[0], w.s[1], w.s[2]);
         }
+        // 2026-10-21: the visible magazine as the ENGINE placed it (a separate actor on a gun socket - the shotgun's
+        // shell): world location, rotator, DrawScale. The replay compares it with the bone it should hang on.
+        float amLoc[3], amScale = 1.0f;
+        int32_t amRot[3];
+        if (dropped_part::ammo_model_pose(weapon, amLoc, amRot, &amScale))
+            fprintf(f, "ammo  %.6g %.6g %.6g  %d %d %d  %.6g\n", amLoc[0], amLoc[1], amLoc[2], amRot[0], amRot[1], amRot[2],
+                    amScale);
     }
 }
 
