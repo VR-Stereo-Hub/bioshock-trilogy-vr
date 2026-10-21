@@ -479,6 +479,26 @@ int main() {
         in.spanCm = 40.0f;
         po = p.update(in, c);
         check(po.run && !p.working(), "6 cm apart: pumped, the clip plays out");
+        // 12:17 run: the hand back from the pouch, taken hold of as it came, cocked it in 0.33 s. A fresh grab settles.
+        Pump p2;
+        in.held = false;
+        in.clipNew = true;
+        in.spanCm = 45.0f;
+        po = p2.update(in, c);
+        in.clipNew = false;
+        in.held = true;
+        in.heldS = 0.05f;
+        in.spanCm = 38.0f; // still coming in: 7 cm
+        po = p2.update(in, c);
+        in.heldS = 0.15f;
+        in.spanCm = 46.0f; // and settling back out: 8 cm
+        po = p2.update(in, c);
+        check(po.hold && !po.run && !p2.backDone(), "a fresh grab's approach and settle count no stroke");
+        in.heldS = 0.5f;
+        po = p2.update(in, c);
+        in.spanCm = 39.5f;
+        po = p2.update(in, c);
+        check(p2.backDone(), "settled: a real 6 cm stroke counts");
     }
     // ---- the shotgun's pump by hand: Half-Life 2 VR's ratchet strokes ----
     {

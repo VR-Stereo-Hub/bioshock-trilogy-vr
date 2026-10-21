@@ -778,6 +778,9 @@ private:
                     o.fallS = in.now - dropAt_;
                 }
                 o.buzz = in.inPouch;
+                // 2026-10-21: a reload that starts at the pouch (the shotgun's) claims the free grip only there - away
+                // from it the squeeze is free for the two-handed grip ("you can always grip it").
+                if (prog_->entryAtPouch && !in.inPouch && !in.spareInHand) o.claim = false;
                 if (in.inPouch && in.gripRise) {
                     lying_ = false;
                     carrying_ = true;
@@ -982,6 +985,10 @@ struct PumpConfig {
     float followCm = 9.0f;  // controller travel over which the clip follows a stroke (it finishes at the catch)
     float earlyCm = 2.5f;   // during the recoil: this much closer and the stroke has begun
     bool waitForHands = false; // the reload's last pump: not two-handed, it waits (never pumps itself)
+    // 2026-10-21 (12:17 run: the reload's last pump "cocked itself" - the hand coming back from the pouch was
+    // taken hold of inside the grab radius and its last 6 cm of approach, then its settling, were the two
+    // strokes: grab to pumped in 0.33 s): a fresh hold counts no stroke for this long.
+    float settleS = 0.30f;
 };
 struct PumpInput {
     bool fireClip = false; // the shotgun's 'Fire' clip is playing
@@ -991,6 +998,7 @@ struct PumpInput {
     float spanCm = 0;      // the distance between the two controllers (the pump back = shorter)
     bool spanOk = false;   // both controllers tracked
     bool triggerRise = false; // the trigger was pulled this frame
+    float heldS = 1e9f;    // seconds since the two-handed hold began (a fresh grab settles first)
 };
 struct PumpOutput {
     bool hold = false;     // hold the clip at t
@@ -1034,6 +1042,14 @@ public:
                 o.run = true;
                 o.event = "let go: the shotgun pumps itself";
             }
+            return o;
+        }
+        if (in.heldS < c.settleS) { // a fresh grab settles: its reference is taken once it has
+            rebase_ = true;
+            refSet_ = false;
+            if (stage_ == Stage::Firing) return o;
+            o.hold = true;
+            o.t = stage_ == Stage::Fwd ? c.backT1 : c.backT0;
             return o;
         }
         if (!in.spanOk) { // a controller lost: hold where it is, measure nothing

@@ -7138,3 +7138,15 @@ held in the hand it stood under the player, and a jump launched him into the cei
   hand kept on the gun while the grip holds, a reload no longer ends the hold by itself; let go, the gun is the
   gun hand's. The Tommy Gun's spare in the hand takes the reload clip's own fingers at 0.30 s
   (`grip_tommy_drum.h`, the hold its placement already comes from), not the grip pose.
+
+## 2026-10-21 - The shotgun's hold: only the grip lets go; a fresh grab settles before it pumps
+
+- The two-handed hold let go when its slide measure exceeded the release distance - and a frame with no
+  measure (a frame the gun hand's branch published nothing, as after a shot) read as slid off. For the
+  shotgun only the grip coming up ends the hold (`manual_reload::sticky_grip`), and it can be taken hold of
+  at any time, a reload included (two_hand_allowed), but while the hand carries a shell to the port; its
+  reload claims the free grip only at the pouch, so away from it the squeeze is the two-handed grip's.
+- The reload's last pump "cocked itself" (12:17:18: grab at 18.353, pumped at 18.679): the hand coming back
+  from the pouch was taken hold of inside the 12 cm grab radius, and its last centimetres of approach and its
+  settle were read as the two 6 cm strokes. A fresh hold counts no stroke for 0.30 s (`PumpConfig::settleS`,
+  PumpInput::heldS), its reference taken once it has settled - between shots too.

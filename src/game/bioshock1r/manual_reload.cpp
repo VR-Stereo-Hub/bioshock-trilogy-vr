@@ -73,6 +73,7 @@ std::atomic<float> g_reach{-1.0f}; // Output::reach, for the grip arbiter
 std::atomic<uint64_t> g_claimMs{0};
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_handles{false}; // handles_reloads()
+std::atomic<bool> g_sticky{false};  // sticky_grip(): the shotgun
 std::atomic<uint64_t> g_reloadButtonMs{0}; // the last time the reload button was down
 // 2026-10-20: with the manual reload on, the reload button ejects instead (the gun in hand has a
 // program that fetches a new magazine): game thread -> XInput thread, and the press back.
@@ -532,10 +533,14 @@ const GripTable* carry_grip() {
     return nullptr;
 }
 bool two_hand_allowed() {
+    // 2026-10-21: the shotgun can always be taken hold of - through a reload too - but while its hand carries a
+    // shell to the port.
+    if (g_sticky.load(std::memory_order_relaxed) && !(g_carryMode == 1 && g_machine.active())) return true;
     // A manual reload leaves the two-handed grip on: at its last pump (the grip IS the pump), and through
     // any wait while that grip is still squeezed (the shotgun emptied with both hands on it - 20:35 run).
     return !active() || g_pumpWait.load(std::memory_order_relaxed) || two_hand::held();
 }
+bool sticky_grip() { return g_sticky.load(std::memory_order_relaxed); }
 float gun_motion_keep() { return g_gunKeep; }
 
 float hand_lock(uint64_t nowMs) {
@@ -810,6 +815,16 @@ static bool catch_check(const Frame& f) {
     return false;
 }
 
+// Seconds since the two-handed hold began (a fresh grab settles before the pump counts a stroke).
+static float held_seconds(uint64_t now) {
+    static bool s_was = false;
+    static uint64_t s_since = 0;
+    const bool h = two_hand::held();
+    if (h && !s_was) s_since = now;
+    s_was = h;
+    return h ? static_cast<float>(now - s_since) * 0.001f : 0.0f;
+}
+
 void tick(const Frame& f) {
     if (g_spare.actor && (!f.weapon || !g_on.load(std::memory_order_relaxed))) {
         if (f.weapon && dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
@@ -893,6 +908,7 @@ void tick(const Frame& f) {
         pi.clipNew = pi.fireClip && pw != s_fireHandle;
         s_fireHandle = pi.fireClip ? pw : 0;
         pi.held = two_hand::held();
+        pi.heldS = held_seconds(f.now);
         {
             // The controllers themselves, never the drawn gun the clip moves (reload_rig.h PumpConfig).
             bvr::vr::HeadPose a{}, b{};
@@ -967,6 +983,7 @@ void tick(const Frame& f) {
     in.clipProgram = in.clipLive ? rr::find(g_cls, clipName) : nullptr;
     in.entryProgram = rr::entry(g_cls);
     g_handles.store(in.entryProgram != nullptr, std::memory_order_relaxed);
+    g_sticky.store(!_wcsicmp(g_cls, L"Shotgun"), std::memory_order_relaxed);
     in.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
     in.unitsPerCm = f.unitsPerCm;
     const uint32_t presses = g_gripPresses.load(std::memory_order_relaxed);
@@ -1186,6 +1203,7 @@ void tick(const Frame& f) {
         pi.clipNew = !g_endPumpWas;
         script::anim_time(f.weapon, hw, &pi.clipT);
         pi.held = two_hand::held();
+        pi.heldS = held_seconds(f.now);
         bvr::vr::HeadPose a{}, b{};
         pi.spanOk = bvr::vr::get_hand_pose(0, false, a) && bvr::vr::get_hand_pose(1, false, b);
         if (pi.spanOk) {

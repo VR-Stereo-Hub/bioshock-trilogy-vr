@@ -69,6 +69,9 @@ bool active();
 // Any thread: the gun in hand reloads by hand (the manual reload is on and has a program for it) - so any reload
 // of it is the hands', from its first frame, before active() can say so (it begins in the gun hand's tick).
 bool handles_reloads();
+// Any thread: the gun in hand is the shotgun - its two-handed hold lets go only when the grip comes up (never by
+// sliding or reaching off it), and it can be taken hold of at any time (two_hand_allowed).
+bool sticky_grip();
 // Game thread: the weapon's live clip is a reload's START clip (the shotgun's 'SingleFrame'): the free hand
 // holds as it was through it (it snapped there and back on every reload an ammunition switch restarted).
 bool start_clip(void* weapon);
