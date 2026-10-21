@@ -6838,3 +6838,19 @@ drum does the same (`manual_reload.cpp throw_feed / throw_velocity`): the carrie
 each frame, a microsecond clock, ten frames, the peak's inner neighbour, x1.6, handed to the Havok
 copy's `HavokSetLinearVelocity` (`[reload] ... left the hand at N m/s`). Spin is not taken (the copy
 keeps its fixed tumble).
+
+## 2026-10-20 - Set, don't play, from a carry hold onto an insert; the shotgun's Fire clip after its recoil
+
+The manual reload carries a new part with the clip held BEHIND its insert, where the clip's hand grips
+it (Tommy Gun 0.30 s, pistol 0.53 s). Reaching the insert's first time by PLAYING the clip (`hold(...,
+chase)`) runs it through everything between - for the Tommy Gun the spent drum pulled 63 units down and
+the new one tossed up from the waist: "the mag teleports to the floor and shoots up into the gun in
+under half a second" (19:57 run), and its AnimNotify_SetAmmoVisible hide/show could leave the drum
+hidden. That first step is now SET (reload_rig.h `from_hold`, Output::seating), `ShowAmmoModel` is called
+at it, and the clip plays only from there.
+
+The shotgun's Fire clip after the recoil (about 0.25-0.40 s) is the game's ONE-HANDED pump: the gun hand
+swings the gun up to present the pump (renders sgf-t0.750). The hand-back layered that gun-hand motion on
+the controller for the whole clip, so the gun tilted up "in expectation" of the pump. It is now faded out
+over 0.25-0.40 s of the Fire clip (`manual_reload::gun_motion_keep`): the recoil plays, the rest does not.
+The fade times are read off the renders, not measured live.

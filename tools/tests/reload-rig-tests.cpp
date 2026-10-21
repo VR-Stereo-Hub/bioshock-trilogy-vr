@@ -154,7 +154,10 @@ int main() {
         o = s.step(Vec{10, 0, -90}, true, true);
         o = s.step(kTommyDrumIn[0].p + Vec{0, 2, 0}, true);
         o = s.step(kTommyDrumIn[0].p, true);
-        check(o.carry == 0, "at the well's mouth: guided");
+        check(o.carry == 0 && o.seating && !o.chase,
+              "guided: the clip is SET from the carry hold onto the insert, never played through its toss");
+        o = s.step(kTommyDrumIn[0].p, true);
+        check(o.carry == 0 && !o.seating, "at the well's mouth: guided, played from there");
         o = s.step(kTommyDrumIn[0].p, false); // a slap: let go at the mouth, short of half way
         check(!o.dropped && o.carry == 0, "slapped in: let go guided, it is seated, not dropped");
         for (int i = 0; i < 30 && s.m.phase() == 3; ++i) o = s.step(Vec{10, 0, -60}, false);
@@ -174,6 +177,31 @@ int main() {
         o = s.step(kTommyDrumIn[3].p, true);
         o = s.step(kTommyDrumIn[3].p, false);
         check(s.m.phase() == 6 && o.run, "seated with a round in: straight to the end, no bolt", s.m.phase(), 6);
+    }
+    // ---- a shell let go near the port is pressed in (19:57: the second shell kept falling) ----
+    {
+        Sim s;
+        s.cls = L"Shotgun";
+        s.in.adopt = true;
+        s.clip(L"Reload_Loop", 0.49f);
+        Output o = s.step(Vec{10, 0, -90}, false);
+        s.in.adopt = false;
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(s.m.phase() == 1, "a shell from the pouch", s.m.phase(), 1);
+        const Vec port = kShotgunShell[5].p;
+        o = s.step(port + Vec{0, 12, 0}, true);
+        o = s.step(port + Vec{0, 12, 0}, false);
+        check(!o.dropped && o.carry == 0, "let go 12 cm from the port: pressed in, not dropped");
+        Sim f;
+        f.cls = L"Shotgun";
+        f.in.adopt = true;
+        f.clip(L"Reload_Loop", 0.49f);
+        o = f.step(Vec{10, 0, -90}, false);
+        f.in.adopt = false;
+        o = f.step(Vec{10, 0, -90}, true, true);
+        o = f.step(Vec{10, 0, -60}, true);
+        o = f.step(Vec{10, 0, -60}, false);
+        check(o.dropped, "let go far from the port: it falls");
     }
     // ---- timeout ----
     {

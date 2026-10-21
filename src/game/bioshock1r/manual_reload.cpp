@@ -64,6 +64,7 @@ std::atomic<uint32_t> g_triggerPulls{0};
 bool g_triggerWas = false; // XInput thread
 uint32_t g_seenPulls = 0;  // game thread
 std::atomic<bool> g_pumping{false};
+float g_gunKeep = 1.0f;    // game thread: gun_motion_keep
 
 // Game thread.
 uint32_t g_seenPresses = 0;
@@ -429,6 +430,7 @@ bool can_reload(void* weapon, uint64_t now) {
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
 bool pumping() { return g_pumping.load(std::memory_order_relaxed); }
+float gun_motion_keep() { return g_gunKeep; }
 
 float hand_lock(uint64_t nowMs) {
     // Eased toward the machine's ask: 100 ms onto the part, 200 ms back to the controller.
@@ -570,6 +572,7 @@ void tick(const Frame& f) {
             if (g_ejectedThis) g_showAmmoFor = g_weapon; // shown when it is back in hand
         }
         g_ejectedThis = false;
+        g_gunKeep = 1.0f;
         g_active.store(false, std::memory_order_relaxed);
         g_claim.store(false, std::memory_order_relaxed);
         g_ejectable.store(false, std::memory_order_relaxed);
@@ -624,6 +627,12 @@ void tick(const Frame& f) {
             }
             if (pi.fireClip) script::anim_time(f.weapon, pw, &pi.clipT);
         }
+        {
+            constexpr float kRecoilEnd0 = 0.25f, kRecoilEnd1 = 0.40f;
+            float u = pi.fireClip ? (pi.clipT - kRecoilEnd0) / (kRecoilEnd1 - kRecoilEnd0) : 0.0f;
+            u = u < 0 ? 0 : u > 1 ? 1 : u;
+            g_gunKeep = 1.0f - u * u * (3.0f - 2.0f * u);
+        }
         static int32_t s_fireHandle = 0;
         pi.clipNew = pi.fireClip && pw != s_fireHandle;
         s_fireHandle = pi.fireClip ? pw : 0;
@@ -670,6 +679,7 @@ void tick(const Frame& f) {
         }
     } else {
         g_pumping.store(false, std::memory_order_relaxed);
+        g_gunKeep = 1.0f;
     }
     in.clipLive = clipName != nullptr;
     in.clip = clipName;
@@ -755,11 +765,11 @@ void tick(const Frame& f) {
     // reload of a gun that ejects, once it has ended - refilled or not, the gun has rounds in it.
     const rr::Program* prog = g_machine.program();
     const bool ejects = prog && prog->ejectT >= 0;
-    if (o.fetched && ejects) {
+    if ((o.fetched || o.seating) && ejects) {
         struct { int32_t pad[4]; } none{};
         const bool ok = script::call(f.weapon, "ShowAmmoModel", &none);
-        BVR_LOG("[reload] %S: a new %s from the pouch - its magazine shown (%s)", g_cls, o.part ? o.part : "part",
-                ok ? "ShowAmmoModel" : "ShowAmmoModel FAILED");
+        BVR_LOG("[reload] %S: %s %s - its magazine shown (%s)", g_cls, o.fetched ? "a new one from the pouch:" : "seating:",
+                o.part ? o.part : "part", ok ? "ShowAmmoModel" : "ShowAmmoModel FAILED");
     }
     if (wasActive && !g_machine.active() && g_ejectedThis) g_showAmmoFor = f.weapon;
     if (!g_machine.active()) g_ejectedThis = false;
@@ -770,7 +780,8 @@ void tick(const Frame& f) {
     // part; the pistol's cylinder has no mesh of its own and simply goes (carry 2).
     if (o.dropped && !_wcsicmp(g_cls, L"MachineGun")) {
         float peak = 0.0f;
-        constexpr float kThrowScale = 1.6f; // Alyx's vr_throw_velocity_scale default: a hand's throw feels weak 1:1
+        // Alyx's vr_throw_velocity_scale is 1.6; at 1.6 here "a little too powerful" (19:57 run): 1:1.
+        constexpr float kThrowScale = 1.0f;
         const Vec v = throw_velocity(&peak) * kThrowScale;
         const float vel[3] = {v.x, v.y, v.z};
         const bool ok = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, vel);

@@ -287,6 +287,8 @@ struct Output {
     bool handLock = false;      // the free hand is drawn where the clip's own hand is (on the bolt)
     bool chase = false;         // `t` follows the hand forward: PLAY the clip there (its sounds fire)
     bool fetched = false;       // this frame a new part was taken from the pouch (`part` names it)
+    bool seating = false;       // this frame the clip jumped from the carry hold onto the insert: the
+                                // magazine notifies in between were skipped (the glue shows it)
     bool dropped = false;       // this frame a carried part left the hand away from the gun (the spent one
                                 // pulled out, or a new one let go short of its seat): it falls or is
                                 // thrown (`part` names it)
@@ -362,6 +364,17 @@ private:
     bool lying_ = false;        // and lies where it fell through that Fetch
     bool snap_ = false;         // an Insert's part reached its latch: the clip seats it
     bool skipped_ = false;      // a phase was skipped (Phase::skipLoaded): say so once
+    // 2026-10-20 (19:57 run, "the mag teleports to the floor and shoots up into the gun"): a carried part
+    // holds the clip BEHIND its insert (Tommy 0.30, pistol 0.53 - where the clip's hand grips it), and the
+    // first insert time after that was reached by PLAYING the clip there - through its own toss of the
+    // drum to the waist and back. That first step is SET (`seating`: the glue shows the magazine, whose
+    // hide/show notifies the jump skips); the clip plays only from there on.
+    bool jumpNext_ = false;
+    void from_hold(Output& o) {
+        o.chase = !jumpNext_;
+        if (jumpNext_) o.seating = true;
+        jumpNext_ = false;
+    }
     Vec grab_{};                // a Slide: where the hand took hold
     // A Slide's direction: its path's, start to end (the sideways axis out for a two-sided part).
     static Vec slide_axis(const Phase& p) {
@@ -683,7 +696,7 @@ private:
                     playT_ += dt;
                     o.carry = 0; // the clip has it again, sliding it in
                     o.t = playT_ < T(p.t1) ? playT_ : T(p.t1);
-                o.chase = true; // played forward: its sounds fire
+                    from_hold(o);
                     if (playT_ >= T(p.t1)) {
                         snap_ = false;
                         o.haptic = Haptic::Seat;
@@ -702,7 +715,13 @@ private:
                 // 19:31 run: a drum "slapped" into the well was let go guided short of half way - it fell,
                 // looking as if it bounced off the gun. A part let go guided, or within slapCm of where it
                 // sits, is seated (the clip plays it home); only one let go away from the gun falls.
-                if (!in.grip && (sub_ == Sub::Guided || (in.partSeatCm >= 0 && in.partSeatCm <= c.slapCm))) {
+                // 19:57 run: the shotgun's second shell let go 12 cm from the port fell, again and again (a
+                // shell has no recorded seat - no eject - so only its path can say it is near): within
+                // three quarters of slapCm of where the insert's path ends (the port), it is pressed in too.
+                // (The path's END: an insert path can begin far from the gun - the Tommy Gun's at the waist.)
+                const bool nearPath = in.partSeatCm < 0 && p.n > 0 &&
+                                      arm_ik::length(in.hand - p.path[p.n - 1].p) <= 0.75f * c.slapCm * in.unitsPerCm;
+                if (!in.grip && (sub_ == Sub::Guided || nearPath || (in.partSeatCm >= 0 && in.partSeatCm <= c.slapCm))) {
                     snap_ = true;
                     playT_ = T(p.n > 1 ? p.path[p.n - 2].t : p.t0);
                     if (sub_ == Sub::Guided && T(lastT_) > playT_) playT_ = T(lastT_);
@@ -710,7 +729,7 @@ private:
                     o.event = "let go at the well: it is seated";
                     o.carry = 0;
                     o.t = playT_;
-                    o.chase = true;
+                    from_hold(o);
                     break;
                 }
                 if (!in.grip) {
@@ -733,6 +752,7 @@ private:
                     o.carry = 1;
                     o.t = T(hold_t(p));
                     o.carryFrom = p.path[0].p;
+                    jumpNext_ = hold_t(p) < p.t0; // the clip waits behind the insert (the carry pose)
                     if (pr.dist <= c.insertCm * in.unitsPerCm) {
                         sub_ = Sub::Guided;
                         o.haptic = Haptic::Tick;
@@ -747,13 +767,14 @@ private:
                     o.carry = 1;
                     o.t = T(hold_t(p));
                     o.carryFrom = p.path[0].p;
+                    jumpNext_ = hold_t(p) < p.t0;
                     break;
                 }
                 const float prog = pr.progress > lastProgress_ ? pr.progress : lastProgress_;
                 lastProgress_ = prog;
                 if (pr.t > lastT_) lastT_ = pr.t;
                 o.t = T(lastT_);
-                o.chase = true; // played forward: its sounds fire
+                from_hold(o);
                 if (prog >= 0.97f || (!in.grip && prog >= 0.5f)) {
                     o.t = T(p.t1);
                     o.haptic = Haptic::Seat;

@@ -7880,7 +7880,9 @@ void m4_compose(bool late) {
             hc::Placement own{D.q, target.t, sPos};
             const float toCmClip = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
             if (h == gunHand) {
-                const float g = handback::gun_motion(hb(h), now);
+                // 2026-10-20: the shotgun's Fire clip after its recoil is the one-handed pump - the gun
+                // swung up to show the pump - and in VR the pump is the player's: only the recoil plays.
+                const float g = handback::gun_motion(hb(h), now) * manual_reload::gun_motion_keep();
                 if (!handback::active(hb(h), now)) {
                     memcpy(s_gunRest[h].p, A[w].p, 12);
                     memcpy(s_gunRest[h].q, A[w].q, 16);
