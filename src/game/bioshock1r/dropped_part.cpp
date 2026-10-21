@@ -345,16 +345,18 @@ Prop make_held(void* weapon, void* hands) {
         BVR_LOG("[drop] the spare took no mesh - removed");
         return Prop{};
     }
-    // Drawn in the layer the gun's own magazine is (the hands' foreground) while it is in the hand.
-    const int32_t amOff = script::property_offset(weapon, L"AmmoModel");
-    void* am = nullptr;
+    // In the WORLD's draw layer, like every drop that shows (00:44 run: in the hands' foreground layer, copied
+    // from the gun's magazine, the spare in the hand was never drawn), and with no collision while it is held -
+    // so the game's own SetLocation moves it (its zone and render bounds with it) instead of refusing.
     const int32_t prio = script::property_offset(a, L"DrawPriority");
-    uint8_t amPrio = 0;
-    if (amOff >= 0 && rd(static_cast<uint8_t*>(weapon) + amOff, &am) && am && prio >= 0 &&
-        rd(static_cast<uint8_t*>(am) + prio, &amPrio))
-        wr(static_cast<uint8_t*>(a) + prio, amPrio);
+    if (prio >= 0) wr(static_cast<uint8_t*>(a) + prio, uint8_t{0});
+    struct {
+        uint32_t colActors, blockActors, blockPlayers;
+        int32_t pad[3];
+    } sc{0, 0, 0, {}};
+    const bool collOff = script::call(a, "SetCollision", &sc);
     const Prop p = identify(a);
-    BVR_LOG("[drop] a spare in the hand: %p (draw layer %u)", a, amPrio);
+    BVR_LOG("[drop] a spare in the hand: %p (world layer, collision %s)", a, collOff ? "off" : "NOT changed");
     return p;
 }
 
@@ -370,9 +372,22 @@ bool alive(const Prop& p, void* weapon) {
 }
 
 void move(const Prop& p, const float loc[3], const int32_t rot[3]) {
-    // Its physics is off: the fields are where it is drawn.
-    wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, *reinterpret_cast<const float(*)[3]>(loc));
-    wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, *reinterpret_cast<const int32_t(*)[3]>(rot));
+    // The game's own move (its zone and render bounds follow), the fields when it refuses.
+    struct {
+        float loc[3];
+        uint32_t noTest;
+        uint32_t ret;
+        int32_t pad[3];
+    } sl{{loc[0], loc[1], loc[2]}, 1, 0, {}};
+    if (!script::call(p.actor, "SetLocation", &sl) || !sl.ret)
+        wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, *reinterpret_cast<const float(*)[3]>(loc));
+    struct {
+        int32_t rot[3];
+        uint32_t ret;
+        int32_t pad[3];
+    } sr{{rot[0], rot[1], rot[2]}, 0, {}};
+    if (!script::call(p.actor, "SetRotation", &sr) || !sr.ret)
+        wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, *reinterpret_cast<const int32_t(*)[3]>(rot));
     // Kept alive while it is moved, and gone on its own soon after it no longer is (a spare we lost track of).
     const int32_t lifeOff = script::property_offset(p.actor, L"LifeSpan");
     if (lifeOff >= 0) wr(static_cast<uint8_t*>(p.actor) + lifeOff, 20.0f);
