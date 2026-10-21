@@ -12,7 +12,8 @@
 # For each time: renders from the left and from below-front, and the part bone's position and turn
 # in the palm bone's frame (the carry pose a manual reload would hold the part at). --list prints
 # the actions and the bones and stops. Outputs stay in the model workspace, never the repo.
-import bpy, sys, os, json, re, argparse, math, struct
+import bpy, sys, os, json, re, argparse, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mathutils import Vector, Matrix, Quaternion
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -93,66 +94,13 @@ R["hands_action"], R["gun_action"] = hact and hact.name, gact and gact.name
 # nodes: C = node_rest^-1 * bone_rest, so the game's frame of a posed bone is  armature * pose * C^-1.
 # Coordinates: glTF Y-up enters Blender as A = +90 deg about X; bs2gltf's glTF is Unreal reflected
 # (x, y, z) -> (x, z, y). So a vector in a bone's Unreal frame is (x, -y, z) in its Blender frame.
-A = Matrix.Rotation(math.radians(90.0), 4, "X")
-
-
-def glb_rest_frames(path):
-    with open(path, "rb") as fh:
-        data = fh.read()
-    n = struct.unpack("<I", data[12:16])[0]
-    doc = json.loads(data[20:20 + n])
-    nodes = doc["nodes"]
-    parent = {}
-    for i, nd in enumerate(nodes):
-        for ch in nd.get("children", []):
-            parent[ch] = i
-    local = []
-    for nd in nodes:
-        t = Vector(nd.get("translation", [0, 0, 0]))
-        x, y, z, w = nd.get("rotation", [0, 0, 0, 1])
-        s = nd.get("scale", [1, 1, 1])
-        local.append(Matrix.LocRotScale(t, Quaternion((w, x, y, z)), Vector(s)))
-    world = {}
-
-    def wm(i):
-        if i not in world:
-            world[i] = (wm(parent[i]) @ local[i]) if i in parent else local[i]
-        return world[i]
-
-    return {nd.get("name"): A @ wm(i) @ A.inverted() for i, nd in enumerate(nodes)}
-
-
-def bone_turns(arm, path):
-    """name -> C (bone rest = node rest * C), and the largest translation in any C (should be ~0)."""
-    rest = glb_rest_frames(path)
-    out, worst = {}, 0.0
-    for b in arm.data.bones:
-        if b.name not in rest:
-            continue
-        c = rest[b.name].inverted() @ arm.matrix_world @ b.matrix_local
-        loc, rot, _ = c.decompose()
-        worst = max(worst, loc.length)
-        out[b.name] = Matrix.Rotation(rot.angle, 4, rot.axis) if rot.angle > 1e-9 else Matrix.Identity(4)
-    return out, worst
-
+from game_frames import bone_turns, game_frame, ue_local  # noqa: E402  (the shared frame math)
 
 HC, hworst = bone_turns(ha, args.hands)
 GC, gworst = bone_turns(ga, args.gun)
 R["bone_turn_check"] = {"hands_max_translation": hworst, "gun_max_translation": gworst}
 if max(hworst, gworst) > 1e-3:
     R["problems"].append("a bone's import turn is not a pure turn (%.4f, %.4f): the frames may be off" % (hworst, gworst))
-
-
-def game_frame(arm, turns, name):
-    """The bone's frame as the game has it, posed, in Blender world space."""
-    pb = arm.pose.bones[name]
-    return arm.matrix_world @ pb.matrix @ turns.get(name, Matrix.Identity(4)).inverted()
-
-
-def ue_local(v):
-    """A Blender-frame local vector as the Unreal-frame one (and back: the map is its own inverse)."""
-    return Vector((v.x, -v.y, v.z))
-
 
 # The gun on the hands' grip socket, as the engine attaches it: the weapon's origin ON the socket
 # bone's game frame (no offset: every weapon socket aliases bone 43 with none, ENGINE_NOTES Session 91).
@@ -309,6 +257,15 @@ for t in [float(x) for x in re.split(r"[ ,]+", args.times.strip()) if x]:  # Pow
         pose["grip_turn_deg"] = math.degrees(d.to_quaternion().angle)
         pose["grip_move"] = d.to_translation().length
         print("BVR_POSE t=%.3f gun hand vs t0: turned %.1f deg, moved %.1f" % (t, pose["grip_turn_deg"], pose["grip_move"]))
+        # The gun IN the hand: the grip socket in the right hand bone's frame (an idle can turn the gun
+        # in the fingers while the hand itself stays - the empty shotgun's held "differently").
+        if "Bip01_R_Hand" in ha.pose.bones:
+            gh = game_frame(ha, HC, "Bip01_R_Hand").inverted() @ g
+            e = gh.to_euler("XYZ")
+            pose["grip_in_hand"] = {"location": list(ue_local(gh.to_translation())),
+                                    "euler_deg": [math.degrees(a) for a in e]}
+            print("BVR_POSE t=%.3f grip in the right hand: at %.1f %.1f %.1f, turned %.1f %.1f %.1f deg"
+                  % (t, *pose["grip_in_hand"]["location"], *pose["grip_in_hand"]["euler_deg"]))
     if not args.no_render:
         pose["renders"] = render("t%05.3f" % t, focus)
     R["poses"].append(pose)

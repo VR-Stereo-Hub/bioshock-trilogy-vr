@@ -254,6 +254,9 @@ void clear_weapon_part_offsets();
 // bone's clip pose and the drawn gun, steady across the frame - a GetBoneCoords read can land before
 // or after the write (2026-10-20, the pistol's carried cylinder jumping between the two).
 float weapon_written_scale();
+// 2026-10-20: write the hands' and the gun's drawn pose (pose_NN.txt) into `dir`, `frames` late composes
+// from `delayMs` on - armed with the AFW capture, for tools\blender\pose_capture.py.
+void arm_pose_capture(const wchar_t* dir, uint32_t delayMs, int frames);
 // Mirrored (the gun in the left hand): reflect a point in the grip's frame across the gun's own
 // centre plane, so it reads as it would with the gun in the right hand (m4_pose's flip).
 void unmirror_grip_point(float p[3]);

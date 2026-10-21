@@ -2,6 +2,7 @@
 #include "game/bioshock1r/temporal.h"
 #include "core/gfx/frame_pacing.h"
 #include "game/bioshock1r/native_repair.h"
+#include "game/bioshock1r/bones.h"
 
 #include "core/gfx/blit.h"
 #include "core/gfx/dlss_client.h"
@@ -1604,6 +1605,8 @@ void request_dump(int presents, uint32_t delayMs) {
                  t.wMinute, t.wSecond);
     CreateDirectoryW(g_dumpDir, nullptr);
     g_dumpIndex = 0;
+    // 2026-10-20: and the hands' and gun's drawn pose beside the pictures (tools\blender\pose_capture.py).
+    bones::arm_pose_capture(g_dumpDir, delayMs, presents < 3 ? presents : 3);
     g_dumpAtMs.store(GetTickCount64() + delayMs);
     g_dumpLeft.store(presents);
     _snprintf_s(g_dumpStatus, sizeof(g_dumpStatus), _TRUNCATE, "armed: %d presents in %.1f s", presents, delayMs / 1000.0);

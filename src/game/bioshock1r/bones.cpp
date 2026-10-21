@@ -6921,6 +6921,157 @@ void mirror_into(const mirror::Aff& a, Qts& q) {
 
 bool weapon_socket_axes(float axes[3][3]); // below, beside the socket cache
 
+// ---- 2026-10-20: THE POSE CAPTURE - the hands and the gun exactly as this frame draws them --------
+// Armed with the AFW capture (F10 > "Capture 6 presents in 5 s", temporal::request_dump), the late
+// compose writes `pose_NN.txt` into that capture's folder: the hands actor's world transform, every
+// hands bone as the engine evaluated it (component space, Unreal axes), each hand's palette correction
+// (the controller placement the skin palette applies to that hand's bones), the gun's actor transform
+// and every gun bone as the skeleton lane wrote it, the clips and their times. tools\blender\
+// pose_capture.py rebuilds that exact frame in Blender - the game's drawn pose, not a clip guessed at.
+std::atomic<int> g_poseLeft{0};
+std::atomic<uint64_t> g_poseAtMs{0};
+wchar_t g_poseDir[MAX_PATH] = L"";
+int g_poseIndex = 0;
+
+constexpr const char* kPoseHeader =
+    "bvr-pose 1\n# Unreal axes. hands bones: component space of the hands actor (engine pose, before the "
+    "palette); handfix: the palette correction p' = t + q (p - pivot) s on that hand's bones. A recording is "
+    "frames, each opened by a `frame` line\n";
+
+void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
+                const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now);
+
+void pose_capture_write(const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
+                        const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now) {
+    if (g_poseLeft.load(std::memory_order_relaxed) <= 0 || now < g_poseAtMs.load(std::memory_order_relaxed) ||
+        !g_poseDir[0])
+        return;
+    wchar_t path[MAX_PATH];
+    _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\pose_%02d.txt", g_poseDir, g_poseIndex);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) {
+        g_poseLeft.store(0);
+        BVR_LOG("[pose] capture: could not write %ls", path);
+        return;
+    }
+    fputs(kPoseHeader, f);
+    write_pose(f, A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+    fclose(f);
+    BVR_LOG("[pose] capture: %ls (state %S)", path, hands_state::current_name(g_m4.actor));
+    ++g_poseIndex;
+    if (g_poseLeft.fetch_sub(1) <= 1) g_poseDir[0] = 0;
+}
+
+// ---- 2026-10-20: THE SHOTGUN RECORDING (the tester: "map all of the shotgun animations next run") ----
+// While the shotgun is in hand, every late compose up to 30 a second is appended to
+// dumps\poserec-<date>-<time>\Shotgun.bvrpose (one per session, capped at 300 MB): the same frame as the
+// pose capture, so tools\blender\pose_capture.py replays the run as an animation (--record).
+FILE* g_rec = nullptr;
+uint64_t g_recLastMs = 0, g_recBytes = 0;
+uint32_t g_recFrames = 0;
+bool g_recFull = false;
+constexpr uint64_t kRecMaxBytes = 300ull * 1024 * 1024;
+
+void pose_record(const Qts* A, int n, const float aLoc[3], const float qa[4], float k, const palette::HandXform palX[2],
+                 bool mir, bool weaponOnSocket, uint64_t now) {
+    void* weapon = nullptr;
+    if (g_recFull || !hands::current_holdable(&weapon) || !weapon) return;
+    const wchar_t* cls = patterns::object_class_name(weapon);
+    if (!cls || wcscmp(cls, L"Shotgun") != 0 || now - g_recLastMs < 33) return;
+    g_recLastMs = now;
+    if (!g_rec) {
+        const wchar_t* dd = bvr::log::data_dir();
+        if (!dd || !dd[0]) return;
+        wchar_t dir[MAX_PATH], path[MAX_PATH];
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        _snwprintf_s(dir, MAX_PATH, _TRUNCATE, L"%s\\dumps", dd);
+        CreateDirectoryW(dir, nullptr);
+        _snwprintf_s(dir, MAX_PATH, _TRUNCATE, L"%s\\dumps\\poserec-%04u%02u%02u-%02u%02u%02u", dd, t.wYear, t.wMonth,
+                     t.wDay, t.wHour, t.wMinute, t.wSecond);
+        CreateDirectoryW(dir, nullptr);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\Shotgun.bvrpose", dir);
+        if (_wfopen_s(&g_rec, path, L"w") != 0 || !g_rec) {
+            g_rec = nullptr;
+            g_recFull = true;
+            BVR_LOG("[pose] recording: could not write %ls", path);
+            return;
+        }
+        fputs(kPoseHeader, g_rec);
+        BVR_LOG("[pose] recording the shotgun into %ls (30 a second while it is in hand; pose_capture.py --record)",
+                path);
+    }
+    fprintf(g_rec, "frame %u\n", g_recFrames++);
+    write_pose(g_rec, A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+    const long at = ftell(g_rec);
+    if (at > 0) g_recBytes = static_cast<uint64_t>(at);
+    if ((g_recFrames % 30) == 0) fflush(g_rec); // the game's exit kills the process: lose at most a second
+    if ((g_recFrames % 900) == 0)
+        BVR_LOG("[pose] recording: %u shotgun frames, %.1f MB", g_recFrames, g_recBytes / 1048576.0);
+    if (g_recBytes > kRecMaxBytes) {
+        fclose(g_rec);
+        g_rec = nullptr;
+        g_recFull = true;
+        BVR_LOG("[pose] recording: stopped at %u frames (%.0f MB, the cap)", g_recFrames, g_recBytes / 1048576.0);
+    }
+}
+
+void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
+                const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now) {
+    fprintf(f, "ms %llu\nstate %S\nmirrored %d\n", static_cast<unsigned long long>(now),
+            hands_state::current_name(g_m4.actor), mir ? 1 : 0);
+    fprintf(f, "actor %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g\n", aLoc[0], aLoc[1], aLoc[2], qa[0], qa[1], qa[2], qa[3], k);
+    fprintf(f, "clusters L %d %d R %d %d weaponbone %d held %d\n", patterns::kBoneLClusterFirst,
+            patterns::kBoneLClusterLast, patterns::kBoneRClusterFirst, patterns::kBoneRClusterLast,
+            patterns::kBoneWeaponAttach, g_m4.held);
+    for (int h = 0; h < 2; ++h) {
+        const palette::HandXform& X = palX[h];
+        fprintf(f, "handfix %d %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g %.6g %.6g  %.6g\n", h, X.valid ? 1 : 0, X.q[0],
+                X.q[1], X.q[2], X.q[3], X.t[0], X.t[1], X.t[2], X.pivot[0], X.pivot[1], X.pivot[2], X.s);
+    }
+    fprintf(f, "bones %d\n", n);
+    for (int i = 0; i < n; ++i)
+        fprintf(f, "b %d  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g\n", i, A[i].p[0], A[i].p[1], A[i].p[2],
+                A[i].q[0], A[i].q[1], A[i].q[2], A[i].q[3], A[i].s[0], A[i].s[1], A[i].s[2]);
+    // The hands' clip (the Hands actor's own handle) and the gun's, with their times.
+    auto clip = [&](void* who, int32_t handle, const char* tag) {
+        int32_t nm = -1;
+        float t = -1.0f;
+        if (who && handle > 0 && script::anim_name(who, handle, &nm) && nm >= 0) {
+            script::anim_time(who, handle, &t);
+            const wchar_t* s = patterns::fname_text(nm);
+            fprintf(f, "clip %s %S %.4f\n", tag, s ? s : L"?", t);
+        }
+    };
+    void* weapon = nullptr;
+    hands::current_holdable(&weapon);
+    if (g_m4.actor) {
+        const int32_t off = script::property_offset(g_m4.actor, L"HandsAnimationHandle");
+        int32_t hh = 0;
+        if (off >= 0) read_n(static_cast<uint8_t*>(g_m4.actor) + off, &hh, sizeof hh);
+        clip(g_m4.actor, hh, "hands");
+    }
+    if (weapon && weapon == g_wHoldable) {
+        clip(weapon, manual_reload::weapon_clip_handle(weapon), "weapon");
+        const wchar_t* cls = patterns::object_class_name(weapon);
+        float wLoc[3] = {}, kw = 1.0f, wq[4] = {0, 0, 0, 1};
+        int32_t wRot[3] = {};
+        read_n(static_cast<uint8_t*>(weapon) + patterns::kActorLocOffset, wLoc, 12);
+        read_n(static_cast<uint8_t*>(weapon) + patterns::kActorViewDirOffset, wRot, 12);
+        if (!ds_read(weapon, &kw) || !(kw > 0.01f)) kw = 1.0f;
+        ue_rot_to_quat(FRotator{wRot[0], wRot[1], wRot[2]}, wq);
+        fprintf(f, "weapon %S onsocket %d  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g  size %.6g\n", cls ? cls : L"?",
+                weaponOnSocket ? 1 : 0, wLoc[0], wLoc[1], wLoc[2], wq[0], wq[1], wq[2], wq[3], kw,
+                g_wWrittenValid ? g_wWrittenScale : 1.0f);
+        fprintf(f, "wbones %d\n", g_wBoneCount);
+        for (int i = 0; i < g_wBoneCount && i < kMaxBones; ++i) {
+            const Qts& w = g_wWrittenValid ? g_wWritten[i] : g_wAnim[i];
+            fprintf(f, "w %d %s  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g\n", i, g_wName[i][0] ? g_wName[i] : "-",
+                    w.p[0], w.p[1], w.p[2], w.q[0], w.q[1], w.q[2], w.q[3], w.s[0], w.s[1], w.s[2]);
+        }
+    }
+}
+
 // ---- `vrbones reloadrec <seconds>`: what a reload clip does, part by part ----------------------
 // Armed, the next reload is logged at 30 Hz for that long: every gun part the clip moves away from
 // its rest (translation in the gun's own units, rotation in degrees) and both palms in the frame of
@@ -8356,6 +8507,10 @@ void m4_compose(bool late) {
                 wx.dWorld = palette::sim_world(lh, sh);
                 wx.lWeapon = lw;
             }
+        }
+        if (late) {
+            pose_capture_write(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+            pose_record(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
         }
         socket_follow(palX, A, n, k); // s91: the effects' sockets onto the drawn hands
         palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx,
@@ -9857,6 +10012,15 @@ void set_weapon_part_pose(int i, const float p[3], const float q[4]) {
     g_wPartAny = true;
 }
 float weapon_written_scale() { return g_wHoldable && g_wWrittenValid ? g_wWrittenScale : 1.0f; }
+void arm_pose_capture(const wchar_t* dir, uint32_t delayMs, int frames) {
+    if (!dir || !dir[0] || frames <= 0) return;
+    wcsncpy_s(g_poseDir, dir, _TRUNCATE);
+    g_poseIndex = 0;
+    g_poseAtMs.store(GetTickCount64() + delayMs);
+    g_poseLeft.store(frames);
+    BVR_LOG("[pose] capture armed: %d frame(s) from %.1f s into %ls (tools\\blender\\pose_capture.py)", frames,
+            delayMs / 1000.0, dir);
+}
 void clear_weapon_part_offsets() {
     memset(g_wPartOn, 0, sizeof g_wPartOn);
     memset(g_wPartPose, 0, sizeof g_wPartPose);
