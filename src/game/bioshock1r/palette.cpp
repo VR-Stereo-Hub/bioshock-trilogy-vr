@@ -500,7 +500,14 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
         if (x.wristBone >= 0 && x.wristBone < count) measure_anchor(h, x, g_copy, count);
         const int first = h == 1 ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
         const int last = h == 1 ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
-        for (int i = first; i <= last && i < count; ++i) compose(x, g_copy + i * 16);
+        for (int i = first; i <= last && i < count; ++i) {
+            const int f = i - first;
+            if (f < HandXform::kMaxFix && x.fixValid[f]) {
+                static const float kZero[3] = {0, 0, 0};
+                apply_sim(palette_math::hand_sim(x.fixQ[f], 1.0f, kZero, x.fixT[f]), g_copy + i * 16);
+            }
+            compose(x, g_copy + i * 16);
+        }
         const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
         if (x.armValid) {
             // s88: the IK arm (Dishonored arm_ik_draw.inc): each sleeve matrix carried from the

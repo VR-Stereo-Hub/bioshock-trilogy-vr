@@ -7897,6 +7897,7 @@ void m4_compose(bool late) {
     // While no reload runs, that hand's bones are kept relative to the gun hand's wrist; while one runs
     // with the two-handed grip still squeezed, they are put back there, so the hold and the drawn hand stay
     // exactly as they were until the grip is let go (then the reload has the hand, as before).
+    const Qts* const A0 = A; // the evaluated pose the skin matrices were made from
     {
         static Qts s_freeRel[kMaxBones];
         static bool s_freeRelValid = false;
@@ -7999,6 +8000,26 @@ void m4_compose(bool late) {
                 }
                 A = s_sub;
             }
+        }
+    }
+    // The skin follows the substitution (palette.h HandXform::fix*): each free-hand bone drawn other than the
+    // game evaluated it carries the game's bone onto the drawn one, D * inverse(E). Without it the hand's
+    // placement was computed from the substituted wrist while the mesh kept the game's - fingers open, and a
+    // turned wrist put the hand off its grab.
+    palette::HandXform boneFix[2];
+    if (A != A0) {
+        const int fh = 1 - gunHand;
+        const int lo = fh ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+        const int hi = fh ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+        for (int i = lo; i <= hi && i < n && i - lo < palette::HandXform::kMaxFix; ++i) {
+            if (!memcmp(A[i].p, A0[i].p, 12) && !memcmp(A[i].q, A0[i].q, 16)) continue;
+            const ik::Quat d = ik::normalized(ik::quat(A[i].q)), e = ik::normalized(ik::quat(A0[i].q));
+            const ik::Quat r = ik::normalized(ik::mul(d, ik::conj(e)));
+            const ik::Vec t = ik::vec(A[i].p) - ik::rotate(r, ik::vec(A0[i].p));
+            const int f = i - lo;
+            boneFix[fh].fixValid[f] = true;
+            memcpy(boneFix[fh].fixQ[f], r.v, 16);
+            ik::put(t, boneFix[fh].fixT[f]);
         }
     }
     static ik::Bone s_gunRest[2];
@@ -8639,6 +8660,11 @@ void m4_compose(bool late) {
             pose_record(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
         }
         socket_follow(palX, A, n, k); // s91: the effects' sockets onto the drawn hands
+        for (int h = 0; h < 2; ++h) {
+            memcpy(palX[h].fixValid, boneFix[h].fixValid, sizeof palX[h].fixValid);
+            memcpy(palX[h].fixQ, boneFix[h].fixQ, sizeof palX[h].fixQ);
+            memcpy(palX[h].fixT, boneFix[h].fixT, sizeof palX[h].fixT);
+        }
         palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx,
                          mir);
         palette::set_link_probe(g_m4.actor, g_skelInst);

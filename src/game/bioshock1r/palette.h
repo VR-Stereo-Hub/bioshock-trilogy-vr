@@ -44,6 +44,15 @@ struct HandXform {
     // hand-back weight, so at weight 0 the arm is exactly the game's.
     bool armValid = false;
     float arm[5][12] = {};
+    // 2026-10-20: per-bone poses of this hand the drive drew differently from the game's (the grip pose's
+    // fingers, a designed grip) - x' = t + rotate(q, x), component space, composed on BEFORE the hand's
+    // correction, carrying the game's evaluated bone to the drive's. Indexed from the cluster's first bone.
+    // Without this the skinned fingers stayed the game's however the drive posed them (the 22:54
+    // captures: the solved cylinder grip in every bone, an open hand on screen).
+    static constexpr int kMaxFix = 24;
+    bool fixValid[kMaxFix] = {};
+    float fixQ[kMaxFix][4] = {};
+    float fixT[kMaxFix][3] = {};
 };
 
 // Hook the gather (once; fail-soft with a log line). Game thread.
