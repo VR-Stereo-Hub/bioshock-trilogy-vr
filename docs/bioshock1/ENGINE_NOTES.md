@@ -6963,3 +6963,16 @@ Catching: a thrown spare (or a new drum let go short of the well) is tracked 4 s
 at its Fetch with the well open, one whose drum bone (the prop less the measured AmmoModel offset) comes
 within 15 cm of where the spent drum sat (the latch, recorded at the eject) is removed and the machine
 seats the gun's own drum from the insert's last stretch, as a slap does.
+
+## 2026-10-20 - The cock poses, frame by frame (the 21:11 recording)
+
+`pose_capture.py --csv` now writes the free wrist's turn against the gun's attach bone and each finger's
+curl. Across the recording's pumps: every shot's Fire clip keeps the free wrist at the rest turn (140, -7.5,
+-60 deg, within 2) and the palm on SG_Pump (5-6 units) through the stroke - but its FINGERS open flat from
+0.40 to 0.85 s (index/middle/ring curl 72/103/108 deg at rest -> 17/14/15), exactly the stroke, and the
+pump waits at 0.75 with the hand flat. Which cocks looked wrong depended on where each stroke caught the
+clip. The reload's last pump held the clip at 0.409 s, where its free wrist is turned 27 deg off the rest
+grab (113, -18, -74) and 4 units over, its fingers half open (76/48/55) - the cock after a reload grabbed
+differently. Both are now the rest grab whenever the two-handed grip holds: the fingers latched at rest
+(the earlier fix), and the wrist at the rest turn against the attach bone, turned about the palm so the
+palm stays on the pump (bones.cpp, the free-hand substitution).

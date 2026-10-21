@@ -7916,6 +7916,12 @@ void m4_compose(bool late) {
             static Qts s_fingerRel[kMaxBones];
             static bool s_fingerRelValid = false;
             static const void* s_fingerGun = nullptr;
+            // 2026-10-20 (the 21:11 recording, pose_capture.py --csv): and the WRIST's turn against the gun
+            // (its attach bone) with it. Through every shot's pump the clip keeps the free wrist at the rest
+            // turn (within 2 deg), but the reload's last pump holds it at 0.409 s turned 27 deg off and 4 units
+            // over - the cock after a reload grabbed "differently". The turn is the rest's, about the palm.
+            static ik::Quat s_wristRel;
+            static ik::Vec s_palmLocal;
             void* curGun = nullptr;
             hands::current_holdable(&curGun);
             if (curGun != s_fingerGun) {
@@ -7923,8 +7929,11 @@ void m4_compose(bool late) {
                 s_fingerRelValid = false;
             }
             const int fw = m4_wrist(fh);
-            const ik::Quat fq = ik::normalized(ik::quat(A[fw].q));
-            const ik::Vec fp = ik::vec(A[fw].p);
+            ik::Quat fq = ik::normalized(ik::quat(A[fw].q));
+            ik::Vec fp = ik::vec(A[fw].p);
+            const int ga = patterns::kBoneWeaponAttach;
+            const ik::Quat aq = ga < n ? ik::normalized(ik::quat(A[ga].q)) : gq;
+            const int* pbf = fh == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
             if (!manual_reload::active() && two_hand::held() &&
                 hands_state::current(g_m4.actor) == hands_state::State::Idling) {
                 for (int i = lo; i <= hi; ++i) {
@@ -7933,10 +7942,19 @@ void m4_compose(bool late) {
                     const ik::Quat rq = ik::normalized(ik::mul(ik::conj(fq), ik::quat(A[i].q)));
                     memcpy(s_fingerRel[i].q, rq.v, 16);
                 }
+                s_wristRel = ik::normalized(ik::mul(ik::conj(aq), fq));
+                s_palmLocal = ik::Vec{0, 0, 0};
+                for (int j = 0; j < 5; ++j) s_palmLocal = s_palmLocal + ik::vec(s_fingerRel[pbf[j]].p) * 0.2f;
                 s_fingerRelValid = true;
             }
             if (two_hand::held() && s_fingerRelValid) {
                 if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                // The wrist at the rest turn against the gun, its palm where it was.
+                const ik::Vec palm = fp + ik::rotate(fq, s_palmLocal);
+                fq = ik::normalized(ik::mul(aq, s_wristRel));
+                fp = palm - ik::rotate(fq, s_palmLocal);
+                ik::put(fp, s_sub[fw].p);
+                memcpy(s_sub[fw].q, fq.v, 16);
                 for (int i = lo; i <= hi; ++i) {
                     if (i == fw) continue;
                     ik::put(fp + ik::rotate(fq, ik::vec(s_fingerRel[i].p)), s_sub[i].p);

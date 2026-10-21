@@ -302,6 +302,21 @@ def measure(cap):
     palm = wrist @ ue_local(PALM[free])
     pg = ue_local(grip.inverted() @ palm)
     m["palm_in_grip_x"], m["palm_in_grip_y"], m["palm_in_grip_z"] = pg
+    # The free hand's turn against the grip, and how far each finger is curled (its three joints' turns
+    # against the wrist, summed, degrees) - a cock drawn with a different hand shows here.
+    wq = (grip.inverted() @ wrist).to_quaternion()
+    m["wrist_in_grip_rx"], m["wrist_in_grip_ry"], m["wrist_in_grip_rz"] = [math.degrees(a) for a in wq.to_euler("XYZ")]
+    side = "L" if free == 0 else "R"
+    for fn in ("Thumb", "Index", "Middle", "Ring", "Pinky"):
+        tot, prev = 0.0, wrist
+        for k in (1, 2, 3):
+            bn = "kBone_%s_%s%d" % (side, fn, k)
+            if bn not in ha.pose.bones:
+                break
+            f = game_frame(ha, HC, bn)
+            tot += math.degrees((prev.inverted() @ f).to_quaternion().angle) if k > 1 else 0.0
+            prev = f
+        m["curl_" + fn] = tot
     if ga and cap.get("weapon"):
         for name in ga.pose.bones.keys():
             f = game_frame(ga, GC, name)
