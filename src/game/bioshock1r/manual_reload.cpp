@@ -95,6 +95,7 @@ int32_t g_lastHandle = 0;
 bool g_paused = false;
 int32_t g_heldW = 0, g_heldH = 0;
 uint64_t g_lastBuzzMs = 0, g_canMs = 0;
+uint64_t g_switchMs = 0; // the last ammunition switch seen (a reload begun soon after it is the switch's)
 bool g_can = true;
 int32_t g_lenName = -1;
 float g_len = 0;
@@ -484,6 +485,14 @@ bool can_reload(void* weapon, uint64_t now) {
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
 bool handles_reloads() { return g_handles.load(std::memory_order_relaxed); }
+bool start_clip(void* weapon) {
+    if (!weapon) return false;
+    const int32_t hw = weapon_clip_handle(weapon);
+    int32_t nm = -1;
+    if (hw <= 0 || !script::anim_name(weapon, hw, &nm) || nm < 0) return false;
+    const wchar_t* cn = patterns::fname_text(nm);
+    return cn && !_wcsicmp(cn, L"SingleFrame");
+}
 bool pumping() {
     return g_pumping.load(std::memory_order_relaxed) || (g_pumpWait.load(std::memory_order_relaxed) && g_endPump.working()) ||
            GetTickCount64() - g_fireClipMs.load(std::memory_order_relaxed) < 400;
@@ -565,7 +574,11 @@ static void place_spare(const HandPlacement& hp) {
     const float loc[3] = {amW.x, amW.y, amW.z};
     const ue::FRotator r = ue::ue_quat_to_rot(amQ.v);
     const int32_t rot[3] = {r.pitch, r.yaw, r.roll};
-    dropped_part::move(g_spare, loc, rot);
+    static uint64_t s_lastUs = 0;
+    const uint64_t us = now_us();
+    const float dt = s_lastUs && us > s_lastUs ? static_cast<float>(us - s_lastUs) * 1e-6f : 1.0f / 90.0f;
+    s_lastUs = us;
+    dropped_part::move(g_spare, loc, rot, dt);
     throw_feed(amW);
 }
 
@@ -961,6 +974,7 @@ void tick(const Frame& f) {
             BVR_LOG("[reload] %S: the ammunition was switched while the reload waits - the drum drops", g_cls);
             in.ejectNow = true;
             s_switchSeen = true;
+            g_switchMs = f.now;
         }
     }
     in.pumpDone = g_endPumpDone;
@@ -993,7 +1007,12 @@ void tick(const Frame& f) {
         switching = po >= 0 && co >= 0 && read_n(static_cast<uint8_t*>(f.weapon) + po, &pend, sizeof pend) &&
                     read_n(static_cast<uint8_t*>(f.weapon) + co, &cur, sizeof cur) && pend && cur && pend != cur;
     }
-    if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered && !switching) in.ejectAdopted = false;
+    // 09:32 run: a switch while a dry gun waits ends that reload the same frame the drop is asked for, and the
+    // game's next reload (for the new type) already has Pending == Current - it waited at the drum again. A
+    // reload begun within 1.5 s of a seen switch is the switch's: it drops the drum.
+    if (switching) g_switchMs = f.now;
+    const bool afterSwitch = g_switchMs && f.now - g_switchMs < 1500;
+    if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered && !switching && !afterSwitch) in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
     // one quickly", and "throw one up in the air and slap the gun into it").
     const bool spareGun = in.entryProgram && in.entryProgram->spare;

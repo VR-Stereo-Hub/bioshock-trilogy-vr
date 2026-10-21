@@ -8046,6 +8046,28 @@ void m4_compose(bool late) {
                 }
                 A = s_sub;
             }
+            // 2026-10-21 (the 09:32 recording: switching ammunition restarted the shotgun's reload four times, and on
+            // each restart the start clip 'SingleFrame' snapped the free hand to its start pose and back - "still
+            // changing the hand pose when empty and switching ammo"): through a start clip the free hand holds
+            // exactly as it was the frame before, against the gun.
+            static Qts s_lastRel[kMaxBones];
+            static bool s_lastRelValid = false;
+            if (reloading && !keep && s_lastRelValid && manual_reload::start_clip(curGun)) {
+                if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                for (int i = lo; i <= hi; ++i) {
+                    ik::put(gp + ik::rotate(gq, ik::vec(s_lastRel[i].p)), s_sub[i].p);
+                    const ik::Quat q = ik::normalized(ik::mul(gq, ik::quat(s_lastRel[i].q)));
+                    memcpy(s_sub[i].q, q.v, 16);
+                }
+                A = s_sub;
+            } else {
+                for (int i = lo; i <= hi; ++i) {
+                    ik::put(ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp), s_lastRel[i].p);
+                    const ik::Quat rq = ik::normalized(ik::mul(ik::conj(gq), ik::quat(A[i].q)));
+                    memcpy(s_lastRel[i].q, rq.v, 16);
+                }
+                s_lastRelValid = true;
+            }
         }
     }
     // The skin follows the substitution (palette.h HandXform::fix*): each free-hand bone drawn other than the
@@ -8072,6 +8094,7 @@ void m4_compose(bool late) {
     static bool s_gunRestValid[2] = {false, false};
     static float s_joinMinCm[2] = {1e9f, 1e9f};
     static bool s_carrying[2] = {false, false};
+    static ik::Vec s_reloadSlide{};    // a reload's front hand along the gun with the controller (two_hand)
     static ik::Quat s_twoTurnLocal[2]; // the two-handed turn, in the gun hand's frame, and its weight
     static float s_twoTurnW[2] = {0.0f, 0.0f};
     // 2026-10-19: the two-handed grip (two_hand.h). The gun hand's branch needs the FREE hand's
@@ -8267,6 +8290,24 @@ void m4_compose(bool late) {
                         toward[2] = dw[2] * toCm;
                     }
                     two_hand::publish(distCm, slideCm, paused, toward, now);
+                    // 2026-10-21 (09:33 capture: the shotgun empty with the grip held, the drawn palm on the pump
+                    // but the real hand 17 cm behind it and 14 up - the arm drawn out to the pump, "the wrist
+                    // stretched a ton"): while the gun reloads there is no pump to hold, so the front hand slides
+                    // along the gun with the controller - the real hand's place along the gun's line, against the
+                    // anchor's.
+                    s_reloadSlide = ik::Vec{0, 0, 0};
+                    if (manual_reload::handles_reloads() &&
+                        hands_state::current(g_m4.actor) == hands_state::State::Reloading) {
+                        const ik::Vec ax = authored - pinned.at;
+                        const float al = ik::length(ax);
+                        if (al > 1e-3f) {
+                            const ik::Vec dir = ax * (1.0f / al);
+                            float d = ik::dot(real - pinned.at, dir) - al;
+                            const float lim = 30.0f / toCmClip;
+                            d = d < -lim ? -lim : d > lim ? lim : d;
+                            s_reloadSlide = dir * d;
+                        }
+                    }
                     const float tw = paused ? 0.0f : two_hand::hold_weight(now);
                     if (tw > 0.0f) {
                         // The turn from the gun as held; applied to the kicked gun it keeps the kick
@@ -8338,7 +8379,11 @@ void m4_compose(bool late) {
                 }
                 // Two hands on the gun: this hand rides it where the game's clip has it (the same
                 // carry, at the hold's weight).
-                if (twoHold > 0.0f) own = hc::toward(own, carried_on_gun(), twoHold);
+                if (twoHold > 0.0f) {
+                    hc::Placement on = carried_on_gun();
+                    on.at = on.at + s_reloadSlide; // a reload: along the gun with the controller (above)
+                    own = hc::toward(own, on, twoHold);
+                }
                 // 2026-10-20: the manual reload's bolt held - this hand drawn ON it, where the clip's own
                 // hand grips it (fingers and all), riding it back as the bolt follows the real hand.
                 static float s_lock = 0.0f;
