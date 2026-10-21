@@ -217,11 +217,25 @@ static bool place_at(void* a, const Captured& c) {
 
 bool dropped_rounds_only() { return g_lastRounds; }
 
-bool drop(void* weapon, void* hands, const float velocity[3]) {
-    if (!g_cap.valid || !weapon) return false;
-    const Captured c = g_cap;
-    g_cap.valid = false;
-    g_lastRounds = c.byName;
+Prop g_lastDrop;
+Prop last_dropped() { return g_lastDrop; }
+
+static void* level_of(void* a) {
+    const int32_t off = a ? script::property_offset(a, L"Level") : -1;
+    void* l = nullptr;
+    return off >= 0 && rd(static_cast<uint8_t*>(a) + off, &l) ? l : nullptr;
+}
+static Prop identify(void* a) {
+    Prop p;
+    p.actor = a;
+    p.cls = class_of(a);
+    rd(static_cast<uint8_t*>(a) + patterns::kUObjectNameIndexOffset, &p.name);
+    p.level = level_of(a);
+    return p;
+}
+
+// A prop of the captured magazine where it was: spawned, its physics off, the magazine's mesh and size.
+static void* make_prop(void* weapon, void* hands, const Captured& c, bool* meshOk) {
     // The 12:21 headset run: Spawn(PhysicalReactiveActor) returned nothing every time. The game spawns
     // NonPhysicalReactiveActor at runtime itself (SecurityCamera.OnKilled) - the same prop with its
     // physics off, turned on below - and the hands' script spawn is the last resort.
@@ -238,20 +252,26 @@ bool drop(void* weapon, void* hands, const float velocity[3]) {
         BVR_LOG("[drop] %S: %s", path, a ? how : "Spawn and the hands' script spawn both returned nothing");
         if (a) break;
     }
-    if (!a) return false;
+    if (!a) return nullptr;
     // Its physics is built for the mesh it has and where it is, so: off, moved to the magazine, the
-    // magazine's mesh and size, then Havok.
+    // magazine's mesh and size (then Havok, when it is let go).
     place_at(a, c);
     struct {
         void* mesh;
         int32_t pad[3];
     } sm{c.mesh, {}};
-    const bool meshOk = script::call(a, "SetStaticMesh", &sm);
+    *meshOk = script::call(a, "SetStaticMesh", &sm);
     struct {
         float s;
         int32_t pad[3];
     } ds{c.scale, {}};
     script::call(a, "SetDrawScale", &ds);
+    return a;
+}
+
+// Havok on, moving at `velocity` plus a short fall, tumbling; gone after LifeSpan. False (and removed) when
+// it would hang in the air.
+static bool launch(void* a, bool meshOk, const float velocity[3]) {
     const bool havokOk = set_physics(a, 1); // PHYS_Havok
     const float v[3] = {velocity[0], velocity[1], velocity[2] - kFallUu};
     set_vector(a, "HavokSetLinearVelocity", v);
@@ -275,6 +295,106 @@ bool drop(void* weapon, void* hands, const float velocity[3]) {
         return false;
     }
     return true;
+}
+
+bool drop(void* weapon, void* hands, const float velocity[3]) {
+    g_lastDrop = Prop{};
+    if (!g_cap.valid || !weapon) return false;
+    const Captured c = g_cap;
+    g_cap.valid = false;
+    g_lastRounds = c.byName;
+    bool meshOk = false;
+    void* a = make_prop(weapon, hands, c, &meshOk);
+    if (!a) return false;
+    const Prop id = identify(a);
+    if (!launch(a, meshOk, velocity)) return false;
+    g_lastDrop = id;
+    return true;
+}
+
+bool ammo_model_pose(void* weapon, float loc[3], int32_t rot[3], float* scale) {
+    if (!weapon || !script::properties_ready(weapon)) return false;
+    const int32_t amOff = script::property_offset(weapon, L"AmmoModel");
+    void* am = nullptr;
+    if (amOff < 0 || !rd(static_cast<uint8_t*>(weapon) + amOff, &am) || !am) return false;
+    const int32_t meshOff = script::property_offset(am, L"StaticMesh");
+    void* mesh = nullptr;
+    if (meshOff < 0 || !rd(static_cast<uint8_t*>(am) + meshOff, &mesh) || !mesh) return false;
+    float s = 1.0f;
+    if (!rd(static_cast<uint8_t*>(am) + patterns::kActorLocOffset, reinterpret_cast<float(*)[3]>(loc)) ||
+        !rd(static_cast<uint8_t*>(am) + patterns::kActorLocOffset + 12, reinterpret_cast<int32_t(*)[3]>(rot)) ||
+        !rd(static_cast<uint8_t*>(am) + patterns::kActorDrawScaleOffset, &s))
+        return false;
+    *scale = s > 0.01f ? s : 1.0f;
+    return true;
+}
+
+Prop make_held(void* weapon, void* hands) {
+    if (!capture(weapon) || g_cap.byName) { // a mesh of its own only (the Tommy Gun's drum)
+        g_cap.valid = false;
+        return Prop{};
+    }
+    const Captured c = g_cap;
+    g_cap.valid = false;
+    bool meshOk = false;
+    void* a = make_prop(weapon, hands, c, &meshOk);
+    if (!a) return Prop{};
+    if (!meshOk) {
+        uint8_t none[32] = {};
+        script::call(a, "Destroy", none);
+        BVR_LOG("[drop] the spare took no mesh - removed");
+        return Prop{};
+    }
+    // Drawn in the layer the gun's own magazine is (the hands' foreground) while it is in the hand.
+    const int32_t amOff = script::property_offset(weapon, L"AmmoModel");
+    void* am = nullptr;
+    const int32_t prio = script::property_offset(a, L"DrawPriority");
+    uint8_t amPrio = 0;
+    if (amOff >= 0 && rd(static_cast<uint8_t*>(weapon) + amOff, &am) && am && prio >= 0 &&
+        rd(static_cast<uint8_t*>(am) + prio, &amPrio))
+        wr(static_cast<uint8_t*>(a) + prio, amPrio);
+    const Prop p = identify(a);
+    BVR_LOG("[drop] a spare in the hand: %p (draw layer %u)", a, amPrio);
+    return p;
+}
+
+bool alive(const Prop& p, void* weapon) {
+    if (!p.actor || !weapon) return false;
+    void* cls = nullptr;
+    int32_t name = -1;
+    if (!rd(static_cast<uint8_t*>(p.actor) + patterns::kUObjectClassOffset, &cls) || cls != p.cls ||
+        !rd(static_cast<uint8_t*>(p.actor) + patterns::kUObjectNameIndexOffset, &name) || name != p.name)
+        return false;
+    // The same level as the gun in hand: after a level change both are new, and the old one is freed memory.
+    return p.level && level_of(p.actor) == p.level && level_of(weapon) == p.level;
+}
+
+void move(const Prop& p, const float loc[3], const int32_t rot[3]) {
+    // Its physics is off: the fields are where it is drawn.
+    wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, *reinterpret_cast<const float(*)[3]>(loc));
+    wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, *reinterpret_cast<const int32_t(*)[3]>(rot));
+    // Kept alive while it is moved, and gone on its own soon after it no longer is (a spare we lost track of).
+    const int32_t lifeOff = script::property_offset(p.actor, L"LifeSpan");
+    if (lifeOff >= 0) wr(static_cast<uint8_t*>(p.actor) + lifeOff, 20.0f);
+}
+
+bool location(const Prop& p, float loc[3], int32_t rot[3]) {
+    return rd(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, reinterpret_cast<float(*)[3]>(loc)) &&
+           rd(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, reinterpret_cast<int32_t(*)[3]>(rot));
+}
+
+bool release(const Prop& p, const float velocity[3]) {
+    Captured c;
+    if (!location(p, c.loc, c.rot)) return false;
+    const int32_t prio = script::property_offset(p.actor, L"DrawPriority");
+    if (prio >= 0) wr(static_cast<uint8_t*>(p.actor) + prio, uint8_t{0}); // out of the hands' layer
+    place_at(p.actor, c);
+    return launch(p.actor, true, velocity);
+}
+
+void destroy(const Prop& p) {
+    uint8_t none[32] = {};
+    script::call(p.actor, "Destroy", none);
 }
 
 } // namespace bvr::b1r::dropped_part

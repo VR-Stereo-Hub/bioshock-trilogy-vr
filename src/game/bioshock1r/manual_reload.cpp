@@ -13,6 +13,7 @@
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/reload_rig.h"
 #include "game/bioshock1r/script_call.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 
@@ -286,6 +287,25 @@ const char* g_carryPart = nullptr;
 void* g_carryWeapon = nullptr;
 bool g_carryAtPalm = false;
 bool g_chambered = false;       // the gun had a round left as this reload began (reload_rig Input)
+// 2026-10-20 THE SPARE DRUM (reload_rig Program::spare): a prop of the gun's own magazine in the free hand,
+// taken from the pouch whenever the Tommy Gun is held; let go it is thrown, and a thrown one can be caught
+// in the open well.
+dropped_part::Prop g_spare;
+bool g_spareAmmo = true;        // the player carries rounds beyond the gun's (can_reload)
+// The drum against the clip's left wrist (Bip01_L_Hand) where the reload's hand grips it at 0.30 s -
+// TG_AmmoClip, Unreal axes, clip units (tools\blender\game_frames.py, the hold the carry uses too).
+constexpr float kSpareWristP[3] = {20.8412f, -14.7071f, -8.0871f};
+constexpr float kSpareWristQ[4] = {0.6109275f, 0.3447002f, 0.2079246f, 0.6817014f};
+// The visible magazine (AmmoModel) against its bone, measured while the gun is idle and steady.
+bool g_amRelValid = false;
+Vec g_amRelP{};
+arm_ik::Quat g_amRelQ{};
+float g_amGunS = 1.0f;
+uint64_t g_amRelMs = 0;
+struct Flying { dropped_part::Prop p; uint64_t ms; };
+Flying g_flying[4] = {};
+constexpr uint64_t kCatchMs = 4000;   // a thrown drum can be caught this long
+constexpr float kCatchCm = 15.0f;     // ... this near where the drum sits in the open gun
 // The carried part's recent world positions, for a throw (Half-Life: Alyx's way, ENGINE_NOTES): the
 // velocity of the frame next to the fastest of the last few, not of the release frame itself.
 constexpr int kThrowFrames = 10;
@@ -442,6 +462,20 @@ bool can_reload(void* weapon, uint64_t now) {
             if (script::call(holder, "GetNumberOfItems", &n)) g_can = r.ret != n.ret;
         }
     }
+    // A spare magazine is there to take while the player carries more rounds than the gun holds (unknown: yes).
+    g_spareAmmo = true;
+    if (script::properties_ready(weapon)) {
+        const int32_t ammoOff = script::property_offset(weapon, L"PendingAmmoSelection");
+        void* ammo = nullptr;
+        void* holder = nullptr;
+        struct { int32_t ret; int32_t pad[3]; } rr2{};
+        if (ammoOff >= 0 && read_n(static_cast<uint8_t*>(weapon) + ammoOff, &ammo, sizeof ammo) && ammo &&
+            read_n(static_cast<uint8_t*>(weapon) + patterns::kWeaponOwnerOffset, &holder, sizeof holder) && holder &&
+            script::call(weapon, "GetRoundsRemaining", &rr2)) {
+            struct { void* cls; int32_t ret; int32_t pad[2]; } n{ammo, 0, {}};
+            if (script::call(holder, "GetNumberOfItems", &n)) g_spareAmmo = n.ret > rr2.ret;
+        }
+    }
     return g_can;
 }
 } // namespace
@@ -489,7 +523,37 @@ float hand_lock(uint64_t nowMs) {
 // hand moved onto the controller - so the same move, applied to the part, keeps it in the drawn hand,
 // turning with it. Weapon space -> world (the gun's two bones), world -> the hands' component space,
 // the hand's move, and back.
+// The spare drum in the free hand: where the reload's hand holds the drum (TG_AmmoClip against the wrist,
+// kSpareWrist), moved with the drawn hand as carry() moves a carried part; the prop - the visible magazine
+// - against that bone as it sits on the gun (g_amRel).
+static void place_spare(const HandPlacement& hp) {
+    if (!g_spare.actor) return;
+    if (!dropped_part::alive(g_spare, g_weapon)) {
+        g_spare = dropped_part::Prop{};
+        return;
+    }
+    const arm_ik::Quat qa = arm_ik::normalized(arm_ik::quat(hp.actorQ)), qh = arm_ik::normalized(arm_ik::quat(hp.q));
+    const arm_ik::Quat wq = arm_ik::normalized(arm_ik::quat(hp.wristQ));
+    const Vec comp = arm_ik::vec(hp.wristP) + arm_ik::rotate(wq, arm_ik::vec(kSpareWristP));
+    const arm_ik::Quat compQ = arm_ik::normalized(arm_ik::mul(wq, arm_ik::normalized(arm_ik::quat(kSpareWristQ))));
+    const Vec moved = arm_ik::vec(hp.palmAt) + arm_ik::rotate(qh, (comp - arm_ik::vec(hp.palm)) * hp.s);
+    const Vec boneW = arm_ik::vec(hp.actorLoc) + arm_ik::rotate(qa, moved * hp.actorScale);
+    const arm_ik::Quat boneQ = arm_ik::normalized(arm_ik::mul(qa, arm_ik::mul(qh, compQ)));
+    Vec amW = boneW;
+    arm_ik::Quat amQ = boneQ;
+    if (g_amRelValid) {
+        amW = boneW + arm_ik::rotate(boneQ, g_amRelP * g_amGunS);
+        amQ = arm_ik::normalized(arm_ik::mul(boneQ, g_amRelQ));
+    }
+    const float loc[3] = {amW.x, amW.y, amW.z};
+    const ue::FRotator r = ue::ue_quat_to_rot(amQ.v);
+    const int32_t rot[3] = {r.pitch, r.yaw, r.roll};
+    dropped_part::move(g_spare, loc, rot);
+    throw_feed(amW);
+}
+
 void carry(const HandPlacement& hp) {
+    place_spare(hp);
     if (g_carryMode != 1 || !g_carryPart || !g_carryWeapon || !g_machine.active()) return;
     float m[3][3], s = 1, o0[3], p0[3];
     if (!weapon_space(g_carryWeapon, g_carryPart, m, &s, o0, p0) || !(s > 1e-6f) || !(hp.actorScale > 1e-6f)) return;
@@ -627,7 +691,90 @@ bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
     return false;
 }
 
+// A bone of the gun as drawn now, in the world (weapon_space; carry()'s own placement of a part).
+static bool weapon_bone_world(void* weapon, int bone, const char* exclude, Vec* p, arm_ik::Quat* q, float* s) {
+    float m[3][3], o0[3], p0[3], bp[3], bq[4];
+    if (!weapon_space(weapon, exclude, m, s, o0, p0) || !bones::weapon_bone_pose(bone, bp, bq)) return false;
+    const float mf[9] = {m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]};
+    const arm_ik::Quat mq = arm_ik::conj(arm_ik::from_matrix(mf));
+    *p = arm_ik::vec(o0) + arm_ik::rotate(mq, arm_ik::vec(bp) - arm_ik::vec(p0)) * *s;
+    *q = arm_ik::normalized(arm_ik::mul(mq, arm_ik::normalized(arm_ik::quat(bq))));
+    return true;
+}
+
+// The visible magazine against the drum's bone (the spare is drawn the same way against the hand's).
+static void measure_ammo_model(void* weapon, uint64_t now) {
+    g_amRelMs = now;
+    const rr::Program* e = rr::entry(g_cls);
+    const int bone = e && e->ejectPart ? bones::weapon_bone_index(e->ejectPart) : -1;
+    float loc[3], scale = 1.0f, s = 1.0f;
+    int32_t rot[3];
+    Vec bp;
+    arm_ik::Quat bq;
+    if (bone < 0 || !dropped_part::ammo_model_pose(weapon, loc, rot, &scale) ||
+        !weapon_bone_world(weapon, bone, nullptr, &bp, &bq, &s) || !(s > 1e-6f))
+        return;
+    float amq[4];
+    ue::ue_rot_to_quat(ue::FRotator{rot[0], rot[1], rot[2]}, amq);
+    const arm_ik::Quat ib = arm_ik::conj(bq);
+    const Vec relP = arm_ik::rotate(ib, arm_ik::vec(loc) - bp) * (1.0f / s);
+    const arm_ik::Quat relQ = arm_ik::normalized(arm_ik::mul(ib, arm_ik::normalized(arm_ik::quat(amq))));
+    const bool first = !g_amRelValid || arm_ik::length(relP - g_amRelP) > 1.0f;
+    g_amRelP = relP;
+    g_amRelQ = relQ;
+    g_amGunS = s;
+    g_amRelValid = true;
+    if (first)
+        BVR_LOG("[reload] %S: the visible magazine against %s: %.2f %.2f %.2f (turn %.3f %.3f %.3f %.3f), gun scale %.3f",
+                g_cls, e->ejectPart, relP.x, relP.y, relP.z, relQ.v[0], relQ.v[1], relQ.v[2], relQ.v[3], s);
+}
+
+// A thrown drum (g_flying) at the open well while the reload waits for a new one: it is caught (the prop goes,
+// the machine seats the gun's own).
+static bool catch_check(const Frame& f) {
+    const rr::Program* p = g_machine.program();
+    if (!g_machine.active() || !p || !g_seatValid || g_machine.phase() >= p->n ||
+        p->phases[g_machine.phase()].kind != rr::Kind::Fetch)
+        return false;
+    float m[3][3], s = 1, o0[3], p0[3];
+    if (!weapon_space(f.weapon, p->ejectPart, m, &s, o0, p0)) return false;
+    const float mf[9] = {m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]};
+    const arm_ik::Quat mq = arm_ik::conj(arm_ik::from_matrix(mf));
+    const Vec seatW = arm_ik::vec(o0) + arm_ik::rotate(mq, arm_ik::vec(g_seatP) - arm_ik::vec(p0)) * s;
+    const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
+    for (Flying& fl : g_flying) {
+        if (!fl.p.actor) continue;
+        if (f.now - fl.ms > kCatchMs || !dropped_part::alive(fl.p, f.weapon)) {
+            fl = Flying{};
+            continue;
+        }
+        float loc[3];
+        int32_t rot[3];
+        if (!dropped_part::location(fl.p, loc, rot)) continue;
+        // The prop is the visible magazine; the seat is its bone's.
+        Vec bone = arm_ik::vec(loc);
+        if (g_amRelValid) {
+            float q[4];
+            ue::ue_rot_to_quat(ue::FRotator{rot[0], rot[1], rot[2]}, q);
+            const arm_ik::Quat bq = arm_ik::normalized(arm_ik::mul(arm_ik::normalized(arm_ik::quat(q)), arm_ik::conj(g_amRelQ)));
+            bone = bone - arm_ik::rotate(bq, g_amRelP * g_amGunS);
+        }
+        const float cm = arm_ik::length(bone - seatW) / uu;
+        if (cm <= kCatchCm) {
+            dropped_part::destroy(fl.p);
+            BVR_LOG("[reload] %S: a thrown drum reached the open well (%.1f cm) - caught", g_cls, cm);
+            fl = Flying{};
+            return true;
+        }
+    }
+    return false;
+}
+
 void tick(const Frame& f) {
+    if (g_spare.actor && (!f.weapon || !g_on.load(std::memory_order_relaxed))) {
+        if (f.weapon && dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
+        g_spare = dropped_part::Prop{};
+    }
     if (!f.weapon || !g_on.load(std::memory_order_relaxed) || !script::ready()) {
         if (g_machine.active()) {
             let_go(g_weapon, f.hands);
@@ -811,7 +958,45 @@ void tick(const Frame& f) {
     // (the program's own first step). A reload the game begins with rounds still in the gun (switching
     // ammunition) still drops it.
     if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered) in.ejectAdopted = false;
+    // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
+    // one quickly", and "throw one up in the air and slap the gun into it").
+    const bool spareGun = in.entryProgram && in.entryProgram->spare;
+    if (g_spare.actor && (!spareGun || !dropped_part::alive(g_spare, f.weapon))) {
+        if (dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
+        g_spare = dropped_part::Prop{};
+    }
+    if (spareGun && !g_machine.active() && st != hands_state::State::Reloading && f.now - g_amRelMs >= 500 &&
+        f.gunDegPerSec < 20.0f)
+        measure_ammo_model(f.weapon, f.now);
+    in.spareOk = spareGun && g_spareAmmo;
+    in.spareInHand = g_spare.actor != nullptr;
+    in.caught = spareGun && catch_check(f);
     const rr::Output o = g_machine.update(in, g_cfg);
+    if (o.spareTake && !g_spare.actor) {
+        g_spare = dropped_part::make_held(f.weapon, f.hands);
+        BVR_LOG("[reload] %S: a spare from the pouch - %s", g_cls, g_spare.actor ? "in the hand" : "NO prop (nothing shows)");
+    }
+    if (o.spareUsed && g_spare.actor) {
+        if (dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
+        g_spare = dropped_part::Prop{};
+        BVR_LOG("[reload] %S: the spare goes into the reload - the gun's own drum rides the hand", g_cls);
+    }
+    if (o.spareLetGo && g_spare.actor) {
+        float peak = 0.0f;
+        const Vec v = throw_velocity(&peak);
+        const float vel[3] = {v.x, v.y, v.z};
+        const bool ok = dropped_part::alive(g_spare, f.weapon) && dropped_part::release(g_spare, vel);
+        if (ok) {
+            int slot = 0;
+            for (int i = 1; i < 4; ++i)
+                if (g_flying[i].ms < g_flying[slot].ms) slot = i;
+            g_flying[slot] = Flying{g_spare, f.now};
+        }
+        const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
+        BVR_LOG("[reload] %S: the spare left the hand at %.2f m/s (peak %.2f) - %s", g_cls, arm_ik::length(v) / uu * 0.01f,
+                peak / uu * 0.01f, ok ? "it flies (catchable in the open well)" : "it is gone");
+        g_spare = dropped_part::Prop{};
+    }
     if (o.ejected) {
         // A Havok copy where the magazine sits, when it has a mesh of its own (the Tommy Gun's drum);
         // otherwise the gun's own part falls (the pistol's cylinder is part of the gun's mesh).
@@ -878,6 +1063,14 @@ void tick(const Frame& f) {
         const Vec v = throw_velocity(&peak) * kThrowScale;
         const float vel[3] = {v.x, v.y, v.z};
         const bool ok = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, vel);
+        // A NEW drum let go short of its seat (the machine is back at its Fetch) is a full one: catchable.
+        const rr::Program* dp = g_machine.program();
+        if (ok && dp && g_machine.phase() < dp->n && dp->phases[g_machine.phase()].kind == rr::Kind::Fetch) {
+            int slot = 0;
+            for (int i = 1; i < 4; ++i)
+                if (g_flying[i].ms < g_flying[slot].ms) slot = i;
+            g_flying[slot] = Flying{dropped_part::last_dropped(), f.now};
+        }
         const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
         BVR_LOG("[reload] %S: the %s left the hand at %.2f m/s (peak %.2f) - %s", g_cls, o.part ? o.part : "part",
                 arm_ik::length(v) / uu * 0.01f, peak / uu * 0.01f, ok ? "a Havok copy flies" : "no copy (it is simply gone)");

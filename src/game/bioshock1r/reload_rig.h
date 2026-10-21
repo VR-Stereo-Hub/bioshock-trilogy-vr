@@ -92,6 +92,10 @@ struct Program {
     // (held while that part falls), and the part. ejectT < 0: this clip does not eject.
     float ejectT = -1.0f;
     const char* ejectPart = nullptr;
+    // 2026-10-20: a spare magazine can be taken from the pouch whenever this gun is held (the Tommy Gun's
+    // drum, a prop of its own until it goes into the gun - Input::spareInHand), and a thrown one can be
+    // caught in the open well (Input::caught).
+    bool spare = false;
 };
 
 // ---- the programs ------------------------------------------------------------------------------
@@ -171,7 +175,7 @@ inline constexpr Phase kShotgunEnd[] = {
 inline constexpr Program kPrograms[] = {
     // Eject: the Tommy Gun's drum sits seated as the clip's hand reaches it (0.267, the pull's start);
     // the pistol is folded open with its cylinder still in at 0.466 (the cylinder's pull begins).
-    {L"MachineGun", L"Reload", 3.33f, kTommy, 7, false, 0.267f, "TG_AmmoClip"},
+    {L"MachineGun", L"Reload", 3.33f, kTommy, 7, false, 0.267f, "TG_AmmoClip", true},
     {L"Pistol", L"FastReload", 1.80f, kPistol, 7, false, 0.466f, "DrumParent+drum"},
     {L"Pistol", L"Reload", 1.80f, kPistol, 7, false, 0.466f, "DrumParent+drum"}, // no fast-reload upgrade: scaled
     {L"Shotgun", L"SingleFrame", 0.033f, kShotgunStart, 1, true},
@@ -265,6 +269,12 @@ struct Input {
     bool ejectNow = false;      // the reload button while a reload waits at its first pull (a dry gun's):
                                 // the magazine drops, as the button's own eject
     bool pumpDone = false;      // a PumpHand phase's pump completed (the glue's Pump)
+    // 2026-10-20, the spare magazine (Program::spare): one may be taken from the pouch now (the gun has
+    // rounds to reload with), one is in the free hand (the glue's prop), and a thrown one reached the open
+    // well this frame.
+    bool spareOk = false;
+    bool spareInHand = false;
+    bool caught = false;
 };
 
 enum class Act : uint8_t { None, StartReload, Abort };
@@ -301,6 +311,9 @@ struct Output {
     bool dropped = false;       // this frame a carried part left the hand away from the gun (the spent one
                                 // pulled out, or a new one let go short of its seat): it falls or is
                                 // thrown (`part` names it)
+    bool spareTake = false;     // this frame a spare magazine is taken from the pouch into the free hand
+    bool spareLetGo = false;    // this frame the spare in the free hand is let go: it is thrown, or falls
+    bool spareUsed = false;     // this frame the spare in hand became the gun's own part (carry 1): the prop goes
 };
 
 // The first Fetch of a program (where an eject starts), -1 when it has none.
@@ -348,6 +361,7 @@ public:
                 break;
             case State::Running: running(in, c, grabU, o); break;
         }
+        spare(in, o);
         o.active = state_ != State::Idle;
         if (o.part && prog_ && state_ == State::Running) o.atPalm = prog_->phases[phase_].atPalm;
         if (skipped_ && !o.event) {
@@ -394,6 +408,42 @@ private:
         return l > 1e-6f ? d * (1.0f / l) : Vec{-1, 0, 0};
     }
     float dropAt_ = 0;
+
+    // The spare magazine: free to take one when the hand has nothing else to do here - no reload, or one
+    // waiting at the gun's own part (its first pull, the bolt) or playing on its own. Never at a Fetch (the
+    // pouch gives the gun's own part there) or while a part rides the hand.
+    bool spare_free() const {
+        if (state_ == State::Idle) return true;
+        if (state_ != State::Running || dropping_ || carrying_ || !prog_) return false;
+        switch (ph().kind) {
+            case Kind::Pull:
+            case Kind::Slide: return sub_ == Sub::Wait;
+            case Kind::Play:
+            case Kind::Finish: return true;
+            default: return false;
+        }
+    }
+    void spare(const Input& in, Output& o) {
+        if (in.spareInHand) {
+            o.claim = true; // the grip holds the spare: no bumper reaches the game
+            if (state_ == State::Idle) o.reach = 0.0f;
+            if (!in.grip && !o.spareUsed) {
+                o.spareLetGo = true;
+                if (o.haptic == Haptic::None) o.haptic = Haptic::Drop;
+                if (!o.event) o.event = "the spare is let go: thrown";
+            }
+            return;
+        }
+        if (!in.spareOk || !in.inPouch || !spare_free()) return;
+        if (state_ == State::Idle && o.reach < 0) o.reach = 0.5f; // a zone, not a point: mid-reach
+        if (state_ == State::Idle) o.claim = true;
+        if (in.gripRise) {
+            o.spareTake = true;
+            o.claim = true;
+            if (o.haptic == Haptic::None) o.haptic = Haptic::Grab;
+            if (!o.event) o.event = "a spare from the pouch";
+        }
+    }
 
     // The eject: hold the clip open with the spent part seated while it falls, then wait at the first
     // Fetch. False (nothing changes) for a program that does not eject.
@@ -572,7 +622,9 @@ private:
             o.part = prog_->ejectPart;
             o.fallS = in.now - dropAt_;
             o.carry = 3;
-            if (o.fallS >= c.dropS) {
+            // A spare already in the hand: the spent one has fallen clear once the latch is read (0.06 s) -
+            // the new one goes in at once ("pre-pull, drop the current one, slide in the new one quickly").
+            if (o.fallS >= c.dropS || (in.spareInHand && o.fallS >= 0.2f)) {
                 dropping_ = false;
                 lying_ = true; // the spent part lies where it fell until a new one is taken
                 phase_ = first_fetch(prog_);
@@ -682,6 +734,40 @@ private:
                 o.hold = true;
                 o.t = T(hold_t(p));
                 o.part = p.part;
+                const bool toInsert = phase_ + 1 < prog_->n && prog_->phases[phase_ + 1].kind == Kind::Insert;
+                // The spare already in the hand IS the new part: it rides the hand from this frame (as the
+                // Insert carries it), and the glue's prop goes.
+                if (in.spareInHand && in.grip && toInsert) {
+                    lying_ = false;
+                    carrying_ = true;
+                    o.fetched = true;
+                    o.spareUsed = true;
+                    o.event = "the spare in hand goes to the gun";
+                    next(in);
+                    const Phase& ins = ph();
+                    o.carry = 1;
+                    o.t = T(hold_t(ins));
+                    o.carryFrom = ins.path[0].p;
+                    jumpNext_ = hold_t(ins) < ins.t0;
+                    break;
+                }
+                // A thrown spare reached the open well: it is seated, as a slap is (the clip plays it home).
+                if (in.caught && toInsert) {
+                    lying_ = false;
+                    carrying_ = false;
+                    next(in);
+                    const Phase& ins = ph();
+                    snap_ = true;
+                    playT_ = T(ins.n > 1 ? ins.path[ins.n - 2].t : ins.t0);
+                    jumpNext_ = hold_t(ins) < ins.t0;
+                    o.haptic = Haptic::Seat;
+                    o.event = "a thrown spare caught in the well: it is seated";
+                    o.carry = 0;
+                    o.part = ins.part;
+                    o.t = playT_;
+                    from_hold(o);
+                    break;
+                }
                 o.carry = 2;
                 if (lying_) {
                     o.carry = 3;

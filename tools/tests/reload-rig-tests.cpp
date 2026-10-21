@@ -178,6 +178,86 @@ int main() {
         for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
         check(s.m.phase() == 2, "then the pouch", s.m.phase(), 2);
     }
+    // ---- 2026-10-20 the spare drum: pulled any time the Tommy Gun is held, X swaps it in quickly ----
+    {
+        Sim s;
+        s.in.spareOk = true;
+        Output o = s.step(Vec{10, 0, -90}, false, true);
+        check(!s.m.active() && o.claim && o.reach > 0 && !o.buzz, "idle, at the pouch: the grip would take a spare (no buzz)");
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(o.spareTake && !s.m.active() && o.act == Act::None, "a grip at the pouch takes a spare - no reload starts");
+        s.in.spareInHand = true;
+        o = s.step(Vec{20, 0, -40}, true);
+        check(o.claim && o.reach == 0 && !o.spareTake && !o.spareLetGo, "held: the grip is the spare's");
+        s.in.eject = true;
+        o = s.step(Vec{20, 0, -40}, true);
+        s.in.eject = false;
+        check(o.act == Act::StartReload, "X with a spare in hand: the game is asked to reload");
+        s.clip(L"Reload", 3.33f);
+        o = s.step(Vec{20, 0, -40}, true);
+        check(o.ejected, "the drum drops");
+        int frames = 0;
+        for (; frames < 80 && s.m.phase() != 3; ++frames) o = s.step(Vec{20, 0, -40}, true);
+        check(s.m.phase() == 3 && frames * 0.011f < 0.3f, "the spare goes in at once (0.2 s, not the 0.7 s fall)",
+              frames * 0.011f, 0.2);
+        check(o.spareUsed && o.fetched && o.carry == 1 && std::fabs(o.t - 0.30f) < 0.01f,
+              "the spare becomes the gun's own drum, riding the hand where the clip holds it", o.carry, 1);
+        s.in.spareInHand = false;
+        o = s.step(kTommyDrumIn[0].p, true);
+        o = s.step(kTommyDrumIn[3].p, true);
+        check(s.m.phase() >= 4, "and seats as any drum does", s.m.phase(), 4);
+    }
+    // ---- the spare during a dry gun's wait; let go it is thrown; never at the bolt mid-stroke ----
+    {
+        Sim s;
+        s.in.spareOk = true;
+        s.in.adopt = true;
+        s.clip(L"Reload", 3.33f);
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.adopt = false;
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(o.spareTake && s.m.phase() == 0, "a dry gun waiting at its drum: a spare can still be pulled");
+        s.in.spareInHand = true;
+        o = s.step(Vec{10, 0, -60}, false);
+        check(o.spareLetGo && s.m.phase() == 0, "let go: thrown, the reload still waits");
+        s.in.spareInHand = false;
+        o = s.step(Vec{10, 0, -60}, false);
+        check(!o.spareLetGo && !o.spareTake, "once only");
+    }
+    {
+        Sim s; // at the Fetch, the pouch gives the gun's own drum, never a spare
+        s.in.spareOk = true;
+        s.in.eject = true;
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.eject = false;
+        s.clip(L"Reload", 3.33f);
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(o.fetched && !o.spareTake, "at the Fetch: the gun's own drum, not a spare");
+        o = s.step(Vec{10, 0, -60}, true, true);
+        check(!o.spareTake, "carrying: no spare");
+    }
+    // ---- a thrown spare caught in the open well is seated ----
+    {
+        Sim s;
+        s.in.eject = true;
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.eject = false;
+        s.clip(L"Reload", 3.33f);
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{40, 7, 2}, false);
+        check(s.m.phase() == 2, "waiting at the pouch", s.m.phase(), 2);
+        s.in.caught = true;
+        o = s.step(Vec{40, 7, 2}, false);
+        s.in.caught = false;
+        check(s.m.phase() == 3 && o.carry == 0 && o.seating && o.haptic == Haptic::Seat,
+              "caught: seated, the clip set onto the insert's last stretch", s.m.phase(), 3);
+        for (int i = 0; i < 30 && s.m.phase() == 3; ++i) o = s.step(Vec{40, 7, 2}, false);
+        check(s.m.phase() == 4, "the clip plays it home: the bolt next", s.m.phase(), 4);
+        Sim n; // and not caught while the gun still has its drum
+        n.in.caught = true;
+        o = n.step(Vec{40, 7, 2}, false);
+        check(!n.m.active() && o.act == Act::None, "NEGATIVE: a caught drum with no open well does nothing");
+    }
     // ---- a round still in the Tommy Gun: no bolt to rack ----
     {
         Sim s;

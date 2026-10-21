@@ -6933,3 +6933,33 @@ at weapon size x DrawScale, the hand at the hand size, so the carried cylinder c
 4.07 for 4.77) and every finger stopped ~0.3 short of it; at the hand's size (`set_weapon_part_scale`,
 the hand's actor x placement scale over the gun's drawn factor) every finger and the thumb touch it
 (nearest 0.00-0.05, nothing deeper than 0.28). It returns to the gun's size as the clip seats it.
+
+## 2026-10-20 - A spare magazine in the hand, and catching a thrown one (the Tommy Gun)
+
+The spare drum is a prop, not the gun's: `dropped_part::make_held` spawns the same runtime prop the drop
+uses (ShockGame.PhysicalReactiveActor / NonPhysicalReactiveActor, the weapon's AmmoModel mesh and
+DrawScale) with its physics OFF and the AmmoModel's DrawPriority (the hands' layer), then writes its
+Location/Rotation fields every frame - with physics off nothing else moves it - and keeps its LifeSpan at
+20 s while it is moved, so a spare the mod loses track of removes itself. Let go, it is released exactly as
+a drop: physics off, SetLocation, then Havok with the hand's throw velocity, LifeSpan 90 s.
+
+Where it is drawn: the reload clip's own hold of the drum (TG_AmmoClip against Bip01_L_Hand at 0.30 s of
+TommyGun__ReloadTommyGun, `tools\blender\game_frames.py`: p 20.84 -14.71 -8.09, q 0.611 0.345 0.208 0.682,
+Unreal axes, clip units) put against the drawn free wrist as the designed grips are, and the visible
+magazine against TG_AmmoClip as it sits on the gun - measured in game while the gun is idle and steady
+(`[reload] MachineGun: the visible magazine against TG_AmmoClip: ...`, AmmoModel's Location/Rotation
+against the bone's drawn pose). So when the spare goes into a reload, the gun's own drum - carried from the
+same 0.30 s hold - takes its place where it was.
+
+Identity across loads: a prop handle is the actor, its class, its name index and its Level; it is used
+only while all four read back the same AND the weapon in hand is in that Level (`dropped_part::alive`).
+After a level change both are new and the old memory is never written.
+
+Rounds to take a spare with: PlayerWeapon.Reload compares the gun's RoundsRemaining with
+Holder.GetNumberOfItems(PendingAmmoSelection), and FireWeapon reloads an empty gun while that count is
+above 0 - so the count includes the rounds in the gun; a spare is there while it is GREATER than them.
+
+Catching: a thrown spare (or a new drum let go short of the well) is tracked 4 s; while the reload waits
+at its Fetch with the well open, one whose drum bone (the prop less the measured AmmoModel offset) comes
+within 15 cm of where the spent drum sat (the latch, recorded at the eject) is removed and the machine
+seats the gun's own drum from the insert's last stretch, as a slap does.

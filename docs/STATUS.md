@@ -62,6 +62,15 @@ Built, host-tested (14 suites), lint clean, installed. NOT run in the simulator 
   `tools\blender\pose_capture.py` (MODEL_WORKFLOW.md).
 - Open: the pistol's carried cylinder is "close, slightly off" at 0.80 s; a custom finger grip waits
   on a pose capture of it (the fingers would be a new override of the hand's own bones).
+- **Tommy Gun spare drum (late evening).** Whenever the Tommy Gun is held - idle, a dry gun waiting at
+  its drum, the bolt, the clip playing on - a grip at the pouch takes a spare drum into the free hand (a
+  prop of the gun's own magazine, `dropped_part::make_held`). X with it in hand: the old drum drops and
+  the spare goes in after 0.2 s instead of the 0.7 s fall. Let go, it is thrown (the same Alyx release);
+  a thrown spare - or a new drum let go short of the well - that reaches the open well within 4 s is
+  caught and seated. Not at a Fetch (the pouch gives the gun's own drum there) or while a part rides
+  the hand. Machine-level host-tested (112 checks); the prop, its placement and the catch are
+  unverified in game. Log: `a spare from the pouch`, `the spare left the hand`, `caught`, `the visible
+  magazine against TG_AmmoClip`.
 
 ### Next steps
 
