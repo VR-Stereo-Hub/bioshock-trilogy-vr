@@ -7059,3 +7059,7 @@ bones.cpp fills them for every free-hand bone the substitution changed (`A` agai
   still shows elsewhere, the shell actor is not following that bone; the pose files now carry the
   engine's own placement of the visible magazine (`ammo` line) and the replay reports its distance from
   every gun bone (`ammo_from_*`, `ammo_nearest_bone`).
+- **01:29 run: the visible spare stayed where it was grabbed.** A prop made through the hands' script spawn
+  (ApplyScriptedHandAttachment, then DetachFromBone) is still BASED on the hands: every SetLocation on it
+  is refused (each one logged "now" at the hands actor's own location), and writing its Location field
+  does not move what is drawn. `SetBase(None)` after the detach (`[drop] taken off the hands: ...`).

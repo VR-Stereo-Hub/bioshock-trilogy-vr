@@ -181,6 +181,19 @@ static void* spawn_through_hands(void* hands, void* cls, const Captured& c) {
         int32_t pad[4];
     } dp{a, 0, {}};
     script::call(hands, "DetachFromBone", &dp);
+    // And off the hands as its base: still based on them, every SetLocation was refused (01:29 run: each prop sat
+    // at the hands actor's own location, "now -37846.4 500.5 7735.2" for every spawn), and a held spare moved by
+    // its fields alone stayed drawn where it was made.
+    struct {
+        void* base;
+        float floor[3];
+        int32_t pad[4];
+    } sb{nullptr, {0, 0, 0}, {}};
+    const bool unbased = script::call(a, "SetBase", &sb);
+    void* base = nullptr;
+    const int32_t baseOff = script::property_offset(a, L"Base");
+    if (baseOff >= 0) rd(static_cast<uint8_t*>(a) + baseOff, &base);
+    BVR_LOG("[drop] taken off the hands: SetBase %s, base now %p", unbased ? "called" : "FAILED", base);
     const int32_t prio = script::property_offset(a, L"DrawPriority");
     if (prio >= 0) wr(static_cast<uint8_t*>(a) + prio, uint8_t{0}); // 1 = the hands' foreground layer
     return a;
