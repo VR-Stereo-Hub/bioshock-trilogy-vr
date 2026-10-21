@@ -41,6 +41,9 @@ ap.add_argument("--hold", default="rim", choices=["rim", "across"],
                      "across: its axis along the knuckles, the fingers round its side (a long one)")
 ap.add_argument("--rim-at", type=float, default=0.85, help="rim hold: the face's centre from the wrist to the knuckles")
 ap.add_argument("--out", default="grip-solve.json")
+ap.add_argument("--part-mesh", default="",
+                help="a separate model that hangs on the --part bone (the shotgun's shell, shotgun_shell.pskx) instead "
+                     "of the gun mesh's own skin")
 args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 place = lambda p: p if os.path.isabs(p) else os.path.join(ws, "verification", p)
@@ -103,7 +106,26 @@ parts = [p for p in re.split(r"[ ,]+", args.part.strip()) if p]  # PowerShell tu
 gmesh = max(gm, key=lambda o: len(o.data.vertices))
 gidx = {g.index: g.name for g in gmesh.vertex_groups}
 own = set()
-for v in gmesh.data.vertices:
+if args.part_mesh:
+    # The model hung on the part's bone at its origin, as the engine attaches it to the bone's socket.
+    before = set(bpy.data.objects)
+    if hasattr(bpy.ops, "psk") and hasattr(bpy.ops.psk, "import_file"):
+        bpy.ops.psk.import_file(filepath=os.path.abspath(args.part_mesh))
+    else:
+        bpy.ops.import_scene.psk(filepath=os.path.abspath(args.part_mesh))
+    newo = [o for o in bpy.data.objects if o not in before]
+    for o in newo:
+        if o.type != "MESH":
+            o.hide_render = True
+    gmesh = next(o for o in newo if o.type == "MESH")
+    gmesh.parent = None
+    gmesh.location, gmesh.rotation_euler, gmesh.scale = (0, 0, 0), (0, 0, 0), (1, 1, 1)
+    hc = gmesh.constraints.new("CHILD_OF")
+    hc.target, hc.subtarget = ga, parts[0]
+    hc.inverse_matrix = GC.get(parts[0], Matrix.Identity(4)).inverted()
+    bpy.context.view_layer.update()
+    own = set(range(len(gmesh.data.vertices)))
+for v in ([] if args.part_mesh else gmesh.data.vertices):
     best = max(v.groups, key=lambda g: g.weight, default=None)
     if best and gidx.get(best.group) in parts and best.weight >= 0.5:
         own.add(v.index)

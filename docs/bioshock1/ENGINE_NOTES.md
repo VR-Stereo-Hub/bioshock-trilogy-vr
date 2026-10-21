@@ -7022,3 +7022,21 @@ bones.cpp fills them for every free-hand bone the substitution changed (`A` agai
   part pose against the left wrist becomes Mb^-1 * rel * F against the right one (W_R = mx W_L Mb, the
   mirror cancels; F flips the part's local Y, a symmetry of a cylinder or a drum) - the pistol cylinder
   and the Tommy Gun's spare alike.
+
+## 2026-10-21 - The 00:17 run: the kept hand's first frame, the pouch's reach, the shell's hold
+
+- **The shotgun's arm stretched as it emptied, still** (the 00:20 recording, frame 1879): the free hand
+  kept on the gun through the reload's start was re-recorded FROM the reload clip on its first frame -
+  the game's clip is live a frame before the manual reload says so (it starts in the gun hand's tick,
+  after the substitution). The palm jumped 49 units off the pump and was kept there. The hands' own state
+  (Reloading, which covers ProceduralWeaponReloading - the ammunition switch's) now decides: no rest is
+  recorded while the game reloads, and the hand is kept from that first frame.
+- **No spare from the pouch, all run:** the grip arbiter gives the squeeze to the nearest grab within
+  reach. Idle, the Tommy Gun's reload offers its reach to the drum in the gun (1.6-2.2, out of reach), and
+  the pouch's 0.5 was only used when no reach was set - so the pouch never won. In the pouch it is now 0.25.
+- **The shell "above the middle finger knuckle":** carried at the palm (Phase::atPalm) by its bone, the
+  shell's model (a separate static mesh on SOCKET_AmmoSocket at SG_Shell's origin) reached out through the
+  back of the hand (the recording replayed with it hung on the bone). It is now a designed grip
+  (`grip_shotgun_shell.h`, grip_solve.py `--part-mesh`): across the fingers, middle and ring on its side,
+  the thumb over its end, nothing deeper than 0.16. The shell is 8.21 long, about the knuckle span (8.39),
+  so the index and pinky pass its ends.

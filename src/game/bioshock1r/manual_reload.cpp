@@ -6,6 +6,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/dropped_part.h"
 #include "game/bioshock1r/grip_pistol_cylinder.h"
+#include "game/bioshock1r/grip_shotgun_shell.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
@@ -496,9 +497,20 @@ const GripTable* carry_grip() {
                                            grips::kPistolCylinderGripPart,
                                            static_cast<int>(sizeof grips::kPistolCylinderGripPart /
                                                             sizeof grips::kPistolCylinderGripPart[0])};
+    // 2026-10-21: the shotgun's shell, across the fingers with them closed round it (grip_solve.py --hold across
+    // --part-mesh shotgun_shell.pskx: middle and ring on its side, thumb over its end, nothing deeper than 0.16).
+    // It was carried at the palm centre by its bone, the model reaching out through the back of the hand -
+    // "above my middle finger knuckle" (the 00:20 recording, replayed with the shell hung on its bone).
+    static const GripTable kShotgunShell{grips::kShotgunShellGrip,
+                                         static_cast<int>(sizeof grips::kShotgunShellGrip / sizeof grips::kShotgunShellGrip[0]),
+                                         grips::kShotgunShellGripPart,
+                                         static_cast<int>(sizeof grips::kShotgunShellGripPart /
+                                                          sizeof grips::kShotgunShellGripPart[0])};
     if (g_carryMode == 1 && g_machine.active() && g_carryPart && !g_carryAtPalm && !_wcsicmp(g_cls, L"Pistol") &&
         strstr(g_carryPart, "DrumParent"))
         return &kPistolCylinder;
+    if (g_carryMode == 1 && g_machine.active() && g_carryPart && !_wcsicmp(g_cls, L"Shotgun") && strstr(g_carryPart, "SG_Shell"))
+        return &kShotgunShell;
     return nullptr;
 }
 bool two_hand_allowed() {
@@ -604,7 +616,7 @@ void carry(const HandPlacement& hp) {
         }
         // ... and on through the free hand's, which carries it. At the palm: the part's pivot in the
         // palm itself (the clip's hand is not holding it now).
-        const Vec moved = g_carryAtPalm ? palmAt : palmAt + arm_ik::rotate(qh, (comp - palm) * hp.s);
+        const Vec moved = g_carryAtPalm && !gp ? palmAt : palmAt + arm_ik::rotate(qh, (comp - palm) * hp.s);
         const Vec world2 = aLoc + arm_ik::rotate(qa, moved * hp.actorScale);
         if (!fed) { // the part's first bone, for a throw
             fed = true;

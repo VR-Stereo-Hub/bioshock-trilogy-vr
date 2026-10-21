@@ -126,6 +126,10 @@ in the hand and closes each finger on it by the meshes (an exact cylinder fitted
 sized from their skin), prints per finger the joints' turns, the contact along its length and the penetration
 on the deformed mesh, and emits the table the mod applies (`grips.h`). Check it with the mod's own math on a real
 capture before a run: `pose_capture.py --pose <pose_00.txt> --grip <grip_<x>.h>` prints the same contact numbers.
+A part that is a separate model hung on a gun bone rather than the gun's own skin (the shotgun's shell: its
+`SG_Shell` bone carries no triangles; `shotgun_shell.pskx` hangs on it through `SOCKET_AmmoSocket`, at the bone's
+origin) takes `--part-mesh <pskx>` with `--part <bone>`. In `pose_capture.py` such a model is shown with
+`--attach-socket <bone>` - a glTF socket is a node, not a pose bone, so the socket's own name hangs nothing.
 
 **`reload_pose.py` reproduces the game's own placement** (2026-10-20). The gun's origin sits on
 the hands' `R_grip` (bone 43) in the GAME's frame of that bone, the way the engine attaches it,
