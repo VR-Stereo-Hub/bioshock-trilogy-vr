@@ -109,6 +109,10 @@ int main() {
         o = s.step(kTommyDrumIn[3].p, true);
         check(s.m.phase() == 4, "seated: the bolt next", s.m.phase(), 4);
         o = s.step(kTommyDrumIn[3].p, false);
+        o = s.step(Vec{kTommyBolt[0].p.x, -60.0f, kTommyBolt[0].p.z}, false);
+        check(!o.buzz, "the bolt's reach stops at the gun: the other shoulder does not buzz");
+        o = s.step(Vec{kTommyBolt[0].p.x, -kTommyBolt[0].p.y, kTommyBolt[0].p.z}, false);
+        check(o.buzz, "the bolt from the gun's other side does");
         o = s.step(kTommyBolt[0].p, false);
         check(o.buzz && std::fabs(o.t - 2.10f) < 0.01f, "the clip waits at the bolt", o.t, 2.10);
         o = s.step(kTommyBolt[0].p, true);
@@ -139,21 +143,37 @@ int main() {
         check(s.m.phase() == 2, "then the reload waits at the pouch", s.m.phase(), 2);
         o = s.step(Vec{10, 0, -90}, true, true);
         check(o.fetched && s.m.phase() == 3, "a drum from the pouch: fetched", s.m.phase(), 3);
-        o = s.step(kTommyDrumIn[0].p + Vec{0, 2, 0}, true);
-        o = s.step(kTommyDrumIn[0].p, true);
-        check(o.carry == 0, "at the well's mouth: guided");
-        o = s.step(kTommyDrumIn[0].p, false);
-        check(o.dropped && o.carry == 2 && s.m.phase() == 2, "guided but let go short: it falls, back to the pouch",
+        o = s.step(Vec{10, 0, -60}, true);
+        o = s.step(Vec{10, 0, -60}, false); // let go away from the gun
+        check(o.dropped && o.carry == 2 && s.m.phase() == 2, "let go away from the gun: it falls, back to the pouch",
               s.m.phase(), 2);
         o = s.step(kTommyDrumIn[2].p, false);
         o = s.step(kTommyDrumIn[3].p, false);
         check(s.m.phase() == 2 && !o.dropped, "no part, no seat: a bare hand along the path does nothing",
               s.m.phase(), 2);
         o = s.step(Vec{10, 0, -90}, true, true);
+        o = s.step(kTommyDrumIn[0].p + Vec{0, 2, 0}, true);
         o = s.step(kTommyDrumIn[0].p, true);
-        o = s.step(kTommyDrumIn[2].p, true);
-        o = s.step(kTommyDrumIn[2].p, false);
-        check(s.m.phase() == 4, "past half way and let go: it is seated", s.m.phase(), 4);
+        check(o.carry == 0, "at the well's mouth: guided");
+        o = s.step(kTommyDrumIn[0].p, false); // a slap: let go at the mouth, short of half way
+        check(!o.dropped && o.carry == 0, "slapped in: let go guided, it is seated, not dropped");
+        for (int i = 0; i < 30 && s.m.phase() == 3; ++i) o = s.step(Vec{10, 0, -60}, false);
+        check(s.m.phase() == 4, "the clip plays it home: the bolt next", s.m.phase(), 4);
+    }
+    // ---- a round still in the Tommy Gun: no bolt to rack ----
+    {
+        Sim s;
+        s.in.chambered = true;
+        s.in.eject = true;
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.eject = false;
+        s.clip(L"Reload", 3.33f);
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        o = s.step(kTommyDrumIn[0].p, true);
+        o = s.step(kTommyDrumIn[3].p, true);
+        o = s.step(kTommyDrumIn[3].p, false);
+        check(s.m.phase() == 6 && o.run, "seated with a round in: straight to the end, no bolt", s.m.phase(), 6);
     }
     // ---- timeout ----
     {

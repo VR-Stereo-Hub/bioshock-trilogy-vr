@@ -6812,3 +6812,29 @@ every pump "completed" 0.2 s after the shot, untouched). The Fire clip moves the
 and the pump's own motion as the clip is played on - so the grip frame moved, the measured hand moved
 with it, and the clip advanced on its own motion. A stroke must be read from the controllers, never from
 anything the clip animates.
+
+## 2026-10-20 - A carried part goes back to the clip through the gun's ratio, not the hand's
+
+After the scale fix above the pistol's carried cylinder stopped jumping but still sat ~8 cm off the
+fingers, toward the gun (capture afw-...193041), while the carry's own target was in the palm (~16
+units, the log's `carry` lines). The step that takes the part's drawn position back into the clip's
+space (`manual_reload.cpp carry`) undid only the gun hand's placement - its palm, turn and the hand's
+size - but the drawn gun is a further `gunRatio` (0.92 here: weapon 0.886 x rig 0.800 / hands 0.770)
+of the clip's gun about the grip socket (bone 43; "A hand the clip puts on the gun is on the AUTHORED
+gun" above). So a part at arm's length came back 8% short, toward the grip; the Tommy Gun's drum,
+held near the well, barely showed it. The carry now undoes the ratio about the drawn socket
+(`HandPlacement::socket`, `gunRatio`, filled where bones.cpp places the gun hand).
+
+## 2026-10-20 - Half-Life: Alyx's throw (prior art, concepts only)
+
+From `game\hlvr\bin\win64\client.dll` (strings and the convar registrations, headless IDA; the
+database stays in the local IDA workspace): a released object's velocity comes from a short history of
+the hand's recent frames (about ten), not from the release frame - the frame with the highest speed is
+found, and when it is at either end of the window the frame next to it is used ("0 frame is max
+velocity, using -1 frame", "-9 frame is max velocity, using -8 frame"), so one noisy or decelerating
+frame never sets the throw. The result is scaled by `vr_throw_velocity_scale`, default **1.6**, and the
+spin by `vr_throw_ang_scale`, default 1 (WMR controllers have their own scale). BS1's dropped Tommy Gun
+drum does the same (`manual_reload.cpp throw_feed / throw_velocity`): the carried part's world position
+each frame, a microsecond clock, ten frames, the peak's inner neighbour, x1.6, handed to the Havok
+copy's `HavokSetLinearVelocity` (`[reload] ... left the hand at N m/s`). Spin is not taken (the copy
+keeps its fixed tumble).

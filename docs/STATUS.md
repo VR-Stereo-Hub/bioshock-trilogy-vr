@@ -41,9 +41,20 @@ Built, host-tested (14 suites), lint clean, installed. NOT run in the simulator 
   the pump waits buzzes the gun hand and fires nothing. The reload's last pump completes at 6 cm too.
   `[reload] Shotgun pump: back stroke N cm of 6` twice a second while it waits.
 
+- **After the 19:29 run** (grip confirmed working; pistol steadier but off the fingers; slap fell;
+  bolt reach across the body; shotgun pumping itself): the carry undoes the gun's 0.92 ratio about
+  its socket (ENGINE_NOTES "A carried part goes back..."); a drum let go guided or within 20 cm of its
+  seat is seated, only one let go away from the gun falls; the bolt is reachable either side but only
+  at the gun (1.25x, sideways capped); a Tommy Gun reloaded with a round still in it skips the bolt;
+  a drum let go away from the gun (the spent one pulled out, or a new one) is thrown as a Havok copy
+  with the hand's velocity (Half-Life: Alyx's release, ENGINE_NOTES); the shotgun's pump is read as
+  the distance between the controllers (the drawn gun fed the clip its own motion).
+- Open: the shotgun "changes the hand position when empty" - not yet understood (which hand, when);
+  the wrench trigger-attack hand-back (arm thrown forward) awaits the tester's trigger-swing test.
+
 ### Next steps
 
-- Headset: the four items above (tester instructions in the session's report).
+- Headset: the items above (tester instructions in the session's report).
 - If the 6 cm stroke feels wrong, it is `PumpConfig::strokeCm` (and the Slides' 6.0 in kShotgunEnd);
   the log's stroke lines give the distances the tester actually used.
 - The pistol cylinder as a world object: the spawned skeletal-actor route, if wanted.

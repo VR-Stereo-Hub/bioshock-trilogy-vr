@@ -16,6 +16,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -265,6 +266,55 @@ float g_floorZ = -1e9f;
 const char* g_carryPart = nullptr;
 void* g_carryWeapon = nullptr;
 bool g_carryAtPalm = false;
+bool g_chambered = false;       // the gun had a round left as this reload began (reload_rig Input)
+// The carried part's recent world positions, for a throw (Half-Life: Alyx's way, ENGINE_NOTES): the
+// velocity of the frame next to the fastest of the last few, not of the release frame itself.
+constexpr int kThrowFrames = 10;
+constexpr uint64_t kThrowGapUs = 100000; // older than this: no throw history
+struct ThrowSample { float p[3]; uint64_t us; };
+ThrowSample g_throw[kThrowFrames] = {};
+int g_throwN = 0, g_throwAt = 0;
+uint64_t g_throwFedUs = 0;
+uint64_t now_us() { // GetTickCount64's 16 ms steps are too coarse for a hand's speed
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+}
+void throw_feed(const Vec& p) {
+    const uint64_t us = now_us();
+    if (g_throwN && us - g_throwFedUs < 2000) return; // the same frame (carry runs twice a frame)
+    if (g_throwN && us - g_throwFedUs > kThrowGapUs) g_throwN = 0; // a gap: start over
+    g_throwFedUs = us;
+    g_throw[g_throwAt] = ThrowSample{{p.x, p.y, p.z}, us};
+    g_throwAt = (g_throwAt + 1) % kThrowFrames;
+    if (g_throwN < kThrowFrames) ++g_throwN;
+}
+// World units per second; zero when there is no fresh history.
+Vec throw_velocity(float* peakOut) {
+    *peakOut = 0.0f;
+    if (g_throwN < 3 || now_us() - g_throwFedUs > kThrowGapUs) return Vec{0, 0, 0};
+    Vec v[kThrowFrames];
+    float sp[kThrowFrames];
+    int n = 0;
+    for (int i = g_throwN - 1; i >= 1; --i) { // oldest pair first
+        const ThrowSample& a = g_throw[(g_throwAt - i - 1 + 2 * kThrowFrames) % kThrowFrames];
+        const ThrowSample& b = g_throw[(g_throwAt - i + 2 * kThrowFrames) % kThrowFrames];
+        const float dt = static_cast<float>(b.us - a.us) * 1e-6f;
+        if (!(dt > 1e-4f)) continue;
+        v[n] = Vec{(b.p[0] - a.p[0]) / dt, (b.p[1] - a.p[1]) / dt, (b.p[2] - a.p[2]) / dt};
+        sp[n] = arm_ik::length(v[n]);
+        ++n;
+    }
+    if (!n) return Vec{0, 0, 0};
+    int peak = 0;
+    for (int i = 1; i < n; ++i)
+        if (sp[i] > sp[peak]) peak = i;
+    *peakOut = sp[peak];
+    // The neighbour of the peak, toward the middle of the window (Alyx: a peak at either end uses the
+    // frame next to it) - one frame of tracking noise never sets the throw.
+    const int use = peak == 0 ? (n > 1 ? 1 : 0) : peak == n - 1 ? peak - 1 : peak;
+    return v[use];
+}
 bool g_ejectedThis = false;     // this manual reload ejected its magazine
 void* g_showAmmoFor = nullptr;  // ...and it is over: show the magazine on this weapon once it is in hand
 
@@ -411,18 +461,28 @@ void carry(const HandPlacement& hp) {
     // qa qh qg^-1 qa^-1.
     const arm_ik::Quat moveW =
         arm_ik::normalized(arm_ik::mul(arm_ik::mul(qa, arm_ik::mul(qh, arm_ik::conj(qg))), arm_ik::conj(qa)));
+    bool fed = false;
     for_parts(g_carryPart, [&](int i) {
         float p[3], q[4];
         if (!bones::weapon_bone_pose(i, p, q)) return;
         const Vec d = Vec{p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
         const Vec world = arm_ik::vec(o0) + arm_ik::rotate(mq, d) * s;
         const Vec drawn = arm_ik::rotate(arm_ik::conj(qa), world - aLoc) * (1.0f / hp.actorScale);
-        // Back through the gun hand's placement to where the clip has it ...
-        const Vec comp = gunPalm + arm_ik::rotate(arm_ik::conj(qg), drawn - gunPalmAt) * (1.0f / hp.gunS);
+        // Back through the gun hand's placement to where the clip has it ... and the drawn gun is
+        // gunRatio of the clip's about its grip socket (2026-10-20, the pistol's carried cylinder ~4 cm
+        // toward the grip: only the hand's scale was undone, so a part at arm's length came back 8% short).
+        const float ratio = hp.gunRatio > 1e-3f ? hp.gunRatio : 1.0f;
+        const Vec sock = arm_ik::vec(hp.socket);
+        const Vec sockDrawn = gunPalmAt + arm_ik::rotate(qg, (sock - gunPalm) * hp.gunS);
+        const Vec comp = sock + arm_ik::rotate(arm_ik::conj(qg), drawn - sockDrawn) * (1.0f / (hp.gunS * ratio));
         // ... and on through the free hand's, which carries it. At the palm: the part's pivot in the
         // palm itself (the clip's hand is not holding it now).
         const Vec moved = g_carryAtPalm ? palmAt : palmAt + arm_ik::rotate(qh, (comp - palm) * hp.s);
         const Vec world2 = aLoc + arm_ik::rotate(qa, moved * hp.actorScale);
+        if (!fed) { // the part's first bone, for a throw
+            fed = true;
+            throw_feed(world2);
+        }
         // 2026-10-20 the latch: how far the carried part is from where it sits in the gun (recorded at
         // the eject, the gun's own frame), for the Insert - the PART is measured, not the palm, so the
         // hand's orientation does not matter.
@@ -639,8 +699,16 @@ void tick(const Frame& f) {
     in.ejectAdopted = ejectable;
     // The carried part's distance from its latch (carry(), last frame), while one is known.
     in.partSeatCm = g_seatValid && f.now - g_partSeatMs < 150 ? g_partSeatCm : -1.0f;
+    // A round still in the gun (read once as each reload begins; the game refills only at the clip's end).
+    in.chambered = g_chambered;
 
     const bool wasActive = g_machine.active();
+    if (!wasActive && in.entryProgram) {
+        // Before this frame's update: a reload that begins now reads the rounds the gun has left.
+        struct { int32_t ret; int32_t pad[3]; } r{};
+        g_chambered = script::call(f.weapon, "GetRoundsRemaining", &r) && r.ret > 0;
+        in.chambered = g_chambered;
+    }
     const rr::Output o = g_machine.update(in, g_cfg);
     if (o.ejected) {
         // A Havok copy where the magazine sits, when it has a mesh of its own (the Tommy Gun's drum);
@@ -696,13 +764,19 @@ void tick(const Frame& f) {
     if (wasActive && !g_machine.active() && g_ejectedThis) g_showAmmoFor = f.weapon;
     if (!g_machine.active()) g_ejectedThis = false;
     if (o.ejected) g_ejectedThis = true;
-    // The new part let go short of its seat falls as the spent one did: a Havok copy for a gun whose copy
-    // is the part (the Tommy Gun's drum); the pistol's falls out of the gun as before (carry 2).
-    if (o.dropped && g_havokCopy && !g_copyRounds) {
-        const float still[3] = {0.0f, 0.0f, 0.0f};
-        const bool ok = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, still);
-        BVR_LOG("[reload] %S: the new %s was let go short of its seat - %s", g_cls, o.part ? o.part : "part",
-                ok ? "a Havok copy falls" : "no copy (it is simply gone)");
+    // A part let go away from the gun (the spent drum pulled out by hand, or a new one short of its seat)
+    // leaves the hand as a Havok copy moving as the hand moved it - thrown (Half-Life: Alyx's release:
+    // the velocity next to the fastest of the last ten frames). The Tommy Gun's drum only: its copy IS the
+    // part; the pistol's cylinder has no mesh of its own and simply goes (carry 2).
+    if (o.dropped && !_wcsicmp(g_cls, L"MachineGun")) {
+        float peak = 0.0f;
+        constexpr float kThrowScale = 1.6f; // Alyx's vr_throw_velocity_scale default: a hand's throw feels weak 1:1
+        const Vec v = throw_velocity(&peak) * kThrowScale;
+        const float vel[3] = {v.x, v.y, v.z};
+        const bool ok = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, vel);
+        const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
+        BVR_LOG("[reload] %S: the %s left the hand at %.2f m/s (peak %.2f) - %s", g_cls, o.part ? o.part : "part",
+                arm_ik::length(v) / uu * 0.01f, peak / uu * 0.01f, ok ? "a Havok copy flies" : "no copy (it is simply gone)");
     }
     if (g_showAmmoFor == f.weapon && !g_machine.active() && st != hands_state::State::Reloading) {
         struct { int32_t pad[4]; } none{};

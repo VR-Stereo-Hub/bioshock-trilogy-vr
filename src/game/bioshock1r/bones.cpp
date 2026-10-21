@@ -8025,6 +8025,8 @@ void m4_compose(bool late) {
                 ik::put(palmAt, mrPlace.gunPalmAt);
                 for (int c = 0; c < 4; ++c) mrPlace.gunQ[c] = qb.v[c];
                 mrPlace.gunS = sb;
+                memcpy(mrPlace.socket, A[patterns::kBoneWeaponAttach].p, 12);
+                mrPlace.gunRatio = gunRatio;
                 mrGun = true;
                 manual_reload::Frame mf;
                 mf.weapon = twoGun;

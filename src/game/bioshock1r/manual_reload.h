@@ -45,6 +45,9 @@ struct HandPlacement {
     float actorLoc[3] = {}, actorQ[4] = {0, 0, 0, 1}, actorScale = 1;
     float palm[3] = {}, palmAt[3] = {}, q[4] = {0, 0, 0, 1}, s = 1;          // the free hand
     float gunPalm[3] = {}, gunPalmAt[3] = {}, gunQ[4] = {0, 0, 0, 1}, gunS = 1; // the gun hand
+    // The gun as drawn against the clip's: gunRatio of it about the grip socket (two_hand_math.h
+    // gun_ratio), the socket at `socket` in the clip's component space.
+    float socket[3] = {}, gunRatio = 1;
 };
 void carry(const HandPlacement& hp);
 

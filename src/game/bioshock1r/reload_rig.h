@@ -72,6 +72,9 @@ struct Phase {
     // rest) - the shotgun's pump, as its pump between shots (Pump, after Half-Life 2 VR); <= 0: 95% of
     // the travel (the Tommy Gun's bolt).
     float strokeCm = -1.0f;
+    // 2026-10-20: skipped when the gun still had a round in it at the reload (Input::chambered) - the
+    // Tommy Gun's bolt: an open-bolt gun with a round left is not racked (the tester: "more realistic").
+    bool skipLoaded = false;
 };
 inline float hold_t(const Phase& p) { return p.holdT >= 0 ? p.holdT : p.t0; }
 
@@ -107,9 +110,10 @@ inline constexpr Phase kTommy[] = {
     {Kind::Fetch, 0.933f, 0.933f, nullptr, 0, "TG_AmmoClip", "take a drum from the pouch", false, false, 1.0f, 0.30f},
     {Kind::Insert, 0.933f, 1.222f, kTommyDrumIn, 4, "TG_AmmoClip", "seat the drum", false, false, 1.0f, 0.30f},
     // The bolt (tools\blender\reload_pose.py): TG_Bolt runs 16.4 units straight back between 2.10 and
-    // 2.20 s, the clip's hand on it. Grabbed near the clip's hand from either side, 2x the reach.
-    {Kind::Slide, 2.10f, 2.20f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 2.0f, -1.0f, 16.4f},
-    {Kind::Play, 2.244f, 2.80f, nullptr, 0, nullptr, "the bolt runs home"},
+    // 2.20 s, the clip's hand on it. Grabbed near the clip's hand from either side, 1.25x the reach (2x
+    // buzzed the hand "all the way to the opposite shoulder"). Not racked with a round still in the gun.
+    {Kind::Slide, 2.10f, 2.20f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 1.25f, -1.0f, 16.4f, -1.0f, true},
+    {Kind::Play, 2.244f, 2.80f, nullptr, 0, nullptr, "the bolt runs home", false, false, 1.0f, -1.0f, 0.0f, -1.0f, true},
     {Kind::Finish, 3.20f, 3.33f, nullptr, 0, nullptr, "done"}};
 
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a
@@ -227,6 +231,7 @@ struct Config {
     float settleProgress = 0.85f;// let go past this and a pull completes itself
     float dropS = 0.7f;         // the eject: how long the spent part falls before it is gone
     float seatCm = 10.0f;       // the latch: a carried part this near where it sits snaps home
+    float slapCm = 20.0f;       // let go this near where it sits (a slap into the well): it is seated
 };
 
 struct Input {
@@ -252,6 +257,7 @@ struct Input {
     bool ejectAdopted = false;  // and a reload the game began (the gun ran dry) ejects the same way
     float partSeatCm = -1;      // the carried part's distance from where it sits in the gun (cm), -1
                                 // unknown (no eject recorded the seat): the palm's path decides
+    bool chambered = false;     // the gun still had a round in it when this reload began
 };
 
 enum class Act : uint8_t { None, StartReload, Abort };
@@ -281,8 +287,9 @@ struct Output {
     bool handLock = false;      // the free hand is drawn where the clip's own hand is (on the bolt)
     bool chase = false;         // `t` follows the hand forward: PLAY the clip there (its sounds fire)
     bool fetched = false;       // this frame a new part was taken from the pouch (`part` names it)
-    bool dropped = false;       // this frame the carried new part was let go short of its seat: it falls,
-                                // and the reload waits at the pouch again (`part` names it)
+    bool dropped = false;       // this frame a carried part left the hand away from the gun (the spent one
+                                // pulled out, or a new one let go short of its seat): it falls or is
+                                // thrown (`part` names it)
 };
 
 // The first Fetch of a program (where an eject starts), -1 when it has none.
@@ -332,6 +339,10 @@ public:
         }
         o.active = state_ != State::Idle;
         if (o.part && prog_ && state_ == State::Running) o.atPalm = prog_->phases[phase_].atPalm;
+        if (skipped_ && !o.event) {
+            skipped_ = false;
+            o.event = "a round is still in the gun: no bolt to rack";
+        }
         return o;
     }
 
@@ -350,6 +361,7 @@ private:
     bool dropping_ = false;     // the spent part is falling; then the first Fetch
     bool lying_ = false;        // and lies where it fell through that Fetch
     bool snap_ = false;         // an Insert's part reached its latch: the clip seats it
+    bool skipped_ = false;      // a phase was skipped (Phase::skipLoaded): say so once
     Vec grab_{};                // a Slide: where the hand took hold
     // A Slide's direction: its path's, start to end (the sideways axis out for a two-sided part).
     static Vec slide_axis(const Phase& p) {
@@ -381,7 +393,12 @@ private:
     static bool near_phase(const Phase& p, Vec h, float r) {
         if (!p.path || p.n <= 0) return false;
         Vec a = p.path[0].p;
-        if (p.bothSides) a.y = h.y = 0;
+        if (p.bothSides) {
+            // Either side of the gun, but at the gun: sideways no farther out than the handle's own side
+            // plus the reach (19:31 run: with sideways ignored, the buzz reached the other shoulder).
+            if (std::fabs(h.y) > std::fabs(a.y) + r) return false;
+            a.y = h.y = 0;
+        }
         return arm_ik::length(h - a) <= r * p.grabScale;
     }
     static Projection project_phase(const Phase& p, Vec h) {
@@ -471,6 +488,12 @@ private:
     }
 
     void enter(const Input& in) {
+        if (ph().skipLoaded && in.chambered && phase_ + 1 < prog_->n) {
+            skipped_ = true; // a round still in: no bolt to rack
+            ++phase_;
+            enter(in);
+            return;
+        }
         sub_ = Sub::Wait;
         lastProgress_ = 0;
         lastT_ = ph().t0;
@@ -618,6 +641,7 @@ private:
                 if (!in.grip) {
                     o.carry = 2;
                     o.haptic = Haptic::Drop;
+                    o.dropped = true; // the spent part leaves the hand: thrown, or dropped
                     o.event = p.say;
                     next(in);
                 }
@@ -675,8 +699,21 @@ private:
                 // time (the clip's own new drum, tossed in the air below the gun) and still pushed home by a
                 // hand passing along the path. Now the grip decides alone: past half way it is seated (below),
                 // short of it it falls, guided or not.
-                const bool guidedFar = sub_ == Sub::Guided && lastProgress_ < 0.5f && pr.progress < 0.5f;
-                if (!in.grip && (sub_ != Sub::Guided || guidedFar)) {
+                // 19:31 run: a drum "slapped" into the well was let go guided short of half way - it fell,
+                // looking as if it bounced off the gun. A part let go guided, or within slapCm of where it
+                // sits, is seated (the clip plays it home); only one let go away from the gun falls.
+                if (!in.grip && (sub_ == Sub::Guided || (in.partSeatCm >= 0 && in.partSeatCm <= c.slapCm))) {
+                    snap_ = true;
+                    playT_ = T(p.n > 1 ? p.path[p.n - 2].t : p.t0);
+                    if (sub_ == Sub::Guided && T(lastT_) > playT_) playT_ = T(lastT_);
+                    o.haptic = Haptic::Tick;
+                    o.event = "let go at the well: it is seated";
+                    o.carry = 0;
+                    o.t = playT_;
+                    o.chase = true;
+                    break;
+                }
+                if (!in.grip) {
                     o.carry = 2;
                     o.t = T(hold_t(p));
                     o.haptic = Haptic::Drop;
