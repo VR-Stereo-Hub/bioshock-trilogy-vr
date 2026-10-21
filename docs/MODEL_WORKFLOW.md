@@ -100,7 +100,22 @@ ffdec-cli -swf2xml <ws>\...\sharedlibrary.swf shared.xml ; ffdec-cli -swf2xml <w
 py tools\flash-merge.py shared.xml radial.xml merged.xml ; ffdec-cli -xml2swf merged.xml HUDRadial_merged.swf
 # the UnrealScript corpus into tools\uscript\<game>\
 .\tools\uscript-export.ps1 -Game bs1 [-Only ShockGame] [-Inventory]
+# the hands and a first-person gun TOGETHER, as the game attaches them, posed by their clips: renders,
+# the part in the palm, the gun hand's motion, and a check of the hands against the live game
+.\tools\blender-run.ps1 tools\blender\reload_pose.py -- --hands <ws>\exports\bs1\NEWPlayerHands-all.glb
+    --gun <ws>\exports\bs1\WP_PistolMesh.glb --hands-action Pistol__FastReloadPistol --gun-action FastReload
+    --socket R_grip --times 0.53,0.80 [--part DrumParent] [--palm Bip01_L_Hand]
+    [--attach <ws>\bs1\shockgame-weapons\ShockGame\StaticMesh\PI_AmmoType.pskx] [--no-render]
 ```
+
+**`reload_pose.py` reproduces the game's own placement** (2026-10-20). The gun's origin sits on
+the hands' `R_grip` (bone 43) in the GAME's frame of that bone, the way the engine attaches it,
+and every position it reports is in Unreal axes. Each run prints `BVR_POSE check` lines: the off
+hand's palm in the grip's frame at the times `vrbones reloadrec` recorded in the running game
+(the paths in `reload_rig.h`), and the error. The Tommy Gun and pistol clips agree to 0.1-0.9
+units except one or two samples inside the fastest motion (frame timing); a run whose check
+is off by more is not showing the game. Ammo meshes (`--attach`) hang on the gun's
+`SOCKET_AmmoDummySocket` the same way.
 
 `model-export.ps1` exits 1 and names UModel's error when an export fails, and says when the
 failure is the Havok wall above. `inspect_model.py` prints every problem as a
@@ -126,6 +141,14 @@ its environment and exits non-zero on an uncaught exception.
   and the runtime refused it).
 - **Imported bone tails are display length (1 unit), not limb length.** Use head-to-head
   distances.
+- **Blender's glTF importer REORIENTS every bone** (it points each bone's Y along the bone), so
+  a pose bone's matrix is the game's bone frame times a fixed per-bone turn. Anything attached
+  to a pose bone, or measured in its frame, is turned by that amount: every reload render before
+  2026-10-20 evening had the gun at a wrong angle (the shotgun visibly misplaced, its root far
+  from its origin), and the pistol's 0.53 s carry pose was chosen from one. Undo the turn
+  (`reload_pose.py game_frame`: turn = node rest^-1 x bone rest, from the glb's own nodes) and
+  check against recorded game data before trusting a render. Bone HEAD positions were never
+  affected.
 - **In a `bsmesh-export` glb, Unreal's left (-Y) is Blender's +Y.** The conversion is a
   reflection, not a rotation (HAVOK_AND_PACKAGES.md section 4). Check a left/right claim
   numerically against a named bone, never by eye.

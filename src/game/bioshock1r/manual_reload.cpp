@@ -628,7 +628,7 @@ void tick(const Frame& f) {
             if (pi.fireClip) script::anim_time(f.weapon, pw, &pi.clipT);
         }
         {
-            constexpr float kRecoilEnd0 = 0.25f, kRecoilEnd1 = 0.40f;
+            constexpr float kRecoilEnd0 = 0.30f, kRecoilEnd1 = 0.45f; // reload_pose.py: kick 0.06-0.15, settling to 0.45, then the swing up
             float u = pi.fireClip ? (pi.clipT - kRecoilEnd0) / (kRecoilEnd1 - kRecoilEnd0) : 0.0f;
             u = u < 0 ? 0 : u > 1 ? 1 : u;
             g_gunKeep = 1.0f - u * u * (3.0f - 2.0f * u);
@@ -719,6 +719,10 @@ void tick(const Frame& f) {
         g_chambered = script::call(f.weapon, "GetRoundsRemaining", &r) && r.ret > 0;
         in.chambered = g_chambered;
     }
+    // 2026-10-20 (the tester): the Tommy Gun running dry does not drop its drum - the hand pulls it out
+    // (the program's own first step). A reload the game begins with rounds still in the gun (switching
+    // ammunition) still drops it.
+    if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered) in.ejectAdopted = false;
     const rr::Output o = g_machine.update(in, g_cfg);
     if (o.ejected) {
         // A Havok copy where the magazine sits, when it has a mesh of its own (the Tommy Gun's drum);

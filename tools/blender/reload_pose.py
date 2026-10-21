@@ -12,8 +12,8 @@
 # For each time: renders from the left and from below-front, and the part bone's position and turn
 # in the palm bone's frame (the carry pose a manual reload would hold the part at). --list prints
 # the actions and the bones and stops. Outputs stay in the model workspace, never the repo.
-import bpy, sys, os, json, re, argparse
-from mathutils import Vector
+import bpy, sys, os, json, re, argparse, math, struct
+from mathutils import Vector, Matrix, Quaternion
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser(prog="reload_pose.py")
@@ -28,6 +28,7 @@ ap.add_argument("--palm", default="Bip01_L_Hand")
 ap.add_argument("--render", default="reload-pose")
 ap.add_argument("--out", default="reload-pose.json")
 ap.add_argument("--list", action="store_true")
+ap.add_argument("--no-render", action="store_true", help="measure only (no pictures)")
 ap.add_argument("--attach", help="a static mesh (UModel .pskx) hung on a gun socket: the ammo model the gun mesh lacks")
 ap.add_argument("--attach-socket", default="SOCKET_AmmoDummySocket")
 ap.add_argument("--attach-mirror", action="store_true", help="flip the attached mesh's Y (UModel's PSK handedness)")
@@ -84,13 +85,83 @@ for arm, act in ((ha, hact), (ga, gact)):
     arm.animation_data.action = act
 R["hands_action"], R["gun_action"] = hact and hact.name, gact and gact.name
 
-# The gun on the hands' grip socket: its armature object follows that bone.
+# ---- THE GAME'S BONE FRAMES (2026-10-20) ------------------------------------------------------------
+# Blender's glTF importer REORIENTS every bone (it points each bone's Y along the bone), so a pose bone's
+# matrix is not the frame the game uses: the node's frame times a per-bone fixed turn C. Every earlier
+# render attached the gun to the reoriented frame - the gun at a wrong angle, and the shotgun (whose
+# root bone is far from its origin) visibly in the wrong place. C is recovered from the .glb's own rest
+# nodes: C = node_rest^-1 * bone_rest, so the game's frame of a posed bone is  armature * pose * C^-1.
+# Coordinates: glTF Y-up enters Blender as A = +90 deg about X; bs2gltf's glTF is Unreal reflected
+# (x, y, z) -> (x, z, y). So a vector in a bone's Unreal frame is (x, -y, z) in its Blender frame.
+A = Matrix.Rotation(math.radians(90.0), 4, "X")
+
+
+def glb_rest_frames(path):
+    with open(path, "rb") as fh:
+        data = fh.read()
+    n = struct.unpack("<I", data[12:16])[0]
+    doc = json.loads(data[20:20 + n])
+    nodes = doc["nodes"]
+    parent = {}
+    for i, nd in enumerate(nodes):
+        for ch in nd.get("children", []):
+            parent[ch] = i
+    local = []
+    for nd in nodes:
+        t = Vector(nd.get("translation", [0, 0, 0]))
+        x, y, z, w = nd.get("rotation", [0, 0, 0, 1])
+        s = nd.get("scale", [1, 1, 1])
+        local.append(Matrix.LocRotScale(t, Quaternion((w, x, y, z)), Vector(s)))
+    world = {}
+
+    def wm(i):
+        if i not in world:
+            world[i] = (wm(parent[i]) @ local[i]) if i in parent else local[i]
+        return world[i]
+
+    return {nd.get("name"): A @ wm(i) @ A.inverted() for i, nd in enumerate(nodes)}
+
+
+def bone_turns(arm, path):
+    """name -> C (bone rest = node rest * C), and the largest translation in any C (should be ~0)."""
+    rest = glb_rest_frames(path)
+    out, worst = {}, 0.0
+    for b in arm.data.bones:
+        if b.name not in rest:
+            continue
+        c = rest[b.name].inverted() @ arm.matrix_world @ b.matrix_local
+        loc, rot, _ = c.decompose()
+        worst = max(worst, loc.length)
+        out[b.name] = Matrix.Rotation(rot.angle, 4, rot.axis) if rot.angle > 1e-9 else Matrix.Identity(4)
+    return out, worst
+
+
+HC, hworst = bone_turns(ha, args.hands)
+GC, gworst = bone_turns(ga, args.gun)
+R["bone_turn_check"] = {"hands_max_translation": hworst, "gun_max_translation": gworst}
+if max(hworst, gworst) > 1e-3:
+    R["problems"].append("a bone's import turn is not a pure turn (%.4f, %.4f): the frames may be off" % (hworst, gworst))
+
+
+def game_frame(arm, turns, name):
+    """The bone's frame as the game has it, posed, in Blender world space."""
+    pb = arm.pose.bones[name]
+    return arm.matrix_world @ pb.matrix @ turns.get(name, Matrix.Identity(4)).inverted()
+
+
+def ue_local(v):
+    """A Blender-frame local vector as the Unreal-frame one (and back: the map is its own inverse)."""
+    return Vector((v.x, -v.y, v.z))
+
+
+# The gun on the hands' grip socket, as the engine attaches it: the weapon's origin ON the socket
+# bone's game frame (no offset: every weapon socket aliases bone 43 with none, ENGINE_NOTES Session 91).
 if args.socket not in ha.pose.bones:
     R["problems"].append("no hands bone %r" % args.socket)
 else:
     c = ga.constraints.new("CHILD_OF")
     c.target, c.subtarget = ha, args.socket
-    c.inverse_matrix.identity()
+    c.inverse_matrix = HC.get(args.socket, Matrix.Identity(4)).inverted()
 
 if args.attach:
     sock = bpy.data.objects.get(args.attach_socket)
@@ -105,13 +176,20 @@ if args.attach:
             mw = o.matrix_world.copy()
             o.parent = None
             o.matrix_world = mw
-        o.parent = sock
-        o.matrix_parent_inverse.identity()
         o.location = (0, 0, 0)
+        o.rotation_euler = (0, 0, 0)
         o.scale = (1, -1 if args.attach_mirror else 1, 1)
+        if sock:
+            o.parent = sock
+            o.matrix_parent_inverse.identity()
+        elif args.attach_socket in ga.pose.bones:
+            # A socket that imported as a BONE: hung on its game frame, as the gun is on the hands'.
+            ac = o.constraints.new("CHILD_OF")
+            ac.target, ac.subtarget = ga, args.attach_socket
+            ac.inverse_matrix = GC.get(args.attach_socket, Matrix.Identity(4)).inverted()
         o.color = (0.3, 0.6, 0.95, 1.0)  # the attached ammo in blue
         gm.append(o)
-    if not sock:
+    if not sock and args.attach_socket not in ga.pose.bones:
         R["problems"].append("no socket %r to attach to" % args.attach_socket)
 
 scn = bpy.context.scene
@@ -154,27 +232,85 @@ def render(tag, focus):
     return out
 
 
+# THE CHECK AGAINST THE GAME: the off hand's palm in the grip socket's frame, Unreal axes, rig units, as
+# `vrbones reloadrec` recorded it in the running game (the paths in src/game/bioshock1r/reload_rig.h; our
+# own measurements). A render whose palm lands within a unit or two of these shows the game's pose.
+RECORDED = {
+    "TommyGun__ReloadTommyGun": [(0.267, (19.3, 3.3, -11.8)), (0.567, (15.9, 4.9, -66.2)), (0.933, (2.8, -1.4, -55.3)),
+                                 (1.113, (16.7, 15.1, -11.4)), (1.222, (19.6, 7.5, -8.7)), (2.058, (8.9, 12.6, 9.5)),
+                                 (2.244, (-4.6, 1.5, 13.0))],
+    "Pistol__FastReloadPistol": [(0.189, (25.7, -4.6, 24.3)), (0.377, (30.3, 1.4, 5.3)), (0.466, (36.9, -4.2, 5.6)),
+                                 (0.657, (25.6, -51.4, 42.2)), (0.756, (7.1, -20.5, 47.8)), (0.934, (24.1, -4.0, 21.4))],
+    "Shotgun__ReloadShotgun_LOOP": [(0.034, (16.0, 6.8, -23.2)), (0.122, (27.3, 5.2, 0.7)), (0.267, (29.8, 6.9, 4.1))],
+    "Shotgun__ReloadShotgun_End": [(0.409, (52.7, 18.8, 16.9)), (0.487, (38.4, 12.9, 10.9)), (0.676, (51.1, 17.7, 16.4))],
+}
+PALM_UE = Vector((9.21, 0.12, 0.31))  # the left palm in its wrist's frame (the game's palette anchor, Unreal axes)
+
+
+def palm_in_grip(t):
+    scn.frame_set(int(math.floor(t * fps)), subframe=(t * fps) % 1.0)
+    bpy.context.view_layer.update()
+    grip = game_frame(ha, HC, args.socket)
+    wrist = game_frame(ha, HC, args.palm)
+    return ue_local(grip.inverted() @ (wrist @ ue_local(PALM_UE)))
+
+
+rec = RECORDED.get(hact.name if hact else "", [])
+if rec and args.socket in ha.pose.bones and args.palm in ha.pose.bones:
+    errs = []
+    for t, want in rec:
+        got = palm_in_grip(t)
+        err = (got - Vector(want)).length
+        errs.append(err)
+        R.setdefault("check", []).append({"t": t, "palm_in_grip": list(got), "recorded": list(want), "error": err})
+        print("BVR_POSE check t=%.3f palm in grip %6.1f %6.1f %6.1f  recorded %6.1f %6.1f %6.1f  error %.1f"
+              % (t, got.x, got.y, got.z, *want, err))
+    R["check_worst"] = max(errs)
+    print("BVR_POSE check: worst %.1f rig units over %d recorded times" % (max(errs), len(errs)))
+
 R["poses"] = []
 for t in [float(x) for x in re.split(r"[ ,]+", args.times.strip()) if x]:  # PowerShell turns a,b into "a b"
-    scn.frame_set(int(round(t * fps)), subframe=(t * fps) % 1.0)
+    scn.frame_set(int(math.floor(t * fps)), subframe=(t * fps) % 1.0)
     bpy.context.view_layer.update()
     pose = {"t": t}
-    palm = ha.pose.bones.get(args.palm)
-    part = ga.pose.bones.get(args.part) if args.part else None
-    focus = (ha.matrix_world @ palm.head) if palm else Vector()
-    if palm and part:
-        pm = ha.matrix_world @ palm.matrix
-        qm = ga.matrix_world @ part.matrix
-        rel = pm.inverted() @ qm
-        pose["part_in_palm"] = {"location": list(rel.to_translation()), "quaternion": list(rel.to_quaternion())}
-        pose["part_from_palm_cm"] = (qm.to_translation() - pm.to_translation()).length
-        # And in the gun's own frame (its root bone): how far the part travels along the gun.
-        root = ga.pose.bones[0]
-        rm = ga.matrix_world @ root.matrix
-        pose["part_in_gun"] = list((rm.inverted() @ qm).to_translation())
-        pose["palm_in_gun"] = list((rm.inverted() @ pm).to_translation())
-        focus = (pm.to_translation() + qm.to_translation()) / 2
-    pose["renders"] = render("t%05.3f" % t, focus)
+    focus = Vector()
+    if args.palm in ha.pose.bones:
+        wrist = game_frame(ha, HC, args.palm)
+        pm = wrist @ Matrix.Translation(ue_local(PALM_UE))  # the palm, the wrist's turn
+        focus = pm.to_translation()
+        if args.socket in ha.pose.bones:
+            pose["palm_in_grip_ue"] = list(ue_local(game_frame(ha, HC, args.socket).inverted() @ pm.to_translation()))
+        if args.part and args.part in ga.pose.bones:
+            qm = game_frame(ga, GC, args.part)
+            rel = pm.inverted() @ qm
+            # Unreal axes: the location's y flips, and so does the turn's (a reflection conjugates it).
+            q = rel.to_quaternion()
+            pose["part_in_palm_ue"] = {"location": list(ue_local(rel.to_translation())),
+                                       "quaternion_wxyz": [q.w, -q.x, q.y, -q.z]}
+            pose["part_from_palm"] = (qm.to_translation() - pm.to_translation()).length
+            root = game_frame(ga, GC, ga.pose.bones[0].name)
+            pose["part_in_gun_ue"] = list(ue_local((root.inverted() @ qm).to_translation()))
+            # The part in the gun's MODEL space (the weapon actor's own frame, on the grip socket): how the
+            # gun's own clip moves it - for a root bone, the whole gun against the hand.
+            mm = ga.matrix_world.inverted() @ qm
+            pose["part_model_ue"] = {"location": list(ue_local(mm.to_translation())),
+                                     "turn_deg": math.degrees(mm.to_quaternion().angle)}
+            print("BVR_POSE t=%.3f %s in the gun's model space: %.1f %.1f %.1f, turned %.1f deg"
+                  % (t, args.part, *pose["part_model_ue"]["location"], pose["part_model_ue"]["turn_deg"]))
+            focus = (pm.to_translation() + qm.to_translation()) / 2
+    # The gun hand's own motion in the clip: its grip frame against the first time asked for (a recoil's
+    # kick and settle, the shotgun's swing up to pump) - degrees and rig units.
+    if args.socket in ha.pose.bones:
+        g = game_frame(ha, HC, args.socket)
+        if "grip0" not in R:
+            R["grip0"] = [list(r) for r in g]
+        g0 = Matrix(R["grip0"])
+        d = g0.inverted() @ g
+        pose["grip_turn_deg"] = math.degrees(d.to_quaternion().angle)
+        pose["grip_move"] = d.to_translation().length
+        print("BVR_POSE t=%.3f gun hand vs t0: turned %.1f deg, moved %.1f" % (t, pose["grip_turn_deg"], pose["grip_move"]))
+    if not args.no_render:
+        pose["renders"] = render("t%05.3f" % t, focus)
     R["poses"].append(pose)
 
 out = place(args.out)

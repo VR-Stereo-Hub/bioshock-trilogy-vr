@@ -132,10 +132,12 @@ inline constexpr Phase kPistol[] = {
     {Kind::Pull, 0.189f, 0.377f, kPistolOpen, 3, nullptr, "fold the barrel down"},
     {Kind::Pull, 0.466f, 0.657f, kPistolCylOut, 3, nullptr, "pull the cylinder out"},
     {Kind::Carry, 0.657f, 0.657f, nullptr, 0, "DrumParent+drum", "drop the spent cylinder"},
-    // Held at 0.53 s while carrying: the clip's hand wrapped round the cylinder from below, pulling it
-    // out (reload_pose.py; at 0.89 the fingers only steer it into the frame, at 0.756 it is tossed).
-    {Kind::Fetch, 0.756f, 0.756f, nullptr, 0, "DrumParent+drum", "take a cylinder from the pouch", false, false, 1.0f, 0.53f},
-    {Kind::Insert, 0.756f, 0.934f, kPistolCylIn, 3, "DrumParent+drum", "seat the cylinder", false, false, 1.0f, 0.53f},
+    // Held at 0.80 s while carrying: the clip's hand holds the new cylinder between thumb and fingers on
+    // its way to the frame (reload_pose.py with the gun on the game's socket frame, 2026-10-20 evening).
+    // The earlier 0.53 came from renders with the gun at a wrong angle: there the cylinder is still in
+    // the gun and the hand only beside it - the 19:57 run's "still holding it wrong".
+    {Kind::Fetch, 0.756f, 0.756f, nullptr, 0, "DrumParent+drum", "take a cylinder from the pouch", false, false, 1.0f, 0.80f},
+    {Kind::Insert, 0.756f, 0.934f, kPistolCylIn, 3, "DrumParent+drum", "seat the cylinder", false, false, 1.0f, 0.80f},
     {Kind::Flick, 1.40f, 1.55f, kPistolClose, 3, nullptr, "flick it shut"},
     {Kind::Finish, 1.70f, 1.80f, nullptr, 0, nullptr, "done"}};
 

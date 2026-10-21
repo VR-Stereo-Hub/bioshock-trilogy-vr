@@ -6854,3 +6854,26 @@ swings the gun up to present the pump (renders sgf-t0.750). The hand-back layere
 the controller for the whole clip, so the gun tilted up "in expectation" of the pump. It is now faded out
 over 0.25-0.40 s of the Fire clip (`manual_reload::gun_motion_keep`): the recoil plays, the rest does not.
 The fade times are read off the renders, not measured live.
+
+## 2026-10-20 - Correction: the reload renders had the gun at a wrong angle
+
+Every `reload_pose.py` render before this evening attached the gun to Blender's REORIENTED pose bone
+(docs/MODEL_WORKFLOW.md, Traps), so the gun sat at a wrong angle against the hands; the hold times
+chosen from those pictures are revised here. The tool now uses the game's bone frames and checks the
+hands against the live recordings (0.1-0.9 units).
+
+- **Pistol: the carry hold is 0.80 s, not 0.53.** At 0.53 the cylinder is still in the open frame
+  and the clip's hand is only beside it; at 0.80 the hand holds the new cylinder between thumb and
+  fingers on its way in (DrumParent 8 units from the palm). The "wrapped round the cylinder from
+  below at 0.53" read above came from the wrong render.
+- **Tommy Gun, 0.30 s:** with the drum (`TG_AmmoModel`) on its socket the gun now sits correctly in
+  the right hand; the tester reports this hold good, so it stays.
+- **The shotgun's Fire clip, gun hand against its first frame:** a kick 0.06-0.15 s (to 16 deg and
+  35 units back), settling until about 0.45 s (still 16 deg, 19 units), then the swing up to pump one-
+  handed (50 deg at 0.70). The gun-motion fade is 0.30-0.45 s.
+- **The shotgun's reload clips do not move the gun:** `SG_Body` stays at (10.1, -3.7, -1.7) in model
+  space through the start and every loop, and the gun hand turns at most 3 deg.
+
+The live-game Tommy Gun change of the same evening: a dry gun's own reload does not drop the drum (the
+hand pulls it, the program's first step); a reload the game begins with rounds still in the gun
+(switching ammunition) still drops it.

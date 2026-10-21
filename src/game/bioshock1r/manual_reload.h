@@ -60,7 +60,7 @@ bool pumping();
 // (holding the Tommy Gun's bolt: the hand locked onto it in the game's grip), eased in and out.
 float hand_lock(uint64_t nowMs);
 // Game thread: 0..1, how much of the gun hand's own clip motion is layered on the controller. 1 but
-// for the shotgun's Fire clip, which fades it out after the recoil (0.25-0.40 s): the rest of that clip
+// for the shotgun's Fire clip, which fades it out after the recoil (0.30-0.45 s): the rest of that clip
 // swings the gun up to pump it one-handed ("it should just recoil", 19:57 run).
 float gun_motion_keep();
 

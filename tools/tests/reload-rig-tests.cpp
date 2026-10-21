@@ -295,7 +295,8 @@ int main() {
         check(o.ejected && o.carry == 3 && std::fabs(o.t - 0.466f) < 0.01f, "pistol: open, the cylinder falls", o.t,
               0.466);
         for (int i = 0; i < 70; ++i) o = p.step(Vec{40, 7, 2}, false);
-        check(p.m.phase() == 3 && std::fabs(o.t - 0.53f) < 0.01f, "then take a new one", o.t, 0.53);
+        check(p.m.phase() == 3 && std::fabs(o.t - 0.80f) < 0.01f, "then take a new one (held where the clip's hand holds it)",
+              o.t, 0.80);
 
         // The latch: the carried drum within 10 cm of its seat snaps home, wherever the palm is.
         s.in.partSeatCm = 30.0f;
