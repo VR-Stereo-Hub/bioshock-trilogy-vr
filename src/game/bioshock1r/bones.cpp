@@ -7574,6 +7574,8 @@ void fx_actor_restore() {
     g_fxaN = 0;
 }
 
+std::atomic<void*> g_fxaIgnore{nullptr}; // an actor on the hands that its owner places (attach_relative)
+
 void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k, arm_ik::Vec tAttach) {
     namespace ik = arm_ik;
     void* hands = g_m4.actor;
@@ -7594,6 +7596,7 @@ void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k
             g_fxa[r] = g_fxa[--g_fxaN];
         }
         for (int j = 0; j < nl && g_fxaN < 32; ++j) {
+            if (linked[j] == g_fxaIgnore.load(std::memory_order_relaxed)) continue; // placed by its owner (the spare)
             bool known = false;
             for (int r = 0; r < g_fxaN; ++r) known = known || g_fxa[r].actor == linked[j];
             if (known) continue;
@@ -8618,8 +8621,13 @@ void m4_compose(bool late) {
                 memcpy(rb[j]->p, A[sl[j]].p, 12);
                 memcpy(rb[j]->q, A[sl[j]].q, 16);
             }
-            memcpy(ref[h].wristP, A[w].p, 12);
-            memcpy(ref[h].wristQ, A[w].q, 16);
+            // 2026-10-21 THE STRETCHED ARM (the 10:26 recording, replayed: the shotgun's last pump, empty - the
+            // left hand drawn on the gun, the forearm swung down to the waist and the wrist's skin stretched between
+            // them). The reference arm is the game's: its sleeve bones from the clip (the reload's arm reaching for
+            // the pouch) AND its own wrist - not the free hand kept on the gun (the substitution above), which made
+            // a reference forearm a foot long from the pouch to the gun, and the solve turned the drawn forearm by it.
+            memcpy(ref[h].wristP, A0[w].p, 12);
+            memcpy(ref[h].wristQ, A0[w].q, 16);
             float sc[3];
             to_comp_p(g_m4.shoulder[h], sc);
             nominal[h] = ik::vec(sc);
@@ -8650,7 +8658,7 @@ void m4_compose(bool late) {
             // A stretched arm is a longer, bigger arm ("the arms were waaay too big").
             {
                 const float rig = ik::length(ik::vec(A[sl[2]].p) - ik::vec(A[sl[1]].p)) * I.upperLength +
-                                  ik::length(ik::vec(A[w].p) - ik::vec(A[sl[2]].p)) * I.foreLength;
+                                  ik::length(ik::vec(A0[w].p) - ik::vec(A[sl[2]].p)) * I.foreLength;
                 const float reach = rig * I.scale * 0.995f;
                 const float dist = ik::length(I.wrist - I.shoulder);
                 if (!late) g_m4ReachFrac[h] = reach > 1e-3f ? dist / reach : 0.0f;
@@ -10236,6 +10244,29 @@ void draw_debug_ui() {
 }
 
 bool mirror_hands() { return mirror_wanted(); }
+bool attach_relative(void* actor, int bone, const float worldP[3], const float worldQ[4], float relP[3], float relQ[4]) {
+    namespace ik = arm_ik;
+    g_fxaIgnore.store(actor, std::memory_order_relaxed);
+    if (!g_m4.actor || !g_evCopyValid || bone < 0 || bone >= g_evCopyCount) return false;
+    float aLoc[3], k = 1.0f;
+    int32_t aRot[3];
+    if (!read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorLocOffset, aLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorViewDirOffset, aRot, 12))
+        return false;
+    if (!ds_read(g_m4.actor, &k) || !(k > 0.01f)) k = 1.0f;
+    float qa[4];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    const ik::Quat qA = ik::normalized(ik::quat(qa));
+    // The engine's attachment on a hands bone (fx_actor_follow's model): component = bone + rotate(bone, rel),
+    // the bone as the game evaluated it; world = the actor's place of component.
+    const ik::Vec comp = ik::rotate(ik::conj(qA), ik::vec(worldP) - ik::vec(aLoc)) * (1.0f / k);
+    const ik::Quat bq = ik::normalized(ik::quat(g_evCopy[bone].q));
+    ik::put(ik::rotate(ik::conj(bq), comp - ik::vec(g_evCopy[bone].p)), relP);
+    const ik::Quat q = ik::normalized(ik::mul(ik::conj(ik::mul(qA, bq)), ik::normalized(ik::quat(worldQ))));
+    memcpy(relQ, q.v, 16);
+    return true;
+}
+
 bool mirror_free_rel(const float p[3], const float q[4], float outP[3], float outQ[4]) {
     const mirror::Basis* b = palette::mirror_basis();
     if (!g_m4.mirror || !b) return false;

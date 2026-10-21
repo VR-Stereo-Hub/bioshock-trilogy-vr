@@ -7112,3 +7112,22 @@ What the recordings say, together (the 09:32 and 10:09 shotgun recordings, the 0
   with the hands), placed each frame by its relative location and rotation against that bone's engine
   coordinates; let go, it comes off the hands (DetachFromBone, SetBase none), its Havok body is built where
   it is and it is thrown. `[drop] spare on the hand: N uu from where it is asked to be` reports the fit.
+
+## 2026-10-21 - THE STRETCHED ARM, found: the arm solve's reference wrist (the 10:26 recording)
+
+Replayed (`pose_capture.py --record ... --from 125 --render`), the shotgun's first reload frame after the
+last pump shows it exactly: the left hand drawn on the gun, the left forearm swung down to the waist, the
+wrist's skin stretched between them. The arm IK takes a REFERENCE arm from the evaluated pose - clavicle,
+upper arm, forearm and wrist - and turns each segment from its reference to the solved one. Its sleeve bones
+came from the game's reload clip (the arm reaching for the pouch) while its wrist came from the substituted
+pose (the free hand kept on the gun), so the reference forearm ran a foot from the pouch to the gun and the
+solve turned the drawn forearm by that bogus segment. Every change that kept the hand on the gun more
+firmly made it worse. The reference wrist (and the reach measure) is now the game's own (`A0`), consistent
+with the sleeves it came with; the solved arm still ends at the drawn wrist.
+
+The Tommy Gun's held spare, the same day: attached to a hands bone it was also picked up by the effect
+follow (fx_actor_follow), which rewrites every hand-bone attachment to the drawn palm each frame - 25-30 uu
+off and swivelling. It is excluded, and the spare's relative pose is the engine's attachment model
+(`bones::attach_relative`: component = evaluated bone + rotate(bone, rel)), written to the attachment's
+fields. And it is a PhysicalReactiveActor (its defaults do not block players): as a NonPhysicalReactiveActor
+held in the hand it stood under the player, and a jump launched him into the ceiling.

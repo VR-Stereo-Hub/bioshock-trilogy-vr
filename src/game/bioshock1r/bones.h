@@ -241,6 +241,10 @@ bool mirror_hands_enabled();
 // inverse(Mb wrist) * rel * a flip of the part's local Y (a part symmetric about it - a cylinder, a drum).
 // False when the hands are not mirrored now.
 bool mirror_free_rel(const float p[3], const float q[4], float outP[3], float outQ[4]);
+// 2026-10-21: the relative location and rotation that put an actor attached to a hands bone (the game's
+// evaluated `bone`, an index) at a world pose - the engine's attachment model (fx_actor_follow's), in the hands'
+// component space. The actor is from then on left to its owner (the effect follow does not rewrite it).
+bool attach_relative(void* actor, int bone, const float worldP[3], const float worldQ[4], float relP[3], float relQ[4]);
 void set_mirror_hands(bool on);
 
 // ---- 2026-10-20: the held weapon's own skeleton, for the manual reload (manual_reload.h) ----
