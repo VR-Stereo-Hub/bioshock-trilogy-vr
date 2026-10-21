@@ -71,6 +71,7 @@ std::atomic<bool> g_claim{false};
 std::atomic<float> g_reach{-1.0f}; // Output::reach, for the grip arbiter
 std::atomic<uint64_t> g_claimMs{0};
 std::atomic<bool> g_active{false};
+std::atomic<bool> g_handles{false}; // handles_reloads()
 std::atomic<uint64_t> g_reloadButtonMs{0}; // the last time the reload button was down
 // 2026-10-20: with the manual reload on, the reload button ejects instead (the gun in hand has a
 // program that fetches a new magazine): game thread -> XInput thread, and the press back.
@@ -482,6 +483,7 @@ bool can_reload(void* weapon, uint64_t now) {
 } // namespace
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
+bool handles_reloads() { return g_handles.load(std::memory_order_relaxed); }
 bool pumping() {
     return g_pumping.load(std::memory_order_relaxed) || (g_pumpWait.load(std::memory_order_relaxed) && g_endPump.working()) ||
            GetTickCount64() - g_fireClipMs.load(std::memory_order_relaxed) < 400;
@@ -802,6 +804,7 @@ void tick(const Frame& f) {
         g_ejectedThis = false;
         g_gunKeep = 1.0f;
         g_active.store(false, std::memory_order_relaxed);
+        g_handles.store(false, std::memory_order_relaxed);
         g_claim.store(false, std::memory_order_relaxed);
         g_ejectable.store(false, std::memory_order_relaxed);
         g_ejectReq.store(false, std::memory_order_relaxed);
@@ -924,6 +927,7 @@ void tick(const Frame& f) {
     g_lastHandle = in.clipLive ? hw : 0;
     in.clipProgram = in.clipLive ? rr::find(g_cls, clipName) : nullptr;
     in.entryProgram = rr::entry(g_cls);
+    g_handles.store(in.entryProgram != nullptr, std::memory_order_relaxed);
     in.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
     in.unitsPerCm = f.unitsPerCm;
     const uint32_t presses = g_gripPresses.load(std::memory_order_relaxed);

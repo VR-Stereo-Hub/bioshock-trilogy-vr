@@ -66,6 +66,9 @@ void carry(const HandPlacement& hp);
 
 // A manual reload is in progress (the hands stay on their controllers; the two-handed grip waits).
 bool active();
+// Any thread: the gun in hand reloads by hand (the manual reload is on and has a program for it) - so any reload
+// of it is the hands', from its first frame, before active() can say so (it begins in the gun hand's tick).
+bool handles_reloads();
 // Any thread: the shotgun's pump is mid-stroke (the front hand working it, reload_rig.h Pump). The
 // two-handed grip holds on through it - the pump is the fore-end, so working it is not sliding off.
 bool pumping();

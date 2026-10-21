@@ -104,7 +104,11 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
     int atGun = 0;
     // 2026-10-20: a MANUAL reload (manual_reload.h) drives the clip from the player's hands, so the
     // hands stay on their controllers - the clip only shapes the fingers.
-    if (st == State::Reloading && manual_reload::active()) {
+    // 2026-10-21 (00:45 run: the shotgun emptied, "the left wrist ends up near my left waist"): a reload of a gun
+    // that reloads by hand is the hands' from its first frame. active() comes a frame late (it begins in the gun
+    // hand's tick) and drops between the clips of an ammunition switch's restarted reloads - and each time the
+    // free hand began to be carried "at the gun", to where the clip has it: the pouch.
+    if (st == State::Reloading && (manual_reload::active() || manual_reload::handles_reloads())) {
         g_reason = "manual reload (the hands stay on the controllers)";
     } else if (st == State::Reloading) {
         const Place p = static_cast<Place>(g_reload.load());
