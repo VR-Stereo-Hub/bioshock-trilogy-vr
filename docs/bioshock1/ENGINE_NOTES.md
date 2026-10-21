@@ -6798,10 +6798,17 @@ code is copied). What it does, in our words:
 **What BS1's shotgun takes from it** (`reload_rig.h` Pump, `manual_reload.cpp`, `two_hand.cpp`): the
 two-handed fore-end hold is the pump; while a stroke is in progress the hold lets go only when the
 grip comes up (the 15:37 run lost it mid-stroke - "the hand slid off along the gun" - and the gun
-pumped itself); strokes are ratchets of 6 cm along the gun's pump axis (from the farthest point the
-other way, re-based at each shot's clip), the clip following the hand 1:1 inside a stroke and playing
-the rest of it at the catch; a hand already 1.5 cm back during the recoil starts the stroke (the clip
-is played on to the pump); a trigger pulled while the pump waits buzzes the gun hand and fires
-nothing (the game is in its Fire clip). The reload's own last pump (two Slides) completes at the same
-6 cm. Not taken: a free-floating fore-grip entity (BS1's pump is a bone in the gun's own clip, so the
-clip's time IS the pump's position).
+pumped itself); strokes are ratchets of 6 cm in the DISTANCE BETWEEN THE TWO CONTROLLERS (as HL2VR
+measures its pump from a point on the gun; from the farthest apart / closest since the stroke began,
+re-based at each shot's clip), the clip following the hands over 9 cm and playing the rest of the
+stroke at the catch; hands 2.5 cm closer during the recoil start the stroke (the clip is played on to
+the pump); a trigger pulled while the pump waits buzzes the gun hand and fires nothing (the game is in
+its Fire clip). The reload's own last pump (two Slides) completes at 6 cm too. Not taken: a
+free-floating fore-grip entity (BS1's pump is a bone in the gun's own clip, so the clip's time IS the
+pump's position).
+
+**The first version read the front hand in the drawn gun's grip frame, and pumped itself** (19:33 run:
+every pump "completed" 0.2 s after the shot, untouched). The Fire clip moves the drawn gun - the recoil,
+and the pump's own motion as the clip is played on - so the grip frame moved, the measured hand moved
+with it, and the clip advanced on its own motion. A stroke must be read from the controllers, never from
+anything the clip animates.

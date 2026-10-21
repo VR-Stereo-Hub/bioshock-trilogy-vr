@@ -786,26 +786,31 @@ private:
 // concepts only). Its pump is the gun's fore-grip itself, and a stroke is a RATCHET: it counts from
 // the farthest point the pump has reached the other way since the stroke began, and completes once the
 // hand is a short distance (its default is 2 inches) past it - not a fixed path from where the hand
-// happened to be when the clip got there. Ours: back along the gun's own pump axis (the reload's pump
-// path) measured from the farthest-forward point since the stroke began, 6 cm completes it; then
-// forward from the farthest-back point, 6 cm. Inside a stroke the clip follows the hand 1:1 (the drawn
-// hand rides the pump); at the catch the clip plays the rest of the stroke itself. A stroke undone
+// happened to be when the clip got there. Ours: the two controllers coming 6 cm closer than the
+// farthest apart they have been since the stroke began completes the back stroke; then 6 cm apart
+// again from the closest. Inside a stroke the clip follows the hands (over 9 cm; the drawn hand rides
+// the pump); at the catch the clip plays the rest of the stroke itself. A stroke undone
 // (the hand going back the other way) is never lost: the ratchet's reference only ever moves with it.
 // And as there, firing is GATED, not queued: a trigger pulled while the pump waits clicks (a buzz on
 // the gun hand) and does nothing else.
+// 2026-10-20 (19:33 run, "it is cocking the shots for itself"): THE STROKE IS MEASURED BETWEEN THE TWO
+// CONTROLLERS, as Half-Life 2 VR measures its pump from a point on the gun. The first version read the
+// front hand in the frame of the DRAWN gun, which the Fire clip itself moves (the recoil, the pump's own
+// motion): the clip moved the gun, the gun moved the measured hand, the hand moved the clip - every
+// pump completed itself 0.2 s after the shot. The controllers' distance knows nothing of the clip.
 struct PumpConfig {
     float backT0 = 0.75f, backT1 = 0.85f, fwdT0 = 1.05f, fwdT1 = 1.15f;
-    float travel = 17.0f;   // grip-frame units: the pump's full stroke, where the clip follows the hand 1:1
-    float strokeCm = 6.0f;  // hand travel past the ratchet's reference that completes a stroke
-    float earlyCm = 1.5f;   // during the recoil: this much back and the stroke has begun
+    float strokeCm = 6.0f;  // controller travel past the ratchet's reference that completes a stroke
+    float followCm = 9.0f;  // controller travel over which the clip follows a stroke (it finishes at the catch)
+    float earlyCm = 2.5f;   // during the recoil: this much closer and the stroke has begun
 };
 struct PumpInput {
     bool fireClip = false; // the shotgun's 'Fire' clip is playing
     bool clipNew = false;  // a new 'Fire' clip (the next shot) began this frame
     float clipT = 0;       // its time (seconds)
     bool held = false;     // two hands on the gun
-    Vec hand{};            // the front hand, grip frame
-    float unitsPerCm = 1;  // grip-frame units per centimetre
+    float spanCm = 0;      // the distance between the two controllers (the pump back = shorter)
+    bool spanOk = false;   // both controllers tracked
     bool triggerRise = false; // the trigger was pulled this frame
 };
 struct PumpOutput {
@@ -819,12 +824,6 @@ struct PumpOutput {
     float strokeCm = -1;   // the stroke so far, cm past the ratchet's reference (-1 not pumping)
     const char* event = nullptr;
 };
-// The pump's direction in the grip frame: back along the gun, as the reload's pump stroke goes.
-inline Vec pump_back_dir() {
-    const Vec d = kShotgunPumpBack[2].p - kShotgunPumpBack[0].p;
-    const float l = arm_ik::length(d);
-    return l > 1e-6f ? d * (1.0f / l) : Vec{-1, 0, 0};
-}
 class Pump {
 public:
     PumpOutput update(const PumpInput& in, const PumpConfig& c) {
@@ -849,9 +848,15 @@ public:
             }
             return o;
         }
-        const float along = arm_ik::dot(in.hand, pump_back_dir()); // + is back along the gun
-        const float strokeU = c.strokeCm * (in.unitsPerCm > 1e-4f ? in.unitsPerCm : 1.0f);
-        const float follow = c.travel > 1e-3f ? c.travel : 1.0f;
+        if (!in.spanOk) { // a controller lost: hold where it is, measure nothing
+            if (stage_ == Stage::Firing) return o;
+            o.hold = true;
+            o.t = stage_ == Stage::Back ? c.backT0 : c.backT1;
+            return o;
+        }
+        const float along = -in.spanCm; // + is back: the hands closer together
+        const float strokeU = c.strokeCm;
+        const float follow = c.followCm > 1e-3f ? c.followCm : 1.0f;
         switch (stage_) {
             case Stage::Firing:
                 // The shot and its recoil play - unless the hand is already pumping: Half-Life 2 VR starts
@@ -862,7 +867,7 @@ public:
                     refSet_ = true;
                 }
                 if (along < ref_) ref_ = along;
-                if (in.clipT < c.backT0 && along - ref_ < c.earlyCm * strokeU / c.strokeCm) return o;
+                if (in.clipT < c.backT0 && along - ref_ < c.earlyCm) return o;
                 stage_ = Stage::Back;
                 refSet_ = false;
                 o.event = in.clipT < c.backT0 ? "pump it: back (begun during the recoil)" : "pump it: back";
@@ -873,7 +878,7 @@ public:
                 o.hold = true;
                 o.chase = true;
                 o.t = c.backT0 + (c.backT1 - c.backT0) * (d / follow < 1.0f ? d / follow : 1.0f);
-                o.strokeCm = d / (strokeU / c.strokeCm);
+                o.strokeCm = d;
                 o.deny = in.triggerRise;
                 if (d >= strokeU) {
                     stage_ = Stage::Fwd;
@@ -891,7 +896,7 @@ public:
                 o.chase = true;
                 // Back at the pump's rear stop until the hand starts it forward.
                 o.t = d > 0.5f ? c.fwdT0 + (c.fwdT1 - c.fwdT0) * (d / follow < 1.0f ? d / follow : 1.0f) : c.backT1;
-                o.strokeCm = d / (strokeU / c.strokeCm);
+                o.strokeCm = d;
                 o.deny = in.triggerRise;
                 if (d >= strokeU) {
                     stage_ = Stage::Done;

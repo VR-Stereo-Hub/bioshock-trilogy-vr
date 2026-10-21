@@ -568,8 +568,15 @@ void tick(const Frame& f) {
         pi.clipNew = pi.fireClip && pw != s_fireHandle;
         s_fireHandle = pi.fireClip ? pw : 0;
         pi.held = two_hand::held();
-        pi.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
-        pi.unitsPerCm = f.unitsPerCm;
+        {
+            // The controllers themselves, never the drawn gun the clip moves (reload_rig.h PumpConfig).
+            bvr::vr::HeadPose a{}, b{};
+            pi.spanOk = bvr::vr::get_hand_pose(0, false, a) && bvr::vr::get_hand_pose(1, false, b);
+            if (pi.spanOk) {
+                const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
+                pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
+            }
+        }
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         pi.triggerRise = pulls != g_seenPulls;
         g_seenPulls = pulls;

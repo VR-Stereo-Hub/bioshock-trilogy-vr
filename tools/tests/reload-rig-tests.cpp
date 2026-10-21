@@ -322,14 +322,13 @@ int main() {
     // ---- the shotgun's pump by hand: Half-Life 2 VR's ratchet strokes ----
     {
         Pump pump;
-        const PumpConfig c; // 6 cm strokes; the Sim's 1 unit per cm
+        const PumpConfig c; // 6 cm strokes, measured between the two controllers
         PumpInput in;
         in.fireClip = true;
         in.clipNew = true;
-        in.held = true;
-        const Vec d = pump_back_dir();
-        Vec h{40, 10, 10};
-        in.hand = h;
+        in.held = in.spanOk = true;
+        const float h = 40.0f; // the controllers 40 cm apart
+        in.spanCm = h;
         in.clipT = 0.3f;
         PumpOutput o = pump.update(in, c);
         in.clipNew = false;
@@ -342,24 +341,24 @@ int main() {
         o = pump.update(in, c);
         in.triggerRise = false;
         check(o.deny && o.hold, "the trigger while it waits: a click, nothing fires");
-        in.hand = h - d * 3.0f; // forward first: the ratchet's reference follows it
+        in.spanCm = h + 3.0f; // forward first: the ratchet's reference follows it
         o = pump.update(in, c);
-        in.hand = h + d * 2.0f; // 5 cm back from there
+        in.spanCm = h - 2.0f; // 5 cm back from there
         o = pump.update(in, c);
         check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f && !pump.backDone(),
               "measured from the farthest forward: 5 cm, not yet", o.strokeCm, 5.0);
-        check(std::fabs(o.t - (0.75f + 0.1f * 5.0f / 17.0f)) < 0.005f, "the clip follows the hand 1:1", o.t, 0.779);
-        in.hand = h + d * 3.2f;
+        check(std::fabs(o.t - (0.75f + 0.1f * 5.0f / 9.0f)) < 0.005f, "the clip follows the hands", o.t, 0.806);
+        in.spanCm = h - 3.2f;
         o = pump.update(in, c);
         check(pump.backDone() && std::fabs(o.t - 0.85f) < 0.01f, "6 cm: caught, the clip finishes the stroke", o.t, 0.85);
-        const Vec back = in.hand;
-        in.hand = back + d * 2.0f; // further back first
+        const float back = in.spanCm;
+        in.spanCm = back - 2.0f; // further back first
         o = pump.update(in, c);
         check(std::fabs(o.t - 0.85f) < 0.01f, "held at the rear stop", o.t, 0.85);
-        in.hand = back - d * 3.0f; // 5 cm forward of the farthest back
+        in.spanCm = back + 3.0f; // 5 cm forward of the farthest back
         o = pump.update(in, c);
         check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f, "forward from the farthest back: 5 cm", o.strokeCm, 5.0);
-        in.hand = back - d * 4.1f;
+        in.spanCm = back + 4.1f;
         o = pump.update(in, c);
         check(o.run && !o.jump && !pump.working(), "6 cm forward: pumped, the clip plays out");
         o = pump.update(in, c);
@@ -376,14 +375,14 @@ int main() {
 
         Pump e; // a quick hand: the stroke begins during the recoil
         in = PumpInput{};
-        in.fireClip = in.clipNew = in.held = true;
-        in.hand = h;
+        in.fireClip = in.clipNew = in.held = in.spanOk = true;
+        in.spanCm = h;
         in.clipT = 0.1f;
         e.update(in, c);
         in.clipNew = false;
-        in.hand = h + d * 2.0f;
+        in.spanCm = h - 3.0f;
         o = e.update(in, c);
-        check(e.working() && o.hold && o.t >= 0.75f, "2 cm back during the recoil: the pump begins", o.t, 0.75);
+        check(e.working() && o.hold && o.t >= 0.75f, "3 cm closer during the recoil: the pump begins", o.t, 0.75);
 
         Pump q; // not two-handed: the clip pumps itself
         in = PumpInput{};
@@ -392,7 +391,8 @@ int main() {
         o = q.update(in, c);
         check(!o.hold, "one-handed: never held");
         Pump r; // let go mid-pump: it runs on
-        in.held = true;
+        in.held = in.spanOk = true;
+        in.spanCm = 40.0f;
         in.clipT = 0.76f;
         r.update(in, c);
         in.held = false;
