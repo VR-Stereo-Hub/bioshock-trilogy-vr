@@ -1781,6 +1781,14 @@ static void update_barrel_direction(const RayBase& b, const float socketAxes[3][
         const int sock = nearest_axis(socketAxes, rf, &sockDot);
         const int best = useSocket ? sock : bone;
         const float bestDot = useSocket ? sockDot : boneDot;
+        // 2026-10-20 (23:21 run: "the reticle locked 90 degrees to the left"): the axis is chosen once per
+        // weapon, and the Tommy Gun's was chosen mid equip - the gun turned across the ray, its side (-Y,
+        // 0.77) the nearest - and kept until the weapon changed. Only a gun lined up with the ray decides;
+        // until then the direction stays the controller's and the next frame tries again.
+        if (best < 0 || bestDot < 0.9f) {
+            g_barrel.dirValid = false;
+            return;
+        }
         g_barrel.axisDot = bestDot;
         g_barrel.axis = best >= 0 && bestDot >= 0.5f ? best : 6;
         static const char* kNames[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
