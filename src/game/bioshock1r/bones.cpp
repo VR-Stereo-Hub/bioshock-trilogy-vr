@@ -8379,7 +8379,16 @@ void m4_compose(bool late) {
                         toward[2] = dw[2] * toCm;
                     }
                     two_hand::publish(distCm, slideCm, paused, toward, now);
-                    const float tw = paused ? 0.0f : two_hand::hold_weight(now);
+                    float tw = paused ? 0.0f : two_hand::hold_weight(now);
+                    // 2026-10-21 (the 12:53 recording: "the split second tilt" - the drawn gun hand turning 70-79 deg in
+                    // one frame as the grip came up mid-reload): the shotgun's hold never lets go by distance, so with
+                    // the real hand 20-25 cm off the pump (reaching to load, pumping a dry gun) the aim turned the gun
+                    // toward it, and letting go snapped it back. The aim fades with the hand's distance from where it
+                    // holds the gun: whole within 15 cm, none past 30.
+                    if (manual_reload::sticky_grip() && distCm > 15.0f) {
+                        const float f = 1.0f - (distCm - 15.0f) / 15.0f;
+                        tw *= f < 0.0f ? 0.0f : f;
+                    }
                     if (tw > 0.0f) {
                         // The turn from the gun as held; applied to the kicked gun it keeps the kick
                         // in the gun's own frame (turn * pinned.q * (pinned.q^-1 * own.q)), and the
