@@ -7,6 +7,7 @@
 #include "game/bioshock1r/dropped_part.h"
 #include "game/bioshock1r/grip_pistol_cylinder.h"
 #include "game/bioshock1r/grip_shotgun_shell.h"
+#include "game/bioshock1r/grip_tommy_drum.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
@@ -522,6 +523,12 @@ const GripTable* carry_grip() {
         return &kPistolCylinder;
     if (g_carryMode == 1 && g_machine.active() && g_carryPart && !_wcsicmp(g_cls, L"Shotgun") && strstr(g_carryPart, "SG_Shell"))
         return &kShotgunShell;
+    // 2026-10-21: a spare Tommy Gun drum in the hand - the reload clip's own hand on the drum at 0.30 s (where the
+    // spare is placed against the wrist), not the grip pose ("an unneeded mag has the normal grip pose").
+    static const GripTable kTommyDrum{grips::kTommyDrumGrip,
+                                      static_cast<int>(sizeof grips::kTommyDrumGrip / sizeof grips::kTommyDrumGrip[0]),
+                                      nullptr, 0};
+    if (g_spare.actor) return &kTommyDrum;
     return nullptr;
 }
 bool two_hand_allowed() {

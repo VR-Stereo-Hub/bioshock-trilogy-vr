@@ -7131,3 +7131,10 @@ off and swivelling. It is excluded, and the spare's relative pose is the engine'
 (`bones::attach_relative`: component = evaluated bone + rotate(bone, rel)), written to the attachment's
 fields. And it is a PhysicalReactiveActor (its defaults do not block players): as a NonPhysicalReactiveActor
 held in the hand it stood under the player, and a jump launched him into the ceiling.
+- **After the arm fix (12:00 run):** the reload slide of the front hand (a workaround for the stretch) and the
+  "kept angle" through a reload both go. The kept angle held the two-handed turn of the moment the hold ended -
+  the front hand already leaving - for the whole reload: the 12:02 capture's shotgun turned ~90 deg off a
+  controller pointed straight ahead ("the wrist turn when empty", worse on an ammunition switch). With the free
+  hand kept on the gun while the grip holds, a reload no longer ends the hold by itself; let go, the gun is the
+  gun hand's. The Tommy Gun's spare in the hand takes the reload clip's own fingers at 0.30 s
+  (`grip_tommy_drum.h`, the hold its placement already comes from), not the grip pose.
