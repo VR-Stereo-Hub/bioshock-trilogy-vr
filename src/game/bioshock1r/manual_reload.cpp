@@ -931,7 +931,26 @@ void tick(const Frame& f) {
         }
     } else {
         g_pumping.store(false, std::memory_order_relaxed);
-        g_gunKeep = 1.0f;
+        // 2026-10-21 (10:08 run: the Tommy Gun's last burst sat in the firing state a second and pointed the gun
+        // down - "the game normally does that when they run out, we need to suppress it"): of any other gun's
+        // clips only a shot's recoil is layered - the first 0.30 s of a firing clip, faded out by 0.45, and none
+        // once the gun is empty.
+        // (Guns that reload by hand only: the wrench and the rest keep their clips as they were.)
+        g_gunKeep = rr::entry(g_cls) ? 0.0f : 1.0f;
+        if (g_gunKeep == 0.0f && st == hands_state::State::Firing) {
+            const int32_t fh = weapon_clip_handle(f.weapon);
+            int32_t nm = -1;
+            float ft = 0.0f;
+            const wchar_t* cn = nullptr;
+            if (fh > 0 && script::anim_name(f.weapon, fh, &nm) && nm >= 0) cn = patterns::fname_text(nm);
+            struct { int32_t ret; int32_t pad[3]; } rr2{};
+            const bool rounds = script::call(f.weapon, "GetRoundsRemaining", &rr2) && rr2.ret > 0;
+            if (cn && wcsstr(cn, L"Fire") && rounds && script::anim_time(f.weapon, fh, &ft)) {
+                float u = (ft - 0.30f) / 0.15f;
+                u = u < 0 ? 0 : u > 1 ? 1 : u;
+                g_gunKeep = 1.0f - u * u * (3.0f - 2.0f * u);
+            }
+        }
     }
     in.clipLive = clipName != nullptr;
     in.clip = clipName;
