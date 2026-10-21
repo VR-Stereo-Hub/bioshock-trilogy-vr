@@ -4,7 +4,7 @@
 #include "core/util/log.h"
 #include "game/shared/ue_math.h"
 #include "arm_ik.h"
-#include "muzzle.h"
+#include "bones.h"
 
 #include <windows.h>
 
@@ -369,7 +369,9 @@ Prop make_held(void* weapon, void* hands) {
     g_cap.valid = false;
     const int32_t bone = script::name_index("Bip01_L_Hand"); // any hands bone: the placement is relative to it
     void* a = nullptr;
-    for (const wchar_t* path : {L"ShockGame.NonPhysicalReactiveActor", L"ShockGame.PhysicalReactiveActor"}) {
+    // PhysicalReactiveActor first: it does not block players (its defaults); the non-physical one does - held, it
+    // stood under the player and a jump launched him into the ceiling (10:25 run).
+    for (const wchar_t* path : {L"ShockGame.PhysicalReactiveActor", L"ShockGame.NonPhysicalReactiveActor"}) {
         void* cls = load_class(weapon, path);
         if (cls && (a = attach_to_hands(hands, cls, bone))) break;
     }
@@ -423,59 +425,35 @@ bool alive(const Prop& p, void* weapon) {
     return p.level && level_of(p.actor) == p.level && level_of(weapon) == p.level;
 }
 
-// Its relative location and rotation on the hands bone that put it at loc/rot in the world: the engine places an
-// attached actor at origin + sum(rel_i * axis_i) of the bone's coordinates, turned by them.
+// Its relative location and rotation on the hands bone that put it at loc/rot in the world: the engine's own
+// attachment model (bones::attach_relative), written to the attachment's fields as the effect follow writes its own.
+// (10:25 run: placed by the bone's world coordinates instead it sat 25-30 uu off and swivelled - the effect follow
+// was also rewriting it to the palm every frame; it leaves this one alone now.)
 void move(const Prop& p, const float loc[3], const int32_t rot[3], float) {
     if (!p.holder) return;
-    float o[3], ax[3][3];
-    if (!muzzle::bone_coords(p.holder, p.bone, o, ax)) return;
-    const float d[3] = {loc[0] - o[0], loc[1] - o[1], loc[2] - o[2]};
-    float rel[3], R[9];
-    for (int i = 0; i < 3; ++i) {
-        const float l2 = ax[i][0] * ax[i][0] + ax[i][1] * ax[i][1] + ax[i][2] * ax[i][2];
-        rel[i] = l2 > 1e-8f ? (d[0] * ax[i][0] + d[1] * ax[i][1] + d[2] * ax[i][2]) / l2 : 0.0f;
-        const float l = std::sqrt(l2 > 1e-8f ? l2 : 1.0f);
-        for (int k = 0; k < 3; ++k) R[i * 3 + k] = ax[i][k] / l; // row i: the bone's axis i in the world
-    }
-    // World -> bone as a quaternion (rows are the bone's axes), so the bone's own turn is its conjugate.
-    const arm_ik::Quat boneQ = arm_ik::conj(arm_ik::from_matrix(R));
-    float wq[4];
+    float wq[4], rel[3], rq[4];
     ue::ue_rot_to_quat(ue::FRotator{rot[0], rot[1], rot[2]}, wq);
-    const arm_ik::Quat relQ = arm_ik::normalized(arm_ik::mul(arm_ik::conj(boneQ), arm_ik::normalized(arm_ik::quat(wq))));
-    const ue::FRotator rr = ue::ue_quat_to_rot(relQ.v);
-    struct {
-        float v[3];
-        uint32_t ret;
-        int32_t pad[3];
-    } sl{{rel[0], rel[1], rel[2]}, 0, {}};
-    const bool okL = script::call(p.actor, "SetRelativeLocation", &sl);
-    struct {
-        int32_t r[3];
-        uint32_t ret;
-        int32_t pad[3];
-    } sr{{rr.pitch, rr.yaw, rr.roll}, 0, {}};
-    const bool okR = script::call(p.actor, "SetRelativeRotation", &sr);
-    if (!okL || !okR) {
-        const int32_t lo = script::property_offset(p.actor, L"RelativeLocation");
-        const int32_t ro = script::property_offset(p.actor, L"RelativeRotation");
-        if (lo >= 0) wr(static_cast<uint8_t*>(p.actor) + lo, rel);
-        const int32_t r3[3] = {rr.pitch, rr.yaw, rr.roll};
-        if (ro >= 0) wr(static_cast<uint8_t*>(p.actor) + ro, r3);
-    }
+    if (!bones::attach_relative(p.actor, patterns::kBoneLWrist, loc, wq, rel, rq)) return;
+    const ue::FRotator rr = ue::ue_quat_to_rot(rq);
+    const int32_t r3[3] = {rr.pitch, rr.yaw, rr.roll};
+    const int32_t lo = script::property_offset(p.actor, L"RelativeLocation");
+    const int32_t ro = script::property_offset(p.actor, L"RelativeRotation");
+    if (lo >= 0) wr(static_cast<uint8_t*>(p.actor) + lo, rel);
+    if (ro >= 0) wr(static_cast<uint8_t*>(p.actor) + ro, r3);
     // Where the engine actually drew it, against where it was asked to be: a few times in a run, logged.
     static int s_logs = 0;
     static uint64_t s_ms = 0;
     const uint64_t now = GetTickCount64();
-    if (s_logs < 6 && now - s_ms > 500) {
+    if (s_logs < 8 && now - s_ms > 500) {
         s_ms = now;
         ++s_logs;
         float cur[3];
         int32_t cr[3];
         if (location(p, cur, cr))
-            BVR_LOG("[drop] spare on the hand: %.1f uu from where it is asked to be (relative set %s/%s)",
+            BVR_LOG("[drop] spare on the hand: %.1f uu from where it is asked to be (relative at +%d/+%d)",
                     std::sqrt((cur[0] - loc[0]) * (cur[0] - loc[0]) + (cur[1] - loc[1]) * (cur[1] - loc[1]) +
                               (cur[2] - loc[2]) * (cur[2] - loc[2])),
-                    okL ? "ok" : "by field", okR ? "ok" : "by field");
+                    lo, ro);
     }
     const int32_t lifeOff = script::property_offset(p.actor, L"LifeSpan");
     if (lifeOff >= 0) wr(static_cast<uint8_t*>(p.actor) + lifeOff, 0.0f); // held: never expires
