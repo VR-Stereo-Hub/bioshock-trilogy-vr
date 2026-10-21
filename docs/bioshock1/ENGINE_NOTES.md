@@ -7063,3 +7063,28 @@ bones.cpp fills them for every free-hand bone the substitution changed (`A` agai
   (ApplyScriptedHandAttachment, then DetachFromBone) is still BASED on the hands: every SetLocation on it
   is refused (each one logged "now" at the hands actor's own location), and writing its Location field
   does not move what is drawn. `SetBase(None)` after the detach (`[drop] taken off the hands: ...`).
+
+## 2026-10-21 - The 09:30 run: the front hand slides in a reload, the start clip, the spare as a driven body
+
+- **The stretched arm, again (capture afw-...093344):** the kept hand was right this time - the palm on
+  the pump, 6.8 units off - but the two-handed hold draws the front hand at the gun's anchor, and with the
+  shotgun empty the real hand was 17 cm behind it and 14 up (pumping a dry gun, reaching to load). The arm
+  was drawn out to the pump. While the gun reloads the front hand now slides along the gun with the
+  controller (`s_reloadSlide`: the real hand's place along the anchor's line, within 30 cm), and sliding no
+  longer lets the hold go (two_hand.cpp: slide 0 through a manual reload).
+- **The hand pose flashing on an ammunition switch** (the 09:32 recording, frames 383/420/501/534): each of
+  the four restarted reloads began with the 'SingleFrame' start clip, which put the free hand in its start
+  pose, then the pouch's. Through a start clip the free hand holds as it was the frame before, against the
+  gun (`manual_reload::start_clip`).
+- **The gun in the gun hand** stays within 2 degrees of the idle hold through every reload clip (measured
+  bone 43 against the right wrist over the whole recording) - the reload clips do not turn the gun in the
+  hand; only the free hand moved.
+- **The held spare (09:31):** SetLocation stayed refused with the base cleared, and the Location field is
+  not what is drawn. The spare is now a live Havok body the hand DRIVES: each frame the velocity that brings
+  it to the hand in one frame (HavokSetLinearVelocity) and the spin to the hand's turn
+  (HavokSetAngularVelocity, the quaternion error over the frame time). Let go, it keeps the throw - no fresh
+  drop in its place (that flashed a second drum at the gun's magazine). A removed prop is shrunk with
+  SetDrawScale(0.001) before Destroy, which was refused.
+- **The Tommy Gun's ammunition switch (09:32:15):** the switch ended the dry gun's waiting reload on the
+  frame the drop was asked for, and the game's next reload already had Pending == Current. A reload begun
+  within 1.5 s of a seen switch now drops the drum.

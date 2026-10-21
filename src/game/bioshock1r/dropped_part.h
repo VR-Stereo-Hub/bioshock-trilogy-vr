@@ -37,12 +37,12 @@ struct Prop {
 Prop last_dropped();
 
 // 2026-10-20, the spare magazine in the hand: a prop like the drop's - the weapon's visible magazine's mesh
-// and size - with its physics off, moved by hand each frame (move), until it is let go (release: a drop,
-// thrown) or goes into the gun (destroy). Game thread.
+// and size - a live Havok body the hand drives each frame (move), until it is let go (release: it keeps its
+// throw) or goes into the gun (destroy). Game thread.
 Prop make_held(void* weapon, void* hands);
 bool alive(const Prop& p, void* weapon); // the same actor, in the weapon's level
-void move(const Prop& p, const float loc[3], const int32_t rot[3]);
-bool release(const Prop& p, void* weapon, void* hands, const float velocity[3]); // a NEW drop where it is; the held one goes
+void move(const Prop& p, const float loc[3], const int32_t rot[3], float dt); // drives its Havok body there
+bool release(const Prop& p, void* weapon, void* hands, const float velocity[3]); // thrown: it keeps flying
 void destroy(const Prop& p);
 bool location(const Prop& p, float loc[3], int32_t rot[3]);
 // The weapon's visible magazine now: where it is, its turn and size. False with none (or no mesh).

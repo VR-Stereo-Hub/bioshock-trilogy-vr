@@ -2,6 +2,7 @@
 #include "patterns.h"
 #include "script_call.h"
 #include "core/util/log.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 
@@ -359,8 +360,8 @@ Prop make_held(void* weapon, void* hands) {
         return Prop{};
     }
     // In the WORLD's draw layer, like every drop that shows (00:44 run: in the hands' foreground layer, copied
-    // from the gun's magazine, the spare in the hand was never drawn), and with no collision while it is held -
-    // so the game's own SetLocation moves it (its zone and render bounds with it) instead of refusing.
+    // from the gun's magazine, the spare in the hand was never drawn), with no collision with actors while it is
+    // held, and a live Havok body the hand drives (move()).
     const int32_t prio = script::property_offset(a, L"DrawPriority");
     if (prio >= 0) wr(static_cast<uint8_t*>(a) + prio, uint8_t{0});
     struct {
@@ -368,8 +369,12 @@ Prop make_held(void* weapon, void* hands) {
         int32_t pad[3];
     } sc{0, 0, 0, {}};
     const bool collOff = script::call(a, "SetCollision", &sc);
+    const bool havok = set_physics(a, 1); // PHYS_Havok
+    const float none[3] = {0, 0, 0};
+    set_vector(a, "HavokSetLinearVelocity", none);
     const Prop p = identify(a);
-    BVR_LOG("[drop] a spare in the hand: %p (world layer, collision %s)", a, collOff ? "off" : "NOT changed");
+    BVR_LOG("[drop] a spare in the hand: %p (world layer, collision %s, Havok %s)", a, collOff ? "off" : "NOT changed",
+            havok ? "on" : "NOT on");
     return p;
 }
 
@@ -384,23 +389,30 @@ bool alive(const Prop& p, void* weapon) {
     return p.level && level_of(p.actor) == p.level && level_of(weapon) == p.level;
 }
 
-void move(const Prop& p, const float loc[3], const int32_t rot[3]) {
-    // The game's own move (its zone and render bounds follow), the fields when it refuses.
-    struct {
-        float loc[3];
-        uint32_t noTest;
-        uint32_t ret;
-        int32_t pad[3];
-    } sl{{loc[0], loc[1], loc[2]}, 1, 0, {}};
-    if (!script::call(p.actor, "SetLocation", &sl) || !sl.ret)
-        wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, *reinterpret_cast<const float(*)[3]>(loc));
-    struct {
-        int32_t rot[3];
-        uint32_t ret;
-        int32_t pad[3];
-    } sr{{rot[0], rot[1], rot[2]}, 0, {}};
-    if (!script::call(p.actor, "SetRotation", &sr) || !sr.ret)
-        wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, *reinterpret_cast<const int32_t(*)[3]>(rot));
+// 2026-10-21 (09:31 run: the held spare stayed drawn where it was made until thrown - every SetLocation on these
+// props is refused, based on the hands or not, and their Location field is not what is drawn): the spare is a
+// live Havok body, and the hand DRIVES it - each frame the velocity that brings it to the hand in one frame, and
+// the spin that brings it to the hand's turn. Let go, it simply keeps its throw.
+void move(const Prop& p, const float loc[3], const int32_t rot[3], float dt) {
+    float cur[3];
+    int32_t cr[3];
+    if (!location(p, cur, cr) || !(dt > 1e-4f)) return;
+    if (dt > 0.05f) dt = 0.05f;
+    const float v[3] = {(loc[0] - cur[0]) / dt, (loc[1] - cur[1]) / dt, (loc[2] - cur[2]) / dt};
+    set_vector(p.actor, "HavokSetLinearVelocity", v);
+    float qt[4], qc[4], qi[4], dq[4];
+    ue::ue_rot_to_quat(ue::FRotator{rot[0], rot[1], rot[2]}, qt);
+    ue::ue_rot_to_quat(ue::FRotator{cr[0], cr[1], cr[2]}, qc);
+    ue::quat_conj(qc, qi);
+    ue::quat_mul(qt, qi, dq); // world: current -> target
+    if (dq[3] < 0) for (float& c : dq) c = -c;
+    const float s = std::sqrt(dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]);
+    float w[3] = {0, 0, 0};
+    if (s > 1e-6f) {
+        const float ang = 2.0f * std::atan2(s, dq[3]);
+        for (int k = 0; k < 3; ++k) w[k] = dq[k] / s * ang / dt;
+    }
+    set_vector(p.actor, "HavokSetAngularVelocity", w);
     // Kept alive while it is moved, and gone on its own soon after it no longer is (a spare we lost track of).
     const int32_t lifeOff = script::property_offset(p.actor, L"LifeSpan");
     if (lifeOff >= 0) wr(static_cast<uint8_t*>(p.actor) + lifeOff, 20.0f);
@@ -411,31 +423,27 @@ bool location(const Prop& p, float loc[3], int32_t rot[3]) {
            rd(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, reinterpret_cast<int32_t(*)[3]>(rot));
 }
 
-// 2026-10-20 (22:55 run: a let-go spare fell "from the position of the mag already in the gun"): the held
-// prop's Havok body was built where it was spawned - at the gun's magazine - and moving its fields never
-// moved that body, so turning Havok on dropped it from there. Let go, the held prop goes and a NEW drop is
-// made where it is now (drop()'s own order: placed, then its mesh, then Havok), which falls from the hand.
-bool release(const Prop& p, void* weapon, void* hands, const float velocity[3]) {
-    Captured c;
-    if (!location(p, c.loc, c.rot)) return false;
-    const int32_t meshOff = script::property_offset(p.actor, L"StaticMesh");
-    if (meshOff < 0 || !rd(static_cast<uint8_t*>(p.actor) + meshOff, &c.mesh) || !c.mesh) return false;
-    if (!rd(static_cast<uint8_t*>(p.actor) + patterns::kActorDrawScaleOffset, &c.scale) || !(c.scale > 0.01f))
-        c.scale = 1.0f;
-    destroy(p);
-    bool meshOk = false;
-    void* a = make_prop(weapon, hands, c, &meshOk);
-    g_lastDrop = Prop{};
-    if (!a) return false;
-    const Prop id = identify(a);
-    if (!launch(a, meshOk, velocity)) return false;
-    g_lastDrop = id;
+// Let go: the held body keeps flying with the throw (09:31 run: a fresh drop made in its place showed a second
+// drum at the gun's magazine for a moment, and the held one lingered where it was made until it was removed).
+bool release(const Prop& p, void*, void*, const float velocity[3]) {
+    const float v[3] = {velocity[0], velocity[1], velocity[2] - kFallUu};
+    set_vector(p.actor, "HavokSetLinearVelocity", v);
+    const float spin[3] = {1.5f, -2.0f, 0.8f};
+    set_vector(p.actor, "HavokSetAngularVelocity", spin);
+    const int32_t lifeOff = script::property_offset(p.actor, L"LifeSpan");
+    if (lifeOff >= 0) wr(static_cast<uint8_t*>(p.actor) + lifeOff, kLifeSpanS);
+    g_lastDrop = p;
     return true;
 }
 
-// Gone for certain (the 22:55 run: a caught drum went on falling from the well - Destroy alone left it):
-// physics off, out of sight far below, then Destroy, and LifeSpan as the backstop.
+// Gone for certain (the 22:55 run: a caught drum went on falling from the well - Destroy refused): shrunk to
+// nothing (SetDrawScale is a move the game does make), physics off, then Destroy, and LifeSpan as the backstop.
 void destroy(const Prop& p) {
+    struct {
+        float s;
+        int32_t pad[3];
+    } ds{0.001f, {}};
+    script::call(p.actor, "SetDrawScale", &ds);
     set_physics(p.actor, 0);
     float loc[3];
     if (rd(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, &loc)) {
