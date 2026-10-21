@@ -120,7 +120,9 @@ inline constexpr Phase kTommy[] = {
     // 2.20 s, the clip's hand on it. Grabbed near the clip's hand from either side, 1.25x the reach (2x
     // buzzed the hand "all the way to the opposite shoulder"). Not racked with a round still in the gun.
     {Kind::Slide, 2.10f, 2.20f, kTommyBolt, 3, nullptr, "rack the bolt", false, true, 1.25f, -1.0f, 16.4f, -1.0f, true},
-    {Kind::Play, 2.244f, 2.80f, nullptr, 0, nullptr, "the bolt runs home", false, false, 1.0f, -1.0f, 0.0f, -1.0f, true},
+    // From where the stroke leaves the clip (2.20), not 2.244: a phase's start is SET, and the 44 ms jumped over held
+    // the bolt's slam home - its sound never played (2026-10-21, "the tommy gun slide sound").
+    {Kind::Play, 2.20f, 2.80f, nullptr, 0, nullptr, "the bolt runs home", false, false, 1.0f, -1.0f, 0.0f, -1.0f, true},
     {Kind::Finish, 3.20f, 3.33f, nullptr, 0, nullptr, "done"}};
 
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a

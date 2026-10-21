@@ -62,6 +62,7 @@ rr::PumpConfig g_pumpCfg = shot_pump_cfg();
 rr::Pump g_dryPump;
 bool g_needCock = false;
 std::atomic<bool> g_blockFire{false};
+bool g_dryClick = false; // game thread: a pump refused a pull this tick (the dry fire's sound)
 // The shotgun reload's last pump (reload_rig.h Kind::PumpHand): the same Pump over the end clip's own pump
 // times, waiting for the hands instead of pumping itself.
 rr::Pump g_endPump;
@@ -966,6 +967,7 @@ void tick(const Frame& f) {
         haptic(po.haptic, f);
         // Fire is gated while the pump waits (Half-Life 2 VR's dry click): the gun hand says so.
         if (po.deny) {
+            g_dryClick = true;
             bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
             BVR_LOG("[reload] Shotgun pump: the trigger while the pump waits - click (%s stroke %.1f cm of %.0f)",
                     g_pump.backDone() ? "forward" : "back", po.strokeCm, g_pumpCfg.strokeCm);
@@ -1315,12 +1317,29 @@ void tick(const Frame& f) {
             g_needCock = false;
             BVR_LOG("[reload] Shotgun: cocked dry by hand - it fires again");
         }
-        if (po.deny) bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
+        if (po.deny) {
+            g_dryClick = true;
+            bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
+        }
     } else if (s_dryWas) {
         rr::PumpInput off;
         g_dryPump.update(off, g_pumpCfg);
     }
     s_dryWas = dry;
+    // The dry fire (2026-10-21, "all of the sounds besides a shotgun dry fire"): a pull the reload holds back never
+    // reaches PlayerWeapon, so its own DryFiring (on the weapon, the ammunition's name as the tag) never fires - the
+    // sound engine plays it for each pull the shotgun refuses, as the game does for an empty gun.
+    {
+        static uint32_t s_dryPulls = 0;
+        const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
+        const bool rose = pulls != s_dryPulls;
+        s_dryPulls = pulls;
+        if (shotgun && (g_dryClick || (rose && g_blockFire.load(std::memory_order_relaxed)))) {
+            char tag[64];
+            sound_engine::play(f.weapon, "DryFiring", sound_engine::ammo_tag(f.weapon, tag, sizeof tag) ? tag : nullptr);
+        }
+        g_dryClick = false;
+    }
     g_blockFire.store(shotgun && (g_machine.active() || g_needCock), std::memory_order_relaxed);
     haptic(o.haptic, f);
     if (o.buzz && f.now - g_lastBuzzMs >= kBuzzEveryMs) {

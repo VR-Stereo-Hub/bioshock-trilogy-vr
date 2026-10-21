@@ -16,6 +16,8 @@ bool install(void* anyActor);
 // whether its manual reload is on (the mute table applies only then).
 void set_context(void* hands, void* weapon, const wchar_t* weaponClass, bool manualReloadOn);
 // Game thread: fire `event` (an effect event name, e.g. "PumpShotgun") on `actor` as the game would - passes the mute.
-bool play(void* actor, const char* event);
+bool play(void* actor, const char* event, const char* referenceTag = nullptr);
+// The weapon's current ammunition's class name - the ReferenceTag the game's own weapon events carry (DryFiring, ...).
+bool ammo_tag(void* weapon, char* out, int n);
 
 } // namespace bvr::b1r::sound_engine

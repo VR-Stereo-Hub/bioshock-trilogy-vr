@@ -118,19 +118,20 @@ void set_context(void* hands, void* weapon, const wchar_t* weaponClass, bool man
     g_muteOn.store(manualReloadOn, std::memory_order_relaxed);
 }
 
-bool play(void* actor, const char* event) {
+bool play(void* actor, const char* event, const char* referenceTag) {
     if (!g_orig || !actor || !event) return false;
     const int32_t idx = script::name_index(event);
     if (idx < 0) {
         BVR_LOG("[sound] play %s: no such name", event);
         return false;
     }
+    const int32_t ref = referenceTag ? script::name_index(referenceTag) : 0;
     float zero[3] = {0, 0, 0};
     int32_t zrot[3] = {0, 0, 0};
     t_playing = true;
     int r = 0;
     __try {
-        r = g_orig(actor, idx, 0, nullptr, nullptr, zero, zrot, 0, 0, nullptr, 0, 0, nullptr);
+        r = g_orig(actor, idx, 0, nullptr, nullptr, zero, zrot, 0, 0, nullptr, ref > 0 ? ref : 0, 0, nullptr);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         r = 0;
     }
@@ -138,6 +139,25 @@ bool play(void* actor, const char* event) {
     BVR_LOG("[sound] played %s on the %s (%s)", event, actor == g_hands.load(std::memory_order_relaxed) ? "hands" : "weapon",
             r ? "a response ran" : "no response");
     return r != 0;
+}
+
+bool ammo_tag(void* weapon, char* out, int n) {
+    if (!weapon || !out || n < 2 || !script::properties_ready(weapon)) return false;
+    const int32_t off = script::property_offset(weapon, L"CurrentAmmoSelection");
+    void* ammo = nullptr;
+    int32_t name = -1;
+    __try {
+        if (off < 0 || !(ammo = *reinterpret_cast<void**>(static_cast<uint8_t*>(weapon) + off))) return false;
+        name = *reinterpret_cast<int32_t*>(static_cast<uint8_t*>(ammo) + patterns::kUObjectNameIndexOffset);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    const wchar_t* w = patterns::fname_text(name);
+    if (!w) return false;
+    int i = 0;
+    for (; w[i] && i < n - 1; ++i) out[i] = static_cast<char>(w[i]);
+    out[i] = 0;
+    return true;
 }
 
 } // namespace bvr::b1r::sound_engine

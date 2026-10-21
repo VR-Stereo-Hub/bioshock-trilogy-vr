@@ -7199,4 +7199,17 @@ only, their tables to be read from a run's log.
 **The split-second tilt** (the 12:53 recording): the drawn gun hand turned 70-79 deg in one frame as the grip
 came up mid-reload while the game's own wrist moved 0.3 deg - the two-handed aim, which (the shotgun's hold
 never letting go by distance) had turned the gun toward a free hand 20-25 cm off the pump, snapping back on
-release. The shotgun's aim now fades with that distance: whole within 15 cm, none past 30.
+release. A distance fade of the aim (whole within 15 cm, none past 30) was tried and REMOVED the same day: pulling
+the gun away read as the grip letting go, and the shotgun's rule is that only releasing grip ends the hold.
+The lift on the last shell (a ~12 deg pitch-up over ~150 ms with gun-in-hand constant) is still unexplained; the
+pose recording now carries an `aim <hold weight> <aim turn deg> <hand distance cm> <gun motion>` line per frame
+so the next recording says which layer turns the gun.
+
+**Dry fire.** PlayerWeapon fires `TriggerEffectEvent('DryFiring',,,,,,,, CurrentAmmoSelection.Name)` on the weapon
+for an empty pull (corpus, PlayerWeapon.uc); a pull the shotgun's manual reload zeroes never gets there. The
+engine plays DryFiring on the weapon, with the ammunition object's name as the ReferenceTag, for each pull the
+shotgun refuses (reloading, waiting to be cocked, a pump waiting).
+
+**The Tommy Gun's bolt** ("the tommy gun slide sound"): the bolt-home Play phase started at 2.244 s, the stroke
+leaving the clip at 2.20; a phase's start is set, not played, so the cue in those 44 ms never fired. It starts at
+2.20 now.

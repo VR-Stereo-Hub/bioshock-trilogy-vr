@@ -6941,6 +6941,10 @@ constexpr const char* kPoseHeader =
     "palette); handfix: the palette correction p' = t + q (p - pivot) s on that hand's bones. A recording is "
     "frames, each opened by a `frame` line\n";
 
+// 2026-10-21: the gun hand's placement layers this compose (the recording's `aim` line): the two-handed aim's weight
+// and turn, the real hand's distance from where it holds the gun, the clip's own gun motion layered.
+float g_dbgAimTw = 0.0f, g_dbgAimTurnDeg = 0.0f, g_dbgAimDistCm = -1.0f, g_dbgGunMotion = 0.0f;
+
 void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
                 const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now);
 
@@ -7091,6 +7095,7 @@ void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float q
             fprintf(f, "ammo  %.6g %.6g %.6g  %d %d %d  %.6g\n", amLoc[0], amLoc[1], amLoc[2], amRot[0], amRot[1], amRot[2],
                     amScale);
     }
+    fprintf(f, "aim  %.4g %.4g %.4g  %.4g\n", g_dbgAimTw, g_dbgAimTurnDeg, g_dbgAimDistCm, g_dbgGunMotion);
 }
 
 // ---- `vrbones reloadrec <seconds>`: what a reload clip does, part by part ----------------------
@@ -8315,6 +8320,10 @@ void m4_compose(bool late) {
                 // 2026-10-20: the shotgun's Fire clip after its recoil is the one-handed pump - the gun
                 // swung up to show the pump - and in VR the pump is the player's: only the recoil plays.
                 const float g = handback::gun_motion(hb(h), now) * manual_reload::gun_motion_keep();
+                g_dbgGunMotion = g;
+                g_dbgAimTw = 0.0f; // set below while two hands hold
+                g_dbgAimTurnDeg = 0.0f;
+                g_dbgAimDistCm = -1.0f;
                 if (!handback::active(hb(h), now)) {
                     memcpy(s_gunRest[h].p, A[w].p, 12);
                     memcpy(s_gunRest[h].q, A[w].q, 16);
@@ -8379,21 +8388,18 @@ void m4_compose(bool late) {
                         toward[2] = dw[2] * toCm;
                     }
                     two_hand::publish(distCm, slideCm, paused, toward, now);
-                    float tw = paused ? 0.0f : two_hand::hold_weight(now);
-                    // 2026-10-21 (the 12:53 recording: "the split second tilt" - the drawn gun hand turning 70-79 deg in
-                    // one frame as the grip came up mid-reload): the shotgun's hold never lets go by distance, so with
-                    // the real hand 20-25 cm off the pump (reaching to load, pumping a dry gun) the aim turned the gun
-                    // toward it, and letting go snapped it back. The aim fades with the hand's distance from where it
-                    // holds the gun: whole within 15 cm, none past 30.
-                    if (manual_reload::sticky_grip() && distCm > 15.0f) {
-                        const float f = 1.0f - (distCm - 15.0f) / 15.0f;
-                        tw *= f < 0.0f ? 0.0f : f;
-                    }
+                    // (2026-10-21: a fade of the aim with the hand's distance was tried for the tilt on letting go
+                    // mid-reload and dropped - "it can lose grip by pulling the gun away": the shotgun's rule one is
+                    // that a held grip never lets go, in any part.)
+                    const float tw = paused ? 0.0f : two_hand::hold_weight(now);
+                    g_dbgAimTw = tw;
+                    g_dbgAimDistCm = distCm;
                     if (tw > 0.0f) {
                         // The turn from the gun as held; applied to the kicked gun it keeps the kick
                         // in the gun's own frame (turn * pinned.q * (pinned.q^-1 * own.q)), and the
                         // front hand, carried by this placement, kicks with it.
                         const ik::Quat turn = two_hand::aim_turn(pinned.at, authored, real, 5.0f / toCmClip);
+                        g_dbgAimTurnDeg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(turn.v[3]))) * 57.29578f;
                         const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
                         own = hc::toward(own, aimed, tw);
                         twoHold = tw;
