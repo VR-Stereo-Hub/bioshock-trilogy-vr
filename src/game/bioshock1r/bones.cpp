@@ -963,6 +963,7 @@ float g_wPartOff[kMaxBones][3] = {};
 bool g_wPartOn[kMaxBones] = {};
 float g_wPartQ[kMaxBones][4] = {};   // with g_wPartPose: the part's whole pose replaces the clip's
 bool g_wPartPose[kMaxBones] = {};
+float g_wPartScale[kMaxBones] = {}; // 2026-10-20: a part's own size factor while posed (0 = none): a designed grip draws it at the hand's size
 bool g_wPartAny = false;
 Qts g_wAnim[kMaxBones]; // adopted engine p/q; scale rows pinned to g_wRef
 Qts g_wWritten[kMaxBones]; // what we last wrote (adoption + reapply source)
@@ -2361,7 +2362,8 @@ bool wskel_compose(float ws) {
         } else if (g_wPartOn[i]) {
             for (int c = 0; c < 3; ++c) p[c] += g_wPartOff[i][c] * ws;
         }
-        float sv[3] = {g_wRef[i].s[0] * ws, g_wRef[i].s[1] * ws, g_wRef[i].s[2] * ws};
+        const float ks = g_wPartOn[i] && g_wPartScale[i] > 0.0f ? g_wPartScale[i] : 1.0f;
+        float sv[3] = {g_wRef[i].s[0] * ws * ks, g_wRef[i].s[1] * ws * ks, g_wRef[i].s[2] * ws * ks};
         if (!write_n(g_wBones[i].p, p, 12) || !write_n(g_wBones[i].q, qw, 16) ||
             !write_n(g_wBones[i].s, sv, 12)) {
             g_wSkelInst = nullptr;
@@ -7943,6 +7945,24 @@ void m4_compose(bool late) {
                 }
                 A = s_sub;
             }
+            // A DESIGNED GRIP for the part this hand carries (grips.h, from tools\blender\grip_solve.py): each
+            // finger joint takes the solved rotation against its parent, keeping the clip's own joint offsets.
+            if (const manual_reload::GripTable* gt = manual_reload::carry_grip(); gt && fh == 0) {
+                Qts clip[kMaxBones];
+                memcpy(clip, A, sizeof(Qts) * static_cast<size_t>(n));
+                if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                for (int j = 0; j < gt->jointCount; ++j) {
+                    const grips::GripJoint& J = gt->joints[j];
+                    if (J.bone < 0 || J.bone >= n || J.parent < 0 || J.parent >= n) continue;
+                    const ik::Quat cpq = ik::normalized(ik::quat(clip[J.parent].q));
+                    const ik::Vec off = ik::rotate(ik::conj(cpq), ik::vec(clip[J.bone].p) - ik::vec(clip[J.parent].p));
+                    const ik::Quat pq = ik::normalized(ik::quat(s_sub[J.parent].q));
+                    ik::put(ik::vec(s_sub[J.parent].p) + ik::rotate(pq, off), s_sub[J.bone].p);
+                    const ik::Quat q = ik::normalized(ik::mul(pq, ik::normalized(ik::quat(J.q))));
+                    memcpy(s_sub[J.bone].q, q.v, 16);
+                }
+                A = s_sub;
+            }
             if (!manual_reload::active()) {
                 for (int i = lo; i <= hi; ++i) {
                     const ik::Vec rp = ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp);
@@ -8320,6 +8340,8 @@ void m4_compose(bool late) {
             } else if (h != gunHand && !late && mrGun) {
                 // The free hand is placed: a part it carries moves with it (manual_reload.h carry).
                 manual_reload::HandPlacement hp = mrPlace;
+                memcpy(hp.wristP, A[m4_wrist(h)].p, 12);
+                memcpy(hp.wristQ, A[m4_wrist(h)].q, 16);
                 memcpy(hp.actorLoc, aLoc, 12);
                 memcpy(hp.actorQ, qa, 16);
                 hp.actorScale = k;
@@ -10107,9 +10129,14 @@ void arm_pose_capture(const wchar_t* dir, uint32_t delayMs, int frames) {
     BVR_LOG("[pose] capture armed: %d frame(s) from %.1f s into %ls (tools\\blender\\pose_capture.py)", frames,
             delayMs / 1000.0, dir);
 }
+void set_weapon_part_scale(int i, float k) {
+    if (i < 0 || i >= kMaxBones || !(k > 0.05f && k < 20.0f)) return;
+    g_wPartScale[i] = k;
+}
 void clear_weapon_part_offsets() {
     memset(g_wPartOn, 0, sizeof g_wPartOn);
     memset(g_wPartPose, 0, sizeof g_wPartPose);
+    memset(g_wPartScale, 0, sizeof g_wPartScale);
     g_wPartAny = false;
 }
 void unmirror_grip_dir(float d[3]) {

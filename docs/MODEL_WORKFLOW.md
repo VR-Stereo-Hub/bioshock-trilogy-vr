@@ -120,6 +120,13 @@ and Unreal axes): `--pose <pose_00.txt> --render cap` for one frame, `--record <
 grip's frame). A capture of the reference pose lands every bone on its rest (`hands_off_rest`
 0.00). The IK arms and the mirror are not rebuilt.
 
+**Designed grips** (2026-10-20). `tools\blender\grip_solve.py --hands <glb> --gun <glb> --hands-action <rx>
+--gun-action <rx> --time <s> --part "<bones>" [--hold rim|across] --emit src\game\bioshock1r\grip_<x>.h` places a part
+in the hand and closes each finger on it by the meshes (an exact cylinder fitted to the part; finger capsules
+sized from their skin), prints per finger the joints' turns, the contact along its length and the penetration
+on the deformed mesh, and emits the table the mod applies (`grips.h`). Check it with the mod's own math on a real
+capture before a run: `pose_capture.py --pose <pose_00.txt> --grip <grip_<x>.h>` prints the same contact numbers.
+
 **`reload_pose.py` reproduces the game's own placement** (2026-10-20). The gun's origin sits on
 the hands' `R_grip` (bone 43) in the GAME's frame of that bone, the way the engine attaches it,
 and every position it reports is in Unreal axes. Each run prints `BVR_POSE check` lines: the off

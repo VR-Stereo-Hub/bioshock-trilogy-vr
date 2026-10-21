@@ -8,6 +8,7 @@
 // The normal reload button is untouched: a reload the mod did not start is never held.
 
 #include "menu_model.h"
+#include "game/bioshock1r/grips.h"
 
 #include <cstdint>
 
@@ -48,7 +49,19 @@ struct HandPlacement {
     // The gun as drawn against the clip's: gunRatio of it about the grip socket (two_hand_math.h
     // gun_ratio), the socket at `socket` in the clip's component space.
     float socket[3] = {}, gunRatio = 1;
+    // The free hand's wrist bone in the clip's component space: a designed grip (grips.h) puts the part
+    // against it instead of where the clip's hand has it.
+    float wristP[3] = {}, wristQ[4] = {0, 0, 0, 1};
 };
+// Game thread: a designed grip for the part the free hand carries now (grips.h), or null - bones.cpp
+// curls that hand's fingers by it, carry() places the part by it.
+struct GripTable {
+    const grips::GripJoint* joints;
+    int jointCount;
+    const grips::GripPart* parts;
+    int partCount;
+};
+const GripTable* carry_grip();
 void carry(const HandPlacement& hp);
 
 // A manual reload is in progress (the hands stay on their controllers; the two-handed grip waits).

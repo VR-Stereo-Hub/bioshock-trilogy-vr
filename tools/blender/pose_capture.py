@@ -15,7 +15,7 @@
 # frame, 30 a second) and a CSV of what each frame did: the hands' state and clips, the gun hand's grip
 # frame, the free palm against the gun, every gun bone against its first frame. Not rebuilt: the IK arms
 # (the sleeves are the game's), the mirror. Outputs stay in the model workspace.
-import bpy, sys, os, json, argparse, math
+import bpy, sys, os, json, argparse, math, re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mathutils import Matrix, Quaternion, Vector  # noqa: E402
@@ -39,6 +39,8 @@ ap.add_argument("--out", default="")
 ap.add_argument("--focus", default="grip", help="grip | palm | a gun bone: what the renders look at")
 ap.add_argument("--size", type=float, default=45.0, help="the renders' camera distance scale (rig units)")
 ap.add_argument("--hide-arms", action="store_true", help="hide the arm meshes' sleeves (not rebuilt: IK)")
+ap.add_argument("--grip", default="", help="a grips header (grip_solve.py --emit): apply it to the capture with the "
+                                           "mod's own math (bones.cpp, manual_reload.cpp carry) and measure the hold")
 args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 exports = os.path.join(ws, "exports", "bs1")
@@ -107,6 +109,62 @@ def parse(path):
 
 
 frames = parse(args.record or args.pose)
+
+
+# ---- a designed grip, applied as the mod applies it ------------------------------------------------
+def parse_grip(path):
+    joints, parts_, wrist = [], [], 6
+    for line in open(path):
+        m = re.match(r"\s*\{(\d+), (\d+), \{([-\d.e]+)f, ([-\d.e]+)f, ([-\d.e]+)f, ([-\d.e]+)f\}\}", line)
+        if m:
+            joints.append((int(m.group(1)), int(m.group(2)), [float(m.group(k)) for k in range(3, 7)]))
+            continue
+        m = re.match(r'\s*\{"(\w+)", \{([-\d.e]+)f, ([-\d.e]+)f, ([-\d.e]+)f\}, \{([-\d.e]+)f, ([-\d.e]+)f, ([-\d.e]+)f, ([-\d.e]+)f\}\}', line)
+        if m:
+            parts_.append((m.group(1), [float(m.group(k)) for k in range(2, 5)], [float(m.group(k)) for k in range(5, 9)]))
+            continue
+        m = re.match(r"\s*inline constexpr int \w+Wrist = (\d+);", line)
+        if m:
+            wrist = int(m.group(1))
+    return joints, parts_, wrist
+
+
+def qmul(a, b):  # x y z w
+    x1, y1, z1, w1 = a
+    x2, y2, z2, w2 = b
+    return [w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2, w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2, w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2]
+
+
+def qrot(q, v):
+    x, y, z, w = q
+    Q = Quaternion((w, x, y, z))
+    return list(Q @ Vector(v))
+
+
+def apply_grip(cap, grip):
+    """bones.cpp's DESIGNED GRIP on the capture's engine pose (component space, Unreal axes), and
+    carry()'s placement of the part against the wrist (kept for pose_frame, in the same space)."""
+    joints, parts_, wrist = grip
+    clip = {i: (list(p), list(q)) for i, (p, q, s) in cap["bones"].items()}
+    out = {i: [list(p), list(q), list(s)] for i, (p, q, s) in cap["bones"].items()}
+    for bone, parent, jq in joints:
+        cp, cq = clip[parent]
+        x, y, z, w = cq
+        off = qrot([-x, -y, -z, w], [clip[bone][0][k] - cp[k] for k in range(3)])
+        pp, pq = out[parent][0], out[parent][1]
+        out[bone][0] = [pp[k] + qrot(pq, off)[k] for k in range(3)]
+        out[bone][1] = qmul(pq, jq)
+    cap["bones"] = {i: (v[0], v[1], v[2]) for i, v in out.items()}
+    wp, wq = out[wrist][0], out[wrist][1]
+    cap["grip_parts"] = {n: ([wp[k] + qrot(wq, p)[k] for k in range(3)], qmul(wq, q)) for n, p, q in parts_}
+
+
+if args.grip:
+    grip = parse_grip(args.grip)
+    for cap in frames:
+        apply_grip(cap, grip)
+    print("BVR_POSECAP grip %s: %d joints, parts %s" % (os.path.basename(args.grip), len(grip[0]), [p[0] for p in grip[1]]))
 if not frames:
     raise SystemExit("BVR_POSECAP no frames in %s" % (args.record or args.pose))
 last = len(frames) if args.last < 0 else min(args.last + 1, len(frames))
@@ -211,6 +269,16 @@ def pose_frame(cap):
             if valid:
                 to_comp = ue_matrix(ft, fq, (fs,) * 3) @ ue_matrix([-c for c in fp], [0, 0, 0, 1]) @ to_comp
         wf = {name: to_comp @ ue_matrix(p, q, s) for i, (name, p, q, s) in cap["wbones"].items() if name in ga.pose.bones}
+        # A designed grip's part: against the wrist in the clip's component space, then moved with the hand that
+        # holds it by that hand's palette correction (the left hand's - the free hand's).
+        for name, (p, q) in cap.get("grip_parts", {}).items():
+            if name in ga.pose.bones:
+                fh = 1 - cap.get("held", 1)
+                valid, fq, ft, fp, fs = cap["handfix"].get(fh, (False, None, None, None, None))
+                fix = (ue_matrix(ft, fq, (fs,) * 3) @ ue_matrix([-c for c in fp], [0, 0, 0, 1])) if valid else Matrix.Identity(4)
+                # At the HAND's scale (the mod draws a part held by a designed grip at the size of the hand that
+                # holds it - the grip was solved at the game's own 1:1): the hand's correction scales it.
+                wf[name] = fix @ ue_matrix(p, q, (1, 1, 1))
         for name in depth_order(ga, wf):
             set_game_frame(ga, GC, name, wf[name])
             bpy.context.view_layer.update()
@@ -285,6 +353,69 @@ for k, cap in enumerate(frames):
                                                                rows[-1]["weapon_t"]))
 scn.frame_start, scn.frame_end = 0, max(0, len(frames) - 1)
 hang_ammo()
+
+
+def measure_grip():
+    """The hold, on the meshes as drawn: per finger, the share of its skin within 0.6 of the part's cylinder
+    and the deepest any of it goes in."""
+    names = [p[0] for p in grip[1]]
+    deps = bpy.context.evaluated_depsgraph_get()
+
+    def verts(obj):
+        ev = obj.evaluated_get(deps)
+        me = ev.to_mesh()
+        pts = [ev.matrix_world @ v.co for v in me.vertices]
+        ev.to_mesh_clear()
+        return pts
+
+    gmesh = max(gm, key=lambda o: len(o.data.vertices) if o.type == "MESH" and o.vertex_groups else 0)
+    gidx = {g.index: g.name for g in gmesh.vertex_groups}
+    gp = verts(gmesh)
+    own = [gp[v.index] for v in gmesh.data.vertices
+           if (b := max(v.groups, key=lambda g: g.weight, default=None)) and gidx.get(b.group) in names and b.weight >= 0.5]
+    c0 = sum(own, Vector()) / len(own)
+    rw = game_frame(ga, GC, names[0]).to_3x3()
+    best = None
+    for a in range(3):
+        ax = rw.col[a].normalized()
+        ds = [((p - c0) - ax * (p - c0).dot(ax)).length for p in own]
+        mean = sum(ds) / len(ds)
+        sd = math.sqrt(sum((d - mean) ** 2 for d in ds) / len(ds)) / max(mean, 1e-6)
+        if best is None or sd < best[0]:
+            best = (sd, ax)
+    ax = best[1]
+    ts = [(p - c0).dot(ax) for p in own]
+    c = c0 + ax * ((min(ts) + max(ts)) / 2)
+    h = (max(ts) - min(ts)) / 2
+    r = sorted(((p - c0) - ax * (p - c0).dot(ax)).length for p in own)[int(len(own) * 0.9)]
+
+    def sdist(p):
+        v = p - c
+        t = v.dot(ax)
+        er, eh = (v - ax * t).length - r, abs(t) - h
+        return max(er, eh) if er <= 0 and eh <= 0 else math.sqrt(max(er, 0) ** 2 + max(eh, 0) ** 2)
+
+    hmesh = max(hm, key=lambda o: len(o.data.vertices))
+    hidx = {g.index: g.name for g in hmesh.vertex_groups}
+    hp = verts(hmesh)
+    out = {}
+    side = "L" if cap0.get("held", 1) == 1 else "R"
+    for f in ("Thumb", "Index", "Middle", "Ring", "Pinky"):
+        bones_ = {"kBone_%s_%s%d" % (side, f, k) for k in (1, 2, 3)}
+        ds = [sdist(hp[v.index]) for v in hmesh.data.vertices
+              if (b := max(v.groups, key=lambda g: g.weight, default=None)) and hidx.get(b.group) in bones_]
+        if ds:
+            out[f] = {"on": sum(1 for d in ds if abs(d) <= 0.6) / len(ds), "deepest": -min(min(ds), 0.0),
+                      "nearest": min(abs(d) for d in ds)}
+            print("BVR_POSECAP grip %-6s %3.0f%% of its skin on the part, nearest %.2f, deepest in %.2f"
+                  % (f, 100 * out[f]["on"], out[f]["nearest"], out[f]["deepest"]))
+    print("BVR_POSECAP grip the part as drawn: radius %.2f, length %.2f" % (r, 2 * h))
+    return out
+
+
+cap0 = frames[0]
+if args.grip:
+    R["grip"] = measure_grip()
 R["frames"] = len(frames)
 R["first"] = rows[0]
 

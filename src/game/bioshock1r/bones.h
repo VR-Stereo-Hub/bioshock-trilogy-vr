@@ -250,6 +250,9 @@ void set_weapon_part_offset(int i, const float d[3]);
 // The whole pose of a part instead (weapon space, before the weapon size): the part a hand carries.
 void set_weapon_part_pose(int i, const float p[3], const float q[4]);
 void clear_weapon_part_offsets();
+// A posed part's own size factor (on top of the weapon size) until cleared - a part held by a designed
+// grip is drawn at the hand's size, the size the grip was solved at.
+void set_weapon_part_scale(int i, float k);
 // The weapon size the skeleton lane last WROTE (1.0 while no lane is bound): the factor between a
 // bone's clip pose and the drawn gun, steady across the frame - a GetBoneCoords read can land before
 // or after the write (2026-10-20, the pistol's carried cylinder jumping between the two).

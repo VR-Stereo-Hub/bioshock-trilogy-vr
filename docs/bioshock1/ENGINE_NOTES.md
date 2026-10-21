@@ -6910,3 +6910,26 @@ older captures carry the arm with the hand), so its wrists are no longer torn.
 
 A dry Tommy Gun's reload waits at the drum; switching ammunition then (PendingAmmoSelection changing)
 drops the drum as X does, and the game loads the new type when the clip ends.
+
+## 2026-10-20 - A designed grip for a carried part (the pistol's cylinder)
+
+The pistol's carry hold (0.80 s of FastReload) is the game's own pose, replayed exactly from a capture: an
+open hand mid-toss, the cylinder resting on the fingers - and measured on the meshes the clip's index and
+middle are 4-6 units INSIDE the cylinder there, so no curl of the clip's fingers can grip it.
+`tools\blender\grip_solve.py` designs the hold instead, by the meshes: the part as an exact cylinder fitted
+to its skin (the pistol's: length 7.97, diameter 9.55 - a puck, wider than long, and shorter than the hand
+is wide, so laid across the knuckles the index and pinky miss it); `--hold rim` puts its face in the palm
+under the fingers' bases, seats it out of the palm's skin, then closes each joint, base first, until its
+own segment touches (a capsule sized from the finger's skin), backs off any joint whose skin goes deeper
+than 0.3 - and checks the result on the deformed meshes. The pistol's: middle, ring, pinky and thumb on the
+cylinder along 57-63% of their length, the index 37%, nothing deeper than 0.3. It emits each finger joint's
+rotation against its parent and each part bone's pose against the wrist (`grip_pistol_cylinder.h`).
+
+The mod applies it while the new cylinder is carried (`manual_reload::carry_grip`): bones.cpp sets the
+left fingers to the solved rotations with the clip's own joint offsets, carry() places the part against the
+clip's wrist and moves it with the hand's placement - and draws it at the HAND's size. The simulation
+(`pose_capture.py --grip`, the mod's own math on the real capture) found that last part: the gun is drawn
+at weapon size x DrawScale, the hand at the hand size, so the carried cylinder came out 15% small (radius
+4.07 for 4.77) and every finger stopped ~0.3 short of it; at the hand's size (`set_weapon_part_scale`,
+the hand's actor x placement scale over the gun's drawn factor) every finger and the thumb touch it
+(nearest 0.00-0.05, nothing deeper than 0.28). It returns to the gun's size as the clip seats it.

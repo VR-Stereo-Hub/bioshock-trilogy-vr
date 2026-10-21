@@ -5,6 +5,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/dropped_part.h"
+#include "game/bioshock1r/grip_pistol_cylinder.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
@@ -451,6 +452,21 @@ bool pumping() {
            GetTickCount64() - g_fireClipMs.load(std::memory_order_relaxed) < 400;
 }
 bool pump_wait() { return g_pumpWait.load(std::memory_order_relaxed); }
+
+const GripTable* carry_grip() {
+    // 2026-10-20: the pistol's new cylinder, held in the palm with the fingers over its rim
+    // (tools\blender\grip_solve.py --hold rim: middle, ring, pinky and thumb on it along 57-63% of their
+    // length, nothing deeper than 0.3) - the clip's own hand there is open, mid-toss.
+    static const GripTable kPistolCylinder{grips::kPistolCylinderGrip,
+                                           static_cast<int>(sizeof grips::kPistolCylinderGrip / sizeof grips::kPistolCylinderGrip[0]),
+                                           grips::kPistolCylinderGripPart,
+                                           static_cast<int>(sizeof grips::kPistolCylinderGripPart /
+                                                            sizeof grips::kPistolCylinderGripPart[0])};
+    if (g_carryMode == 1 && g_machine.active() && g_carryPart && !g_carryAtPalm && !_wcsicmp(g_cls, L"Pistol") &&
+        strstr(g_carryPart, "DrumParent"))
+        return &kPistolCylinder;
+    return nullptr;
+}
 bool two_hand_allowed() {
     // A manual reload leaves the two-handed grip on: at its last pump (the grip IS the pump), and through
     // any wait while that grip is still squeezed (the shotgun emptied with both hands on it - 20:35 run).
@@ -502,7 +518,20 @@ void carry(const HandPlacement& hp) {
         const float ratio = hp.gunRatio > 1e-3f ? hp.gunRatio : 1.0f;
         const Vec sock = arm_ik::vec(hp.socket);
         const Vec sockDrawn = gunPalmAt + arm_ik::rotate(qg, (sock - gunPalm) * hp.gunS);
-        const Vec comp = sock + arm_ik::rotate(arm_ik::conj(qg), drawn - sockDrawn) * (1.0f / (hp.gunS * ratio));
+        Vec comp = sock + arm_ik::rotate(arm_ik::conj(qg), drawn - sockDrawn) * (1.0f / (hp.gunS * ratio));
+        // A designed grip (grips.h, tools\blender\grip_solve.py): the part where the solved hand holds it,
+        // against the clip's wrist - not where the clip's own hand has it (the pistol's: an open hand,
+        // mid-toss, the cylinder resting on the fingers).
+        const grips::GripPart* gp = nullptr;
+        if (const GripTable* g = carry_grip())
+            for (int k = 0; k < g->partCount; ++k)
+                if (!_stricmp(g->parts[k].bone, bones::weapon_bone_name(i))) gp = &g->parts[k];
+        arm_ik::Quat compQ{};
+        if (gp) {
+            const arm_ik::Quat wq = arm_ik::normalized(arm_ik::quat(hp.wristQ));
+            comp = arm_ik::vec(hp.wristP) + arm_ik::rotate(wq, Vec{gp->p[0], gp->p[1], gp->p[2]});
+            compQ = arm_ik::normalized(arm_ik::mul(wq, arm_ik::normalized(arm_ik::quat(gp->q))));
+        }
         // ... and on through the free hand's, which carries it. At the palm: the part's pivot in the
         // palm itself (the clip's hand is not holding it now).
         const Vec moved = g_carryAtPalm ? palmAt : palmAt + arm_ik::rotate(qh, (comp - palm) * hp.s);
@@ -535,10 +564,18 @@ void carry(const HandPlacement& hp) {
                         world2.y, world2.z, palmAtW.x, palmAtW.y, palmAtW.z, p[0], p[1], p[2], np[0], np[1], np[2], s);
             }
         }
-        // Turned with the hand: q' = M^-1 (move) M q.
+        // Turned with the hand: q' = M^-1 (move) M q - or, gripped by design, the hand's own turn of it:
+        // M^-1 qa qh (wrist q_rel).
         const arm_ik::Quat nq =
-            arm_ik::normalized(arm_ik::mul(mT, arm_ik::mul(moveW, arm_ik::mul(mq, arm_ik::normalized(arm_ik::quat(q))))));
+            gp ? arm_ik::normalized(arm_ik::mul(mT, arm_ik::mul(qa, arm_ik::mul(qh, compQ))))
+               : arm_ik::normalized(
+                     arm_ik::mul(mT, arm_ik::mul(moveW, arm_ik::mul(mq, arm_ik::normalized(arm_ik::quat(q))))));
         bones::set_weapon_part_pose(i, np, nq.v);
+        // Held by a designed grip, the part is drawn at the HAND's size (the grip was solved at the game's own
+        // 1:1, hands and gun alike; the gun is drawn smaller than the hand - the pistol's cylinder came out
+        // 15% small in the simulation and no finger reached it). World units per clip unit: the hand's
+        // actor scale times its placement's, against the gun's drawn factor.
+        if (gp && s > 1e-6f) bones::set_weapon_part_scale(i, hp.actorScale * hp.s / s);
     });
 }
 
