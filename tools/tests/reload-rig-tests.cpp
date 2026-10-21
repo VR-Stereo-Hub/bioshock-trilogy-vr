@@ -163,6 +163,21 @@ int main() {
         for (int i = 0; i < 30 && s.m.phase() == 3; ++i) o = s.step(Vec{10, 0, -60}, false);
         check(s.m.phase() == 4, "the clip plays it home: the bolt next", s.m.phase(), 4);
     }
+    // ---- a dry Tommy Gun waits for the hand to pull the drum; X drops it instead (20:35: "locked up") ----
+    {
+        Sim s;
+        s.in.adopt = true;
+        s.clip(L"Reload", 3.33f);
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.adopt = false;
+        check(s.m.active() && s.m.phase() == 0 && !o.ejected, "dry: the reload waits at the drum, nothing dropped");
+        s.in.ejectNow = true;
+        o = s.step(Vec{40, 7, 2}, false);
+        s.in.ejectNow = false;
+        check(o.ejected, "the reload button there: the drum drops");
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
+        check(s.m.phase() == 2, "then the pouch", s.m.phase(), 2);
+    }
     // ---- a round still in the Tommy Gun: no bolt to rack ----
     {
         Sim s;
@@ -239,12 +254,13 @@ int main() {
         o = s.step(Vec{52, 18, 16}, false);
         check(s.m.program() && s.m.program()->clip == kPrograms[5].clip, "the end clip is the pump");
         o = s.step(kShotgunPumpBack[0].p, true);
-        o = s.step(kShotgunPumpBack[2].p, true);
-        check(s.m.phase() == 1, "pumped back", s.m.phase(), 1);
-        // one stroke: still holding at the back, straight on forward
-        o = s.step(kShotgunPumpFwd[3].p, true);
-        o = s.step(kShotgunPumpFwd[3].p, false);
-        check(s.m.phase() == 2 && o.run && o.jump, "and forward: done, the clip let run", s.m.phase(), 2);
+        check(o.pumpWait && !o.claim && !o.hold && !o.run,
+              "the last pump waits for the two-handed pump: the grip is not the reload's");
+        s.in.pumpDone = true;
+        o = s.step(kShotgunPumpBack[0].p, true);
+        s.in.pumpDone = false;
+        o = s.step(kShotgunPumpBack[0].p, false);
+        check(s.m.phase() == 1 && o.run && o.jump, "pumped: the clip let run to its end", s.m.phase(), 1);
     }
     // ---- adopt: the game reloads by itself (the gun ran dry) ----
     {
@@ -347,7 +363,7 @@ int main() {
         o = f.step(Vec{40, 7, 2}, false);
         check(o.act != Act::StartReload && o.haptic == Haptic::Deny, "a full gun does not eject: it buzzes no");
     }
-    // ---- the shotgun reload's last pump: two slides, the hand held through both ----
+    // ---- the shotgun reload's last pump is the pump between shots (PumpHand + the waiting Pump) ----
     {
         Sim s;
         s.cls = L"Shotgun";
@@ -355,18 +371,33 @@ int main() {
         s.clip(L"Reload", 0.95f);
         Output o = s.step(kShotgunPumpBack[0].p, false);
         s.in.adopt = false;
-        check(s.m.active() && s.m.phase() == 0, "the end clip: waiting at the pump", s.m.phase(), 0);
-        const Vec back = kShotgunPumpBack[2].p - kShotgunPumpBack[0].p;
-        const Vec bd = back * (1.0f / bvr::b1r::arm_ik::length(back));
-        o = s.step(kShotgunPumpBack[0].p, true);
-        o = s.step(kShotgunPumpBack[0].p + bd * 4.5f, true);
-        check(o.handLock && o.t > 0.42f && o.t < 0.44f, "4.5 cm back: the pump follows 1:1, the hand on it", o.t, 0.432);
-        o = s.step(kShotgunPumpBack[0].p + bd * 6.5f, true);
-        check(s.m.phase() == 1, "6 cm back: caught - now forward, still held", s.m.phase(), 1);
-        const Vec at = kShotgunPumpBack[0].p + bd * 6.5f;
-        const Vec fwd = kShotgunPumpFwd[3].p - kShotgunPumpFwd[0].p;
-        o = s.step(at + fwd * (6.5f / bvr::b1r::arm_ik::length(fwd)), true);
-        check(s.m.phase() == 2, "6 cm forward: pumped, the clip finishes", s.m.phase(), 2);
+        check(s.m.active() && s.m.phase() == 0 && o.pumpWait, "the end clip: waiting at the pump", s.m.phase(), 0);
+        // The Pump over the end clip, waiting for the hands: one-handed it holds, it never pumps itself.
+        PumpConfig c;
+        c.backT0 = 0.409f;
+        c.backT1 = 0.487f;
+        c.fwdT0 = 0.532f;
+        c.fwdT1 = 0.676f;
+        c.earlyCm = 1e6f;
+        c.waitForHands = true;
+        Pump p;
+        PumpInput in;
+        in.fireClip = in.clipNew = in.spanOk = true;
+        in.clipT = 0.41f;
+        in.spanCm = 40.0f;
+        PumpOutput po = p.update(in, c);
+        in.clipNew = false;
+        check(po.hold && !po.run && std::fabs(po.t - 0.409f) < 0.01f, "not two-handed: it waits at the pump", po.t, 0.409);
+        po = p.update(in, c);
+        check(po.hold && !po.run, "and keeps waiting (never pumps itself)");
+        in.held = true;
+        po = p.update(in, c);
+        in.spanCm = 33.5f;
+        po = p.update(in, c);
+        check(p.backDone(), "two-handed: 6 cm closer, the back stroke");
+        in.spanCm = 40.0f;
+        po = p.update(in, c);
+        check(po.run && !p.working(), "6 cm apart: pumped, the clip plays out");
     }
     // ---- the shotgun's pump by hand: Half-Life 2 VR's ratchet strokes ----
     {

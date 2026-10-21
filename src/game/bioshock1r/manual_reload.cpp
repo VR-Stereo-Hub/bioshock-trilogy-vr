@@ -43,6 +43,22 @@ rr::Machine g_machine;
 rr::Config g_cfg;
 rr::Pump g_pump;          // the shotgun's pump by hand
 rr::PumpConfig g_pumpCfg;
+// The shotgun reload's last pump (reload_rig.h Kind::PumpHand): the same Pump over the end clip's own pump
+// times, waiting for the hands instead of pumping itself.
+rr::Pump g_endPump;
+rr::PumpConfig end_pump_cfg() {
+    rr::PumpConfig c;
+    c.backT0 = 0.409f;
+    c.backT1 = 0.487f;
+    c.fwdT0 = 0.532f;
+    c.fwdT1 = 0.676f;
+    c.earlyCm = 1e6f; // no early start: the clip is already at the pump
+    c.waitForHands = true;
+    return c;
+}
+bool g_endPumpDone = false;
+bool g_endPumpWas = false;
+std::atomic<bool> g_pumpWait{false}; // game thread -> bones/two-hand: the grip is the two-handed grip's now
 
 // XInput thread <-> game thread.
 std::atomic<bool> g_gripDown{false};
@@ -397,7 +413,7 @@ void haptic(rr::Haptic h, const Frame& f) {
 }
 
 const char* kind_name(rr::Kind k) {
-    static const char* const n[] = {"pull", "carry", "fetch", "insert", "flick", "play", "finish", "slide"};
+    static const char* const n[] = {"pull", "carry", "fetch", "insert", "flick", "play", "finish", "slide", "pump"};
     return n[static_cast<int>(k)];
 }
 
@@ -429,7 +445,13 @@ bool can_reload(void* weapon, uint64_t now) {
 } // namespace
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
-bool pumping() { return g_pumping.load(std::memory_order_relaxed); }
+bool pumping() { return g_pumping.load(std::memory_order_relaxed) || (g_pumpWait.load(std::memory_order_relaxed) && g_endPump.working()); }
+bool pump_wait() { return g_pumpWait.load(std::memory_order_relaxed); }
+bool two_hand_allowed() {
+    // A manual reload leaves the two-handed grip on: at its last pump (the grip IS the pump), and through
+    // any wait while that grip is still squeezed (the shotgun emptied with both hands on it - 20:35 run).
+    return !active() || g_pumpWait.load(std::memory_order_relaxed) || two_hand::held();
+}
 float gun_motion_keep() { return g_gunKeep; }
 
 float hand_lock(uint64_t nowMs) {
@@ -631,7 +653,9 @@ void tick(const Frame& f) {
             constexpr float kRecoilEnd0 = 0.30f, kRecoilEnd1 = 0.45f; // reload_pose.py: kick 0.06-0.15, settling to 0.45, then the swing up
             float u = pi.fireClip ? (pi.clipT - kRecoilEnd0) / (kRecoilEnd1 - kRecoilEnd0) : 0.0f;
             u = u < 0 ? 0 : u > 1 ? 1 : u;
-            g_gunKeep = 1.0f - u * u * (3.0f - 2.0f * u);
+            // Half the clip's kick through the recoil (20:35 run: "too much recoil"), none after it.
+            constexpr float kShotgunKick = 0.5f;
+            g_gunKeep = (pi.fireClip ? kShotgunKick : 1.0f) * (1.0f - u * u * (3.0f - 2.0f * u));
         }
         static int32_t s_fireHandle = 0;
         pi.clipNew = pi.fireClip && pw != s_fireHandle;
@@ -704,7 +728,11 @@ void tick(const Frame& f) {
     // pistol, the Tommy Gun; the shotgun's reload starts at the pouch and keeps the game's button).
     const bool ejectable = in.entryProgram && !in.entryProgram->entryAtPouch && rr::first_fetch(in.entryProgram) >= 0;
     g_ejectable.store(ejectable, std::memory_order_relaxed);
-    in.eject = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable && !g_machine.active();
+    const bool xPressed = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable;
+    in.eject = xPressed && !g_machine.active();
+    in.ejectNow = xPressed && g_machine.active(); // a reload waiting at its first pull drops the magazine
+    in.pumpDone = g_endPumpDone;
+    g_endPumpDone = false;
     // And a reload the game begins itself (the gun ran dry) ejects the same way.
     in.ejectAdopted = ejectable;
     // The carried part's distance from its latch (carry(), last frame), while one is known.
@@ -769,7 +797,8 @@ void tick(const Frame& f) {
     // reload of a gun that ejects, once it has ended - refilled or not, the gun has rounds in it.
     const rr::Program* prog = g_machine.program();
     const bool ejects = prog && prog->ejectT >= 0;
-    if ((o.fetched || o.seating) && ejects) {
+    // The shotgun's shell too (20:35 run: "the other bullets turned invisible while I put them in").
+    if (o.fetched || (o.seating && ejects)) {
         struct { int32_t pad[4]; } none{};
         const bool ok = script::call(f.weapon, "ShowAmmoModel", &none);
         BVR_LOG("[reload] %S: %s %s - its magazine shown (%s)", g_cls, o.fetched ? "a new one from the pouch:" : "seating:",
@@ -814,6 +843,39 @@ void tick(const Frame& f) {
         else if (o.run)
             run(f.weapon, f.hands, hw, hh, o.jump, o.t);
     }
+    // The reload's last pump, exactly the pump between shots: the same Pump, the same two-handed grab.
+    g_pumpWait.store(o.pumpWait, std::memory_order_relaxed);
+    if (o.pumpWait && in.clipLive) {
+        static const rr::PumpConfig s_cfg = end_pump_cfg();
+        rr::PumpInput pi;
+        pi.fireClip = true;
+        pi.clipNew = !g_endPumpWas;
+        script::anim_time(f.weapon, hw, &pi.clipT);
+        pi.held = two_hand::held();
+        bvr::vr::HeadPose a{}, b{};
+        pi.spanOk = bvr::vr::get_hand_pose(0, false, a) && bvr::vr::get_hand_pose(1, false, b);
+        if (pi.spanOk) {
+            const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
+            pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
+        }
+        const rr::PumpOutput po = g_endPump.update(pi, s_cfg);
+        if (po.hold)
+            hold(f.weapon, f.hands, hw, hh, po.t, po.chase);
+        else if (po.run) {
+            run(f.weapon, f.hands, hw, hh, po.jump, po.t);
+            g_endPumpDone = true;
+        }
+        haptic(po.haptic, f);
+        if (po.event) BVR_LOG("[reload] Shotgun reload's last pump: %s", po.event);
+        if (!pi.held && f.now - g_lastBuzzMs >= 400) { // grab the fore-end: the hand is told where
+            g_lastBuzzMs = f.now;
+            bvr::vr::pulse_hand(f.freePhys, 0.25f, 30);
+        }
+    } else if (g_endPumpWas) {
+        rr::PumpInput off;
+        g_endPump.update(off, end_pump_cfg()); // reset for the next reload
+    }
+    g_endPumpWas = o.pumpWait && in.clipLive;
     if (wasActive && !g_machine.active()) {
         let_go(f.weapon, f.hands);
         ++g_done;

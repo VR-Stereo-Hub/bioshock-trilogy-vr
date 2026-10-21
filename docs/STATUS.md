@@ -52,9 +52,22 @@ Built, host-tested (14 suites), lint clean, installed. NOT run in the simulator 
 - Open: the shotgun "changes the hand position when empty" - not yet understood (which hand, when);
   the wrench trigger-attack hand-back (arm thrown forward) awaits the tester's trigger-swing test.
 
+- **After the 20:35 run** (pistol close; Tommy "locked up"; shotgun's empty position, recoil, the
+  reload's pump unlike the normal one, invisible shells): a dry Tommy Gun's reload waits for the hand
+  to pull the drum (it no longer drops it itself) - and X there now drops it (the lock-up was that
+  wait with every button ignored). The shotgun keeps the two-handed hold and the drawn free hand
+  through a reload begun with the grip squeezed; the reload's last pump is the same Pump as between
+  shots (two-handed grab, 6 cm strokes, never pumps itself); the Fire clip's kick is halved; a shell
+  from the pouch is shown. Tools: the in-game pose capture and the shotgun recording, replayed by
+  `tools\blender\pose_capture.py` (MODEL_WORKFLOW.md).
+- Open: the pistol's carried cylinder is "close, slightly off" at 0.80 s; a custom finger grip waits
+  on a pose capture of it (the fingers would be a new override of the hand's own bones).
+
 ### Next steps
 
 - Headset: the items above (tester instructions in the session's report).
+- From the shotgun recording (`dumps\poserec-...\Shotgun.bvrpose`): replay it, read the per-frame CSV,
+  and tune the pump, recoil and empty-gun behaviour against the game's real frames.
 - If the 6 cm stroke feels wrong, it is `PumpConfig::strokeCm` (and the Slides' 6.0 in kShotgunEnd);
   the log's stroke lines give the distances the tester actually used.
 - The pistol cylinder as a world object: the spawned skeletal-actor route, if wanted.

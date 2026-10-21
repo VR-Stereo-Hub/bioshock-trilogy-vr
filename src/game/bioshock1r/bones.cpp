@@ -7877,6 +7877,45 @@ void m4_compose(bool late) {
     // composed first. The gun hand's pose just before (the rest the clip's own motion of the
     // gun is measured from) is kept per hand while no hand-back touches it.
     const int gunHand = g_m4.held == 0 ? 0 : 1;
+    // ---- 2026-10-20: THE FREE HAND KEPT ON THE GUN THROUGH A RELOAD'S START ---------------------------
+    // The 20:35 run: the shotgun emptied with both hands on it, the game's reload began, and its clip took
+    // the free hand off the fore-end (to the pouch) - the two-handed hold, which aims from where the clip
+    // has that hand, let go and the gun swung ("1000% moving the weapon differently when it goes empty").
+    // While no reload runs, that hand's bones are kept relative to the gun hand's wrist; while one runs
+    // with the two-handed grip still squeezed, they are put back there, so the hold and the drawn hand stay
+    // exactly as they were until the grip is let go (then the reload has the hand, as before).
+    {
+        static Qts s_freeRel[kMaxBones];
+        static bool s_freeRelValid = false;
+        static Qts s_sub[kMaxBones];
+        const int fh = 1 - gunHand;
+        const int lo = fh ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+        const int hi = fh ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+        const int gw = m4_wrist(gunHand);
+        if (n > hi && n <= kMaxBones && gw < n) {
+            const ik::Quat gq = ik::normalized(ik::quat(A[gw].q));
+            const ik::Vec gp = ik::vec(A[gw].p);
+            const bool keep = manual_reload::active() && two_hand::held() && !manual_reload::pump_wait();
+            if (!manual_reload::active()) {
+                for (int i = lo; i <= hi; ++i) {
+                    const ik::Vec rp = ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp);
+                    const ik::Quat rq = ik::normalized(ik::mul(ik::conj(gq), ik::quat(A[i].q)));
+                    ik::put(rp, s_freeRel[i].p);
+                    memcpy(s_freeRel[i].q, rq.v, 16);
+                    memcpy(s_freeRel[i].s, A[i].s, 12);
+                }
+                s_freeRelValid = true;
+            } else if (keep && s_freeRelValid) {
+                memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                for (int i = lo; i <= hi; ++i) {
+                    ik::put(gp + ik::rotate(gq, ik::vec(s_freeRel[i].p)), s_sub[i].p);
+                    const ik::Quat q = ik::normalized(ik::mul(gq, ik::quat(s_freeRel[i].q)));
+                    memcpy(s_sub[i].q, q.v, 16);
+                }
+                A = s_sub;
+            }
+        }
+    }
     static ik::Bone s_gunRest[2];
     static bool s_gunRestValid[2] = {false, false};
     static float s_joinMinCm[2] = {1e9f, 1e9f};
@@ -8053,7 +8092,7 @@ void m4_compose(bool late) {
                 // the other hand rides it there (the free hand's branch). A clip that owns either
                 // hand (a reload) pauses it: the carry above already puts the hand on the gun.
                 const M4Hand& O = g_m4.hand[1 - h];
-                if (twoGunOk && O.valid && toCmClip > 0.0f && !manual_reload::active()) {
+                if (twoGunOk && O.valid && toCmClip > 0.0f && manual_reload::two_hand_allowed()) {
                     float op[3];
                     to_comp_p(O.p, op);
                     const ik::Vec real = ik::vec(op);
@@ -8091,7 +8130,7 @@ void m4_compose(bool late) {
                     } else {
                         s_twoTurnW[h] = 0.0f;
                     }
-                } else if (twoGunOk && manual_reload::active() && s_twoTurnW[h] > 0.0f) {
+                } else if (twoGunOk && !manual_reload::two_hand_allowed() && s_twoTurnW[h] > 0.0f) {
                     // 2026-10-20: a manual reload takes the front hand off the gun, and the gun used to
                     // swing back from its two-handed angle to the one-handed one - the shotgun's
                     // reload "tilting the gun up". It keeps the angle it had, in this hand's frame,

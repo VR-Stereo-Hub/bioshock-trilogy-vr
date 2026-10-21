@@ -47,6 +47,9 @@ enum class Kind : uint8_t {
     Slide,   // 2026-10-20: a part that slides along the gun (the Tommy Gun's bolt): grabbed near the path's
              // start, it follows the hand's travel back along the gun 1:1 (Phase::travel), both ways while
              // held, and the drawn hand is locked onto it in the clip's own grip (Output::handLock)
+    PumpHand,// 2026-10-20: the shotgun reload's last pump, worked EXACTLY as between shots: the free hand's
+             // grip is left to the two-handed grip (Output::pumpWait), the glue's Pump drives the clip from
+             // t0 to t1 (PumpConfig over this clip), and Input::pumpDone moves on
 };
 
 struct Phase {
@@ -159,11 +162,10 @@ inline constexpr Pt kShotgunPumpFwd[] = {
     {0.532f, {38.4f, 13.0f, 10.9f}}, {0.588f, {39.2f, 13.2f, 11.2f}}, {0.634f, {44.1f, 15.1f, 13.3f}},
     {0.676f, {51.1f, 17.7f, 16.4f}}};
 inline constexpr Phase kShotgunEnd[] = {
-    // Slides (2026-10-20, as the Tommy Gun's bolt): the hand locked on the pump, which follows it one
-    // for one - the old pulls mapped the hand onto the clip hand's path ("controlled from far away").
-    // About 15 units each way (the reload's pump path; the Fire clip's SG_Pump runs 18).
-    {Kind::Slide, 0.409f, 0.487f, kShotgunPumpBack, 3, nullptr, "pump back", false, false, 1.5f, -1.0f, 15.0f, 6.0f},
-    {Kind::Slide, 0.532f, 0.676f, kShotgunPumpFwd, 4, nullptr, "pump forward", false, false, 1.5f, -1.0f, 15.0f, 6.0f},
+    // The pump back 0.409-0.487, forward 0.532-0.676 - worked by the two-handed grip like every other
+    // pump (the 20:35 run: "the cocking after reloading is not the same as the normal grab cocking and I
+    // have to regrip it"). Its strokes are the glue's Pump over this clip (kEndPump in manual_reload.cpp).
+    {Kind::PumpHand, 0.409f, 0.676f, nullptr, 0, nullptr, "pumped"},
     {Kind::Finish, 0.90f, 0.95f, nullptr, 0, nullptr, "done"}};
 
 inline constexpr Program kPrograms[] = {
@@ -174,7 +176,7 @@ inline constexpr Program kPrograms[] = {
     {L"Pistol", L"Reload", 1.80f, kPistol, 7, false, 0.466f, "DrumParent+drum"}, // no fast-reload upgrade: scaled
     {L"Shotgun", L"SingleFrame", 0.033f, kShotgunStart, 1, true},
     {L"Shotgun", L"Reload_Loop", 0.49f, kShotgunLoop, 4, true},
-    {L"Shotgun", L"Reload", 0.95f, kShotgunEnd, 3, true},
+    {L"Shotgun", L"Reload", 0.95f, kShotgunEnd, 2, true},
 };
 
 inline bool same(const wchar_t* a, const wchar_t* b) {
@@ -260,6 +262,9 @@ struct Input {
     float partSeatCm = -1;      // the carried part's distance from where it sits in the gun (cm), -1
                                 // unknown (no eject recorded the seat): the palm's path decides
     bool chambered = false;     // the gun still had a round in it when this reload began
+    bool ejectNow = false;      // the reload button while a reload waits at its first pull (a dry gun's):
+                                // the magazine drops, as the button's own eject
+    bool pumpDone = false;      // a PumpHand phase's pump completed (the glue's Pump)
 };
 
 enum class Act : uint8_t { None, StartReload, Abort };
@@ -289,6 +294,8 @@ struct Output {
     bool handLock = false;      // the free hand is drawn where the clip's own hand is (on the bolt)
     bool chase = false;         // `t` follows the hand forward: PLAY the clip there (its sounds fire)
     bool fetched = false;       // this frame a new part was taken from the pouch (`part` names it)
+    bool pumpWait = false;      // a PumpHand phase: the glue's Pump works the clip, the grip is the
+                                // two-handed grip's
     bool seating = false;       // this frame the clip jumped from the carry hold onto the insert: the
                                 // magazine notifies in between were skipped (the glue shows it)
     bool dropped = false;       // this frame a carried part left the hand away from the gun (the spent one
@@ -580,6 +587,15 @@ private:
         switch (p.kind) {
             case Kind::Pull: {
                 const Projection pr = project_phase(p, in.hand);
+                // 20:35 run: a dry Tommy Gun's reload waited here for the hand to pull the drum, and the
+                // reload button did nothing ("locked up"). The button drops the magazine, as its eject.
+                if (sub_ == Sub::Wait && phase_ == 0 && in.ejectNow && start_drop(in, o)) {
+                    o.event = "the reload button: the magazine drops - take a new one from the pouch";
+                    o.claim = true;
+                    o.hold = true;
+                    o.t = T(prog_->ejectT);
+                    break;
+                }
                 if (sub_ == Sub::Wait) {
                     const bool near = near_phase(p, in.hand, grabU);
                     o.buzz = near;
@@ -822,6 +838,18 @@ private:
                 if (playT_ >= T(p.t1)) next(in);
                 break;
             }
+            case Kind::PumpHand: {
+                // The glue's Pump holds and plays the clip here; the free hand's grip is the two-handed
+                // grip's, so the pump is grabbed and worked the same way as between shots.
+                o.pumpWait = true;
+                o.claim = false;
+                if (in.pumpDone) {
+                    o.haptic = Haptic::Seat;
+                    o.event = p.say;
+                    next(in);
+                }
+                break;
+            }
             case Kind::Finish: {
                 // Jump to the clip's last moment once, then let it run out: the game completes.
                 o.run = true;
@@ -863,6 +891,7 @@ struct PumpConfig {
     float strokeCm = 6.0f;  // controller travel past the ratchet's reference that completes a stroke
     float followCm = 9.0f;  // controller travel over which the clip follows a stroke (it finishes at the catch)
     float earlyCm = 2.5f;   // during the recoil: this much closer and the stroke has begun
+    bool waitForHands = false; // the reload's last pump: not two-handed, it waits (never pumps itself)
 };
 struct PumpInput {
     bool fireClip = false; // the shotgun's 'Fire' clip is playing
@@ -896,6 +925,15 @@ public:
         // (the 15:37 run: a pump left Done never came back for the shot after it).
         if (stage_ == Stage::Off || in.clipNew) stage_ = Stage::Firing;
         if (stage_ == Stage::Done) return o;
+        if (!in.held && c.waitForHands) {
+            // The reload's last pump waits for the hands at the stroke it is on.
+            if (stage_ == Stage::Firing && in.clipT < c.backT0) return o;
+            if (stage_ == Stage::Firing) stage_ = Stage::Back;
+            o.hold = true;
+            o.t = stage_ == Stage::Fwd ? c.backT1 : c.backT0;
+            rebase_ = true; // a new grab starts the ratchet afresh
+            return o;
+        }
         if (!in.held) {
             // Not (or no longer) two-handed: the clip pumps itself. (Before the pump a hand may still
             // take hold.)
@@ -915,6 +953,10 @@ public:
             return o;
         }
         const float along = -in.spanCm; // + is back: the hands closer together
+        if (rebase_) {
+            ref_ = along;
+            rebase_ = false;
+        }
         const float strokeU = c.strokeCm;
         const float follow = c.followCm > 1e-3f ? c.followCm : 1.0f;
         switch (stage_) {
@@ -980,6 +1022,7 @@ private:
     Stage stage_ = Stage::Off;
     float ref_ = 0;
     bool refSet_ = false;
+    bool rebase_ = false; // the ratchet's reference restarts at the hands' next reading
 };
 
 } // namespace bvr::b1r::reload_rig

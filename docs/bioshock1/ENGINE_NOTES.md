@@ -6877,3 +6877,19 @@ hands against the live recordings (0.1-0.9 units).
 The live-game Tommy Gun change of the same evening: a dry gun's own reload does not drop the drum (the
 hand pulls it, the program's first step); a reload the game begins with rounds still in the gun
 (switching ammunition) still drops it.
+
+## 2026-10-20 - The shotgun when it empties, and its last pump
+
+Measured with the corrected `reload_pose.py`: `Shotgun__EmptyFidgetShotgun` and `Shotgun__FidgetShotgun`
+hold the gun identically (the grip socket at the same place in the right hand, the left palm at the same
+point on the gun, 49.8 / 15.4 / 16.0 in the grip's frame), and the reload clips move neither the gun's
+`SG_Body` nor the gun hand by more than 3 deg. So "the empty weapon position" was not the game's: the
+shotgun's own reload begins the moment it empties, its clip takes the free hand from the fore-end to the
+pouch, and the two-handed hold - which aims from where the clip has that hand - let go and the gun
+swung to the one-handed angle. Now (bones.cpp): while no reload runs, the free hand's bones are kept
+relative to the gun hand's wrist; while one runs and the two-handed grip is still squeezed, they are put
+back there, so the hold and the drawn hand are unchanged until the grip is let go
+(`manual_reload::two_hand_allowed`). The reload's last pump is the pump between shots: a PumpHand phase
+leaves the grip to the two-handed grip, and the same Pump ratchet works the end clip's pump (0.409-0.487
+back, 0.532-0.676 forward), waiting for the hands instead of pumping itself. The recoil the gun hand
+plays from the Fire clip is halved.
