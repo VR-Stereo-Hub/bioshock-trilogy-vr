@@ -435,6 +435,7 @@ private:
             return;
         }
         if (!in.spareOk || !in.inPouch || !spare_free()) return;
+        o.buzz = true; // the pouch has one (22:55 run: "the rumble doesn't show up")
         if (state_ == State::Idle && o.reach < 0) o.reach = 0.5f; // a zone, not a point: mid-reach
         if (state_ == State::Idle) o.claim = true;
         if (in.gripRise) {

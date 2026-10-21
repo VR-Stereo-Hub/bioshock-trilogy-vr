@@ -71,6 +71,10 @@ Built, host-tested (14 suites), lint clean, installed. NOT run in the simulator 
   the hand. Machine-level host-tested (112 checks); the prop, its placement and the catch are
   unverified in game. Log: `a spare from the pouch`, `the spare left the hand`, `caught`, `the visible
   magazine against TG_AmmoClip`.
+- **After the 22:54 run:** the palette now skins the free hand's substituted bones (per-bone fixes) - the
+  grip pose and the pistol's solved grip had never reached the mesh, and the shotgun's substituted wrist
+  put the hand off its grab. Spares drop from the hand, caught drums are removed, the pouch buzzes, an
+  ammo-switch reload drops the drum, and the shotgun layers only its Fire recoil (ENGINE_NOTES).
 
 ### Next steps
 

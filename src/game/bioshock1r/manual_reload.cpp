@@ -843,7 +843,10 @@ void tick(const Frame& f) {
             u = u < 0 ? 0 : u > 1 ? 1 : u;
             // Half the clip's kick through the recoil (20:35 run: "too much recoil"), none after it.
             constexpr float kShotgunKick = 0.5f;
-            g_gunKeep = (pi.fireClip ? kShotgunKick : 1.0f) * (1.0f - u * u * (3.0f - 2.0f * u));
+            // Nothing of any other clip (the 22:57 recording: the reload clips turned the gun in the hand up to
+            // 60 deg and 25 units the moment it emptied, the idle fidget 20 units - "still has problems
+            // suppressing animations when the gun runs out"): the gun is where the controller is.
+            g_gunKeep = pi.fireClip ? kShotgunKick * (1.0f - u * u * (3.0f - 2.0f * u)) : 0.0f;
         }
         static int32_t s_fireHandle = 0;
         pi.clipNew = pi.fireClip && pw != s_fireHandle;
@@ -957,7 +960,18 @@ void tick(const Frame& f) {
     // 2026-10-20 (the tester): the Tommy Gun running dry does not drop its drum - the hand pulls it out
     // (the program's own first step). A reload the game begins with rounds still in the gun (switching
     // ammunition) still drops it.
-    if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered) in.ejectAdopted = false;
+    // 22:57 run: after an ammunition switch the game ended its reload and began another for the new type -
+    // with the gun dry that one waited for the hand to pull the drum ("stuck", "the pull stopped before
+    // doing it"). A reload begun for a switch drops the drum, as the user asked of switches.
+    bool switching = false;
+    if (!g_machine.active() && script::properties_ready(f.weapon)) {
+        const int32_t po = script::property_offset(f.weapon, L"PendingAmmoSelection");
+        const int32_t co = script::property_offset(f.weapon, L"CurrentAmmoSelection");
+        void *pend = nullptr, *cur = nullptr;
+        switching = po >= 0 && co >= 0 && read_n(static_cast<uint8_t*>(f.weapon) + po, &pend, sizeof pend) &&
+                    read_n(static_cast<uint8_t*>(f.weapon) + co, &cur, sizeof cur) && pend && cur && pend != cur;
+    }
+    if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered && !switching) in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
     // one quickly", and "throw one up in the air and slap the gun into it").
     const bool spareGun = in.entryProgram && in.entryProgram->spare;
@@ -985,12 +999,12 @@ void tick(const Frame& f) {
         float peak = 0.0f;
         const Vec v = throw_velocity(&peak);
         const float vel[3] = {v.x, v.y, v.z};
-        const bool ok = dropped_part::alive(g_spare, f.weapon) && dropped_part::release(g_spare, vel);
+        const bool ok = dropped_part::alive(g_spare, f.weapon) && dropped_part::release(g_spare, f.weapon, f.hands, vel);
         if (ok) {
             int slot = 0;
             for (int i = 1; i < 4; ++i)
                 if (g_flying[i].ms < g_flying[slot].ms) slot = i;
-            g_flying[slot] = Flying{g_spare, f.now};
+            g_flying[slot] = Flying{dropped_part::last_dropped(), f.now};
         }
         const float uu = f.uuPerCm > 1e-4f ? f.uuPerCm : 1.0f;
         BVR_LOG("[reload] %S: the spare left the hand at %.2f m/s (peak %.2f) - %s", g_cls, arm_ik::length(v) / uu * 0.01f,

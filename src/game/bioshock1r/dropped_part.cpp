@@ -383,18 +383,45 @@ bool location(const Prop& p, float loc[3], int32_t rot[3]) {
            rd(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset + 12, reinterpret_cast<int32_t(*)[3]>(rot));
 }
 
-bool release(const Prop& p, const float velocity[3]) {
+// 2026-10-20 (22:55 run: a let-go spare fell "from the position of the mag already in the gun"): the held
+// prop's Havok body was built where it was spawned - at the gun's magazine - and moving its fields never
+// moved that body, so turning Havok on dropped it from there. Let go, the held prop goes and a NEW drop is
+// made where it is now (drop()'s own order: placed, then its mesh, then Havok), which falls from the hand.
+bool release(const Prop& p, void* weapon, void* hands, const float velocity[3]) {
     Captured c;
     if (!location(p, c.loc, c.rot)) return false;
-    const int32_t prio = script::property_offset(p.actor, L"DrawPriority");
-    if (prio >= 0) wr(static_cast<uint8_t*>(p.actor) + prio, uint8_t{0}); // out of the hands' layer
-    place_at(p.actor, c);
-    return launch(p.actor, true, velocity);
+    const int32_t meshOff = script::property_offset(p.actor, L"StaticMesh");
+    if (meshOff < 0 || !rd(static_cast<uint8_t*>(p.actor) + meshOff, &c.mesh) || !c.mesh) return false;
+    if (!rd(static_cast<uint8_t*>(p.actor) + patterns::kActorDrawScaleOffset, &c.scale) || !(c.scale > 0.01f))
+        c.scale = 1.0f;
+    destroy(p);
+    bool meshOk = false;
+    void* a = make_prop(weapon, hands, c, &meshOk);
+    g_lastDrop = Prop{};
+    if (!a) return false;
+    const Prop id = identify(a);
+    if (!launch(a, meshOk, velocity)) return false;
+    g_lastDrop = id;
+    return true;
 }
 
+// Gone for certain (the 22:55 run: a caught drum went on falling from the well - Destroy alone left it):
+// physics off, out of sight far below, then Destroy, and LifeSpan as the backstop.
 void destroy(const Prop& p) {
-    uint8_t none[32] = {};
-    script::call(p.actor, "Destroy", none);
+    set_physics(p.actor, 0);
+    float loc[3];
+    if (rd(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, &loc)) {
+        loc[2] -= 100000.0f;
+        wr(static_cast<uint8_t*>(p.actor) + patterns::kActorLocOffset, loc);
+    }
+    const int32_t lifeOff = script::property_offset(p.actor, L"LifeSpan");
+    if (lifeOff >= 0) wr(static_cast<uint8_t*>(p.actor) + lifeOff, 0.1f);
+    struct {
+        uint32_t ret;
+        int32_t pad[3];
+    } d{};
+    const bool ok = script::call(p.actor, "Destroy", &d) && d.ret != 0;
+    BVR_LOG("[drop] prop %p removed (Destroy %s)", p.actor, ok ? "ok" : "REFUSED - out of sight, gone on its LifeSpan");
 }
 
 } // namespace bvr::b1r::dropped_part

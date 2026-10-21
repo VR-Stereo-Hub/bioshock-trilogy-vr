@@ -6976,3 +6976,31 @@ grab (113, -18, -74) and 4 units over, its fingers half open (76/48/55) - the co
 differently. Both are now the rest grab whenever the two-handed grip holds: the fingers latched at rest
 (the earlier fix), and the wrist at the rest turn against the attach bone, turned about the palm so the
 palm stays on the pump (bones.cpp, the free-hand substitution).
+
+## 2026-10-20 - The palette skins the game's bones, not the drive's: per-bone fixes
+
+The 22:54 pistol captures had the solved cylinder grip in every bone the drive composed (each finger joint
+0.0 deg from grip_solve.py's, the cylinder 0.02-0.04 units and 0.0 deg from the table, at the hand's
+scale) - and the frame itself showed an OPEN hand with the cylinder on the palm. The palette route hands the
+skinner the ENGINE's skin matrices with one rigid correction per hand composed on; the drive's substituted
+pose (the grip pose's fingers, a designed grip, the free hand kept on the gun, the shotgun's wrist at its
+rest turn) only fed the placement math. So the fingers never moved, and a substituted WRIST was worse: the
+hand's correction was computed from it while the mesh kept the game's, putting the hand off its grab (the
+22:57 shotgun "regrabbed way under the handle").
+
+`palette::HandXform` now carries per-bone rigid fixes, composed on before the hand's correction:
+fix_i = D_i * inverse(E_i), the drawn bone D against the evaluated bone E the skin matrix was made from.
+bones.cpp fills them for every free-hand bone the substitution changed (`A` against `A0`).
+
+## 2026-10-20 - The shotgun's clip motion, the spare's Havok body, a caught drum
+
+- The 22:57 recording: the moment the shotgun emptied, the reload clips turned the gun in the gun hand
+  ~40-60 deg and moved it 18-25 units (held there through the whole reload); the idle fidget moved it
+  ~20. Only the Fire clip's recoil is layered now; every other clip's gun motion is 0 for the shotgun.
+- A held spare is spawned at the gun's magazine and moved by its fields; its Havok body stays where it
+  was built, so turning Havok on dropped it from the gun. Let go, the held prop is removed and a NEW drop
+  is made where it is (drop()'s order: placed, mesh, Havok).
+- Destroy on a caught drum left it falling from the well. Removal is now physics off, moved 100000
+  units down, LifeSpan 0.1, then Destroy (`[drop] prop ... removed (Destroy ok|REFUSED ...)`).
+- After an ammunition switch the game ends its reload and begins another for the new type; with the gun
+  dry that one waited at the drum. A reload begun while Pending != Current ammunition now drops the drum.
