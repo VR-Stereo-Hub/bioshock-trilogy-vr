@@ -33,16 +33,18 @@ struct Prop {
     void* cls = nullptr;     // its class and name as made, and the level it was made in: a prop whose
     int32_t name = -1;       // memory no longer reads back the same (a level change freed it) is dead
     void* level = nullptr;
+    void* holder = nullptr;  // held: the hands it is attached to, and the bone (a name index)
+    int32_t bone = 0;
 };
 Prop last_dropped();
 
 // 2026-10-20, the spare magazine in the hand: a prop like the drop's - the weapon's visible magazine's mesh
-// and size - a live Havok body the hand drives each frame (move), until it is let go (release: it keeps its
-// throw) or goes into the gun (destroy). Game thread.
+// and size - attached to the hands (their scripted attachment) and placed on them each frame (move), until it is
+// let go (release: off the hands and thrown) or goes into the gun (destroy). Game thread.
 Prop make_held(void* weapon, void* hands);
 bool alive(const Prop& p, void* weapon); // the same actor, in the weapon's level
-void move(const Prop& p, const float loc[3], const int32_t rot[3], float dt); // drives its Havok body there
-bool release(const Prop& p, void* weapon, void* hands, const float velocity[3]); // thrown: it keeps flying
+void move(const Prop& p, const float loc[3], const int32_t rot[3], float dt); // placed on the hands there
+bool release(const Prop& p, void* weapon, void* hands, const float velocity[3]); // off the hands, thrown
 void destroy(const Prop& p);
 bool location(const Prop& p, float loc[3], int32_t rot[3]);
 // The weapon's visible magazine now: where it is, its turn and size. False with none (or no mesh).
