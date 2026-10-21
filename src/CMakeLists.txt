@@ -104,6 +104,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/dial_input.h
     game/bioshock1r/manual_reload.cpp
     game/bioshock1r/dropped_part.cpp
+    game/bioshock1r/sound_engine.cpp
+    game/bioshock1r/sound_engine.h
     game/bioshock1r/manual_reload.h
     game/bioshock1r/script_call.cpp
     game/bioshock1r/cheats.cpp

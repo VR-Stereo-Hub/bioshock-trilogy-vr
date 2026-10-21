@@ -438,6 +438,12 @@ inline constexpr uint32_t kAbilityInstigatorOffset = 0xF0; // UAttackAbility -> 
 //   +0x550 eye height (GetViewPoint = location + eyeHeight on Z).
 inline constexpr uint32_t kActorLocOffset = 0x1D8;
 inline constexpr uint32_t kActorViewDirOffset = 0x1E4;
+// 2026-10-21 (tools\ida\se1_effect_event.py): AActor::TriggerEffectEvent is the actor vtable's +0x290 slot.
+// Actor's native table entry "intAActorexecTriggerEffectEvent" (RVA 0x11BB6AC) gets its exec thunk (RVA
+// 0x37B910) at startup; the thunk unpacks the script's 13 parameters and calls [vtable+0x290] - thiscall,
+// (FName EffectEvent by value, Other, Material, FVector*, FRotator*, bool, bool, Observer, FName ReferenceTag by
+// value, EffectEventInfo) = 12 dwords on the stack, bool in eax. Animation cues reach the same virtual.
+inline constexpr uint32_t kActorTriggerEffectEventVtbl = 0x290;
 // M7 session-11 actor-field probes, recorded honestly: a TRUE DrawScale has
 // NOT been located on this build. +0x16C (default 0.0) HIDES the mesh at small
 // values (0.5/0.8 both vanished the pistol - cull-distance-like semantics, and

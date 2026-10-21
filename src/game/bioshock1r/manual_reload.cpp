@@ -15,6 +15,7 @@
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/reload_rig.h"
 #include "game/bioshock1r/script_call.h"
+#include "game/bioshock1r/sound_engine.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -847,6 +848,12 @@ static float held_seconds(uint64_t now) {
 }
 
 void tick(const Frame& f) {
+    // The gun sound engine (sound_engine.h): hooked through the hands actor once; told whose events are the gun's.
+    if (f.hands) sound_engine::install(f.hands);
+    {
+        const wchar_t* wc = f.weapon ? patterns::object_class_name(f.weapon) : nullptr;
+        sound_engine::set_context(f.hands, f.weapon, wc, f.weapon && g_on.load(std::memory_order_relaxed));
+    }
     if (g_spare.actor && (!f.weapon || !g_on.load(std::memory_order_relaxed))) {
         if (f.weapon && dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
         g_spare = dropped_part::Prop{};
@@ -942,7 +949,10 @@ void tick(const Frame& f) {
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         pi.triggerRise = pulls != g_seenPulls;
         g_seenPulls = pulls;
+        const bool sndWas = g_pump.working();
         const rr::PumpOutput po = g_pump.update(pi, g_pumpCfg);
+        // The sound engine: the pump's sound as the player begins the stroke (its clip's own cue is muted).
+        if (!sndWas && g_pump.working()) sound_engine::play(f.hands, "PumpShotgun");
         g_pumping.store(g_pump.working(), std::memory_order_relaxed);
         // 21:11 recording: the hold let go ("slid off") ~0.1 s after each pump - the clip still returning
         // the pump, the hand where the stroke left it. The whole Fire clip, and a moment after, is the pump's.
@@ -1231,7 +1241,10 @@ void tick(const Frame& f) {
             const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
             pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
         }
+        const bool sndWas = g_endPump.working();
         const rr::PumpOutput po = g_endPump.update(pi, s_cfg);
+        // The sound engine: the pump's sound as the player begins the stroke (its clip's own cue is muted).
+        if (!sndWas && g_endPump.working()) sound_engine::play(f.hands, "PumpShotgun");
         if (po.hold)
             hold(f.weapon, f.hands, hw, hh, po.t, po.chase);
         else if (po.run) {
@@ -1278,7 +1291,10 @@ void tick(const Frame& f) {
             const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
             pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
         }
+        const bool sndWas = g_dryPump.working();
         const rr::PumpOutput po = g_dryPump.update(pi, g_pumpCfg);
+        // The sound engine: the pump's sound as the player begins the stroke (its clip's own cue is muted).
+        if (!sndWas && g_dryPump.working()) sound_engine::play(f.hands, "PumpShotgun");
         // The pump along the gun as the strokes go: back over backT0..backT1, forward over fwdT0..fwdT1.
         const rr::PumpConfig& c = g_pumpCfg;
         float back = 0.0f;

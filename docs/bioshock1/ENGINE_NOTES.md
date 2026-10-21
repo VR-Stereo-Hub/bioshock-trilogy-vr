@@ -7170,3 +7170,33 @@ held in the hand it stood under the player, and a jump launched him into the cei
   keeps its rest whenever a clip has taken it more than 4 units off (a shot's pump stroke aside). The gun's
   grip and tip sockets (43, 44) stay against the gun hand's wrist as at idle through every clip but a shot's
   ("the tilt-up for a split second" on running out of an ammunition type).
+
+## 2026-10-21 - Effect events: AActor::TriggerEffectEvent, and the gun sound engine
+
+**Where every effect event goes** (`tools\ida\se1_effect_event.py`, static). Actor's native function table
+holds `{name, exec thunk, 0}` entries; `intAActorexecTriggerEffectEvent` sits at RVA 0x11BB6AC and its thunk
+pointer (+4) is written at startup by a static initializer (RVA 0x3AE2A: `mov [0x11BB6B0], sub @ RVA
+0x37B910`). The thunk unpacks the script's 13 parameters and calls the actor's **vtable +0x290** (RVA 0x37BB4B
+`call [eax+290h]`), thiscall with 12 dwords: the EffectEvent FName by value (index, number), Other, Material,
+FVector*, FRotator*, PlayOnOther, QueryOnly, Observer, the ReferenceTag FName by value, EffectEventInfo;
+bool in eax (`patterns.h kActorTriggerEffectEventVtbl`). Animation cues reach the same virtual. The mod hooks
+the function the hands actor's slot points at (MinHook on the code, so every actor sharing it is covered),
+refusing a slot outside the game's image (`[sound] the gun sound engine is on: ... RVA 0x...`).
+
+**What the sounds are.** A gun's action sounds are EventResponse_SoundEffectsSubsystem objects named
+`<class><event>` in the map packages: `HandsPumpShotgun`, `HandsShotgunReloadEnd` (+ ammo variants),
+`HandsShotgunReloadLoop`, `HandsShotgunReloadStart`, `HandsReloadShotgun`, `HandsFidgetShotgunSound`,
+`HandsEquipShotgun(Sound)`. The hands' SharedSkeletonAnimationMetadata objects do not hold the cue times; the
+cues are inside the Havok animation data. So the times are not read offline: the engine LOGS each event as it
+fires on the hands or the gun in hand (`[sound] event <name> on the hands|weapon`, 150 ms de-duplicated).
+
+**The sound engine** (`sound_engine.h`). While a gun's manual reload is on, its action events in the mute
+table are dropped when a clip fires them (`- MUTED`), and the mod fires them itself at the player's action
+(`[sound] played ...`). Shotgun: PumpShotgun and ShotgunReloadEnd muted; PumpShotgun played as each pump's
+back stroke begins (between shots, the reload's last pump, a dry cock). The Tommy Gun and pistol are logged
+only, their tables to be read from a run's log.
+
+**The split-second tilt** (the 12:53 recording): the drawn gun hand turned 70-79 deg in one frame as the grip
+came up mid-reload while the game's own wrist moved 0.3 deg - the two-handed aim, which (the shotgun's hold
+never letting go by distance) had turned the gun toward a free hand 20-25 cm off the pump, snapping back on
+release. The shotgun's aim now fades with that distance: whole within 15 cm, none past 30.
