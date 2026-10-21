@@ -7926,7 +7926,13 @@ void m4_compose(bool late) {
             // before the manual reload says so (it starts in the gun hand's tick, after this), and that frame
             // re-recorded the kept hand FROM the reload clip. The hands' own state decides: no rest is recorded
             // while the game reloads, and the hand is kept from its first frame.
-            const bool reloading = hands_state::current(g_m4.actor) == hands_state::State::Reloading;
+            // 2026-10-21 (the 10:09 recording): an ammunition switch first LOWERS the hands (ProceduralLoweringHands,
+            // the Offscreen state - the gun hand's wrist turned up to 74 deg in the pose), and the rest was re-recorded
+            // from that lowered pose, then kept through the reload: "the position change even bigger". The rest is
+            // recorded only while the hands idle, and kept whenever they are in a state of the game's own (a reload,
+            // the lowering) with the grip held.
+            const hands_state::State hs = hands_state::current(g_m4.actor);
+            const bool reloading = hs == hands_state::State::Reloading || hs == hands_state::State::Offscreen;
             const bool keep = (manual_reload::active() || reloading) && two_hand::held() && !manual_reload::pump_wait();
             // THE GRIP POSE WHENEVER THE GRIP HOLDS (the tester: "gripping should always make it the grip
             // pose"). The fingers, on their own wrist, are the curl the two-handed grip has on the gun at
@@ -7946,6 +7952,7 @@ void m4_compose(bool late) {
             if (curGun != s_fingerGun) {
                 s_fingerGun = curGun;
                 s_fingerRelValid = false;
+                s_freeRelValid = false; // the rest on the gun is per gun too
             }
             const int fw = m4_wrist(fh);
             ik::Quat fq = ik::normalized(ik::quat(A[fw].q));
@@ -8028,7 +8035,8 @@ void m4_compose(bool late) {
                 }
                 A = s_sub;
             }
-            if (!manual_reload::active() && !reloading) {
+            // Held, or the first idle seen (an idle fidget's pose is not the grab).
+            if (!manual_reload::active() && hs == hands_state::State::Idling && (two_hand::held() || !s_freeRelValid)) {
                 for (int i = lo; i <= hi; ++i) {
                     const ik::Vec rp = ik::rotate(ik::conj(gq), ik::vec(A[i].p) - gp);
                     const ik::Quat rq = ik::normalized(ik::mul(ik::conj(gq), ik::quat(A[i].q)));
@@ -8296,14 +8304,19 @@ void m4_compose(bool late) {
                     // along the gun with the controller - the real hand's place along the gun's line, against the
                     // anchor's.
                     s_reloadSlide = ik::Vec{0, 0, 0};
-                    if (manual_reload::handles_reloads() &&
-                        hands_state::current(g_m4.actor) == hands_state::State::Reloading) {
+                    // 10:09 recording: slid up to 30 cm while the real hand had gone to the pouch with the grip still
+                    // counted as held, the drawn palm landed behind the gun's grip, at the waist. The hold lets a
+                    // hand that far go (as between shots); the slide stays inside that distance, and the reload's
+                    // last pump rides the pump itself.
+                    if ((hands_state::current(g_m4.actor) == hands_state::State::Reloading ||
+                         hands_state::current(g_m4.actor) == hands_state::State::Offscreen) &&
+                        !manual_reload::pump_wait()) {
                         const ik::Vec ax = authored - pinned.at;
                         const float al = ik::length(ax);
                         if (al > 1e-3f) {
                             const ik::Vec dir = ax * (1.0f / al);
                             float d = ik::dot(real - pinned.at, dir) - al;
-                            const float lim = 30.0f / toCmClip;
+                            const float lim = 20.0f / toCmClip;
                             d = d < -lim ? -lim : d > lim ? lim : d;
                             s_reloadSlide = dir * d;
                         }

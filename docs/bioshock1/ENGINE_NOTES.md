@@ -7088,3 +7088,27 @@ bones.cpp fills them for every free-hand bone the substitution changed (`A` agai
 - **The Tommy Gun's ammunition switch (09:32:15):** the switch ended the dry gun's waiting reload on the
   frame the drop was asked for, and the game's next reload already had Pending == Current. A reload begun
   within 1.5 s of a seen switch now drops the drum.
+
+## 2026-10-21 - The 10:07 run: the approach to the free hand in a reload, re-evaluated
+
+What the recordings say, together (the 09:32 and 10:09 shotgun recordings, the 09:33 capture):
+- The gun never turns in the gun hand through a reload (bone 43 against the right wrist within 2 deg);
+  the gun hand follows its controller (the palette correction takes the clip's 74 deg wrist turn out).
+- An ammunition switch first runs **ProceduralLoweringHands** (the Offscreen state) - the hands lowered
+  procedurally - and only then the reload. The free hand's rest on the gun was recorded in every state that
+  was not a reload, the lowering included, so it was taken from the lowered pose and then kept. It is now
+  recorded only while the hands idle (held, or the first idle on that gun), and kept through the game's own
+  states (a reload, the lowering) while the grip holds.
+- The front hand slid along the gun with the controller through a reload (to stop the stretched arm), but
+  the hold had been told never to let go then; with the real hand gone to the pouch and the grip still held,
+  the drawn palm slid 30 cm back - behind the gun's grip, at the waist (10:09 recording, palm -35..-46 along
+  the gun). The hold lets go of a hand that far again (20 cm, as between shots); the slide stays inside it,
+  and the reload's last pump rides the pump itself.
+- **The Tommy Gun's dip as it runs dry (10:08:56):** the last burst sat in the firing state a second, its
+  clip pointing the gun down. For guns that reload by hand only the first 0.30 s of a firing clip's own
+  motion is layered (faded out by 0.45), none once the gun is empty.
+- **The spare in the hand:** a world prop judders in the hand under alternate frame warp and a driven
+  Havok body fought its physics. It is now the hands' own scripted attachment left ON a hands bone (drawn
+  with the hands), placed each frame by its relative location and rotation against that bone's engine
+  coordinates; let go, it comes off the hands (DetachFromBone, SetBase none), its Havok body is built where
+  it is and it is thrown. `[drop] spare on the hand: N uu from where it is asked to be` reports the fit.
