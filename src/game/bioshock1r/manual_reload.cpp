@@ -590,6 +590,14 @@ bool two_hand_allowed() {
 bool sticky_grip() { return g_sticky.load(std::memory_order_relaxed); }
 float gun_motion_keep() { return g_gunKeep; }
 
+bool hand_lock_wanted() { return g_handLock && g_machine.active(); }
+bool dragging() {
+    // Waiting at a part and taken hold of (Pull / Slide / Flick dragging): the machine says the hand is not free.
+    const rr::Program* p = g_machine.program();
+    if (!g_machine.active() || !p || g_machine.phase() >= p->n || g_machine.hand_free() || g_carryMode == 1) return false;
+    const rr::Kind k = p->phases[g_machine.phase()].kind;
+    return k == rr::Kind::Pull || k == rr::Kind::Slide || k == rr::Kind::Flick;
+}
 float hand_lock(uint64_t nowMs) {
     // Eased toward the machine's ask: 100 ms onto the part, 200 ms back to the controller.
     const float dt = g_lockMs && nowMs > g_lockMs ? static_cast<float>(nowMs - g_lockMs) : 0.0f;

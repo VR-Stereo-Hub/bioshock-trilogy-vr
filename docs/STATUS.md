@@ -28,6 +28,16 @@ clean, INSTALLED. NOT run in the simulator or the headset.
   fore-grip over the reload on a tie; the reload's reach is a distance in every stage, never an absolute
   claim. Host-tested (`grip-owner` 20, `reload-rig` 130). `HELD_GUN_MATRIX.md` is the specification;
   its section 10 enumerates the hand POSE sources per state and designs the hand pose engine (step 3b).
+- **Step 3b is in** (ENGINE_NOTES "The hand pose engine"): `hand_pose.h` decides the free hand's wrist and
+  finger sources per frame (clip-owned, on the gun, designed grip, on the part, pulling, relaxed, the
+  clip's), one builder blends them with eases; the kept rest, the grip-pose branch, the designed-grip
+  branches, the start-clip hold and the bolt's own ease are gone; a free hand holding nothing is relaxed
+  (the game's lowered-hands fingers). Host-tested (`hand-pose` 29). `[hands] free hand: ...` logs each
+  decision change.
+- **Headset check for step 3b:** grip the shotgun or Tommy two-handed: the rest pose from the first frame,
+  eased in, kept through a shot, a reload, an ammo switch; let go: the fingers relax (not the idle clip's
+  curl) over 0.15 s; carry the pistol's cylinder or a shell: the designed grip blends in; rack the Tommy's
+  bolt: the hand locks on as before; in the left hand all the same mirrored.
 - **Step 3c is in, UNVERIFIED** (ENGINE_NOTES "Ending a reload early"): a pump stroke while the shotgun
   waits for a shell ends its reload with the shells in and cocks it; X while the pistol waits for a
   cylinder cancels its reload. Both through the hands' own interrupt sequence and a re-equip (script
@@ -64,8 +74,8 @@ clean, INSTALLED. NOT run in the simulator or the headset.
 
 ### Next steps
 
-- Headset: the step-1, 2, 3a and 3c checks above. Then 3b (the hand pose engine, HELD_GUN_MATRIX.md 10),
-  then step 4 (the suppression record), 5 (one pump on the barrel axis), 6 (the sound table).
+- Headset: the step-1, 2, 3a, 3b and 3c checks above. Then step 4 (the suppression record), 5 (one pump
+  on the barrel axis), 6 (the sound table).
 - Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
   offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 

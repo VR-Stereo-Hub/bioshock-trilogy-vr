@@ -7439,3 +7439,32 @@ only at a clip's end, so "open and empty" is not available). F10 Controls > Manu
 early" (`Reload.Abort`, default on). Open until a run: whether `EquipWeapon` is honoured from `HandsOffscreen`
 (if not, the hands stay down until the weapon wheel re-equips), and whether the loops' shells are counted
 (`RoundsRemaining` is set per loop by the game; the log's state line shows the count after).
+
+## 2026-10-21 - The hand pose engine: one decision for the free hand, blended sources
+
+Step 3b (HELD_GUN_MATRIX.md section 10). `hand_pose.h` (pure, 29 host checks) decides per frame what the
+free hand is drawn from - a wrist source (the controller, the gun's rest point, the part the clip's hand
+grips) and a finger source (the clip's, the gun's rest pose, a designed grip, a relaxed hand) - from the gun's
+state record, the hold, and the reload's "dragging" / "hand on the part" asks, in a fixed priority: a clip the
+hand-back owns; two hands on the gun; a carried part with a designed grip; the bolt; a part being pulled; a
+hand holding nothing (relaxed); anything else the clip's. `bones.cpp` has one builder: the left hand in the
+game's own frame, the wrist blended toward the rest point and each finger bone (against the wrist) blended
+toward the rest / designed / relaxed table by that source's eased weight (120/150 ms the wrist on the gun,
+100/200 the bolt, 150/150 the fingers; `hand_pose::ease`, smootherstep, continuing from wherever a reversed
+transition was), re-rooted on the blended wrist, then copied into the left cluster or mirrored into the
+right by the rig's pair mirror. `[hands] free hand: wrist ..., fingers ... (rule N; ...)` logs each decision
+change.
+
+**Gone with it:** the kept rest and its `offRest` rule (the hand is at the rest point whenever held, full
+stop - the matrix's rule R5), the grip pose's "palm where the clip has it" branch, the two designed-grip
+branches, the start-clip hold (`s_lastRel`: a restarted reload snaps nothing while held, and a hand that
+holds nothing is relaxed), and the bolt lock's own ease in `manual_reload::hand_lock` (the engine's
+`Wrist::OnPart` weight drives the same placement). The shotgun's socket rest (43/44 at the gun hand's idle)
+now runs BEFORE the free hand is built, so the hand is placed against the gun as drawn; mirrored, it is
+built against the game's own 43 and carried by the pair mirror.
+
+**The relaxed hand** (gap P1): a free hand on its controller holding nothing wore the gun's idle clip's
+fingers (a grip on nothing) or the reload clip's reach to the pouch. Its fingers are now the game's own
+lowered hands' (`Default__HandsDown` at 0.5 s, measured as the rest poses were: `grip_rest_poses.h
+kRelaxedFingers`, 15 bones against the wrist; the palm centre checks at 9.215 0.119 0.313). The gun hand
+is unchanged by this step: the controller plus its recoil window and the two-handed aim.

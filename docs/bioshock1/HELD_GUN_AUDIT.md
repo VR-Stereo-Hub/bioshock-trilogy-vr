@@ -581,8 +581,10 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    the squeeze from four reaches; the reload's reach is a distance in every stage, the spare's its own.
    Fixes bug 1 (G7) and G1. Headset check: a squeeze under the dry Tommy's fore-grip takes the grip, at
    the drum well takes the drum; a squeeze at the fore-grip while a drum drops or seats takes the grip.
-   **3b (next):** the hand pose engine, `HELD_GUN_MATRIX.md` section 10 - one resolver per hand per
-   frame from a source table, replacing the six places that substitute hand bones. **3c DONE 2026-10-21, UNVERIFIED** (ENGINE_NOTES
+   **3b DONE 2026-10-21** (ENGINE_NOTES "The hand pose engine"): `hand_pose.h` resolves the free hand's
+   wrist and finger sources per frame; one builder in bones.cpp blends them by eased weights; the kept
+   rest, the grip-pose branch, the designed-grip branches, the start-clip hold and the bolt's own ease are
+   gone; the relaxed hand (P1) is in. The gun hand is unchanged. **3c DONE 2026-10-21, UNVERIFIED** (ENGINE_NOTES
    "Ending a reload early"): the aborts G2 (a pump stroke ends a shotgun loop) and G3 (X at the pouch cancels
    the pistol's reload) through the hands' own `InterruptStateTransitionExecution` and a re-equip, behind
    F10 "End a reload early".

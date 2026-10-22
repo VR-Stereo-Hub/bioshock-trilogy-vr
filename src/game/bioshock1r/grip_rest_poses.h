@@ -116,6 +116,31 @@ inline constexpr RestPose kRestPoses[] = {
     {L"Crossbow", {23.1066f, -1.6007f, -0.0333f}, {-0.549909f, -0.456740f, 0.395045f, 0.576999f}, {9.2150f, 0.1187f, 0.3125f}, kCrossbowRestBones, 15},
 };
 
+// The RELAXED hand (HELD_GUN_MATRIX.md section 10, gap P1): the fingers of the game's own lowered hands
+// (Default__HandsDown at 0.5 s), for a free hand that is on its controller and holds nothing - the idle clip's
+// grip on nothing and the reload clip's reach to the pouch no longer show on it. Fingers only (7-21).
+inline constexpr RestBone kRelaxedFingers[] = {
+    {7, {1.3674f, -1.9279f, -3.8891f}, {-0.670279f, 0.365125f, 0.175481f, 0.621784f}}, // kBone_L_Thumb1
+    {8, {4.6506f, -3.2536f, -7.2579f}, {-0.735655f, 0.203477f, 0.029788f, 0.645385f}}, // kBone_L_Thumb2
+    {9, {7.7806f, -4.1457f, -8.3058f}, {-0.759859f, -0.072145f, -0.202242f, 0.613602f}}, // kBone_L_Thumb3
+    {10, {11.3943f, 0.6631f, -3.8253f}, {-0.029362f, 0.105358f, -0.242841f, 0.963881f}}, // kBone_L_Index1
+    {11, {15.1324f, -1.3990f, -4.6463f}, {-0.087710f, 0.065341f, -0.782035f, 0.613563f}}, // kBone_L_Index2
+    {12, {14.3778f, -4.5617f, -4.4606f}, {-0.105555f, 0.028648f, -0.952492f, 0.284247f}}, // kBone_L_Index3
+    {13, {12.0340f, 0.8465f, -0.9173f}, {-0.015545f, 0.041452f, -0.223497f, 0.973699f}}, // kBone_L_Middle1
+    {14, {16.3989f, -1.2785f, -1.2764f}, {-0.039318f, 0.020350f, -0.818405f, 0.572933f}}, // kBone_L_Middle2
+    {15, {15.2219f, -4.5265f, -1.1346f}, {-0.044272f, -0.000229f, -0.990852f, 0.127487f}}, // kBone_L_Middle3
+    {16, {11.6518f, -0.3666f, 1.8425f}, {0.013126f, -0.039380f, -0.360635f, 0.931783f}}, // kBone_L_Ring1
+    {17, {14.9766f, -3.4041f, 2.1310f}, {0.037359f, -0.018094f, -0.918902f, 0.392296f}}, // kBone_L_Ring2
+    {18, {12.7269f, -5.7611f, 1.9532f}, {-0.041497f, 0.001027f, 0.998879f, 0.022764f}}, // kBone_L_Ring3
+    {19, {10.9949f, -0.5494f, 4.4626f}, {0.040071f, -0.081177f, -0.628693f, 0.772366f}}, // kBone_L_Pinky1
+    {20, {11.7499f, -4.3093f, 4.7511f}, {0.077230f, -0.047231f, -0.944010f, 0.317253f}}, // kBone_L_Pinky2
+    {21, {10.3316f, -5.4022f, 4.5423f}, {0.085802f, -0.028867f, -0.990931f, 0.099298f}}, // kBone_L_Pinky3
+};
+inline const RestBone* relaxed_fingers(int* n) {
+    *n = static_cast<int>(sizeof kRelaxedFingers / sizeof kRelaxedFingers[0]);
+    return kRelaxedFingers;
+}
+
 // The rest pose for a gun's class, or null (a gun with no two-handed idle clip).
 inline const RestPose* rest_pose(const wchar_t* cls) {
     for (const RestPose& r : kRestPoses)

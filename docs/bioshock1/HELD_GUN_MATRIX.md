@@ -236,9 +236,11 @@ at the drawn wrist; the gun's sockets 43/44 ride the gun hand):
 | plasmid in the free hand (ability mode) | CONTROLLER | CONTROLLER (the plasmid clip's fingers) | the clip's |
 | the shotgun's sockets 43/44, every state but a shot | at the gun hand's idle rest (per gun, per hand) | | |
 
-**The engine** (step 3b): one resolver per hand per frame that returns `{wristSource, fingerSource, weight}`
-from a table keyed by the gun's state record and the hands' state, with one ease per transition pair,
-producing every substitution in one place; the palette's per-bone fixes then follow it as they do now.
-It removes the start-clip hold (ON THE GUN covers it), `keep`/`offRest` (the table says ON THE GUN
-whenever held), the bolt's separate ease, and the hand-back's manual-reload special case. New sources
-are rows, not code: a relaxed hand (P1), a hand on the drum well, a hand cupping a shell.
+**The engine** (step 3b, **done 2026-10-21**, ENGINE_NOTES "The hand pose engine"): `hand_pose.h` resolves
+the free hand's `{wrist, fingers}` per frame from the gun's state record and the hands' state in a fixed
+priority (rules 1-7 in the header), one ease per source, and one builder in bones.cpp blends the sources
+against the clip's pose; the palette's per-bone fixes follow it as before. Removed: the start-clip hold,
+`keep`/`offRest`, the grip-pose branch, the two designed-grip branches, the bolt's separate ease. The
+relaxed hand (P1) is in, from the game's lowered-hands clip. Still outside it: the gun hand (the recoil
+window and the aim), and the hand-back's manual-reload case (step 4). New sources are rows, not code: a
+hand on the drum well, a hand cupping a shell.
