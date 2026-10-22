@@ -187,7 +187,9 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
     if (manual_reload::pumping() && g_grip.held()) in.slideCm = 0.0f;
     // 2026-10-21 (the tester: "the only thing that can release a grip is letting go of the grip"): the shotgun's
     // hold ignores sliding and stale measures (a frame with no measure read as slid off - one lost after a shot).
-    if (manual_reload::sticky_grip() && g_grip.held()) in.slideCm = 0.0f;
+    // 2026-10-21: every gun's, not only the shotgun's - with the gun in the left hand the Tommy Gun's hold read as
+    // sliding off five times in a minute (the 20:19 run) while the grip stayed down.
+    if (g_grip.held()) in.slideCm = 0.0f;
     GripConfig c;
     c.grabCm = g_grabCm.load(std::memory_order_relaxed);
     c.releaseCm = c.grabCm + kReleaseExtraCm;

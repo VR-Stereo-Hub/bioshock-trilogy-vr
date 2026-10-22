@@ -183,6 +183,21 @@ int main() {
         for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
         check(s.m.phase() == 2, "then the pouch", s.m.phase(), 2);
     }
+    // ---- 2026-10-21 a Tommy Gun left with no drum: its next reload begins at the pouch, nothing dropped ----
+    {
+        Sim s;
+        s.in.adopt = true;
+        s.in.ejectAdopted = true;
+        s.in.magOut = true;
+        s.clip(L"Reload", 3.33f);
+        Output o = s.step(Vec{40, 7, 2}, false);
+        s.in.adopt = false;
+        check(s.m.active() && s.m.phase() == 2 && !o.ejected && s.m.mag_out(),
+              "no drum: the reload waits at the pouch, nothing falls", s.m.phase(), 2);
+        o = s.step(Vec{10, 0, -90}, false, true);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(o.fetched && !s.m.mag_out(), "a drum from the pouch: the gun has one again (negative control)");
+    }
     // ---- 2026-10-20 the spare drum: pulled any time the Tommy Gun is held, X swaps it in quickly ----
     {
         Sim s;

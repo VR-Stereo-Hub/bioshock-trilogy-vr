@@ -27,8 +27,7 @@ void* g_target = nullptr;
 bool g_tried = false;
 
 // ---- FMOD Ex (the game's fmodex.dll, its C++ API: __stdcall, `this` first) ----
-// 2026-10-21 (the tester: "the sound effect is both cocking motions in one ... play each part with each corresponding
-// direction"): an action sound is one file for a whole action, so a part of it is played - the channel FMOD starts for
+// 2026-10-21 (one cock sound played both strokes at once; each stroke should have its own half): an action sound is one file for a whole action, so a part of it is played - the channel FMOD starts for
 // the event is moved to the part's start and stopped at its end. System::playSound is hooked to catch that channel
 // (and to log which sound each of the gun's events plays: `[sound] <event> plays <sound>`).
 using PlaySoundFn = int(__stdcall*)(void* system, int channelIndex, void* sound, int paused, void** channel);
@@ -36,39 +35,46 @@ using ChSetPosFn = int(__stdcall*)(void* ch, unsigned pos, unsigned unit);
 using ChGetPosFn = int(__stdcall*)(void* ch, unsigned* pos, unsigned unit);
 using ChStopFn = int(__stdcall*)(void* ch);
 using SndNameFn = int(__stdcall*)(void* snd, char* name, int len);
+using SndLengthFn = int(__stdcall*)(void* snd, unsigned* len, unsigned unit);
 constexpr unsigned kTimeMs = 1; // FMOD_TIMEUNIT_MS
 PlaySoundFn g_playOrig = nullptr;
 ChSetPosFn g_chSetPos = nullptr;
 ChGetPosFn g_chGetPos = nullptr;
 ChStopFn g_chStop = nullptr;
 SndNameFn g_sndName = nullptr;
+SndLengthFn g_sndLength = nullptr;
 
 struct Want {
     const char* sound = nullptr; // the part's sound (its FMOD name)
     unsigned fromMs = 0, toMs = 0;
-    uint64_t untilMs = 0;        // armed for a playSound after the event returned (another thread's)
 };
 struct Live {
     void* ch;
     unsigned toMs;
 };
 std::mutex g_mx;
-Want g_armed;                       // under g_mx
 std::vector<Live> g_live;           // under g_mx: the parts playing, each stopped at its end
 thread_local const Want* t_want = nullptr;
 thread_local int t_caught = 0;      // this play_part's channels: 1 the part's sound, -1 only others
 thread_local const wchar_t* t_event = nullptr; // the gun's effect event being fired on this thread
 
-bool name_is(void* sound, const char* want, char* nm, int n) {
+// The sound's FMOD name and length. The game makes its sounds from memory, and FMOD names those "(null)" (the 20:18
+// run: every one) - so a part is matched by name only when the sound has one, and its length is logged to say which
+// it was (reloadEndwav ~840 ms, pump_01 ~400, tommy reload_01 ~2350).
+bool name_is(void* sound, const char* want, char* nm, int n, unsigned* lenMs = nullptr) {
     nm[0] = 0;
+    if (lenMs) *lenMs = 0;
     if (!g_sndName || !sound) return false;
     __try {
         g_sndName(sound, nm, n);
+        if (lenMs && g_sndLength) g_sndLength(sound, lenMs, kTimeMs);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         nm[0] = 0;
     }
     nm[n - 1] = 0;
-    return want && nm[0] && !_stricmp(nm, want);
+    const bool unnamed = !nm[0] || !_stricmp(nm, "(null)");
+    if (unnamed) strcpy_s(nm, n, "an unnamed sound");
+    return want && (unnamed || !_stricmp(nm, want));
 }
 
 // FMOD calls on a channel that may have ended: SEH-guarded, in functions of their own (no unwinding objects).
@@ -99,8 +105,10 @@ int __stdcall play_detour(void* system, int channelIndex, void* sound, int pause
     const int r = g_playOrig(system, channelIndex, sound, paused, channel);
     if (r || !channel || !*channel) return r;
     char nm[128];
-    if (t_want) { // inside play_part's event: the part's sound is cut
-        if (name_is(sound, t_want->sound, nm, sizeof nm)) {
+    if (t_want) { // inside play_part's event: the part's sound is cut (the first; an event plays one sound)
+        unsigned len = 0;
+        if (t_caught <= 0 && name_is(sound, t_want->sound, nm, sizeof nm, &len)) {
+            BVR_LOG("[sound] the part's sound: %s, %u ms long (wanted %s)", nm, len, t_want->sound);
             cut(*channel, *t_want, nm);
             t_caught = 1;
         } else {
@@ -110,21 +118,9 @@ int __stdcall play_detour(void* system, int channelIndex, void* sound, int pause
         return r;
     }
     if (t_event) {
-        name_is(sound, nullptr, nm, sizeof nm);
-        BVR_LOG("[sound] %ls plays %s", t_event, nm[0] ? nm : "?");
-    }
-    Want w;
-    {
-        std::lock_guard<std::mutex> lk(g_mx);
-        if (!g_armed.sound || GetTickCount64() > g_armed.untilMs) return r;
-        w = g_armed;
-    }
-    if (name_is(sound, w.sound, nm, sizeof nm)) {
-        {
-            std::lock_guard<std::mutex> lk(g_mx);
-            g_armed.sound = nullptr;
-        }
-        cut(*channel, w, nm);
+        unsigned len = 0;
+        name_is(sound, nullptr, nm, sizeof nm, &len);
+        BVR_LOG("[sound] %ls plays %s (%u ms)", t_event, nm, len);
     }
     return r;
 }
@@ -144,6 +140,7 @@ void install_fmod() {
     g_chGetPos = reinterpret_cast<ChGetPosFn>(GetProcAddress(m, "?getPosition@Channel@FMOD@@QAG?AW4FMOD_RESULT@@PAII@Z"));
     g_chStop = reinterpret_cast<ChStopFn>(GetProcAddress(m, "?stop@Channel@FMOD@@QAG?AW4FMOD_RESULT@@XZ"));
     g_sndName = reinterpret_cast<SndNameFn>(GetProcAddress(m, "?getName@Sound@FMOD@@QAG?AW4FMOD_RESULT@@PADH@Z"));
+    g_sndLength = reinterpret_cast<SndLengthFn>(GetProcAddress(m, "?getLength@Sound@FMOD@@QAG?AW4FMOD_RESULT@@PAII@Z"));
     if (!play || !g_chSetPos || !g_chGetPos || !g_chStop || !g_sndName) {
         BVR_LOG("[sound] fmodex.dll lacks an export (playSound %p setPosition %p getPosition %p stop %p getName %p): no "
                 "parts of sounds", play, reinterpret_cast<void*>(g_chSetPos), reinterpret_cast<void*>(g_chGetPos),
@@ -301,13 +298,10 @@ bool play_part(void* actor, const char* event, const char* sound, unsigned fromM
         BVR_LOG("[sound] part of %s: %s does not play it", sound, event);
         return false;
     }
-    if (t_caught == 0) {
-        // Nothing yet: the sound starts later, maybe on the mixer's thread - catch it there for 300 ms.
-        std::lock_guard<std::mutex> lk(g_mx);
-        w.untilMs = GetTickCount64() + 300;
-        g_armed = w;
-    }
-    return r || t_caught > 0;
+    // Nothing started inside the event (the 20:18 run: it always starts inside): nothing to cut. With every sound
+    // unnamed, one started later on another thread could be anyone's - it is left alone.
+    if (t_caught == 0) BVR_LOG("[sound] part of %s: %s started no sound inside the call", sound, event);
+    return t_caught > 0;
 }
 
 void tick() {

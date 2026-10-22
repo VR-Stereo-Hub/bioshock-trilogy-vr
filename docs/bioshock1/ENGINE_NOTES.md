@@ -7256,3 +7256,19 @@ the manual reload adopted and held for a shell the player never fetched - fire b
 X is now never the game's on any gun the hands reload. And a reload waiting for the free hand (an empty gun's)
 claims its grip only at the part it waits on (`Machine::hand_free`): elsewhere the squeeze hands the gun over or
 takes the two-handed grip.
+
+**Correction, the 20:18 run.** FMOD's `Sound::getName` returns `(null)` for every sound the game plays: it makes
+them from memory, without names. Matching parts by file name failed every time, so each event played whole, the
+shotgun's two strokes as two full cocks. A part is now matched to the first sound its event starts (an event plays
+one), and its length (`Sound::getLength`) is logged to say which file it was. The stroke parts play as each stroke
+ENDS (back home, then forward home): that run detected the back stroke only 34 ms before the forward one.
+
+**The mirror axis, mid-reload.** The gun's sideways axis for the left-hand mirror was latched from the first
+mirrored frame. Handed over during a shotgun reload, the reload clip had the gun turned, and Z (0.72 along the
+mirror's normal) won over Y: the gun upside down until the weapon changed. The axis is now read from the gun held
+at rest (the hands idling) in either hand; a frame not at rest only decides it provisionally, until one is.
+
+**A Tommy Gun left without its drum** (switched away at the pouch step) had its drum shown again by the reload's
+end. It now stays without one (`HideAmmoModel` while in hand, fire refused with the dry click), and its reload is
+begun again at rest; the machine adopts it at the pouch (`Input::magOut`) instead of dropping another drum.
+

@@ -7236,9 +7236,65 @@ bool rigid_centre(void* actor, float out[3]) {
 
 // The evaluated pose as the drive reads it: the game's, or with the gun in the left hand the
 // mirrored one (each hand the other's layout; 43/44, the gun's grip and tip, at their mirror).
+// Of the gun's socket axes (or the grip bone's own), the one lying most along the mirror's normal in this
+// pose's grip frame - the gun's sideways axis while the hand holds it at rest. Its index, the unit axis, the dot.
+int gun_side_axis(const mirror::Aff& grip, const mirror::Basis& b, float u[3], float* dot, bool* fromSocket) {
+    float ax[3][3];
+    *fromSocket = weapon_socket_axes(ax);
+    if (!*fromSocket)
+        for (int a = 0; a < 3; ++a)
+            for (int c = 0; c < 3; ++c) ax[a][c] = a == c ? 1.0f : 0.0f; // the bone's own axes
+    const arm_ik::Vec nrm{b.n[0], b.n[1], b.n[2]};
+    int best = -1;
+    float bestDot = -1.0f;
+    for (int a = 0; a < 3; ++a) {
+        const arm_ik::Vec v = arm_ik::vec(ax[a]);
+        const float l = arm_ik::length(v);
+        if (!(l > 1e-6f)) continue;
+        mirror::Aff rr = grip;
+        rr.t[0] = rr.t[1] = rr.t[2] = 0.0f;
+        const arm_ik::Vec w = mirror::apply(rr, v * (1.0f / l));
+        const float wl = arm_ik::length(w);
+        const float d = wl > 1e-6f ? std::fabs(arm_ik::dot(w * (1.0f / wl), nrm)) : 0.0f;
+        if (d > bestDot) {
+            bestDot = d;
+            best = a;
+            arm_ik::put(v * (1.0f / l), u);
+        }
+    }
+    *dot = bestDot;
+    return best;
+}
+
 const Qts* m4_pose(const Qts* A, int n) {
+    // 2026-10-21 (the shotgun turned upside down when handed to the left hand): the gun was
+    // handed over mid-reload, the reload clip turning it in the hand, and the axis latched from that first mirrored
+    // frame was Z (0.72 along the normal) - upside down until the weapon changed. The sideways axis is now read
+    // from the gun held at REST (the hands idling), in either hand, and a frame of anything else never decides it.
+    static void* s_restWeapon = nullptr;
+    static int s_restAxis = -1;
+    static float s_restU[3] = {};
+    const mirror::Basis* b = n >= patterns::kHandsRigBoneCount ? palette::mirror_basis() : nullptr;
+    const bool atRest = g_m4.actor && hands_state::current(g_m4.actor) == hands_state::State::Idling;
+    if (b && atRest) {
+        void* w = nullptr;
+        if (hands::current_holdable(&w) && w) {
+            if (w != s_restWeapon) s_restAxis = -1;
+            // Unmirrored, the game's pose is read as it is; mirrored, the grip's own bone is the mirror image of
+            // the same hold - its axes' dots with the normal are the same.
+            float u[3], d = 0.0f;
+            bool fromSocket = false;
+            const int a = gun_side_axis(mirror::from_frame(A[patterns::kBoneWeaponAttach].q, A[patterns::kBoneWeaponAttach].p,
+                                                           A[patterns::kBoneWeaponAttach].s),
+                                        *b, u, &d, &fromSocket);
+            if (a >= 0 && d > 0.6f && s_restAxis < 0) {
+                s_restWeapon = w;
+                s_restAxis = a;
+                arm_ik::put(arm_ik::vec(u), s_restU);
+            }
+        }
+    }
     if (!g_m4.mirror || n < patterns::kHandsRigBoneCount) return A;
-    const mirror::Basis* b = palette::mirror_basis();
     if (!b) return A;
     memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
     auto aff = [&](int i) { return mirror::from_frame(A[i].q, A[i].p, A[i].s); };
@@ -7257,7 +7313,7 @@ const Qts* m4_pose(const Qts* A, int n) {
     // frame, not a bone axis (flipping the bone's left the gun tilted by twice the socket's turn:
     // "the gun angle isnt quite right"). Latched per weapon from the first mirrored frame.
     static void* s_axisWeapon = nullptr;
-    static bool s_haveU = false;
+    static bool s_haveU = false, s_provisional = false;
     static float s_u[3] = {};
     static int s_uAxis = 1; // which of the socket's axes u is (the weapon skeleton's coordinate along it)
     void* weapon = nullptr;
@@ -7267,35 +7323,31 @@ const Qts* m4_pose(const Qts* A, int n) {
         s_haveU = false;
     }
     const mirror::Aff grip = aff(patterns::kBoneWeaponAttach);
-    if (!s_haveU) {
-        float ax[3][3];
-        const bool fromSocket = weapon_socket_axes(ax);
-        if (!fromSocket)
-            for (int a = 0; a < 3; ++a)
-                for (int c = 0; c < 3; ++c) ax[a][c] = a == c ? 1.0f : 0.0f; // the bone's own axes
-        const arm_ik::Vec n{b->n[0], b->n[1], b->n[2]};
-        int best = 0;
-        float bestDot = -1.0f;
-        for (int a = 0; a < 3; ++a) {
-            const arm_ik::Vec v = arm_ik::vec(ax[a]);
-            const float l = arm_ik::length(v);
-            if (!(l > 1e-6f)) continue;
-            mirror::Aff r = grip;
-            r.t[0] = r.t[1] = r.t[2] = 0.0f;
-            const arm_ik::Vec w = mirror::apply(r, v * (1.0f / l));
-            const float wl = arm_ik::length(w);
-            const float d = wl > 1e-6f ? std::fabs(arm_ik::dot(w * (1.0f / wl), n)) : 0.0f;
-            if (d > bestDot) { bestDot = d; best = a; }
+    // The rest's axis once there is one; until then this frame's, PROVISIONAL - taken again from the first frame at rest.
+    const bool restKnown = weapon && weapon == s_restWeapon && s_restAxis >= 0;
+    if (!s_haveU || (s_provisional && (restKnown || atRest))) {
+        float u[3], d = 0.0f;
+        bool fromSocket = false;
+        int best = -1;
+        if (restKnown) {
+            best = s_restAxis;
+            arm_ik::put(arm_ik::vec(s_restU), u);
+            d = 1.0f;
+            fromSocket = true;
+        } else {
+            best = gun_side_axis(grip, *b, u, &d, &fromSocket);
         }
-        const arm_ik::Vec v = arm_ik::vec(ax[best]);
-        const float l = arm_ik::length(v);
-        if (!(l > 1e-6f)) return g_evMirror;
-        arm_ik::put(v * (1.0f / l), s_u);
+        if (best < 0) return g_evMirror;
+        const bool changed = !s_haveU || best != s_uAxis;
+        arm_ik::put(arm_ik::vec(u), s_u);
         s_uAxis = best;
         s_haveU = true;
-        BVR_LOG("[bones] mirror: the held weapon flips its %s axis %c (in the grip's frame %.3f %.3f %.3f, %.2f along "
-                "the mirror's normal; latched until the weapon changes)",
-                fromSocket ? "SOCKET" : "grip bone's", "XYZ"[best], s_u[0], s_u[1], s_u[2], bestDot);
+        s_provisional = !restKnown && !atRest;
+        if (changed)
+            BVR_LOG("[bones] mirror: the held weapon flips its %s axis %c (in the grip's frame %.3f %.3f %.3f, %s)",
+                    fromSocket ? "SOCKET" : "grip bone's", "XYZ"[best], s_u[0], s_u[1], s_u[2],
+                    restKnown ? "read from the gun held at rest" : s_provisional ? "PROVISIONAL - not at rest, taken again at rest"
+                                                                       : "this frame, at rest");
     }
     mirror::Aff gripInv;
     if (!mirror::inverse(grip, &gripInv)) return g_evMirror;

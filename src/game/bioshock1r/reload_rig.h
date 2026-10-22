@@ -268,6 +268,8 @@ struct Input {
     float partSeatCm = -1;      // the carried part's distance from where it sits in the gun (cm), -1
                                 // unknown (no eject recorded the seat): the palm's path decides
     bool chambered = false;     // the gun still had a round in it when this reload began
+    bool magOut = false;        // 2026-10-21: a reload left this gun with no magazine (switched away mid-reload):
+                                // the reload it begins on coming back starts at its first Fetch, nothing to drop
     bool ejectNow = false;      // the reload button while a reload waits at its first pull (a dry gun's):
                                 // the magazine drops, as the button's own eject
     bool pumpDone = false;      // a PumpHand phase's pump completed (the glue's Pump)
@@ -332,6 +334,12 @@ public:
     bool active() const { return state_ != State::Idle; }
     const Program* program() const { return prog_; }
     int phase() const { return phase_; }
+    // The gun's magazine is out and no new one is in the hand yet: falling, carried away, or the hand at the pouch.
+    bool mag_out() const {
+        const int ff = first_fetch(prog_);
+        if (state_ != State::Running || ff < 0) return false;
+        return dropping_ || (phase_ > 0 && phase_ < ff) || (phase_ == ff && !carrying_);
+    }
     // A reload waiting for the free hand, which has nothing of it: at a Pull or Slide not yet taken hold of, or at a
     // Fetch with nothing carried. The hand may grip the gun two-handed or take the gun over meanwhile.
     bool hand_free() const {
@@ -352,6 +360,13 @@ public:
             case State::Idle:
                 if (in.adopt && in.clipLive && in.clipProgram) {
                     begin(in.clipProgram, in);
+                    if (in.magOut && first_fetch(prog_) >= 0) {
+                        phase_ = first_fetch(prog_);
+                        enter(in);
+                        running(in, c, grabU, o, /*fresh=*/true);
+                        if (!o.event) o.event = "no magazine in the gun: take one from the pouch";
+                        break;
+                    }
                     if (in.ejectAdopted && start_drop(in, o)) {
                         running(in, c, grabU, o, /*fresh=*/true);
                         o.event = "the gun ran dry: it opens and the magazine drops - take a new one from the pouch";
@@ -1153,6 +1168,7 @@ public:
     }
     bool working() const { return stage_ == Stage::Back || stage_ == Stage::Fwd; }
     bool backDone() const { return stage_ == Stage::Fwd; }
+    bool done() const { return stage_ == Stage::Done; } // the forward stroke finished
 
 private:
     enum class Stage : uint8_t { Off, Firing, Back, Fwd, Done };

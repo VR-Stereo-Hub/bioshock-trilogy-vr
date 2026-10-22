@@ -379,6 +379,12 @@ Vec throw_velocity(float* peakOut) {
 }
 bool g_ejectedThis = false;     // this manual reload ejected its magazine
 void* g_showAmmoFor = nullptr;  // ...and it is over: show the magazine on this weapon once it is in hand
+// 2026-10-21 (a drum appeared in the Tommy Gun on switching back to it after leaving it with none): a
+// Tommy Gun left mid-reload with its drum out stays without one - hidden when it is back in hand, its reload begun
+// again at the pouch, and no shot until a drum is in.
+void* g_magOut = nullptr;
+uint64_t g_magOutAskMs = 0, g_magOutHideMs = 0;
+int g_magOutAsks = 0;
 
 template <typename Fn>
 void for_parts(const char* part, Fn fn) {
@@ -856,19 +862,21 @@ static float held_seconds(uint64_t now) {
     return h ? static_cast<float>(now - s_since) * 0.001f : 0.0f;
 }
 
-// 2026-10-21 (the tester: "the sound effect is both cocking motions in one, so can you analyze the sound file and
-// play each part with each corresponding direction"): the shotgun's cock, a stroke at a time. The game's PumpShotgun
+// 2026-10-21 (one cock sound played both strokes at once; each stroke should have its own half): the shotgun's cock,
+// a stroke at a time. The game's PumpShotgun
 // sound (weapons_shotgun_pump_01, 0.4 s) has both strokes 35 ms apart - a rack between shots, too quick to part - so the
 // strokes play the reload end's (weapons_shotgun_reloadEndwav), whose strokes stand apart: the pump back 130-310 ms,
 // forward 310 ms to its end (tools/fsb-probe.ps1 on the Sound object UModel exports, 10 ms steps: a gap at -27 dB
 // between them). Without FMOD's channel, the back stroke plays the whole PumpShotgun as before.
+// Each part plays as its stroke ENDS - the pump hitting home at the back, then at the front (the 20:18 run began
+// the back stroke 34 ms before the forward one: begun-stroke timing played the two on top of each other).
 constexpr const char* kSgStrokeSound = "weapons_shotgun_reloadEndwav";
 void stroke_sound(void* hands, const rr::Pump& p, bool wasWorking, bool wasFwd) {
-    if (!wasWorking && p.working() && !p.backDone()) {
+    if (!wasFwd && p.backDone()) {
         if (!sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 130, 310))
             sound_engine::play(hands, "PumpShotgun");
     }
-    if (!wasFwd && p.backDone()) sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 310, 900);
+    if (wasFwd && p.done()) sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 310, 900);
 }
 
 // The Tommy Gun's reload is one sound too (HandsReloadTommy: weapons_tommy_reload_01, 2.35 s), and its clip is
@@ -880,6 +888,20 @@ void tommy_sound(void* hands, int phaseWas, int phase, bool ejected) {
     if (ejected || (phaseWas == 0 && phase == 1)) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 0, 520);
     if (phaseWas == 3 && phase > 3) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1000, 1540);
     if (phaseWas == 4 && phase == 5) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1850, 2330);
+}
+
+// A manual reload is being dropped (the weapon changed, or put away, or the game ended its reload): with the drum
+// out, the gun has none until one goes in; otherwise a magazine it ejected is shown again.
+void reload_left(void* weapon, bool magOut) {
+    if (magOut && weapon && !_wcsicmp(g_cls, L"MachineGun")) {
+        g_magOut = weapon;
+        g_magOutAsks = 0;
+        g_magOutAskMs = 0;
+        if (g_showAmmoFor == weapon) g_showAmmoFor = nullptr;
+        BVR_LOG("[reload] %S: left with its drum out - it stays without one until a new one goes in", g_cls);
+    } else if (g_ejectedThis) {
+        g_showAmmoFor = weapon; // shown when it is back in hand
+    }
 }
 
 void tick(const Frame& f) {
@@ -896,9 +918,10 @@ void tick(const Frame& f) {
     }
     if (!f.weapon || !g_on.load(std::memory_order_relaxed) || !script::ready()) {
         if (g_machine.active()) {
+            const bool out = g_machine.mag_out();
             let_go(g_weapon, f.hands);
             g_machine.reset();
-            if (g_ejectedThis) g_showAmmoFor = g_weapon; // shown when it is back in hand
+            reload_left(g_weapon, out);
         }
         g_ejectedThis = false;
         g_gunKeep = 1.0f;
@@ -915,7 +938,7 @@ void tick(const Frame& f) {
     if (f.weapon != g_weapon) script::warm_names();
     if (f.weapon != g_weapon) {
         if (g_machine.active()) BVR_LOG("[reload] the weapon changed - manual reload dropped");
-        if (g_machine.active() && g_ejectedThis) g_showAmmoFor = g_weapon; // shown when it is back in hand
+        if (g_machine.active()) reload_left(g_weapon, g_machine.mag_out());
         g_ejectedThis = false;
         let_go(nullptr, nullptr);
         g_machine.reset();
@@ -1099,6 +1122,7 @@ void tick(const Frame& f) {
     in.partSeatCm = g_seatValid && f.now - g_partSeatMs < 150 ? g_partSeatCm : -1.0f;
     // A round still in the gun (read once as each reload begins; the game refills only at the clip's end).
     in.chambered = g_chambered;
+    in.magOut = g_magOut && g_magOut == f.weapon;
 
     const bool wasActive = g_machine.active();
     if (!wasActive && in.entryProgram) {
@@ -1141,6 +1165,7 @@ void tick(const Frame& f) {
     in.spareInHand = g_spare.actor != nullptr;
     in.caught = spareGun && catch_check(f);
     const int phaseWas = g_machine.active() ? g_machine.phase() : -1;
+    const bool magOutWas = g_machine.mag_out();
     const rr::Output o = g_machine.update(in, g_cfg);
     if (!_wcsicmp(g_cls, L"MachineGun"))
         tommy_sound(f.hands, phaseWas, g_machine.active() ? g_machine.phase() : -1, o.ejected);
@@ -1221,7 +1246,30 @@ void tick(const Frame& f) {
         BVR_LOG("[reload] %S: %s %s - its magazine shown (%s)", g_cls, o.fetched ? "a new one from the pouch:" : "seating:",
                 o.part ? o.part : "part", ok ? "ShowAmmoModel" : "ShowAmmoModel FAILED");
     }
-    if (wasActive && !g_machine.active() && g_ejectedThis) g_showAmmoFor = f.weapon;
+    if (wasActive && !g_machine.active()) reload_left(f.weapon, magOutWas);
+    // A new drum in the hand (or seated): the gun has one again.
+    if (g_magOut == f.weapon && g_machine.active() && !g_machine.mag_out()) g_magOut = nullptr;
+    if (g_magOut == f.weapon && !g_machine.active()) {
+        struct { int32_t pad[4]; } none{};
+        // Hidden again and again: the gun's equip shows its magazine.
+        if (f.now - g_magOutHideMs >= 300) {
+            g_magOutHideMs = f.now;
+            script::call(f.weapon, "HideAmmoModel", &none);
+        }
+        // Its reload begun again, at rest: the machine adopts it at the pouch (Input::magOut).
+        if (st == hands_state::State::Idling && f.now - g_magOutAskMs >= 1500) {
+            g_magOutAskMs = f.now;
+            if (++g_magOutAsks > 3) {
+                // The game will not reload it (no rounds for it): the drum the gun still counts comes back.
+                g_magOut = nullptr;
+                script::call(f.weapon, "ShowAmmoModel", &none);
+                BVR_LOG("[reload] %S: no drum, and the game will not reload it - its drum is shown again", g_cls);
+            } else {
+                const bool ok = script::call(f.weapon, "Reload", &none);
+                BVR_LOG("[reload] %S: no drum in it - the game is asked to reload (%s)", g_cls, ok ? "called" : "FAILED");
+            }
+        }
+    }
     if (!g_machine.active()) g_ejectedThis = false;
     if (o.ejected) g_ejectedThis = true;
     // A part let go away from the gun (the spent drum pulled out by hand, or a new one short of its seat)
@@ -1373,13 +1421,15 @@ void tick(const Frame& f) {
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         const bool rose = pulls != s_dryPulls;
         s_dryPulls = pulls;
-        if (shotgun && (g_dryClick || (rose && g_blockFire.load(std::memory_order_relaxed)))) {
+        if ((shotgun || (g_magOut && g_magOut == f.weapon)) &&
+            (g_dryClick || (rose && g_blockFire.load(std::memory_order_relaxed)))) {
             char tag[64];
             sound_engine::play(f.weapon, "DryFiring", sound_engine::ammo_tag(f.weapon, tag, sizeof tag) ? tag : nullptr);
         }
         g_dryClick = false;
     }
-    g_blockFire.store(shotgun && (g_machine.active() || g_needCock), std::memory_order_relaxed);
+    const bool noDrum = g_magOut && g_magOut == f.weapon;
+    g_blockFire.store((shotgun && (g_machine.active() || g_needCock)) || noDrum, std::memory_order_relaxed);
     haptic(o.haptic, f);
     if (o.buzz && f.now - g_lastBuzzMs >= kBuzzEveryMs) {
         g_lastBuzzMs = f.now;
