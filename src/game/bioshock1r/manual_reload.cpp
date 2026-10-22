@@ -1154,7 +1154,10 @@ void tick(const Frame& f) {
     const bool afterSwitch = g_switchMs && f.now - g_switchMs < 1500;
     // The rounds as the clip began (read fresh above on that frame), never the 4 Hz count: the 23:57 sim run's dry
     // Tommy Gun still showed 1 round in the cache and dropped its drum instead of waiting for the hand.
-    if (!_wcsicmp(g_cls, L"MachineGun") && !(g_roundsAtStart > 0) && !switching && !afterSwitch) in.ejectAdopted = false;
+    // 2026-10-22 (the 10:31 run, the tester: the pistol opened by itself as it ran dry): the pistol's dry reload
+    // waits for the hand to pull the cylinder too, as the Tommy's waits for the drum.
+    if ((!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"Pistol")) && !(g_roundsAtStart > 0) && !switching && !afterSwitch)
+        in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
     // one quickly", and "throw one up in the air and slap the gun into it").
     const bool spareGun = in.entryProgram && in.entryProgram->spare;
@@ -1469,6 +1472,10 @@ void tick(const Frame& f) {
                     break;
                 case PumpUse::Loop:
                     abort_reload(f.weapon, f.hands, "a pump stroke while it waited for a shell");
+                    // 2026-10-22 (the 10:31 run: a shell went into the gun on its own after every pump out of a
+                    // reload): the weapon's loop clip, held at its fetch, played on from there once let go - the
+                    // hands had moved on to the equip, the gun still animated the shell home. It goes to its end.
+                    if (hw > 0 && g_len > 0.0f) script::set_anim_time(f.weapon, hw, g_len);
                     let_go(f.weapon, f.hands);
                     g_machine.reset();
                     g_uncockedGun = nullptr;

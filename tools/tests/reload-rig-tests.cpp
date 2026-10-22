@@ -572,7 +572,23 @@ int main() {
         in.alongCm = back + 3.0f; // 5 cm forward of the farthest back
         o = pump.update(in, c);
         check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f, "forward from the farthest back: 5 cm", o.strokeCm, 5.0);
-        in.alongCm = back + 4.1f;
+        const float tFwd5 = o.t;
+        check(tFwd5 > 1.05f, "the clip chased along the forward stroke", tFwd5, 1.1);
+        // 2026-10-22: a hand dithering through the forward stroke never sets the clip back over its shell-eject cue.
+        in.alongCm = back - 3.0f; // back past the farthest back (back - 2): the reference moves, the clip does not
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.t - tFwd5) < 1e-4f && std::fabs(o.strokeCm) < 0.01f,
+              "retreated: the stroke restarts from there, the clip stays where it was chased", o.t, tFwd5);
+        in.alongCm = back - 1.0f; // 2 cm forward of the new farthest back: still behind the chased time
+        o = pump.update(in, c);
+        check(o.hold && std::fabs(o.t - tFwd5) < 1e-4f, "2 cm forward again: the clip waits where it was", o.t, tFwd5);
+        in.alongCm = back + 1.0f; // 4 cm
+        o = pump.update(in, c);
+        check(std::fabs(o.t - tFwd5) < 1e-4f && std::fabs(o.strokeCm - 4.0f) < 0.01f, "4 cm: the stroke counts from the new reference", o.strokeCm, 4.0);
+        in.alongCm = back + 2.1f; // 5.1 cm: not yet
+        o = pump.update(in, c);
+        check(o.hold && !o.run && o.t > tFwd5, "5.1 cm: chased on past it", o.t, tFwd5);
+        in.alongCm = back + 3.1f;
         o = pump.update(in, c);
         check(o.run && !o.jump && !pump.working(), "6 cm forward: pumped, the clip plays out");
         o = pump.update(in, c);

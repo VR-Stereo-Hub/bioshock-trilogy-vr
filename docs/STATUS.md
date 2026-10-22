@@ -15,7 +15,10 @@ pumps itself; the drawn hand rides the slide; an ammunition variant's reload-end
 instead of doubled. **The 10:14 run on that cut was worse** - the empty gun pumped itself, the loop pump was
 refused before the first shell, the drawn wrist never moved, and the ionic buck's base take starts late outside
 the mod's call - all four corrected (ENGINE_NOTES "The 10:14 run"), plus the Tommy's pouch squeeze opening the
-plasmid wheel. Installed; not yet in the headset.
+plasmid wheel. The 10:31 run on that: close; three more corrected (ENGINE_NOTES "The 10:31 run"): the pistol's
+dry reload waits for the hand like the Tommy's, the forward pump stroke never rewinds over the shell-eject cue
+(20 shells in 11 s), and the weapon's loop clip is finished, not resumed, when a pump ends a reload. Installed;
+not yet in the headset.
 
 ### Current state
 

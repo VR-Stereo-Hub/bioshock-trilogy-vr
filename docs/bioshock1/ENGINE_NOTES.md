@@ -7621,3 +7621,20 @@ The 10:14 headset run, on 223bbe5, was worse than 09:31. Each cause, from its lo
   outside the machine, so nothing claimed the press and its first frame reached the game as a bumper tap. Older
   than 223bbe5 (207956d's arbiter): a squeeze the arbiter gives the reload or the spare is now withheld from its
   first frame until it comes up, claimed or not.
+
+## 2026-10-22 - The 10:31 run: the pistol's dry reload, the forward stroke's shell cue, the loop clip let go
+
+- **The pistol opened by itself as it ran dry.** The game's own reload on an empty gun is adopted, and the adopted
+  reload ejected at once (`the gun ran dry: it opens and the magazine drops`) - as it had since 10-20; only the
+  Tommy had the rule that a dry gun waits for the hand to pull its part (`ejectAdopted` off, the 23:57 sim run).
+  The pistol has it now too: dry, it waits with the cylinder in for the hand to pull it (or X).
+- **Shells ejected without end.** 10:33:49-10:34:00: the forward stroke of a shot's pump, chased 1:1 by the hand
+  between the rear stop (0.85 s) and the catch, was SET back to 0.85 each time the hand retreated and chased
+  forward again - over the Fire clip's `shelleject` cue (between 1.05 and 1.063 s) every pass: 20 shells in 11 s.
+  The clip never goes back along the forward stroke now (`Pump::fwdT_`); the ratchet's reference still does, so the
+  6 cm are measured from the farthest back as before. Host-tested.
+- **A shell went into the gun on its own after every pump out of a reload.** The loop-ending pump interrupts the
+  game's reload and lets the held clips go: the hands move on to the equip, but the WEAPON's loop clip, held at its
+  fetch (0.034 s), resumed from there and animated its shell home (the log: the weapon's handle stays the loop's
+  after the equip, `hands clips 2411 / 2413`). With the gun empty the game begins its reload again on each pump,
+  so every cock showed it. The weapon's loop clip is set to its end before it is let go.

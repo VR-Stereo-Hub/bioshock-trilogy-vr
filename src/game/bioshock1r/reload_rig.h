@@ -1114,7 +1114,7 @@ public:
             // It waits for the hands at the stroke it is on - before the pump if none has begun.
             if (stage_ == Stage::Firing && in.clipT < waitT) return o;
             o.hold = true;
-            o.t = stage_ == Stage::Fwd ? c.backT1 : stage_ == Stage::Back ? c.backT0 : waitT;
+            o.t = stage_ == Stage::Fwd ? fwdT_ : stage_ == Stage::Back ? c.backT0 : waitT;
             o.deny = in.triggerRise;
             rebase_ = true; // a new grab starts the ratchet afresh
             refSet_ = false;
@@ -1137,14 +1137,14 @@ public:
             refSet_ = false;
             if (stage_ == Stage::Firing && in.clipT < waitT) return o;
             o.hold = true;
-            o.t = stage_ == Stage::Fwd ? c.backT1 : stage_ == Stage::Back ? c.backT0 : waitT;
+            o.t = stage_ == Stage::Fwd ? fwdT_ : stage_ == Stage::Back ? c.backT0 : waitT;
             o.deny = in.triggerRise;
             return o;
         }
         if (!in.alongOk) { // a controller lost: hold where it is, measure nothing
             if (stage_ == Stage::Firing) return o;
             o.hold = true;
-            o.t = stage_ == Stage::Back ? c.backT0 : c.backT1;
+            o.t = stage_ == Stage::Back ? c.backT0 : fwdT_;
             return o;
         }
         const float along = -in.alongCm; // + is back: the hands closer together
@@ -1186,6 +1186,7 @@ public:
                 if (d >= strokeU) {
                     stage_ = Stage::Fwd;
                     ref_ = along;
+                    fwdT_ = c.backT1;
                     o.haptic = Haptic::Tick;
                     o.t = c.backT1; // the catch: the clip finishes the stroke
                     o.event = "pump it: forward";
@@ -1198,7 +1199,15 @@ public:
                 o.hold = true;
                 o.chase = true;
                 // Back at the pump's rear stop until the hand starts it forward.
-                o.t = d > 0.5f ? c.fwdT0 + (c.fwdT1 - c.fwdT0) * (d / follow < 1.0f ? d / follow : 1.0f) : c.backT1;
+                // 2026-10-22 (the 10:31 run: a hand dithering through the forward stroke ejected a shell on every
+                // pass - the clip, chased forward over its shell-eject cue, was SET back to the rear stop each
+                // time the hand retreated, then chased over the cue again; 20 shells in 11 s): the clip never
+                // goes back along the forward stroke. The ratchet's reference still does, so the stroke's 6 cm
+                // are measured from the farthest back as before.
+                float t = d > 0.5f ? c.fwdT0 + (c.fwdT1 - c.fwdT0) * (d / follow < 1.0f ? d / follow : 1.0f) : c.backT1;
+                if (t < fwdT_) t = fwdT_;
+                fwdT_ = t;
+                o.t = t;
                 o.strokeCm = d;
                 o.deny = in.triggerRise;
                 if (d >= strokeU) {
@@ -1223,6 +1232,7 @@ private:
     enum class Stage : uint8_t { Off, Firing, Back, Fwd, Done };
     Stage stage_ = Stage::Off;
     float ref_ = 0;
+    float fwdT_ = 0;      // the farthest the clip has been chased along the forward stroke (never set back)
     bool refSet_ = false;
     bool rebase_ = false; // the ratchet's reference restarts at the hands' next reading
 };
