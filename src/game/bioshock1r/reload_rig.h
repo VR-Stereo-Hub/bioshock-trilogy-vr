@@ -1046,6 +1046,25 @@ struct PumpConfig {
     // stroke has begun - played, not set, so the sound fires with the player's pump and never without it.
     float waitT = -1.0f;
 };
+// 2026-10-22: a stroke the gun does not need (gun_state::PumpNeed::Optional - a pump while the reload waits for a
+// shell) takes a deliberate stroke, twice the quick one, so the aim's own drift while holding two-handed never
+// works it (the 09:31 run: 3 cm of drift began one, 6 completed it); the clip follows the whole of it.
+inline constexpr float kDeliberateStrokeCm = 12.0f;
+inline PumpConfig deliberate(PumpConfig c) {
+    c.strokeCm = kDeliberateStrokeCm;
+    c.followCm = kDeliberateStrokeCm;
+    return c;
+}
+// The pump's position, 0 forward .. 1 at the rear stop, at clip time t under this config (the back stroke over
+// backT0..backT1, the forward one over fwdT0..fwdT1).
+inline float pump_position(const PumpConfig& c, float t) {
+    float back = 0.0f;
+    if (t >= c.fwdT1) back = 0.0f;
+    else if (t >= c.fwdT0) back = 1.0f - (t - c.fwdT0) / (c.fwdT1 - c.fwdT0);
+    else if (t >= c.backT1) back = 1.0f;
+    else if (t > c.backT0) back = (t - c.backT0) / (c.backT1 - c.backT0);
+    return back < 0 ? 0 : back > 1 ? 1 : back;
+}
 struct PumpInput {
     bool fireClip = false; // the shotgun's 'Fire' clip is playing
     bool clipNew = false;  // a new 'Fire' clip (the next shot) began this frame

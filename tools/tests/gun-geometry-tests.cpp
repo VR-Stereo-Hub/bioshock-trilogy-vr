@@ -50,6 +50,20 @@ int main() {
         check(gg::find(L"ResearchCamera") == nullptr, "an unknown class: no row");
         check(gg::find(nullptr) == nullptr, "no class: no row");
     }
+    // ---- the pump (2026-10-22) ----
+    {
+        const gg::Gun* s = gg::find(L"Shotgun");
+        const float travel = arm_ik::length(s->pumpBack);
+        check(std::fabs(travel - 18.0f) < 0.3f, "the shotgun's pump travel is SG_Pump's 18 units", travel, 18.0);
+        check(dist(gg::grip_point(*s, 0.0f), s->foreGrip) < 1e-6f, "pump forward: the fore-grip");
+        check(dist(gg::grip_point(*s, 1.0f), Vec{38.54f, 8.33f, 7.83f}) < 0.2f, "pump at the rear stop: the Fire clip's fist at 0.85 s");
+        check(dist(gg::grip_point(*s, 0.5f), (s->foreGrip + Vec{38.54f, 8.33f, 7.83f}) * 0.5f) < 0.2f, "half way: half way");
+        for (const wchar_t* c : {L"MachineGun", L"GrenadeLauncher", L"ChemicalThrower", L"Crossbow", L"Pistol"}) {
+            const gg::Gun* g = gg::find(c);
+            check(g && arm_ik::length(g->pumpBack) == 0.0f && dist(gg::grip_point(*g, 1.0f), g->foreGrip) < 1e-6f,
+                  "a gun with no pump: the anchor never moves");
+        }
+    }
     // ---- mirror ----
     {
         // The shotgun's measured mirror: socket Y in the grip's frame, the plane 3.63 units toward -u.

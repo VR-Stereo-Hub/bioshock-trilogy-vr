@@ -7551,3 +7551,43 @@ fore-grip (the right hand 1.8 cm from the reflected point, the hold mirrored, ru
   code), and `dragging()` was true for the eject's frame: the drop is the fall in the pull's phase only.
 Not reached in the sim: the Tommy's bolt rack (the stale-program bug skipped it), the pistol's X cancel at
 the pouch (G3), a sideways pump on a loaded gun. The sim's hands jump, so no ease was watched.
+
+## 2026-10-22 - The pump by need, the hand on the slide, the ionic buck's takes (the 09:31 headset run)
+
+**What the run said.** The tester's three shotgun findings, read off `bioshockvr.log` 09:29-09:32: (1) with the gun
+run empty and held two-handed, the game's own reload began, waited at the pouch, and the aim's drift (3 cm began a
+stroke, 6 completed it) ended it as a "pump while loading" - three times in four seconds (09:31:57.771, 59.454,
+09:32:00.917), each time with no shell in, so nothing was cocked and the reload only restarted; (2) the two-handed
+anchor is a constant of the gun (`gun_geometry.h foreGrip`), so the drawn hand stayed at the fore-grip while the
+pump bone went 18 units back; (3) every `ShotgunReloadEnd` the mod fired for a stroke on the default buck cut a
+3552 ms sound (FMOD's length of it), but with the ionic buck selected (09:30:50-09:31:24) the same event answered
+with one of SIX takes at random - 757, 809, 835, 862, 1097, 1175 ms - whose timelines the parts (580-710,
+780-1060 ms) do not fit: the forward part began past the take's end and played it whole, both strokes, after the
+back part. No other event name appeared (the ammunition variant is the response's choice, not the cue's).
+
+**What the pump is for decides its stroke** (`gun_state::pump_need`, host-tested). Required - the gun cannot fire
+until it is worked: a shot's pump with shells left (or the count unknown), the reload's last pump, the dry cock;
+the quick 6 cm stroke as before. Optional - a pump while the reload waits for a shell, once one or more are in:
+`reload_rig::kDeliberateStrokeCm`, 12 cm each way, the clip following the whole of it. None - not offered: a shot
+that ran the gun empty (the Fire clip pumps itself, its `PumpShotgun` cue plays as the game's - the cue is muted
+only while the pump is the hands', `gun_suppress::Record::mutedByHand` - and the game's reload follows), and a pump
+while the reload waits with no shell in yet. The shells in are counted per reload as the loop's Play phase ends
+(`[reload] Shotgun: N shells in this reload`); the rounds a shot leaves are read fresh as its clip begins
+(`GetRoundsRemaining`, the 4 Hz count being a shot stale). `[reload] Shotgun <use>: the quick|a deliberate stroke
+(N cm), N shells in, N rounds` logs each use as it begins.
+
+**The hand on the slide.** The free fist's travel in `Shotgun__FireShotgun` (NEWPlayerHands-all.glb, the same
+measure as the fore-grip): 54.05 14.75 14.32 at 0.75 s, 46.00 11.52 10.99 at 0.80, 38.54 8.38 7.85 at 0.85 (held
+to 1.05), 52.00 14.05 13.37 at 1.15, home by 1.30 - 17.97 units, SG_Pump's 18. `gun_geometry::Gun::pumpBack` holds
+it and `grip_point(gun, back)` is the anchor with the pump `back` (0..1) of the way; `manual_reload::pump_back()`
+publishes it each tick - from the clip's time (held, chased or running on, `reload_rig::pump_position`) for a shot's
+pump and the reload's last, from the ratchet's time for the dry cock and the loop-ending pump. The mirrored hold
+reflects the whole point. Unverified in the headset.
+
+**Another take plays whole, once.** A part row (`gun_sounds::Row`) now names the FMOD length of the take it was cut
+from (reloadEndwav 3552, tommy reload_01 2847) and whether it is its action's first part. Inside `play_part`, a
+sound of another length (2% tolerance) is another take: the first part lets it play whole, every later part stops
+it at once (`[sound] another take of ...`). So the ionic buck's pump sounds whole on the back stroke and nothing on
+the forward - the game's own way - and the Tommy's ammunition variants would do the same for its reload. The polish
+would be a timeline per take, keyed by that length (`tools/fsb-probe.ps1` on each exported variant); the lengths
+are in the log.

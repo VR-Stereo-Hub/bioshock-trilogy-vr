@@ -68,6 +68,28 @@ inline bool two_hand_allowed(const State& s) {
 // last pump is worked by hand; cut short before it, the hands cock it dry).
 inline bool reload_begins_uncocked(Kind k, int rounds) { return k == Kind::Shotgun && rounds == 0; }
 
+// What the shotgun's pump is for right now (manual_reload.cpp's one ratchet): a shot's pump (the Fire clip waits
+// at it), the reload's last pump, the dry cock of a gun left uncocked, a pump while the reload waits for a shell.
+enum class PumpUse : uint8_t { None, Shot, ReloadEnd, Dry, Loop };
+// 2026-10-22 (the 09:31 headset run: an empty gun's reload, started by the game, ended three times in four seconds
+// by the aim's own drift read as a pump - and nothing was cocked): what a stroke IS to the gun decides how much of
+// one it takes. Required: the gun cannot fire until it is worked - a shot's pump with shells left (or the count
+// unknown), the reload's last pump, the dry cock; it stays the quick stroke. Optional: it does something but nothing
+// needs it - a pump while the reload waits for a shell with one or more in already (it ends the reload, cocked);
+// a deliberate stroke. None: it would do nothing, so it is not offered - a shot's pump with the gun run empty (the
+// clip pumps itself, the game's reload follows), a pump while the reload waits with no shell in yet (it would only
+// restart the reload).
+enum class PumpNeed : uint8_t { None, Required, Optional };
+inline PumpNeed pump_need(PumpUse use, int rounds, int shellsIn) {
+    switch (use) {
+        case PumpUse::Shot: return rounds == 0 ? PumpNeed::None : PumpNeed::Required;
+        case PumpUse::ReloadEnd:
+        case PumpUse::Dry: return PumpNeed::Required;
+        case PumpUse::Loop: return shellsIn > 0 ? PumpNeed::Optional : PumpNeed::None;
+        default: return PumpNeed::None;
+    }
+}
+
 inline Kind kind_of(const wchar_t* cls) {
     auto same = [](const wchar_t* a, const wchar_t* b) {
         if (!a || !b) return false;

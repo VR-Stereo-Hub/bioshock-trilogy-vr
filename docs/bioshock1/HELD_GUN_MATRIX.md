@@ -133,7 +133,8 @@ missing shell, the end (the pump) only when full; a switch of type restarts it.
 | idle, cocked, rounds < size, spare > 0 | two-hand **done** | - | take a shell: the reload starts **done** | hand-over **done** | game | fires; then the pump waits (below) | never the game's **done** |
 | idle, full | two-hand | - | nothing (the game refuses) | hand-over | game | fires | - |
 | idle, no spare | two-hand | - | nothing | hand-over | game | fires; empty: the game's click | - |
-| after a shot: the Fire clip held at 0.45 s for the hands, one- or two-handed | a stroke on the FORE hold pumps it (6 cm back, 6 cm forward, measured between the controllers **done**; along the barrel axis **⑤**) | - | - | - | - | click **done (step 2)** | - |
+| after a shot with shells left: the Fire clip held at 0.45 s for the hands, one- or two-handed | a stroke on the FORE hold pumps it (the quick stroke, 6 cm back, 6 cm forward, along the barrel from the gun controller **done**); the drawn hand rides the slide **done 10-22** | - | - | - | - | click **done (step 2)** | - |
+| the shot that ran the gun empty | nothing to chamber: the clip pumps itself, its cue plays, the game's reload follows (`gun_state::pump_need` None) **done 10-22** | | | | | | |
 | a fresh FORE grab during the wait | settles 0.3 s, then strokes count **done** | | | | | | |
 | mid-stroke | the hold lets go only when the grip comes up **done** | | | | | | |
 | stroke done | cocked; the next shot; the stroke sounds as parts of the reload-end sound **done** | | | | | | |
@@ -143,7 +144,7 @@ missing shell, the end (the pump) only when full; a switch of type restarts it.
 | let go within 15 cm of the port | pressed in: the clip plays it home **done** | | | | | | |
 | let go far | it falls, back to the pouch **done** | | | | | | |
 | the loop plays out; the game wants another | the next loop: waiting at the pouch again **done** | | | | | | |
-| ending a reload EARLY (shells in, not full) | **gap**: the trigger is refused during the whole reload, so only a weapon or plasmid switch ends it; the game would otherwise cut it short and fire. Proposal (③+⑤): a pump stroke on the FORE hold while the reload waits at the pouch ends the loop and cocks the gun (the game's clip is let run to the end's pump, the stroke drives it) | | | | | | |
+| ending a reload EARLY (shells in, not full) | a DELIBERATE pump stroke (12 cm each way, `reload_rig::kDeliberateStrokeCm`) on the FORE hold while the reload waits at the pouch ends the loop and cocks the gun (G2) **done 10-22**; with no shell in yet no stroke is offered (it would only restart the reload - the 09:31 run's empty gun, ended three times by the aim's drift) | | | | | | |
 | the end clip (full): the last pump | two-hand = the pump: the end clip waits at 0.409 s for the strokes **done** | - | - | - | - | click until pumped **done** | - |
 | cut short before its last pump (a switch) | UNCOCKED, per weapon, surviving the switch **done (step 2)** | | | | | | |
 | idle, uncocked | two-hand: a dry cock, the pump bone drawn with the strokes **done** | - | a shell: a reload begun with shells in stays uncocked until ITS last pump **done** | hand-over | game | click **done** | - |
@@ -175,7 +176,7 @@ state and ownership need no change.
 | # | Gap | Proposal | Step |
 |---|---|---|---|
 | G1 | During the 0.7 s drop and while a part is being seated by the clip, the machine claims every squeeze; a two-handed grab or a hand-over then is swallowed | the owner table: `Dropping` and `Seating` allow FORE and HANDS (the reload holds nothing of the free hand) | **done 3a** |
-| G2 | The shotgun's reload cannot be ended early by the player (the trigger is refused throughout; the game would fire) | a pump stroke while the loop waits at the pouch ends the loop and cocks | **done 3c, unverified** (ENGINE_NOTES "Ending a reload early"); F10 "End a reload early" |
+| G2 | The shotgun's reload cannot be ended early by the player (the trigger is refused throughout; the game would fire) | a pump stroke while the loop waits at the pouch ends the loop and cocks | **done 3c, verified 09:31 run**; 10-22: a deliberate stroke, and only with a shell in (ENGINE_NOTES "The pump by need"); F10 "End a reload early" |
 | G3 | The pistol's reload waiting at the pouch has no abort (no X there, no spare prop) | X at the pouch cancels through the game's interrupt: the gun comes back closed with the rounds it had ("open and empty" is not available: the game refills only at a clip's end) | **done 3c, unverified** |
 | G4 | A spare drum rides the LEFT wrist bone; a hand-over while holding it cannot happen (the grip is down), but a plasmid switch destroys it | keep: the spare is destroyed on any switch (one line of log) | none |
 | G5 | A spare taken of one type, the type switched before it goes in | re-set the prop's mesh when `switching` flips | ⑥ or later |

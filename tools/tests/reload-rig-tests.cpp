@@ -676,6 +676,53 @@ int main() {
         check(std::fabs(o.t - 2.0f * 0.189f) < 0.01f, "a clip twice as long holds at twice the time", o.t, 0.378);
     }
 
+    // ---- the deliberate stroke and the pump's position (2026-10-22) ----
+    {
+        const PumpConfig c;
+        const PumpConfig d = deliberate(c);
+        check(d.strokeCm == kDeliberateStrokeCm && d.followCm == kDeliberateStrokeCm && d.strokeCm == 2.0f * c.strokeCm,
+              "a deliberate stroke is twice the quick one, followed whole", d.strokeCm, 2.0 * c.strokeCm);
+        check(d.backT0 == c.backT0 && d.waitT == c.waitT && d.settleS == c.settleS, "nothing else of the config changes");
+        // The aim's drift (the 09:31 run: 3 cm begun, 6 completed) works the quick stroke and not the deliberate one.
+        Pump quick, slow;
+        PumpInput in;
+        in.fireClip = true;
+        in.clipNew = true;
+        in.held = in.alongOk = true;
+        in.alongCm = 40.0f;
+        in.clipT = 2.0f;
+        quick.update(in, c);
+        slow.update(in, d);
+        in.clipNew = false;
+        bool quickDone = false, slowDone = false;
+        for (int i = 1; i <= 7; ++i) { // 7 cm closer, 1 cm a frame
+            in.alongCm = 40.0f - i;
+            quickDone |= quick.update(in, c).strokeCm < 0 && quick.backDone();
+            slowDone |= slow.update(in, d).strokeCm < 0 && slow.backDone();
+        }
+        check(quick.backDone() && !quickDone, "7 cm of drift completes the quick back stroke");
+        check(!slow.backDone() && slow.working() && !slowDone, "and only begins the deliberate one");
+        for (int i = 8; i <= 12; ++i) {
+            in.alongCm = 40.0f - i;
+            slow.update(in, d);
+        }
+        check(slow.backDone(), "12 cm completes it");
+        // The position along the clip.
+        check(pump_position(c, 0.0f) == 0.0f && pump_position(c, 0.75f) == 0.0f, "before the back stroke: forward");
+        check(std::fabs(pump_position(c, 0.80f) - 0.5f) < 1e-4f, "half way back", pump_position(c, 0.80f), 0.5);
+        check(pump_position(c, 0.85f) == 1.0f && pump_position(c, 1.0f) == 1.0f && pump_position(c, 1.05f) == 1.0f,
+              "at the rear stop until the forward stroke");
+        check(std::fabs(pump_position(c, 1.10f) - 0.5f) < 1e-4f, "half way forward", pump_position(c, 1.10f), 0.5);
+        check(pump_position(c, 1.15f) == 0.0f && pump_position(c, 1.5f) == 0.0f, "home");
+        PumpConfig e;
+        e.backT0 = 0.409f;
+        e.backT1 = 0.487f;
+        e.fwdT0 = 0.532f;
+        e.fwdT1 = 0.676f;
+        check(pump_position(e, 0.5f) == 1.0f && pump_position(e, 0.3f) == 0.0f && pump_position(e, 0.7f) == 0.0f,
+              "the reload end's own times");
+    }
+
     printf("reload-rig: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

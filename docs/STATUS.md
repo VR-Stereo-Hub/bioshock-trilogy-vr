@@ -7,7 +7,12 @@
 **Branch `claude/bs1-manual-reload`**, local commits only. Built (Release), host-tested (20 suites), lint
 clean, INSTALLED. **Run once on the SIMULATOR** (ENGINE_NOTES "The six steps on the simulator"): every
 step's mechanics verified there but the Tommy's bolt rack, the pistol's X cancel and the eases, which
-want the headset. Five fixes came out of the run and are in the installed build. Not yet in the headset.
+want the headset. Five fixes came out of the run and are in the installed build. **Headset run 09:31
+(2026-10-22): almost everything held; three shotgun findings fixed in 27a7404** (ENGINE_NOTES "The pump by
+need, the hand on the slide, the ionic buck's takes"): a pump the gun needs keeps its quick stroke, one it
+does not (ending a loop) takes a deliberate 12 cm and is offered only with a shell in, an empty gun's shot
+pumps itself; the drawn hand rides the slide; an ammunition variant's reload-end take plays whole once
+instead of doubled. Installed 10:13; the 10:14 headset run is the first with it.
 
 ### Current state
 
@@ -88,9 +93,9 @@ want the headset. Five fixes came out of the run and are in the installed build.
 
 ### Next steps
 
-- Headset: the feel of it all (the eases of the hand pose engine, the pump's stroke length along the
-  barrel, the relaxed hand), the Tommy's bolt rack on a reload begun empty, the pistol's X cancel at the
-  pouch (3c), and the shotgun's loop-ending pump as a player does it. The sim run verified the mechanics.
+- Headset: the three 10-22 fixes (the deliberate loop-ending stroke, the hand on the slide, the ionic
+  buck's pump sound), the Tommy's bolt rack on a reload begun empty, the pistol's X cancel at the pouch (3c),
+  the eases. The polish for the ammunition variants is a timeline per take, keyed by its FMOD length.
 - Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
   offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 

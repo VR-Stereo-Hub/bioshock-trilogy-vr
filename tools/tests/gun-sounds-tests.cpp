@@ -8,10 +8,13 @@
 //             insert ending), bolt back (the slide ending), and nothing else; a phase that does not advance raises
 //             nothing; the eject is not doubled with the pull
 //   pump    - the back stroke ending raises pump back, the forward stroke ending pump forward, nothing twice
+//   takes   - a part row names the take it was cut from (FMOD's length) and whether it is the action's first part;
+//             a sound of another length is another take (the ionic buck's six), one of the same within 2% is not
 #include "game/bioshock1r/gun_sounds.h"
 
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 using namespace bvr::b1r;
 using namespace bvr::b1r::gun_sounds;
@@ -45,6 +48,22 @@ int main() {
         check(r && !strcmp(r->event, "DryFiring") && r->toMs == 0 && r->onWeapon, "dry fire: any gun, whole, on the weapon");
         check(find(K::Pistol, Action::DrumOut) == nullptr && find(K::Pistol, Action::PumpBack) == nullptr, "the pistol's reload has no sound rows yet");
         check(find(K::Shotgun, Action::DrumOut) == nullptr, "the shotgun has no drum");
+    }
+    // ---- takes (2026-10-22) ----
+    {
+        const Row* b = find(K::Shotgun, Action::PumpBack);
+        const Row* f = find(K::Shotgun, Action::PumpForward);
+        check(b && f && b->lengthMs == 3552 && f->lengthMs == 3552 && b->first && !f->first,
+              "the shotgun's parts are cut from the 3552 ms take; the back stroke is the action's first part");
+        check(same_take(*b, 3552) && same_take(*b, 3500) && same_take(*b, 3600), "the take within 2%");
+        for (unsigned len : {757u, 809u, 835u, 862u, 1097u, 1175u}) check(!same_take(*b, len), "the ionic buck's takes are others");
+        check(same_take(*b, 0), "a length FMOD does not give: taken as the one");
+        const Row* d = find(K::Pistol, Action::DryFire);
+        check(d && same_take(*d, 123), "a row with no take: any length");
+        const Row* o = find(K::Tommy, Action::DrumOut);
+        const Row* i = find(K::Tommy, Action::DrumIn);
+        const Row* k = find(K::Tommy, Action::BoltBack);
+        check(o && i && k && o->first && !i->first && !k->first && o->lengthMs == 2847, "the Tommy's drum out is its reload's first part");
     }
     // ---- reload ----
     {

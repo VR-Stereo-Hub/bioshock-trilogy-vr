@@ -62,6 +62,8 @@ int main() {
         check(muted(record(K::Shotgun), L"PumpShotgun") && muted(record(K::Shotgun), L"ShotgunReloadEnd"),
               "the shotgun mutes its pump and reload-end cues");
         check(!muted(record(K::Shotgun), L"FiredSound") && !muted(record(K::Shotgun), nullptr), "and nothing else");
+        check(!muted(record(K::Shotgun), L"PumpShotgun", false) && muted(record(K::Shotgun), L"ShotgunReloadEnd", false),
+              "the pump cue only while the pump is the hands' (an empty gun's shot pumps itself, cue and all)");
         check(muted(record(K::Tommy), L"ReloadTommy") && !muted(record(K::Tommy), L"PumpShotgun"), "the Tommy mutes its reload cue");
         check(!muted(record(K::Pistol), L"ReloadTommy"), "the pistol mutes nothing");
         check(!muted(o, L"PumpShotgun"), "another gun mutes nothing");

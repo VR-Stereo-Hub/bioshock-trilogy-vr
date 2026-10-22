@@ -87,6 +87,9 @@ bool pumping();
 // where it was on the gun then).
 bool two_hand_allowed();
 bool pump_wait(); // the reload's last pump is waiting for (or being worked by) the two-handed grip
+// Any thread: the shotgun's pump position, 0 forward .. 1 at the rear stop - a stroke by hand, the reload's last
+// pump, or a shot's clip pumping itself. The two-handed anchor rides it (gun_geometry::grip_point).
+float pump_back();
 // Game thread, once per compose: 0..1, how much the free hand is drawn where the clip's own hand is
 // (holding the Tommy Gun's bolt: the hand locked onto it in the game's grip), eased in and out.
 float hand_lock(uint64_t nowMs);

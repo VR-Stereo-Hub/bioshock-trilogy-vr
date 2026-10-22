@@ -47,6 +47,8 @@ SndLengthFn g_sndLength = nullptr;
 struct Want {
     const char* sound = nullptr; // the part's sound (its FMOD name)
     unsigned fromMs = 0, toMs = 0;
+    unsigned lengthMs = 0;       // the take the part was cut from (FMOD's length); 0: any
+    bool first = true;           // the action's first part: another take plays whole here; later parts stop it
 };
 struct Live {
     void* ch;
@@ -108,6 +110,24 @@ int __stdcall play_detour(void* system, int channelIndex, void* sound, int pause
     if (t_want) { // inside play_part's event: the part's sound is cut (the first; an event plays one sound)
         unsigned len = 0;
         if (t_caught <= 0 && name_is(sound, t_want->sound, nm, sizeof nm, &len)) {
+            // 2026-10-22: another length is another take of the action (an ammunition variant's), whose
+            // timeline the part's times do not fit (the 09:31 run: the ionic buck's forward part began past
+            // its take's end and played it whole - both strokes - after the back part). It plays whole once,
+            // on the action's first part; a later part stops it at once.
+            const unsigned want = t_want->lengthMs;
+            const unsigned d = len > want ? len - want : want - len;
+            if (want && len && d * 50 > want) {
+                if (t_want->first) {
+                    BVR_LOG("[sound] another take of %s: %u ms long (the parts are cut from the %u ms one) - played whole",
+                            t_want->sound, len, want);
+                } else {
+                    ch_stop(*channel);
+                    BVR_LOG("[sound] another take of %s: %u ms long - stopped (it played whole with the first part)",
+                            t_want->sound, len);
+                }
+                t_caught = 1;
+                return r;
+            }
             BVR_LOG("[sound] the part's sound: %s, %u ms long (wanted %s)", nm, len, t_want->sound);
             cut(*channel, *t_want, nm);
             t_caught = 1;
@@ -163,13 +183,20 @@ std::atomic<bool> g_muteOn{false};
 // The action events the gun's manual reload fires itself - muted when its clips fire them. The list is the gun's
 // suppression record's (gun_suppress.h), handed over with the context (2026-10-21; it was a table here).
 std::atomic<const wchar_t* const*> g_muted{nullptr};
+// 2026-10-22: muted only while the hands work the pump (the shot's pump cue): a shot not held two-handed pumps
+// itself and its cue plays as the game's.
+std::atomic<const wchar_t* const*> g_mutedByHand{nullptr};
+std::atomic<bool> g_byHand{false};
 thread_local bool t_playing = false; // play() is firing its own: let it through
 
-bool muted(const wchar_t* event) {
-    const wchar_t* const* list = g_muted.load(std::memory_order_relaxed);
+bool in_list(const wchar_t* const* list, const wchar_t* event) {
     for (const wchar_t* const* e = list; e && *e; ++e)
         if (!_wcsicmp(*e, event)) return true;
     return false;
+}
+bool muted(const wchar_t* event) {
+    if (in_list(g_muted.load(std::memory_order_relaxed), event)) return true;
+    return g_byHand.load(std::memory_order_relaxed) && in_list(g_mutedByHand.load(std::memory_order_relaxed), event);
 }
 
 int __fastcall detour(void* self, void* /*edx*/, int32_t n0, int32_t n1, void* other, void* mat, void* loc, void* rot,
@@ -241,10 +268,13 @@ bool install(void* anyActor) {
     return true;
 }
 
-void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, bool manualReloadOn) {
+void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, const wchar_t* const* mutedByHand,
+                 bool pumpByHand, bool manualReloadOn) {
     g_hands.store(hands, std::memory_order_relaxed);
     g_weapon.store(weapon, std::memory_order_relaxed);
     g_muted.store(mutedEvents, std::memory_order_relaxed);
+    g_mutedByHand.store(mutedByHand, std::memory_order_relaxed);
+    g_byHand.store(pumpByHand, std::memory_order_relaxed);
     g_muteOn.store(manualReloadOn, std::memory_order_relaxed);
 }
 
@@ -271,12 +301,15 @@ bool play(void* actor, const char* event, const char* referenceTag) {
     return r != 0;
 }
 
-bool play_part(void* actor, const char* event, const char* sound, unsigned fromMs, unsigned toMs) {
+bool play_part(void* actor, const char* event, const char* sound, unsigned fromMs, unsigned toMs, unsigned lengthMs,
+               bool first) {
     if (!g_orig || !g_playOrig || !actor || !event || !sound || toMs <= fromMs) return false;
     Want w;
     w.sound = sound;
     w.fromMs = fromMs;
     w.toMs = toMs;
+    w.lengthMs = lengthMs;
+    w.first = first;
     t_want = &w;
     t_caught = 0;
     const bool r = play(actor, event);

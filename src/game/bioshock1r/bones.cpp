@@ -8363,7 +8363,8 @@ void m4_compose(bool late) {
                     if (const gun_geometry::Gun* row = gun_row(twoGun); row && row->twoHanded && patterns::kBoneWeaponAttach < n) {
                         const ik::Quat aq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
                         const ik::Vec ap = ik::vec(A[patterns::kBoneWeaponAttach].p);
-                        ik::Vec rel = row->foreGrip;
+                        // 2026-10-22: on the pump as it is worked (the fist's measured travel to the rear stop).
+                        ik::Vec rel = gun_geometry::grip_point(*row, manual_reload::pump_back());
                         if (g_m4.mirror) rel = gun_geometry::mirror_point(rel, ik::vec(g_mirU), g_mirPlane);
                         anc = ap + ik::rotate(aq, rel);
                     }

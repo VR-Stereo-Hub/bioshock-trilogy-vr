@@ -35,6 +35,10 @@ struct Gun {
     bool twoHanded;   // the game's idle clip puts the off hand on the gun: it has a fore-grip
     Vec foreGrip;     // the two-handed anchor: the free fist centre against bone 43 (see above)
     int sideAxis;     // which socket axis (0 X, 1 Y, 2 Z) lies across the gun: the mirror flips it
+    // 2026-10-22: where the fore-grip goes when the pump is worked - the free fist's travel from foreGrip to
+    // the pump's rear stop, bone-43 frame (the shotgun's Fire clip, 0.75 -> 0.85 s: 17.97 units, SG_Pump's 18).
+    // The anchor rides it by the pump's position (manual_reload::pump_back), so the hand follows the slide.
+    Vec pumpBack;
 };
 
 // Measured 2026-10-21 (the fist centre, left hand, against R_grip; clip times 0..3 s):
@@ -43,15 +47,20 @@ struct Gun {
 //   GrenadeLauncher FidgetLauncher 51.33 20.49 15.12 .. 51.45 20.65 15.18
 //   ChemicalThrower FidgetChem 12.47 -10.78 22.50 .. 12.52 -10.67 22.72
 //   Crossbow FidgetCrossbow 26.90 8.55 -3.47 .. 27.00 8.71 -3.36
+// The shotgun's pump travel (2026-10-22, the same fist in Shotgun__FireShotgun): 54.05 14.75 14.32 at 0.75 s,
+// 38.54 8.38 7.85 at 0.85 s, back at 1.15 s.
 inline constexpr Gun kGuns[] = {
-    {L"MachineGun", true, {45.0f, 5.5f, 3.0f}, 1},
-    {L"Shotgun", true, {54.05f, 14.7f, 14.3f}, 1},
-    {L"GrenadeLauncher", true, {51.4f, 20.6f, 15.2f}, 1},
-    {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1},
-    {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1},
-    {L"Pistol", false, {0.0f, 0.0f, 0.0f}, 1},
-    {L"Wrench", false, {0.0f, 0.0f, 0.0f}, 1},
+    {L"MachineGun", true, {45.0f, 5.5f, 3.0f}, 1, {0.0f, 0.0f, 0.0f}},
+    {L"Shotgun", true, {54.05f, 14.7f, 14.3f}, 1, {-15.51f, -6.37f, -6.47f}},
+    {L"GrenadeLauncher", true, {51.4f, 20.6f, 15.2f}, 1, {0.0f, 0.0f, 0.0f}},
+    {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1, {0.0f, 0.0f, 0.0f}},
+    {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1, {0.0f, 0.0f, 0.0f}},
+    {L"Pistol", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}},
+    {L"Wrench", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}},
 };
+
+// The two-handed anchor with the pump this far back (0 forward, 1 at the rear stop).
+inline Vec grip_point(const Gun& g, float pumpBack) { return g.foreGrip + g.pumpBack * pumpBack; }
 
 // The free hand's rest pose on a two-handed gun (grip_rest_poses.h, generated): each left-hand bone
 // against the wrist (engine bone 6), the wrist against bone 43, the palm centre in the wrist. The hold
