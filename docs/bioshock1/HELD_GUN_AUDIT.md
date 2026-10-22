@@ -596,7 +596,13 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    tick; the stroke is the front hand's travel along the gun controller's aim forward from the gun hand.
    Fixes bug 4. Headset check: a pump with the hands offset sideways or up/down completes only on the
    along-the-barrel travel; the gun hand swinging forward is no stroke; `along N cm` in the stroke lines.
-6. The sound table. No behaviour change intended; a regression check by log (`[sound] played ...`).
+6. **DONE 2026-10-21** (ENGINE_NOTES "The sound table"): `gun_sounds.h`, actions from phase kinds and
+   pump strokes, one caller of the sound engine. No behaviour change intended; a regression check by log
+   (`[sound] played ...`, `[sound] part of ...`).
+
+All six steps are in as of 2026-10-21 (commits 59fa1ec, 2d206da, 207956d, b5d2af0, 5095221, d7957f5,
+940d1b8 and the step-6 commit). Open: the headset checks listed in STATUS.md, and the two unverified
+aborts of step 3c.
 
 Each step is one commit with its tests and its ENGINE_NOTES/ARCHITECTURE entry; none is pushed or merged.
 `git diff main...HEAD -- src/core/` stays as it is: everything above is in `src/game/bioshock1r/`.

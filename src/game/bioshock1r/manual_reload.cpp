@@ -9,6 +9,7 @@
 #include "game/bioshock1r/grip_shotgun_shell.h"
 #include "game/bioshock1r/grip_tommy_drum.h"
 #include "game/bioshock1r/gun_suppress.h"
+#include "game/bioshock1r/gun_sounds.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
@@ -904,24 +905,26 @@ static float held_seconds(uint64_t now) {
 // Without FMOD's channel, the back stroke plays the whole PumpShotgun as before.
 // (The first cut points, 130/310/900, came from the `env` mode's readData, which came back 400 ms short at the
 // start: both strokes fell in the second part.)
-constexpr const char* kSgStrokeSound = "weapons_shotgun_reloadEndwav";
-void stroke_sound(void* hands, const rr::Pump& p, bool /*wasWorking*/, bool wasFwd) {
-    if (!wasFwd && p.backDone()) {
-        if (!sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 580, 710))
-            sound_engine::play(hands, "PumpShotgun");
+// 2026-10-21 (step 6): one action, one row of the sound table (gun_sounds.h) - a part of the game's own sound
+// fired through its effect event (sound_engine::play_part), the whole event when the part cannot be cut, nothing
+// when the gun has no row for it. The Tommy's reload sound and the shotgun's stroke parts were played from phase
+// numbers and a stroke-flag dance in two helpers; the table and the machine's phase kinds say it now.
+void play_action(gun_state::Kind kind, gun_sounds::Action a, void* hands, void* weapon) {
+    const gun_sounds::Row* r = gun_sounds::find(kind, a);
+    if (!r) return;
+    void* actor = r->onWeapon ? weapon : hands;
+    if (!actor) return;
+    if (r->toMs > r->fromMs && r->sound) {
+        if (sound_engine::play_part(actor, r->event, r->sound, r->fromMs, r->toMs)) return;
+        if (r->fallback) sound_engine::play(actor, r->fallback);
+        return;
     }
-    if (wasFwd && p.done()) sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 780, 1060);
+    char tag[64];
+    sound_engine::play(actor, r->event, r->onWeapon && sound_engine::ammo_tag(weapon, tag, sizeof tag) ? tag : nullptr);
 }
-
-// The Tommy Gun's reload is one sound too (HandsReloadTommy: weapons_tommy_reload_01, 2795 ms), and its clip is
-// never played from its start, so its cue never fires: each part plays as the hands do it. Its timeline (fsb-probe
-// `pcm`, 25 ms steps): the drum's release and pull 50-500 ms, the drum in 1275-1925, the bolt 2225-2700 (back at
-// ~2350, home at ~2450). The first cut points (bolt 1850-2330) were 400 ms early and caught only the bolt's start.
-constexpr const char* kTgReloadSound = "weapons_tommy_reload_01";
-void tommy_sound(void* hands, int phaseWas, int phase, bool ejected) {
-    if (ejected || (phaseWas == 0 && phase == 1)) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 0, 560);
-    if (phaseWas == 3 && phase > 3) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1275, 1925);
-    if (phaseWas == 4 && phase == 5) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 2225, 2700);
+void stroke_sound(gun_state::Kind kind, void* hands, void* weapon, const rr::Pump& p, bool wasFwd) {
+    gun_sounds::Action a[1];
+    if (gun_sounds::pump_actions(wasFwd, p.backDone(), p.done(), a)) play_action(kind, a[0], hands, weapon);
 }
 
 // End the game's reload early, the way a weapon switch does (Hands.uc, from the UnrealScript corpus): the hands'
@@ -1160,7 +1163,11 @@ void tick(const Frame& f) {
     const bool magOutWas = g_machine.mag_out();
     const rr::Output o = g_machine.update(in, g_cfg);
     if (!_wcsicmp(g_cls, L"MachineGun"))
-        tommy_sound(f.hands, phaseWas, g_machine.active() ? g_machine.phase() : -1, o.ejected);
+        {
+            gun_sounds::Action acts[2];
+            const int n = gun_sounds::reload_actions(progWas, phaseWas, g_machine.active() ? g_machine.phase() : -1, o.ejected, acts);
+            for (int i = 0; i < n; ++i) play_action(kind, acts[i], f.hands, f.weapon);
+        }
     if (o.spareTake && !g_spare.actor) {
         g_spare = dropped_part::make_held(f.weapon, f.hands);
         BVR_LOG("[reload] %S: a spare from the pouch - %s", g_cls, g_spare.actor ? "in the hand" : "NO prop (nothing shows)");
@@ -1402,10 +1409,10 @@ void tick(const Frame& f) {
         pi.triggerRise = pulls != g_seenPulls;
         g_seenPulls = pulls;
         const rr::PumpConfig& cfg = use == PumpUse::ReloadEnd ? s_endCfg : g_pumpCfg;
-        const bool sndWas = g_pump.working(), fwdWas = g_pump.backDone();
+        const bool fwdWas = g_pump.backDone();
         const rr::PumpOutput po = g_pump.update(pi, cfg);
         // The sound engine: each stroke's sound as the player ends it (its clip's own cue is muted).
-        stroke_sound(f.hands, g_pump, sndWas, fwdWas);
+        stroke_sound(kind, f.hands, f.weapon, g_pump, fwdWas);
         g_pumping.store(g_pump.working(), std::memory_order_relaxed);
         // 21:11 recording: the hold let go ("slid off") ~0.1 s after each pump - the clip still returning the pump.
         // The whole Fire clip, and a moment after, is the pump's.
@@ -1544,10 +1551,7 @@ void tick(const Frame& f) {
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         const bool rose = pulls != s_dryPulls;
         s_dryPulls = pulls;
-        if (rose && gun_state::dry_click_on_pull(g_state)) {
-            char tag[64];
-            sound_engine::play(f.weapon, "DryFiring", sound_engine::ammo_tag(f.weapon, tag, sizeof tag) ? tag : nullptr);
-        }
+        if (rose && gun_state::dry_click_on_pull(g_state)) play_action(kind, gun_sounds::Action::DryFire, f.hands, f.weapon);
     }
     haptic(o.haptic, f);
     if (o.buzz && f.now - g_lastBuzzMs >= kBuzzEveryMs) {

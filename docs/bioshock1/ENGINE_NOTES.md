@@ -7502,3 +7502,17 @@ smaller; the ratchet, the 6 cm strokes, the 0.3 s settle and the 9 cm follow are
 (`reload-rig`, 136): sideways motion, up and down, and the gun hand moving with the gun are no stroke; 6 cm
 back along the barrel is. The log's stroke lines now carry `along N cm` and the use's name
 (`[reload] Shotgun pump|reload's last pump|dry cock|pump while loading: ...`).
+
+## 2026-10-21 - The sound table: an action, a part of the game's own sound
+
+Step 6 (HELD_GUN_AUDIT.md 2.6). `gun_sounds.h` (pure, 26 host checks) is the one place that says which
+action plays which part: the Tommy Gun's drum out / drum in / bolt back as parts of its reload sound, the
+shotgun's pump back / pump forward as parts of its reload-end sound (PumpShotgun whole when the part cannot
+be cut), and the dry fire as the game's DryFiring on the weapon with the ammunition's tag - the `pcm`
+timeline numbers unchanged. The actions come from the reload machine's phase transitions BY KIND (the
+phase that ended: a first pull or the eject is the magazine out, an insert seated the magazine in, a slide
+racked the bolt back - `reload_actions`) and from the pump's strokes (`pump_actions`), so the pistol's
+reload raises the same actions and is silent only because the table has no rows for it yet (a run with
+the pistol reloading would list its events). `manual_reload::play_action` is the one caller of the sound
+engine; `tommy_sound`, `stroke_sound`'s phase numbers and the dry fire's own call are gone. No behaviour
+change intended.

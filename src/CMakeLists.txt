@@ -119,6 +119,7 @@ add_library(bioshockvr SHARED
     game/bioshock1r/grip_owner.h
     game/bioshock1r/hand_pose.h
     game/bioshock1r/gun_suppress.h
+    game/bioshock1r/gun_sounds.h
     game/bioshock1r/attach_census.cpp
     game/bioshock1r/muzzle.cpp
     game/bioshock1r/muzzle.h

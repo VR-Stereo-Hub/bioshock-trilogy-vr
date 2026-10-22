@@ -28,6 +28,10 @@ clean, INSTALLED. NOT run in the simulator or the headset.
   fore-grip over the reload on a tie; the reload's reach is a distance in every stage, never an absolute
   claim. Host-tested (`grip-owner` 20, `reload-rig` 130). `HELD_GUN_MATRIX.md` is the specification;
   its section 10 enumerates the hand POSE sources per state and designs the hand pose engine (step 3b).
+- **Step 6 is in** (ENGINE_NOTES "The sound table"): `gun_sounds.h`, the action-to-sound-part table,
+  actions from the machine's phase kinds and the pump's strokes, one caller of the sound engine. No
+  behaviour change intended. Host-tested (`gun-sounds` 26). **All six steps of HELD_GUN_AUDIT.md 2.8 are
+  in**; what remains is the headset.
 - **Step 5 is in** (ENGINE_NOTES "One pump, its stroke along the barrel"): one `Pump` for the shot, the
   reload's last pump, the dry cock and the loop-ending pump, its stroke the front hand's travel along the
   gun controller's aim forward from the gun hand (not the controllers' distance). Host-tested
@@ -82,8 +86,9 @@ clean, INSTALLED. NOT run in the simulator or the headset.
 
 ### Next steps
 
-- Headset: the step-1, 2, 3a, 3b and 3c checks above. Then step 4 (the suppression record), 5 (one pump
-  on the barrel axis), 6 (the sound table).
+- Headset: every check above (steps 1-6), in one run: grabs and the grip pose (1, 3b), clicks (2), the
+  owner at the dry Tommy's fore-grip (3a), the early-end aborts (3c, unverified engine work), the pump
+  along the barrel (5), and the sounds unchanged (4, 6). Then whatever the run turns up.
 - Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
   offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 
