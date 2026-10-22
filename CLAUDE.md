@@ -27,6 +27,8 @@ that back those rules up.
 - **NEVER commit game-derived content**: no decompiled UnrealScript, no extracted assets, no
   RenderDoc captures, nothing from the game folder. `tools/uscript/` is gitignored for a reason.
   Summarize findings in the per-game ENGINE_NOTES instead of pasting game code.
+- **No direct quotes in code or the repo.** Comments, docs, commit messages and logs describe what a tester
+  or reviewer reported in our own words; they never quote a person verbatim.
 - **Commit messages**: plain conventional commits (`feat:`/`fix:`/`docs:`/`build:`/`tools:`/`chore:`),
   imperative, subject ≤72 chars. No trailers.
 - **32-bit (Win32) only.** All three games are x86. The CMake guard will stop you; don't fight it.
@@ -204,6 +206,7 @@ the parts that are actually fixed.
 | `docs/IDA_WORKFLOW.md` | **Headless IDA**: staging each game's exe, the md5 provenance check, the one-question script shape (RVAs, per-game anchors), where IDA sits in the order of work, traps |
 | `docs/MODEL_WORKFLOW.md` | **UModel + headless Blender, our BS1 rig/Havok converter, FFDec, the UnrealScript corpus**: what extracts per game, commands, workspace, traps |
 | `docs/MODDING_SDKS.md` | **The Unofficial BioShock SDK and CodeRed** (third-party, cloned to the gitignored `external\`): compiling new classes toward Remastered, CodeRed for Infinite, the open questions |
+| `docs/bioshock1/WEAPON_WHEEL.md` | The weapon and plasmid wheels as a hand dial (the Dishonored VR design, ported): behaviours, stages, the open-state seam, order of work |
 | `docs/bioshock1/HAVOK_AND_PACKAGES.md` | BS1's package, skeletal-mesh and Havok packfile formats, and how each was derived |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |

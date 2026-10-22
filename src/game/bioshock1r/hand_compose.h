@@ -149,4 +149,40 @@ inline Rigid grip_from(const Rigid& controllerWorld, const Rigid& wristWorld) {
     return mul(inverse(controllerWorld), wristWorld);
 }
 
+// ---- an animation played at the gun (2026-10-14, handback.h) ---------------------------
+// The palette route places a hand's every bone by x -> at + q * (x - pivot) * s, the pivot
+// being that hand's palm in the clip. Placement is the controller side of that (q, at, s)
+// before the hand-back to the game blends it toward the identity.
+struct Placement {
+    Quat q;
+    Vec at;
+    float s = 1;
+};
+inline Vec place(const Placement& p, Vec pivot, Vec x) { return p.at + arm_ik::rotate(p.q, (x - pivot) * p.s); }
+
+// The free hand carried by the gun hand (a sibling VR mod's carry): the gun hand's own
+// placement applied to this hand's bones, re-expressed about this hand's pivot. Every bone of
+// the free hand then stands where the clip has it AGAINST the gun hand.
+inline Placement carried_by(const Placement& gun, Vec gunPivot, Vec pivot) {
+    return {gun.q, place(gun, gunPivot, pivot), gun.s};
+}
+
+// From a to b by w: the rotation the short way, the palm and the size on straight lines.
+// Exactly a at 0 and b at 1.
+inline Placement toward(const Placement& a, const Placement& b, float w) {
+    if (w <= 0) return a;
+    if (w >= 1) return b;
+    const Quat step = slerp_identity(arm_ik::mul(b.q, arm_ik::conj(a.q)), w);
+    return {arm_ik::normalized(arm_ik::mul(step, a.q)), a.at + (b.at - a.at) * w, a.s + (b.s - a.s) * w};
+}
+
+// The clip's own motion of a hand layered on its controller (BRVR's HandAnim=1): the
+// correction measured from the hand's REST pose (the last one before the animation) instead
+// of the live one, so the hand moves on the controller by exactly what the clip moves it by
+// since then. At rest == live this is the pinned placement.
+inline Placement from_rest(const Rigid& target, const Bone& rest, Vec palmLocal, Vec livePalm, float s) {
+    const Rigid d = delta(target, rest, palmLocal);
+    return {d.q, target.t + arm_ik::rotate(d.q, (livePalm - palm_of(rest, palmLocal)) * s), s};
+}
+
 } // namespace bvr::b1r::hand_compose

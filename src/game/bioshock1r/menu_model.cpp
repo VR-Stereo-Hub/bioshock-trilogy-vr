@@ -6,8 +6,13 @@ namespace bvr::b1r::menu {
 namespace {
 using S = Setting; using T = Tab; using L = Level; using K = Kind;
 using P = Scope; using C = Condition;
+constexpr const char* kHudAnchors = "On the HUD panel\0Hidden\0In the world\0Left hand\0Right hand\0";
+constexpr const char* kHudScreens = "Flat screen (as before)\0On the HUD panel\0In the world\0";
+#define BVR_HUD_COUNT(n, label, help) +1
+constexpr int kHudPieceCount = 0 BVR_HUD_PIECES(BVR_HUD_COUNT);
+#undef BVR_HUD_COUNT
 // Stable keys are also the on-disk schema. Labels may change without losing settings.
-const Spec kSpecs[] = {
+constexpr Spec kSpecs[] = {
     {S::TextSize,"TextSize",T::Display,"",L::Basic,"Text size",K::Slider,0.8f,1.5f,"%.0f%%",nullptr},
     {S::ViewLevel,"ViewLevel",T::Display,"",L::Basic,"Options",K::Choice,0,2,nullptr,"Basic\0Advanced\0Debug\0"},
     {S::Height,"Height",T::Comfort,"",L::Basic,"Height offset",K::Slider,-150,150,"%+.0f cm",nullptr},
@@ -37,11 +42,13 @@ const Spec kSpecs[] = {
     {S::GameCrosshair,"GameCrosshair",T::Aim,"Reticle visibility",L::Advanced,"Show the game's crosshair",K::Toggle,0,1},
     {S::HideUnarmedReticle,"HideUnarmedReticle",T::Aim,"Reticle visibility",L::Advanced,"Hide reticle with empty hands",K::Toggle,0,1},
     {S::HideSceneReticle,"HideSceneReticle",T::Aim,"Reticle visibility",L::Advanced,"Hide reticle during cutscenes",K::Toggle,0,1},
-    {S::AimPitch,"AimPitch",T::Aim,"Aim alignment",L::Advanced,"Tilt",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
-    {S::AimYaw,"AimYaw",T::Aim,"Aim alignment",L::Advanced,"Turn",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
-    {S::AimForward,"AimForward",T::Aim,"Aim origin",L::Advanced,"Forward / backward",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
-    {S::AimRight,"AimRight",T::Aim,"Aim origin",L::Advanced,"Right / left",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
-    {S::AimUp,"AimUp",T::Aim,"Aim origin",L::Advanced,"Up / down",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
+    // 2026-10-19: the aim is locked to the barrel (aim.cpp barrel_locked) - these trims apply only
+    // with "Shots leave the barrel" or "Aim along the barrel" turned off, so they are debug-only.
+    {S::AimPitch,"AimPitch",T::Aim,"Aim alignment",L::Debug,"Tilt",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
+    {S::AimYaw,"AimYaw",T::Aim,"Aim alignment",L::Debug,"Turn",K::Slider,-90,90,"%+.1f deg",nullptr,P::Profile},
+    {S::AimForward,"AimForward",T::Aim,"Aim origin",L::Debug,"Forward / backward",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
+    {S::AimRight,"AimRight",T::Aim,"Aim origin",L::Debug,"Right / left",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
+    {S::AimUp,"AimUp",T::Aim,"Aim origin",L::Debug,"Up / down",K::Slider,-30,30,"%+.1f cm",nullptr,P::Profile},
     {S::SnapTurn,"SnapTurn",T::Controls,"Turning",L::Basic,"Turn style",K::Choice,0,1,nullptr,"Smooth\0Snap\0"},
     {S::SnapAngle,"SnapAngle",T::Controls,"Turning",L::Basic,"Turn angle",K::Slider,15,90,"%.0f deg",nullptr,P::Global,C::Snap},
     {S::TurnSpeed,"TurnSpeed",T::Controls,"Turning",L::Basic,"Turn speed",K::Slider,.2f,3,"%.2fx",nullptr,P::Global,C::Smooth},
@@ -153,8 +160,62 @@ const Spec kSpecs[] = {
     {S::BarrelOrigin,"BarrelOrigin",T::Aim,"Aim origin",L::Basic,"Shots leave the barrel",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The bullet and the laser start at the drawn gun's muzzle, read from the weapon model itself, for every weapon. The origin sliders above are not used while it is on. Off: they start at the controller plus those sliders, as before."},
     {S::BarrelAim,"BarrelAim",T::Aim,"Aim origin",L::Basic,"Aim along the barrel",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The bullet and the laser point the way the drawn gun's barrel points, for every weapon, and turn with your wrist. The Tilt and Turn trims are not used while it is on. Off: the controller's aim plus those trims, as before."},
     {S::LaserInImage,"LaserInImage",T::Aim,"Aim laser",L::Advanced,"Draw the laser in the game image",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The laser and reticle are drawn into each eye's picture along the bullet's path, through the same camera as the gun, so the beam stays on the barrel. Needs DLSS, DLAA or AFW (otherwise the floating laser is used). Off: the floating laser, as before."},
+    {S::ReloadPlace,"ReloadPlace",T::Hands,"Reload animation",L::Basic,"Reloads play",K::Choice,0,2,nullptr,"Off (hands stay on the controllers)\0At the gun\0In front of the face\0",P::Global,C::ComposedHands,"At the gun: the gun stays in your hand and the game's reload is played there, so your other hand comes to the gun wherever you hold it, does the reload and goes back to its controller. In front of the face: both hands leave the controllers for the flat game's reload. Off: only the gun's own parts move."},
+    {S::ReloadGunMotion,"ReloadGunMotion",T::Hands,"Reload animation",L::Advanced,"Gun moves with the reload",K::Slider,0,1,"%.2f",nullptr,P::Global,C::ComposedHands,"At the gun: how much of the reload's own movement of the gun (tilting it for the magazine) plays on top of your hand. 0 keeps the gun exactly where you hold it."},
+    {S::ReloadJoin,"ReloadJoin",T::Hands,"Reload animation",L::Advanced,"Other hand joins within",K::Slider,0,200,"%.0f cm",nullptr,P::Global,C::ComposedHands,"At the gun: your other hand joins the reload while the game's animation has it this close to the gun, and fades back to its controller over the next 20 cm. Larger: it always joins."},
+    {S::GunRecoil,"GunRecoil",T::Hands,"Reload animation",L::Basic,"Recoil",K::Slider,0,1,"%.2f",nullptr,P::Global,C::ComposedHands,"How much of each gun's firing kick moves the gun in your hand. It kicks and settles back; the shot still goes where you were pointing. 0 keeps the gun still. Never the wrench."},
+#define BVR_HUD_SPEC_ANCHOR(n, label, help) \
+    {S::HudEl##n,"HudElement." #n,T::HUD,"HUD pieces",L::Basic,label,K::Choice,0,4,nullptr,kHudAnchors,P::Global,C::Always,help},
+    BVR_HUD_PIECES(BVR_HUD_SPEC_ANCHOR)
+#undef BVR_HUD_SPEC_ANCHOR
+    {S::HudHandWidth,"HudHandWidth",T::HUD,"HUD on the hands",L::Advanced,"Panel width",K::Slider,.08f,.6f,"%.2f m",nullptr,P::Global,C::Always,"Each piece on a hand fills this width; pieces on the same hand stack upward. 0.22 is the Dishonored VR mod's tune."},
+    {S::HudHandLift,"HudHandLift",T::HUD,"HUD on the hands",L::Advanced,"Height above the hand",K::Slider,-.2f,.3f,"%+.2f m",nullptr},
+    {S::HudHandFace,"HudHandFace",T::HUD,"HUD on the hands",L::Advanced,"Panel faces",K::Choice,0,1,nullptr,"You\0Like a watch face\0",P::Global,C::Always,"You: the panel always turns to your eyes and never rolls. Like a watch face: it lies on the back of the hand and turns with it."},
+    {S::HudHandTilt,"HudHandTilt",T::HUD,"HUD on the hands",L::Advanced,"Watch tilt",K::Slider,-90,90,"%+.0f deg",nullptr},
+#define BVR_HUD_CHOICE(n, label, help) label "\0"
+    {S::HudPiece,"HudPiece",T::HUD,"Adjust a piece",L::Advanced,"Piece",K::Choice,0,kHudPieceCount-1,nullptr,BVR_HUD_PIECES(BVR_HUD_CHOICE),P::Global,C::Always,"Choose a piece, then move it and size it below. On the HUD panel or in the world it moves from where the game draws it; on a hand, across and up the hand panel."},
+#undef BVR_HUD_CHOICE
+#define BVR_HUD_SPEC_PLACE(n, label, help) \
+    {S::HudX##n,"HudPiece." #n ".X",T::HUD,"Adjust a piece",L::Advanced,"Left / right",K::Slider,-.6f,.6f,"%+.3f m",nullptr,P::Global,C::HudPiece}, \
+    {S::HudY##n,"HudPiece." #n ".Y",T::HUD,"Adjust a piece",L::Advanced,"Up / down",K::Slider,-.6f,.6f,"%+.3f m",nullptr,P::Global,C::HudPiece}, \
+    {S::HudScale##n,"HudPiece." #n ".Scale",T::HUD,"Adjust a piece",L::Advanced,"Size",K::Slider,.25f,3,"%.2fx",nullptr,P::Global,C::HudPiece},
+    BVR_HUD_PIECES(BVR_HUD_SPEC_PLACE)
+#undef BVR_HUD_SPEC_PLACE
+    {S::HudScreenPause,"HudScreen.Pause",T::HUD,"Menus",L::Basic,"Pause menu",K::Choice,0,2,nullptr,kHudScreens,P::Global,C::Always,"Flat screen: the anchored screen, as before. On the HUD panel or in the world: the game keeps drawing in 3D behind the menu, and the menu sits where the HUD panel is or stays where you were looking when it opened."},
+    {S::HudScreenMap,"HudScreen.Map",T::HUD,"Menus",L::Basic,"Map",K::Choice,0,2,nullptr,kHudScreens,P::Global,C::Always,"Where the map opens. The same choices as the pause menu."},
+    {S::HudHideBackdrop,"HudScreen.HideBlur",T::HUD,"Menus",L::Basic,"Hide the blurred backdrop",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The paused game blurs the view behind its menus and the weapon and plasmid wheels; in VR it is a blurred box that follows your head. On: the blur is not drawn, and the world shows sharp behind the menu."},
+    {S::HudScreenMachines,"HudScreen.Machines",T::HUD,"Menus",L::Basic,"Machines",K::Choice,0,2,nullptr,kHudScreens,P::Global,C::Always,"Vending machines, U-Invent, the Gatherer's Garden and the Gene Bank. The same choices as the pause menu. The hacking game always takes the flat screen: the game stops drawing the world for it."},
+    {S::DialEnabled,"WheelDial",T::Controls,"Weapon and plasmid dial",L::Basic,"Pick with your hand",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Open the weapon wheel with the right hand or the plasmid wheel with the left (see Open with grip + trigger), then move that hand toward the item and let go. The wheel is drawn where your hand was, centred on it. The sticks do nothing while the wheel is open. A quick squeeze still cycles. Each item gets an equal share of the circle, however many you have."},
+    {S::DialGripTrigger,"WheelDial.GripTrigger",T::Controls,"Weapon and plasmid dial",L::Basic,"Open with grip + trigger",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"On: squeeze the grip and pull that hand's trigger to open its wheel (right: weapons, left: plasmids); keep the grip held to choose, let go to equip. The grip alone does nothing in the game, and while a grip is held its trigger does not fire. Off: the grip alone opens the wheel, as the game's bumper."},
+    {S::DialHoldSwap,"WheelDial.HoldSwap",T::Controls,"Weapon and plasmid dial",L::Basic,"Hold the hand swap until the wheel closes",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Opening the other hand's wheel makes the game swap hands and start the equip before the wheel shows, and the plasmid wheel equips each plasmid the stick lands on; with the game paused, the arm sits in that equip pose. On: the swap and the plasmid pick wait until you let go, so the arm keeps following your hand while you choose. Off: as the game does it."},
+    {S::DialDirectionOnly,"WheelDial.DirectionOnly",T::Controls,"Weapon and plasmid dial",L::Advanced,"Direction only",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Only the direction the hand moves counts, so a small movement picks. Off: the hand must travel the distance below."},
+    {S::DialNeutral,"WheelDial.Neutral",T::Controls,"Weapon and plasmid dial",L::Advanced,"Neutral radius",K::Slider,.5f,15,"%.1f mm",nullptr,P::Global,C::Always,"How far the hand moves before anything is picked."},
+    {S::DialTravel,"WheelDial.Travel",T::Controls,"Weapon and plasmid dial",L::Advanced,"Hand travel (direction only off)",K::Slider,2,30,"%.0f cm",nullptr,P::Global,C::Always,"With Direction only off and Equal shares off: the movement for a full stick."},
+    {S::DialSnap,"WheelDial.Snap",T::Controls,"Weapon and plasmid dial",L::Advanced,"Equal shares",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Each item you have gets an equal slice of the circle and empty slots cannot be picked. Off: the game's own wedges, where the corners are narrower."},
+    {S::DialEntryTilt,"WheelDial.EntryTilt",T::Controls,"Weapon and plasmid dial",L::Advanced,"Follow head tilt on opening",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The dial's plane tilts with your head when it opens. Off: upright."},
+    {S::DialEntryYaw,"WheelDial.EntryYaw",T::Controls,"Weapon and plasmid dial",L::Advanced,"Follow head direction on opening",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The dial's plane turns to where you look when it opens. Off: it faces your position from the hand."},
+    {S::DialWidth,"WheelDial.Width",T::Controls,"Weapon and plasmid dial",L::Basic,"Wheel size at the hand",K::Slider,.15f,1.2f,"%.2f m",nullptr,P::Global,C::Always,"The width of the wheel where the grip was pressed. 0.5 makes the ring itself about 0.35 m, the Dishonored VR mod's tune."},
+    {S::DialDistance,"WheelDial.Distance",T::Controls,"Weapon and plasmid dial",L::Advanced,"Wheel distance offset",K::Slider,-.3f,.5f,"%+.2f m",nullptr,P::Global,C::Always,"Moves the drawn wheel along its facing (+ farther from you). Where the hand starts stays the same, so you never reach for the wheel."},
+    {S::GrabEnabled,"Grab.HandOver",T::Controls,"Grab and hand-over",L::Basic,"Grab with the grip",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Squeeze a grip with that hand close to your other hand to grab instead of opening a wheel. Grabbing with the hand that has no gun takes the gun into that hand: its trigger fires and the aim follows it. Away from your other hand, the grip opens the wheel as before."},
+    {S::GrabDistance,"Grab.Distance",T::Controls,"Grab and hand-over",L::Advanced,"Grab distance",K::Slider,5,40,"%.0f cm",nullptr,P::Global,C::Always,"How close your hands must be to grab (BioShock Remastered VR's two-handed grab: 12 cm). Once holding, the grab stays until you let go of the grip; the hand without the gun buzzes while it is close enough."},
+    {S::GrabMirror,"Grab.MirrorHands",T::Controls,"Grab and hand-over",L::Basic,"Mirror the hands with the gun in the left hand",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The game only has a right hand holding the gun. On: with the gun in your left hand, each hand takes the other's pose mirrored - your left hand holds the gun the way the right one did, your right hand does what the left did. Off: the game's right hand is drawn on your left controller."},
+    {S::TwoHandEnabled,"TwoHand.Grip",T::Controls,"Two-handed grip",L::Basic,"Hold two-handed guns with both hands",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"The Tommy Gun, the shotgun, the grenade launcher, the chemical thrower and the crossbow: bring your other hand to where the game holds the gun with its second hand - it buzzes when you are close - and squeeze its grip. That hand stays on the gun and the gun points along both hands. Let go of the grip to let go. That grip never opens the plasmid wheel while it is on the gun."},
+    {S::TwoHandDistance,"TwoHand.Distance",T::Controls,"Two-handed grip",L::Advanced,"Two-handed grab distance",K::Slider,5,30,"%.0f cm",nullptr,P::Global,C::Always,"How close your hand must be to where the game holds the gun with its second hand (BioShock Remastered VR: 12 cm). Holding, the hand lets go if it slides 8 cm further than this along the gun."},
+    {S::ShotHaptics,"Haptics.Shots",T::Controls,"Two-handed grip",L::Basic,"Feel the shots",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"A kick in the hand holding the gun on every shot, read off the game's own firing animation (as BioShock Remastered VR does), so it follows the fire rate and never kicks on an empty click. With two hands on the gun the other hand feels it too."},
+    {S::ShotHapticStrength,"Haptics.ShotStrength",T::Controls,"Two-handed grip",L::Advanced,"Shot kick strength",K::Slider,0,1,"%.2f",nullptr,P::Global,C::Always,"How hard each shot kicks (1 = full)."},
+    {S::ManualReload,"Reload.Manual",T::Controls,"Manual reload",L::Basic,"Reload with your hands",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Reload the pistol, the Tommy Gun and the shotgun by hand, the game's own reload following your hands. Tommy Gun: grab the drum with your other hand and pull it down, let go, take a new drum from your waist and push it up into place, then pull the bolt back. Pistol: push the barrel down to break it open, pull the cylinder out, let go, take a new one from your waist and put it in, then flick the gun up (or push the barrel back up) to close it. Shotgun: take a shell from your waist and press it into the loading port, once per shell, then pump. Your hand buzzes where it should grab. Pistol and Tommy Gun: the reload button opens the gun and drops the empty cylinder or drum - take a new one from your waist. Off: the reload button reloads the usual way."},
+    {S::ReloadAbort,"Reload.Abort",T::Controls,"Manual reload",L::Basic,"End a reload early",K::Toggle,0,1,nullptr,nullptr,P::Global,C::Always,"Shotgun: a pump stroke while you are loading shells ends the reload with the shells already in and cocks the gun. Pistol: the reload button while the gun waits for a new cylinder puts the gun away and brings it back closed with the rounds it had. Both go through the game's own interrupt, as a weapon switch does. If the hands ever stay down after one, turn this off."},
 };
 static_assert(std::size(kSpecs) == static_cast<std::size_t>(S::Count));
+// spec(id) indexes this table by the enum value, so a row out of the enum's order makes
+// F10 show one setting and change another (2026-10-16: Equal shares toggled grip +
+// trigger). Every row must sit at its own id.
+constexpr bool rows_in_enum_order() {
+    for (std::size_t i = 0; i < std::size(kSpecs); ++i)
+        if (static_cast<std::size_t>(kSpecs[i].id) != i) return false;
+    return true;
+}
+static_assert(rows_in_enum_order(), "kSpecs rows must be in Setting enum order");
 }
 const Spec* specs(std::size_t& count) { count = std::size(kSpecs); return kSpecs; }
 const Spec& spec(Setting id) {
@@ -163,7 +224,7 @@ const Spec& spec(Setting id) {
     return kSpecs[index];
 }
 const char* tab_name(Tab tab) {
-    const char* names[] = {"Hands","IK","Aim","Controls","Comfort","HUD","Display","Runtime","Diagnostics"};
+    const char* names[] = {"Hands","IK","Aim","Controls","Comfort","HUD","Display","Cheats","Runtime","Diagnostics"};
     return names[static_cast<int>(tab)];
 }
 bool is_player_setting(Setting id) { return spec(id).level != Level::Debug; }
@@ -179,6 +240,8 @@ bool visible(const Spec& s, Level level, const Context& c) {
         case Condition::LegacySolver: return c.handMode < 4 && !c.solverV2;
         case Condition::SolverChoice: return c.handMode < 4 && c.hasSolverChoice;
         case Condition::HandPoseChoice: return c.handMode < 3;
+        case Condition::HudPiece:
+            return (static_cast<int>(s.id) - static_cast<int>(Setting::HudXHealth)) / 3 == c.hudPiece;
         default: return true;
     }
 }
@@ -202,6 +265,10 @@ const char* disabled_reason(const Spec& s, const Backend& b, int hand) {
     if(s.id==S::SceneTurnRate && !b.read(S::SceneTurning,0)) return "Enable turning during cutscenes to adjust this.";
     if((s.id==S::FreeArmAppearance || s.id==S::HideHeldArm) && b.read(S::ArmAppearance,0)==2) return "Arm behavior is set to hide both arms.";
     if((s.id==S::HudDistance || s.id==S::HudWidth || s.id==S::HudHeight) && !b.read(S::HudPanel,0)) return "Enable the HUD panel to adjust its placement.";
+    if(s.id>=S::HudElHealth && s.id<=S::HudScreenMachines && !b.read(S::HudPanel,0)) return "Enable the HUD panel to place its pieces.";
+    if(s.id>S::DialHoldSwap && s.id<=S::DialDistance && !b.read(S::DialEnabled,0)) return "Turn on Pick with your hand to adjust this.";
+    if(s.id==S::DialTravel && b.read(S::DialDirectionOnly,0)) return "Turn off Direction only to use hand travel.";
+    if(s.id==S::HudHandTilt && b.read(S::HudHandFace,0)==0) return "Set Panel faces to Like a watch face to tilt it.";
     return nullptr;
 }
 } // namespace bvr::b1r::menu

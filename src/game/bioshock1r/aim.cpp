@@ -22,9 +22,12 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/handback.h"
+#include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/muzzle.h"
+#include "game/bioshock1r/script_call.h"
 #include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/two_hand.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -119,8 +122,22 @@ struct Barrel {
     uint64_t stampMs = 0;
     uint32_t hits = 0, misses = 0, implausible = 0;
     float muzzle[3] = {}, barrelAxis[3] = {}; // the last measurement, world (for captures)
+    // Locked (barrel_locked): rayCm and local are the last measured for THIS hand and gun, kept
+    // through a lapse (a reload, an unreadable frame) - `valid` may drop, `held` does not until
+    // the gun or the hand changes.
+    bool held = false;
 };
 Barrel g_barrel;
+
+// 2026-10-19: AIM HARD-LOCKED TO THE BARREL (the Darkness II mod's rule: the ray IS the gun).
+// With "Shots leave the barrel" and "Aim along the barrel" both on (the defaults), the bullet and
+// the laser come from the drawn gun's muzzle along its barrel and from nothing else: no per-hand
+// tilt/turn/origin trim ever applies (they were tuned per controller and, swapped between hands,
+// kept stacking up), the measurement is not smoothed, a lapse holds the last barrel instead of
+// dropping to the trims, and a new hand or gun starts clean.
+bool barrel_locked() {
+    return g_barrelOrigin.load(std::memory_order_relaxed) && g_barrelAim.load(std::memory_order_relaxed);
+}
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 // Defaults = the user's in-headset calibration (their explicit ask: the
@@ -269,6 +286,10 @@ struct Slot {
     int32_t dumpLeft = 0;
     uint64_t lastWatchMs = 0; // rate gate for the session-30 watch line
 };
+// 2026-10-19: the PLAYER's shots through either seam - one per bullet, pellet volley or cast -
+// for the gunshot kick (two_hand.h): per shot, where the firing clip's wrist jerk is too small
+// on the Tommy Gun to see one shot from the next.
+std::atomic<uint32_t> g_playerShots{0};
 Slot g_weaponFire{"weapon"};  // AWeapon::GetPerfectFireStart impl
 Slot g_abilityFire{"ability"}; // UAttackAbility::GetPerfectFireStart impl
 
@@ -596,6 +617,7 @@ void __fastcall WeaponFireDetour(void* self, void* edx, float* outA, float* outB
     using WeaponFireFn = void(__fastcall*)(void*, void*, float*, float*, float*);
     reinterpret_cast<WeaponFireFn>(g_weaponFire.original)(self, edx, outA, outB, outC);
     g_weaponFire.calls.fetch_add(1, std::memory_order_relaxed);
+    if (owner_is_player_pawn(self)) g_playerShots.fetch_add(1, std::memory_order_relaxed);
 
     float a[3] = {0, 0, 0}, b[3] = {0, 0, 0}, c[3] = {0, 0, 0};
     read12(outA, a);
@@ -625,6 +647,7 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
     reinterpret_cast<AbilityFireFn>(g_abilityFire.original)(self, edx, instigator, outA, outB,
                                                            outC);
     g_abilityFire.calls.fetch_add(1, std::memory_order_relaxed);
+    if (is_player_pawn(instigator)) g_playerShots.fetch_add(1, std::memory_order_relaxed);
 
     float a[3] = {0, 0, 0}, b[3] = {0, 0, 0}, c[3] = {0, 0, 0};
     read12(outA, a);
@@ -1091,6 +1114,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
         strcpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str());
     }
     const int ph = profile_hand(key);
+    if (!key.empty()) hud_elements::set_plasmid_in_hand(ph == 0); // the Ammo / Plasmid HUD pieces swap on it
     if (key.empty()) {
         menu::profile_changed("",-1);
         // s68: a genuinely UNKNOWN holdable (the rig itself unreadable). This is
@@ -1583,6 +1607,7 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     seed_default_profiles();
     load_weapon_profiles(); // a user's weapons.ini overrides the seeds key by key
     muzzle::init(g_syms.actorGetBoneCoords);
+    script::init(g_syms.findFunction, g_syms.processEvent, g_syms.findField);
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
 }
@@ -1679,6 +1704,13 @@ void apply_origin_offset(int i, Ray& out, float worldScale) {
         of = g_barrel.rayCm[0];
         orr = g_barrel.rayCm[1];
         ou = g_barrel.rayCm[2];
+    } else if (barrel_locked() && !out.synthetic) {
+        // Locked: the last barrel this hand had with this gun (a reload, a frame the muzzle could
+        // not be read), else the hand itself - never the per-hand origin sliders.
+        const bool held = g_barrel.held && g_barrel.hand == i;
+        of = held ? g_barrel.rayCm[0] : 0.0f;
+        orr = held ? g_barrel.rayCm[1] : 0.0f;
+        ou = held ? g_barrel.rayCm[2] : 0.0f;
     }
     if (of == 0.0f && orr == 0.0f && ou == 0.0f) return;
     float fwd[3], right[3], up[3];
@@ -1749,6 +1781,14 @@ static void update_barrel_direction(const RayBase& b, const float socketAxes[3][
         const int sock = nearest_axis(socketAxes, rf, &sockDot);
         const int best = useSocket ? sock : bone;
         const float bestDot = useSocket ? sockDot : boneDot;
+        // 2026-10-20 (23:21 run: "the reticle locked 90 degrees to the left"): the axis is chosen once per
+        // weapon, and the Tommy Gun's was chosen mid equip - the gun turned across the ray, its side (-Y,
+        // 0.77) the nearest - and kept until the weapon changed. Only a gun lined up with the ray decides;
+        // until then the direction stays the controller's and the next frame tries again.
+        if (best < 0 || bestDot < 0.9f) {
+            g_barrel.dirValid = false;
+            return;
+        }
         g_barrel.axisDot = bestDot;
         g_barrel.axis = best >= 0 && bestDot >= 0.5f ? best : 6;
         static const char* kNames[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
@@ -1794,18 +1834,41 @@ static void update_barrel_direction(const RayBase& b, const float socketAxes[3][
 // that placed the gun (last frame's), in that ray's frame. Only while the controller drives the
 // weapon hand - when the game animates it (a scripted beat, the hand-back) the gun is not where
 // the controller is, and the old origin stands. A short miss holds the last offset.
+// 2026-10-14: while only a clip's own motion of the gun hand is playing on the controller (the
+// recoil, the reload's gun motion - handback::gun_motion) the offset is HELD for as long as it
+// lasts: the shot leaves along the barrel as it was before the kick, where the player points,
+// and a full-auto burst longer than the miss window does not drop to the old origin.
+// 2026-10-20: NOT while two hands are on the gun. The hold keeps the barrel in the weapon hand's
+// controller frame, and two-handed the gun turns with the front hand too - so a full-auto burst
+// froze the reticle where the burst began while the drawn gun moved. Two-handed the barrel is
+// measured every frame, the kick included: the shot leaves along the drawn barrel.
 static void update_barrel(const FrameContext& ctx, uint64_t now) {
     const RayBase& b = g_prevBase;
     const int hand = hands::active_hand() == 0 ? 0 : 1;
+    const bool twoHanded = two_hand::held();
+    if (!twoHanded && g_barrel.valid && g_barrel.hand == hand && handback::gun_motion(hand, now) > 0.0f &&
+        handback::weight(hand, now) >= 1.0f && handback::carry(hand, now) <= 0.0f) {
+        g_barrel.stampMs = now;
+        return;
+    }
     void* weapon = nullptr;
     bool ok = (g_barrelOrigin.load(std::memory_order_relaxed) || g_barrelAim.load(std::memory_order_relaxed)) &&
-              g_gameplayView && b.valid && b.hand == hand &&
-              hands::active() && !handback::active(hand, now) && hands::current_holdable(&weapon) && weapon;
+              g_gameplayView && b.valid && b.hand == hand && hands::active() &&
+              !(twoHanded ? handback::clip_owns(hand, now) : handback::active(hand, now)) &&
+              hands::current_holdable(&weapon) && weapon;
     if (ok && weapon != g_barrel.weapon) {
         g_barrel.valid = false; // a new weapon: no smoothing across the switch
         g_barrel.weapon = weapon;
         g_barrel.axis = -1;     // and its own barrel axis
         g_barrel.dirValid = false;
+        g_barrel.held = false;
+    }
+    // The gun changed hands (the grab's hand-over): nothing measured against the other
+    // controller carries over - its offset and direction were in that controller's frame.
+    if (g_barrel.held && g_barrel.hand != hand) {
+        g_barrel.valid = false;
+        g_barrel.dirValid = false;
+        g_barrel.held = false;
     }
     float m[3], socketAxes[3][3], boneAxes[3][3];
     if (ok) ok = muzzle::locate(weapon, m, socketAxes, boneAxes);
@@ -1822,7 +1885,8 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
         } else {
             // Light smoothing: the socket is rigid with the hand but read a frame late, so a fast
             // turn of the wrist would otherwise shake the origin by a centimetre or two.
-            const float a = g_barrel.valid && g_barrel.hand == hand ? 0.35f : 1.0f;
+            // Locked: the barrel as measured, unsmoothed - the ray is the gun.
+            const float a = !barrel_locked() && g_barrel.valid && g_barrel.hand == hand ? 0.35f : 1.0f;
             for (int k = 0; k < 3; ++k) g_barrel.rayCm[k] += a * (rc[k] - g_barrel.rayCm[k]);
             for (int k = 0; k < 3; ++k) g_barrel.muzzle[k] = m[k];
             if (!g_barrel.valid)
@@ -1830,6 +1894,7 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
                         hand ? "RIGHT" : "LEFT", rc[0], rc[1], rc[2]);
             update_barrel_direction(b, socketAxes, boneAxes, a);
             g_barrel.valid = true;
+            g_barrel.held = true;
             g_barrel.hand = hand;
             g_barrel.stampMs = now;
             ++g_barrel.hits;
@@ -1944,9 +2009,12 @@ void on_calcview(const FrameContext& ctx) {
         const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
         // The trimmed chain is a pure function in frame_context.h, shared
         // with `vraim synccheck` (roll forced 0 there - the camera owns roll).
+        // Locked to the barrel (barrel_locked): no tilt/turn trim, ever - the barrel gives the
+        // direction, and without a barrel the controller's own aim pose does.
+        const bool lock = barrel_locked();
         GamePose gp = ray_pose_from_xr(ctx, pos, quat,
-                                       g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
-                                       g_yawOffsetDeg[i].load(std::memory_order_relaxed));
+                                       lock ? 0.0f : g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
+                                       lock ? 0.0f : g_yawOffsetDeg[i].load(std::memory_order_relaxed));
         out.origin = gp.loc;
         out.rot = gp.rot;
 
@@ -1986,8 +2054,8 @@ void on_calcview(const FrameContext& ctx) {
                 const GamePose ap = model_pose_from_xr(ctx, apos, aquat, 0.0f, 0.0f, 0.0f);
                 base.aimValid = true;
                 base.aimRot = ap.rot;
-                if (g_barrelAim.load(std::memory_order_relaxed) && g_barrel.valid && g_barrel.dirValid &&
-                    g_barrel.hand == i) {
+                if (g_barrelAim.load(std::memory_order_relaxed) && (g_barrel.valid || (lock && g_barrel.held)) &&
+                    g_barrel.dirValid && g_barrel.hand == i) {
                     float f[3], r[3], u[3];
                     ue_rot_basis(ap.rot, f, r, u);
                     const float* l = g_barrel.local;
@@ -2013,11 +2081,14 @@ void on_calcview(const FrameContext& ctx) {
     lc.enabled = g_laser.load(std::memory_order_relaxed) && ctx.vrDriving && g_gameplayView;
     lc.hand = hands::active_hand();
     int lh = lc.hand == 0 ? 0 : 1;
-    lc.pitchTrimDeg = g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
-    lc.yawTrimDeg = g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
-    lc.posFwdCm = g_posFwdCm[lh].load(std::memory_order_relaxed);
-    lc.posRightCm = g_posRightCm[lh].load(std::memory_order_relaxed);
-    lc.posUpCm = g_posUpCm[lh].load(std::memory_order_relaxed);
+    // Locked to the barrel: the laser takes no trim either (it draws the fire ray when there is
+    // one; without one it is the controller's own aim).
+    const bool lockL = barrel_locked();
+    lc.pitchTrimDeg = lockL ? 0.0f : g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
+    lc.yawTrimDeg = lockL ? 0.0f : g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
+    lc.posFwdCm = lockL ? 0.0f : g_posFwdCm[lh].load(std::memory_order_relaxed);
+    lc.posRightCm = lockL ? 0.0f : g_posRightCm[lh].load(std::memory_order_relaxed);
+    lc.posUpCm = lockL ? 0.0f : g_posUpCm[lh].load(std::memory_order_relaxed);
     lc.dots = g_laserDots.load(std::memory_order_relaxed);
     lc.nearM = g_laserNearM.load(std::memory_order_relaxed);
     lc.farM = g_laserFarM.load(std::memory_order_relaxed);
@@ -2566,6 +2637,8 @@ bool laser_enabled() { return g_laser.load(std::memory_order_relaxed); }
 bool dot_enabled() { return g_dot.load(std::memory_order_relaxed); }
 float dot_dist_m() { return g_dotDistM.load(std::memory_order_relaxed); }
 float dot_size_deg() { return g_dotSizeDeg.load(std::memory_order_relaxed); }
+
+uint32_t player_shots() { return g_playerShots.load(std::memory_order_relaxed); }
 
 void weapon_scan_rearm(const char* why) {
     g_weaponScanMisses = 0;

@@ -19,8 +19,10 @@
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/manual_reload.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
+#include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 #include "core/vr/openxr_runtime.h"
@@ -31,6 +33,8 @@
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/menu_blur.h"
+#include "game/bioshock1r/wheel_state.h"
 #include "game/bioshock1r/native_proof.h"
 #include "game/shared/ue_math.h"
 
@@ -743,6 +747,8 @@ void apply_command(const char* cmd, const char* args) {
         aim::handle_command(args); // M6 decoupled aim; logs its own echoes
     } else if (strcmp(cmd, "vrhands") == 0) {
         hands::handle_command(args); // M7 viewmodel; logs its own echoes
+    } else if (strcmp(cmd, "vrreload") == 0) {
+        manual_reload::handle_command(args); // 2026-10-20 the manual reload; logs its own echoes
     } else if (strcmp(cmd, "vrbones") == 0) {
         bones::handle_command(args); // M7-v2 skeleton probes; logs its own echoes
     } else if (strcmp(cmd, "vrbody") == 0) {
@@ -1906,7 +1912,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // Deliberately NOT gated on vrDrove: hand samples only exist with a live
         // XR session anyway, and leaving it out is what lets `vrinput swing sim`
         // exercise the whole decision path flat.
-        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench"));
+        // 2026-10-20: and shut for 400 ms after the gun changes hands. The detector samples the
+        // weapon hand's slot; a hand-over moves that slot to the other controller, and the jump
+        // between the two read as a swing ("the wrench swings when switching hands").
+        static bool s_swingLh = bvr::input::left_handed();
+        static uint64_t s_swingFlipMs = 0;
+        const uint64_t swingNow = GetTickCount64();
+        if (bvr::input::left_handed() != s_swingLh) {
+            s_swingLh = bvr::input::left_handed();
+            s_swingFlipMs = swingNow;
+        }
+        const bool swingSettled = !s_swingFlipMs || swingNow - s_swingFlipMs > 400;
+        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench") && swingSettled);
 
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;
@@ -2337,7 +2354,17 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // exactly what the first cut did.
     }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
-    bvr::vr::publish_ui_pause(panelUp && (!sceneOwnsPanel || g_playerOpenedPanel));
+    // A UI pause whose Menus row (F10 > HUD) is not the flat screen RIDES the
+    // HUD instead: no ui pause, so the projection stays up and the menu, which
+    // gameswf draws into the HUD capture over the live world, goes where that
+    // row says. Off (the default) is exactly the line before this change.
+    const bool uiPause = panelUp && (!sceneOwnsPanel || g_playerOpenedPanel);
+    const bool rides = uiPause && hud_elements::screen_rides(static_cast<int>(screens::panel_kind()));
+    hud_elements::set_riding_screen(rides ? static_cast<int>(screens::panel_kind()) : 0);
+    bvr::vr::publish_ui_pause(uiPause && !rides);
+    // The paused game's blurred backdrop (F10 HUD > Menus): skipped while a menu
+    // the player opened or a weapon/plasmid wheel is up, so the world shows behind.
+    menu_blur::set_suppressed(hud_elements::hide_backdrop() && (uiPause || wheel_state::open_kind() >= 0));
     // Suppress the aim laser and the aim dot while a scene owns the view. The
     // game's own reticle is NOT this call - it goes out through the engine SET
     // handler in assert_crosshair, which reads the same predicate so the three

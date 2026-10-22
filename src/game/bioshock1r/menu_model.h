@@ -6,15 +6,39 @@
 #include <cstdint>
 #include <string>
 
+// The HUD's pieces, in hud_elements.cpp's table order: (suffix, F10 label, help).
+// The enum, the F10 rows and the selector's choices are all generated from this.
+#define BVR_HUD_PIECES(X)                                                                          \
+    X(Health, "Health bar", "The red health bar with its first-aid gauge.")                        \
+    X(Eve, "EVE bar", "The blue EVE bar with its hypo gauge. The two gauges are one picture in the game; each goes with its own bar.") \
+    X(Reticle, "Game crosshair", "The game's own crosshair. The mod's reticle and laser are on the Aim tab.") \
+    X(Target, "Enemy name and health", "The enemy's name and the health arc above the crosshair.")   \
+    X(Prompt, "Use and hack prompts", "Pick up, use, hack, search and the container list, right of the crosshair.") \
+    X(Ammo, "Ammo", "The ammo holder, shown while a weapon is in your hand. Bottom left.")         \
+    X(Plasmid, "Plasmid", "The plasmid gear and name, shown while a plasmid is in your hand. The game draws it where the ammo goes.") \
+    X(Wheel, "Weapon and plasmid wheel", "The selection wheel's ring while it is open. With Pick with your hand on (Controls tab) it opens at the hand instead.") \
+    X(WheelName, "Wheel item name", "The highlighted item's name above the wheel. At the hand dial it stays above the ring.") \
+    X(WheelLabel, "Wheel button line", "SELECT WEAPON / SELECT PLASMID under the wheel. Hidden at the hand dial.") \
+    X(Subtitles, "Subtitles", "Dialogue subtitles and the area name, bottom centre.")              \
+    X(Tutorial, "Tutorial messages", "The training messages above the subtitles.")                \
+    X(Objective, "Objective", "The current goal, top right.")                                     \
+    X(Messages, "Radio messages", "Radio and speech lines under the objective.")                  \
+    X(Money, "Money and ADAM", "The dollar and ADAM counters, right edge.")                       \
+    X(AudioLog, "Audio log", "The playing audio log or radio speaker, bottom right.")             \
+    X(Escort, "Little Sister and gatherer", "The escorted Little Sister's health and the gatherer meter, under the bars.") \
+    X(Timers, "Challenge timers", "The challenge room timers, left.")
+#define BVR_HUD_ENUM_ANCHOR(n, label, help) HudEl##n,
+#define BVR_HUD_ENUM_PLACE(n, label, help) HudX##n, HudY##n, HudScale##n,
+
 namespace bvr::b1r::menu {
-enum class Tab { Hands, IK, Aim, Controls, Comfort, HUD, Display, Runtime, Diagnostics };
+enum class Tab { Hands, IK, Aim, Controls, Comfort, HUD, Display, Cheats, Runtime, Diagnostics };
 enum class Level { Basic, Advanced, Debug };
 enum class Kind { Toggle, Slider, Choice };
 enum class Scope { Global, Hand, Profile };
 enum class Condition {
     Always, Snap, Smooth, Swing, Reticle, Laser, BodyFollow, CustomFov,
     LegacyHands, LegacySolver, SolverChoice, HandPoseChoice, R3Free,
-    GameOwnsView, SkeletalWeapon, ComposedHands
+    GameOwnsView, SkeletalWeapon, ComposedHands, HudPiece
 };
 enum class Setting {
     TextSize, ViewLevel, Height,
@@ -46,6 +70,24 @@ enum class Setting {
     PlasmidFxAlong, PlasmidFxAcross, PlasmidFxOut,
     AfwRebuild, AfwHandGain, AfwHandsMask, HandDepthProbe,
     OutputWidth, OutputHeight, TemporalTaa, HandMotionVectors, BarrelOrigin, BarrelAim, LaserInImage,
+    ReloadPlace, ReloadGunMotion, ReloadJoin, GunRecoil,
+    // The HUD pieces (hud_elements.cpp): one anchor each, in the element table's order,
+    // then the hand panel, the piece being adjusted and its placement, then the screens.
+    BVR_HUD_PIECES(BVR_HUD_ENUM_ANCHOR)
+    HudHandWidth, HudHandLift, HudHandFace, HudHandTilt,
+    HudPiece,
+    BVR_HUD_PIECES(BVR_HUD_ENUM_PLACE)
+    // ORDER = kSpecs' row order: spec(id) indexes the table by this value (static_assert'ed).
+    HudScreenPause, HudScreenMap, HudHideBackdrop, HudScreenMachines,
+    // The weapon and plasmid dial (dial_input.cpp, swap_hold.cpp).
+    DialEnabled, DialGripTrigger, DialHoldSwap, DialDirectionOnly, DialNeutral, DialTravel, DialSnap,
+    DialEntryTilt, DialEntryYaw, DialWidth, DialDistance,
+    // Grab and hand-over (dial_input.cpp's pad override).
+    GrabEnabled, GrabDistance, GrabMirror,
+    // The two-handed grip and the gunshot kick (two_hand.cpp).
+    TwoHandEnabled, TwoHandDistance, ShotHaptics, ShotHapticStrength,
+    // The manual reload (manual_reload.cpp).
+    ManualReload, ReloadAbort,
     Count
 };
 struct Spec {
@@ -72,6 +114,7 @@ struct Context {
     bool cameraHook = false;
     bool engineReady = false;
     int profileHand = -1;
+    int hudPiece = 0; // the piece F10 > HUD > Adjust a piece shows the placement rows of
     std::string profile;
     std::string notice;
 };

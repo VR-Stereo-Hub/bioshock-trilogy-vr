@@ -2,6 +2,787 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-21 (evening) - BS1: the held-gun audit, then step 1 - gun geometry as constants
+
+**Branch `claude/bs1-manual-reload`**, local commits only. Built (Release), host-tested (20 suites), lint
+clean, INSTALLED. **Run once on the SIMULATOR** (ENGINE_NOTES "The six steps on the simulator"): every
+step's mechanics verified there but the Tommy's bolt rack, the pistol's X cancel and the eases, which
+want the headset. Five fixes came out of the run and are in the installed build. **Headset run 09:31
+(2026-10-22): almost everything held; three shotgun findings fixed in 27a7404** (ENGINE_NOTES "The pump by
+need, the hand on the slide, the ionic buck's takes"): a pump the gun needs keeps its quick stroke, one it
+does not (ending a loop) takes a deliberate 12 cm and is offered only with a shell in, an empty gun's shot
+pumps itself; the drawn hand rides the slide; an ammunition variant's reload-end take plays whole once
+instead of doubled. **The 10:14 run on that cut was worse** - the empty gun pumped itself, the loop pump was
+refused before the first shell, the drawn wrist never moved, and the ionic buck's base take starts late outside
+the mod's call - all four corrected (ENGINE_NOTES "The 10:14 run"), plus the Tommy's pouch squeeze opening the
+plasmid wheel. The 10:31 run on that: close; three more corrected (ENGINE_NOTES "The 10:31 run"): the pistol's
+dry reload waits for the hand like the Tommy's, the forward pump stroke never rewinds over the shell-eject cue
+(20 shells in 11 s), and the weapon's loop clip is finished, not resumed, when a pump ends a reload. Installed;
+not yet in the headset.
+
+### Current state
+
+- **Step 1 of the redesign is in** (ENGINE_NOTES "Gun geometry as constants", ARCHITECTURE decision log):
+  `gun_geometry.h` (the fore-grip point and sideways axis per gun, the mirror and centre-plane functions)
+  and the generated `grip_rest_poses.h` (the free hand's rest pose on each two-handed gun: 15 bones
+  against the wrist, the wrist against bone 43). The two-handed anchor, the grip pose, the kept-on-gun
+  rest, the mirror axis and plane and the Tommy's drum seat read them; the latches they replace are gone
+  (`s_freeRel`, `s_fingerRel`, `s_wristRel`, `s_ancRelBy`, `s_restU`/`s_u`, `g_restSeat*`). The grip pose
+  applies the moment the grip holds, every gun, both hands, and survives a hand-over and a switch.
+  Host-tested: `gun-geometry` (56 checks: the tables, the mirror, the plane, and the two tables agreeing on
+  the fist centre within 0.3). Measured offline in Blender and checked against 2946 live frames.
+- **Step 2 is in** (ENGINE_NOTES "The gun's state as one record"): `gun_state.h`, one record per tick
+  (`[reload] <gun> state: ...` on every change); the trigger is zeroed exactly while `fire_allowed` is
+  false and every refused pull clicks with the game's own DryFiring - every gun, every stage (the dry
+  Tommy at its drum, the pistol's open frame, the shotgun's reload, uncocked chamber and pump wait).
+  The uncocked shotgun is remembered per weapon and survives a switch. Host-tested (`gun-state`, 39).
+- **Step 3a is in** (ENGINE_NOTES "The grip arbiter on the owner table"): `grip_owner.h` picks the owner of
+  a free-grip squeeze from four reaches (hand-over, two-handed, reload, spare), nearest in reach, the
+  fore-grip over the reload on a tie; the reload's reach is a distance in every stage, never an absolute
+  claim. Host-tested (`grip-owner` 20, `reload-rig` 130). `HELD_GUN_MATRIX.md` is the specification;
+  its section 10 enumerates the hand POSE sources per state and designs the hand pose engine (step 3b).
+- **Step 6 is in** (ENGINE_NOTES "The sound table"): `gun_sounds.h`, the action-to-sound-part table,
+  actions from the machine's phase kinds and the pump's strokes, one caller of the sound engine. No
+  behaviour change intended. Host-tested (`gun-sounds` 26). **All six steps of HELD_GUN_AUDIT.md 2.8 are
+  in**; what remains is the headset.
+- **Step 5 is in** (ENGINE_NOTES "One pump, its stroke along the barrel"): one `Pump` for the shot, the
+  reload's last pump, the dry cock and the loop-ending pump, its stroke the front hand's travel along the
+  gun controller's aim forward from the gun hand (not the controllers' distance). Host-tested
+  (`reload-rig` 136). Headset check: pump with the hands offset sideways, and with the gun hand swinging:
+  only travel along the barrel counts; the stroke lines say `along N cm`.
+- **Step 4 is in** (ENGINE_NOTES "The suppression record"): `gun_suppress.h`, one record per gun of what
+  the game may not do (X, the eject, the adopted reload, the free hand, the magazine, the shot's clip-motion
+  curve, the muted cues), read in one place; no behaviour change intended. Host-tested (`gun-suppress` 25).
+- **Step 3b is in** (ENGINE_NOTES "The hand pose engine"): `hand_pose.h` decides the free hand's wrist and
+  finger sources per frame (clip-owned, on the gun, designed grip, on the part, pulling, relaxed, the
+  clip's), one builder blends them with eases; the kept rest, the grip-pose branch, the designed-grip
+  branches, the start-clip hold and the bolt's own ease are gone; a free hand holding nothing is relaxed
+  (the game's lowered-hands fingers). Host-tested (`hand-pose` 29). `[hands] free hand: ...` logs each
+  decision change.
+- **Headset check for step 3b:** grip the shotgun or Tommy two-handed: the rest pose from the first frame,
+  eased in, kept through a shot, a reload, an ammo switch; let go: the fingers relax (not the idle clip's
+  curl) over 0.15 s; carry the pistol's cylinder or a shell: the designed grip blends in; rack the Tommy's
+  bolt: the hand locks on as before; in the left hand all the same mirrored.
+- **Step 3c is in, UNVERIFIED** (ENGINE_NOTES "Ending a reload early"): a pump stroke while the shotgun
+  waits for a shell ends its reload with the shells in and cocks it; X while the pistol waits for a
+  cylinder cancels its reload. Both through the hands' own interrupt sequence and a re-equip (script
+  calls by name, each logged). F10 Controls > Manual reload > "End a reload early" turns it off if the
+  hands ever stay down after one (the weapon wheel brings them back).
+- **Headset check for step 3c:** shotgun with two shells in of four, two hands on it, pump: the reload
+  ends, the gun fires (watch `[reload] Shotgun: the reload is ended early (...)` for three "called" and the
+  state line's rounds). Pistol: X while the hand is waiting for a cylinder: the gun dips and comes back.
+- **Headset check for step 3a:** on a dry Tommy waiting at its drum, a squeeze with the hand under the
+  fore-grip takes the two-handed grip, at the drum well pulls the drum; while a drum drops or seats, a
+  squeeze at the fore-grip takes the grip (not swallowed); the log's `[grab] the free grip goes to`
+  shows four reaches.
+- **Headset check for step 2:** pull the trigger on a dry Tommy before pulling the drum (click), on the
+  pistol mid-reload (click), on the shotgun while its pump waits (click, no shot); switch away from an
+  uncocked shotgun and back: still dead until pumped by hand. The game's own click on an empty idle gun
+  (before any reload) is unchanged.
+- **Headset check for step 1:** grabs land on the fore-grip (Tommy and shotgun) in both hands, after a
+  plasmid switch, right after a pump, on an empty gun; the grip pose from the first frame of a hold; the
+  shotgun in the left hand not upside down; the log's `[bones] mirror: the held weapon's sideways axis`
+  line once per gun; `[twohand] the right/left hand took hold ... N cm` small (under 6) when grabbing at the
+  fore-end.
+- **`docs/bioshock1/HELD_GUN_AUDIT.md`** is the design: Part 1 audits the manual reload, the
+  two-handed grip, the hand-over, the pump, the held parts and every override of the game (the state
+  inventory per module, the fourteen latches and what makes each wrong, the grip ownership flow per gun
+  state, the five bugs of the 21:1x run with their mechanisms, nine more findings). Part 2 proposes one
+  gun-state record, one ownership table, one suppression record per gun, gun geometry as per-gun
+  constants with one mirror function, one pump on the barrel axis, and sounds as an action table, in six
+  steps.
+- The five bugs, in one line each (details in 1.6): the dry Tommy's reload claims the squeeze absolutely
+  inside the drum's reach; nobody clicks while a dry gun waits at its first pull; a hand-over mid-reload
+  clears the free hand's rest latches, so the two-handed carry draws the hand at the pouch; the pump
+  stroke is the controllers' distance, which the gun hand's motion and sideways motion feed; after a
+  plasmid switch the free hand's rest is the equip's end pose and the anchor copies it while held.
+
+### Next steps
+
+- Headset: the three 10-22 fixes (the deliberate loop-ending stroke, the hand on the slide, the ionic
+  buck's pump sound), the Tommy's bolt rack on a reload begun empty, the pistol's X cancel at the pouch (3c),
+  the eases. The polish for the ammunition variants is a timeline per take, keyed by its FMOD length.
+- Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
+  offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
+
+## Session 2026-10-20 (evening) - BS1: the 15:33 headset run's four issues, the shotgun pump after HL2VR
+
+**Branch `claude/bs1-manual-reload`**, local commits only (the cylinder, the drum and the pump).
+Built, host-tested (14 suites), lint clean, installed. NOT run in the simulator or the headset.
+
+### Current state
+
+- **The right grip is the game's bumper again, taps and all.** The 15:33 "switched to the pistol at
+  boot" was a quick right-grip squeeze (117 ms): the HUD turns a bumper tap into "next weapon", which
+  the stuck virtual RB had hidden until 6ebbff2. A 250 ms hold-back tried that evening blocked every
+  real squeeze (the tester's are ~100 ms: "the grip doesn't work at all") and was dropped. Open:
+  whether a tap should cycle at all - the tester decides.
+- **Wrench, open:** in the 19:24 run every attack came from the TRIGGER (`[handback] melee attack
+  source=TRIGGER ... swing pulse never`; no `[swing] FIRE` in the run), so the hand-back gave the right
+  arm to the game's swing clip - "the arm went four feet in front". Not yet diagnosed.
+- **The pistol's carried cylinder sat 5-12 cm off the fingers and jumped** (captures afw-...153433 /
+  153712, Stereo too): the carry's weapon-space scale was measured from GetBoneCoords, which reads
+  the skeleton before or after the size write - 0.800 / 0.708 frame to frame. It is now DrawScale x
+  the written weapon size (`bones::weapon_written_scale`); `[reload] the gun's space: N bone read(s)
+  disagreed` counts the bad reads. The 0.53 s hold was checked in Blender and stays (the clip's hand
+  wraps the cylinder). Reload event lines name both hands clips (`hands clips A / B`).
+- **The cylinder as a falling world object: not possible from game data.** `ShockGame.U` has no
+  cylinder mesh (only `WP_PistolMesh`'s DrumParent/drum bones); the route is a spawned world actor
+  drawing the pistol mesh with every other bone collapsed (ENGINE_NOTES). Not built. The pistol still
+  drops its rounds as the world prop.
+- **Tommy Gun: a drum let go short of the well falls** (`reload_rig.h` Insert): a guided part let go
+  before half way used to stay guided with no hand on it and could still be seated by a bare hand.
+  Now: let go past half way - seated; short of it - it falls (a Havok copy of the drum) and the
+  reload waits at the pouch. The clip's own AnimNotify_SetAmmoVisible shows/hides the drum and a set
+  clip time can skip the show: `ShowAmmoModel` is now called on a fetch and when any ejecting
+  reload ends (`[reload] ...: its magazine shown`).
+- **Shotgun pump redesigned after Half-Life 2 VR** (studied with headless IDA; ENGINE_NOTES "Half-Life
+  2 VR's shotgun pump", ARCHITECTURE decision log). The fore-end hold is the pump and cannot slide off
+  mid-stroke; each stroke is a ratchet - 6 cm past the farthest point the other way - the clip
+  following the hand 1:1 and finishing the stroke at the catch; a stroke can begin during the recoil
+  (1.5 cm back); each shot's clip gets its own pump even with no frame between; the trigger while
+  the pump waits buzzes the gun hand and fires nothing. The reload's last pump completes at 6 cm too.
+  `[reload] Shotgun pump: back stroke N cm of 6` twice a second while it waits.
+
+- **After the 19:29 run** (grip confirmed working; pistol steadier but off the fingers; slap fell;
+  bolt reach across the body; shotgun pumping itself): the carry undoes the gun's 0.92 ratio about
+  its socket (ENGINE_NOTES "A carried part goes back..."); a drum let go guided or within 20 cm of its
+  seat is seated, only one let go away from the gun falls; the bolt is reachable either side but only
+  at the gun (1.25x, sideways capped); a Tommy Gun reloaded with a round still in it skips the bolt;
+  a drum let go away from the gun (the spent one pulled out, or a new one) is thrown as a Havok copy
+  with the hand's velocity (Half-Life: Alyx's release, ENGINE_NOTES); the shotgun's pump is read as
+  the distance between the controllers (the drawn gun fed the clip its own motion).
+- Open: the shotgun "changes the hand position when empty" - not yet understood (which hand, when);
+  the wrench trigger-attack hand-back (arm thrown forward) awaits the tester's trigger-swing test.
+
+- **After the 20:35 run** (pistol close; Tommy "locked up"; shotgun's empty position, recoil, the
+  reload's pump unlike the normal one, invisible shells): a dry Tommy Gun's reload waits for the hand
+  to pull the drum (it no longer drops it itself) - and X there now drops it (the lock-up was that
+  wait with every button ignored). The shotgun keeps the two-handed hold and the drawn free hand
+  through a reload begun with the grip squeezed; the reload's last pump is the same Pump as between
+  shots (two-handed grab, 6 cm strokes, never pumps itself); the Fire clip's kick is halved; a shell
+  from the pouch is shown. Tools: the in-game pose capture and the shotgun recording, replayed by
+  `tools\blender\pose_capture.py` (MODEL_WORKFLOW.md).
+- Open: the pistol's carried cylinder is "close, slightly off" at 0.80 s; a custom finger grip waits
+  on a pose capture of it (the fingers would be a new override of the hand's own bones).
+- **Tommy Gun spare drum (late evening).** Whenever the Tommy Gun is held - idle, a dry gun waiting at
+  its drum, the bolt, the clip playing on - a grip at the pouch takes a spare drum into the free hand (a
+  prop of the gun's own magazine, `dropped_part::make_held`). X with it in hand: the old drum drops and
+  the spare goes in after 0.2 s instead of the 0.7 s fall. Let go, it is thrown (the same Alyx release);
+  a thrown spare - or a new drum let go short of the well - that reaches the open well within 4 s is
+  caught and seated. Not at a Fetch (the pouch gives the gun's own drum there) or while a part rides
+  the hand. Machine-level host-tested (112 checks); the prop, its placement and the catch are
+  unverified in game. Log: `a spare from the pouch`, `the spare left the hand`, `caught`, `the visible
+  magazine against TG_AmmoClip`.
+- **After the 22:54 run:** the palette now skins the free hand's substituted bones (per-bone fixes) - the
+  grip pose and the pistol's solved grip had never reached the mesh, and the shotgun's substituted wrist
+  put the hand off its grab. Spares drop from the hand, caught drums are removed, the pouch buzzes, an
+  ammo-switch reload drops the drum, and the shotgun layers only its Fire recoil (ENGINE_NOTES).
+
+### Next steps
+
+- Headset: the items above (tester instructions in the session's report).
+- From the shotgun recording (`dumps\poserec-...\Shotgun.bvrpose`): replay it, read the per-frame CSV,
+  and tune the pump, recoil and empty-gun behaviour against the game's real frames.
+- If the 6 cm stroke feels wrong, it is `PumpConfig::strokeCm` (and the Slides' 6.0 in kShotgunEnd);
+  the log's stroke lines give the distances the tester actually used.
+- The pistol cylinder as a world object: the spawned skeletal-actor route, if wanted.
+- The clips' AnimNotify_SetAmmoVisible times are unknown; listing them would let the eject keep the
+  game's own visibility instead of forcing it.
+
+## Session 2026-10-20 (afternoon) - BS1: one grip owner, the wrench mirrored, reloads eased, cheats
+
+**Branch `claude/bs1-manual-reload`**, rebased onto `claude/bs1-two-hand-grip` abf36c6 (the old tip is
+`claude/bs1-manual-reload-pre-rebase-20261020`). Local commits only. Built, host-tested and installed;
+NOT run in the simulator or the headset.
+
+### Current state
+
+- **One owner per squeeze of the free hand's grip** (`dial_input.cpp grab`). The hand-over, the
+  two-handed grip and the manual reload each read the same press, so the morning's hand-over also
+  started a Tommy Gun reload that held 40 s. Now, as the grip goes down, each reports its reach - its
+  distance over its own radius (`two_hand::reach`, `manual_reload::reach` from `reload_rig` Output
+  `reach`) - and the nearest within reach owns the whole squeeze; to the others it is no press.
+  `[grab] the free grip goes to ...` logs each decision with the three reaches.
+- **The manual reload on the drawn gun.** Its paths were recorded on the authored gun; the hand is read
+  back onto it through the drawn ratio (`gun_ratio`, the morning's two-hand fix), so Weapon size no
+  longer moves every reload target.
+- **The wrench mirrored about its own centre** (`bones.cpp rigid_centre`). A rigid holdable has no
+  skeleton for the mirror's pin; its mesh's centre comes from the engine's render bounds
+  (`Actor.GetRenderBoundingBox`) taken into its own frame (Location/Rotation), averaged over 16
+  frames and latched. `[bones] rigid holdable ...: its mesh's centre is ...` logs it.
+- **The wrench no longer swings on a hand-over** (`camera.cpp`, `dial_input.cpp`): the swing detector
+  samples the weapon hand's slot, which a hand-over moves to the other controller - the jump read as a
+  swing. Its gate shuts at the swap and stays shut 400 ms. (A trial "reloads ease in and out" was
+  taken back out after the headset run: unclear it helped.)
+- **The reload button ejects; so does a gun that runs dry** (manual reload on, the pistol and the
+  Tommy Gun; `reload_rig` Input `eject` / `ejectAdopted`, Program `ejectT` / `ejectPart`,
+  `dropped_part.cpp`). X never reaches the game; the mod asks the game to reload. When the clip starts
+  it is held where the gun is open with the spent part still seated (Tommy 0.267 s, pistol 0.466 s),
+  the part falls for 0.7 s (the gun's own part bones under gravity, or for the Tommy Gun's drum a
+  Havok copy of its AmmoModel, removed again if it would not simulate), then the reload waits at the
+  first Fetch: a new one from the waist, seat it, close / rack. Nothing to reload (full, or no spare
+  rounds: PlayerWeapon.Reload's own rule, now checked through GetNumberOfItems) buzzes no. The shotgun
+  keeps the game's button. Off: X is the game's reload exactly as before.
+  The first headset run of this (12:00) was broken three ways, all fixed here: every eject was
+  refused (no spare pistol rounds), the dry guns' own reloads sat at the old first step (the pistol's
+  latch up, the Tommy Gun's drum held), and the pistol's AmmoModel had no mesh to copy.
+- **Meshes, from `Build\Final\BakedScripts\pc\ShockGame.U`** (the first-person weapons are not in the
+  maps; UModel lists the script package): `PI_AmmoType` is the pistol's six ROUNDS, not its cylinder
+  (the cylinder is `WP_PistolMesh`'s own `DrumParent`/`drum` bones); `TG_AmmoModel` is the Tommy Gun's
+  drum; `SpentShell` is a casing - a later "the rounds tumble out" can spawn those.
+- **Second headset run (12:21) and the fixes after it.** The Havok copy never spawned (`Spawn returned
+  nothing`): the mags seen were the gun's own part bones, through the floor. Now: two classes and two
+  spawn routes (ENGINE_NOTES), 90 s lifespan to pile up; the gun's own part, when it is the one that
+  falls, falls in the world and stops at the player's feet, lying there until a new one is taken. A new
+  drum/cylinder LATCHES by the part's own distance from where the spent one sat in the open gun
+  (10 cm, any hand orientation; `reload_rig` Input `partSeatCm`), then the clip seats it. The Tommy
+  Gun's bolt is grabbed from either side (Phase `bothSides`, 1.5x reach). The carried part is held as
+  the clip's own hand holds it at the gun (Phase `holdT`: Tommy 1.113 s, pistol 0.89 s; found with
+  `tools\blender\reload_pose.py` - at the old hold times the game's hand had tossed the part).
+- **Third headset run (12:49) and the fixes after it.** The Tommy Gun's Havok drum now spawns (through
+  the hands' script spawn) and lands and piles up, but fell from head height: it is placed with its
+  physics off now (SetLocation, the Location field if that is refused; `[drop] placed at ...`). The
+  pistol's cylinder on the floor floated and flickered: weapon parts are drawn in the hands'
+  FOREGROUND layer (its depth and motion vectors), never convincingly on the floor - so the gun's own
+  part only falls out briefly (0.45 s) and is gone, and the pistol drops its ROUNDS (`PI_AmmoType` by
+  name) as the world prop that stays. The Tommy Gun's bolt is a new Slide step (`reload_rig`
+  Kind::Slide): TG_Bolt runs 16.4 units straight back (2.10-2.20 s, `reload_pose.py`), grabbed near
+  the clip's hand from either side at 2x reach, it follows the hand's travel back along the gun 1:1,
+  both ways, and while held the drawn hand is LOCKED onto it where the clip's own hand grips it
+  (`manual_reload::hand_lock`, eased 100/200 ms). The old pull mapped the hand onto the clip hand's
+  whole reach-and-pull path, forward only - "twice as far, and it does not follow the hand".
+  Open: the pistol's carried new cylinder "flickers and oscillates" - unexplained; it is held next to
+  the gun hand, where the hand motion vectors of the two grips meet, so it may be AFW (worth one look
+  with Stereo instead of AFW).
+- **Fourth headset run (13:25) and the fixes after it.** Tommy Gun good, but a quarter-second freeze on
+  the first drop: each new script name was a full GNames scan, about ten on that drop - now one pass
+  builds an index (`[script] name index: N names in M ms`), warmed on every weapon change. The pistol's
+  rounds never spawned (no log said why: `[drop] the pistol's rounds: ...` now does), and its own
+  cylinder's fall, drawn in the hands' layer, showed through the floor - cut to about 20 cm. The
+  captures (dumps\afw-...132607 / 132704, `afw-replay.ps1`) show both carried parts at the fingertips
+  of an OPEN hand: the hold times now come from where the clip's hand GRIPS the part - Tommy Gun
+  0.30 s (thumb and fingers on the drum's rim to pull it), pistol 0.53 s (wrapped round the cylinder
+  from below) - checked with the drum on its socket in `reload_pose.py` (`--attach`). Open: the
+  pistol's carried cylinder oscillates (with Stereo too) - not explained by the code read; one
+  simulator run would show it frame by frame.
+- **The shotgun's pump by hand** (`reload_rig.h` Pump, `manual_reload.cpp`): held two-handed, each
+  shot's 'Fire' clip waits at its pump (SG_Pump 18 units back 0.75-0.85 s, forward 1.05-1.15 s, from
+  `reload_pose.py`) and the front hand works it back, then forward, the clip following both ways; let
+  go, or one-handed, and it pumps itself. `[reload] Shotgun pump: ...` logs each stroke. A reload that
+  ends under the fore-end squeeze (the last pump) hands the squeeze on to the two-handed grip
+  (`two_hand::take_held_grip`), so the hand stays on the fore-end.
+- **Fifth headset run (14:09) and the fixes after it.** Tommy Gun perfect, no reload or slide SOUNDS:
+  the clips' sound cues (AnimNotify_EffectEvent) fire only when a clip PLAYS, and the manual reload set
+  the clip's time - now a hold the hand moves forward is reached by playing the clips there at 1-4x
+  their speed (`hold(..., chase)`; Pull and Slide drags, the latch's snap, Flick, Play, the shotgun's
+  pump). The shotgun's pump looped: the mod held the gun's Fire clip, the hands' clip ran on its own
+  handle - every hold and run now covers the Hands actor's HandsAnimationHandle too (`each_hands`),
+  paused every frame; the same is the likely cause of the pistol's oscillating carried cylinder. The
+  reload's last pump is two Slides with the hand locked on it (as the bolt; the stroke's direction
+  is its own path's, the forward stroke continuing from the back one under the same squeeze). The
+  shotgun's reload "tilting the gun up" was the two-handed aim letting go: during a manual reload the
+  gun keeps its two-handed angle, in the gun hand's frame. The pistol's rounds: by name they never
+  load - now read from the ammunition class's defaults (`script::class_defaults`, UClass Defaults at
+  +0x54C, from the console's GET); its own cylinder falls only ~7 cm.
+- **The hands stay on the controllers through a weapon swap** (`hands_state.cpp`): the swap passes
+  through ProceduralLoweringHands, classed Scripted, so the hand-back gave both hands to the game for
+  its release - the left hand flew to the next gun's grip and back. It is Offscreen now.
+- **F10 > Cheats** (`cheats.cpp`): Give all weapons / Give all weapons, upgraded. The game's own
+  developer functions by name (ShockCheatManager.GiveAll's lists): UnlockInventorySlots, GiveWeapon
+  for each weapon not yet held, GiveItem 999 of every ammunition. Upgraded does New Game Plus's own
+  spawn step (PlayerWeapon.PostBeginPlay): every UpgradeStats entry PointsAllocated = 1 and the two
+  attachments shown (GiveAltFireMod, GiveStrictlySuperiorMod). Needs script properties by name: the
+  engine's FindField (ENGINE_NOTES 2026-10-20 "Script properties by name"), refused unless it
+  reproduces Actor Location 0x1D8 and DrawScale 0x2AC (`[script] properties by name CHECKED`).
+- No `src/core/` change.
+
+### Next steps
+
+- Headset (or a simulator run, if the tester allows one): X on the pistol and the Tommy Gun with the
+  manual reload on (watch `[drop]` and `[reload]`): does the magazine fall and land, at the right size;
+  is the pistol's AmmoModel the cylinder or only its rounds (the `[drop] magazine noted: mesh ...`
+  line names it)? Cheats > both buttons (watch `[cheats]`); a wrench hand-over (no swing).
+- The tester's next round: a revamp of the manual reload around easy handling ("pulling the ammo out
+  of anything") - this eject is the first piece.
+- Not checked: whether the upgrade attachments show at once on a weapon already in hand.
+
+## Session 2026-10-20 - BS1: the manual reload
+
+**Branch `claude/bs1-manual-reload`** (off `claude/bs1-two-hand-grip` d517367). Local commits only.
+
+### Current state
+
+- **The manual reload (built, host-tested, simulator-checked on all three guns; not in the headset).**
+  The game's OWN reload clip, held and driven by the player's hands (`reload_rig.h` the programs and
+  the state machine, host suite `reload-rig` 38 checks; `manual_reload.cpp` the glue). The game starts
+  its reload as always (`PlayerWeapon.Reload`, called by name) and its script waits on the clip, so
+  while the mod holds the clip's time (Actor's animation API through `script_call.cpp`) the game waits,
+  and when the clip ends the game refills the gun itself - ammo, sounds and timing stay the game's.
+  Each step is a segment of the clip where the clip's own off hand works a part; inside it the clip
+  time follows the player's hand along the clip hand's path in the grip's frame (12 cm to grab, only
+  forward, let go short and it springs back, past 85% it completes). A part between steps rides the
+  hand exactly as the clip's hand would hold it (the part moved back through the gun hand's placement
+  and on through the free hand's, so it stays in the drawn fingers and turns with them); let go and
+  it is gone; a grip at the waist (38-100 cm below the head) takes a new one; within 6 cm of its path
+  it is guided home. Steps: Tommy Gun - pull the drum down, drop it, a new one up into the well, rack
+  the bolt; pistol (top-break) - push the barrel down, pull the cylinder out, drop it, a new one in,
+  flick the gun (320 deg/s) or push the barrel back up; shotgun - a shell from the waist pressed into
+  the port per loop, then the pump back and forward in one stroke; fire to stop loading early. The
+  free hand's grip is the reload's for the whole reload (no plasmid wheel), the hand buzzes where it
+  should grab (the grab's 60 ms at 0.35), clicks on each seat. A gun that runs dry: the game's own
+  automatic reload is adopted and waits for the hands. The reload button still reloads the normal way
+  (a reload begun within 1.5 s of X is never held). The two-handed grip stands aside during a reload;
+  the hand-back leaves both hands on their controllers. F10 > Controls > Manual reload > Reload with
+  your hands (on).
+- **Simulator (2026-10-20, all on the 11:01 save):** Tommy Gun start to finish twice (39-23 -> 40-22),
+  pistol twice (2-21 -> 6-17), shotgun from empty (adopted, 4 shells, pump; 4-11), the reload button
+  (normal, not held), the gun in the left hand (mirrored: the right hand pulled the drum, held it).
+  Captures: the drum and the new drum sit in the drawn fingers; the pistol's new cylinder at the
+  fingertips; the shotgun's shell is carried at the palm (its loop starts with the shell by the port,
+  not in the clip's hand) and did not show in the capture - likely inside the open hand.
+- **Test aids:** `vrreload watch on` (where the hand should go next, cm), `vrreload probe` (the reload
+  handles), `vrreload hold <s>` / `release`, `vrreload give <n> <Package.Class>` (ammunition through
+  `ShockPlayer.GiveItem`), `vrbones reloadrec <s>` (a clip, part by part). ENGINE_NOTES "2026-10-20".
+- No `src/core/` change.
+
+### Next steps
+
+- Headset: each gun's reload by hand. Watch for: the reach to each part (12 cm), the waist pouch height,
+  the shotgun shell visible in the hand, the pistol's spent cylinder in the hand, the flick speed.
+  `[reload] <weapon> <clip> phase N ...` logs every step.
+- Not covered: the grenade launcher, chemical thrower and crossbow (no programs: they reload normally),
+  the pistol's plain `Reload` clip without the fast-reload upgrade (runs the fast clip's program scaled
+  in time - unmeasured), a highlight showing where to grab (the reference draws a ghost part; here the
+  hand buzzes).
+
+## Session 2026-10-19 - BS1: two hands on the gun, and the shots in the hand
+
+**Branch `claude/bs1-two-hand-grip`** (off `claude/bs1-hud-overhaul` 33c2022). Local commits only.
+
+### Current state
+
+- **The two-handed grip (built, host-tested, installed; simulator-checked, not yet in the
+  headset).** BRVR's M6-S2,
+  rebuilt on this rig: on the Tommy Gun, shotgun, grenade launcher, chemical thrower and
+  crossbow (by class) the game's own clip puts the off hand on the gun, and THAT is the grab
+  point - no recording (the left-hand fork records one per weapon; BRVR's "costs nothing" wins).
+  The compose carries the free hand's clip anchor by the gun hand's placement and measures it
+  against the free hand's own target: within 12 cm the hand without the gun buzzes exactly as
+  the hand-over grab does (60 ms at 0.35 every 50 ms) and its grip never reaches the game (no
+  plasmid wheel); the grip's rising edge takes hold. Held, the gun turns about the rear palm
+  until that point lies on the line to the real front hand (roll stays the rear hand's; BRVR
+  substitutes pitch/yaw the same way, the fork aims rear -> front), the free hand rides it with
+  the reload's carry at full weight, eased in 120 ms / out 150 ms. Let go: the grip comes up, or
+  the hand slides 20 cm along the gun (the fork's measure - the gun turns to meet the hand, so
+  only sliding can take it off). A reload pauses a hold (the clip's carry already has the hand
+  on the gun) and it resumes after. The barrel-locked aim follows the drawn gun on its own.
+  `[twohand]` logs the class verdict, the grab, the let-go and BRVR's 0.5 s distance probe (with
+  the direction to the grab point, fwd/right/up cm, and while holding how far the hand slid).
+- **The gunshot kick.** A 45 ms pulse at full strength (BRVR's) on every shot: the player's fire
+  seam running (aim.h `player_shots`, one per bullet, pellet volley or cast), and for the wrench
+  (no seam) each swing's firing state beginning; an 80 ms quiet period folds one shot's events into
+  one kick. The front hand gets 0.6 of it while two-handing. BRVR's own signal - the firing clip's
+  wrist jerk past 6 deg - failed both ways in the simulator: 1.8 deg a frame on the Tommy Gun (one
+  kick for a burst), 96 deg on a wrench swing (eight kicks for one swing).
+- **Simulator (2026-10-19, tester's go-ahead, mirrored controller poses):** Tommy Gun - the probe
+  falls to 0.1 cm with the left controller on the drawn barrel grip, ELIGIBLE there; the held hand
+  matches the game's own pose (`vrhands handback force both`: the left hand on the barrel just ahead
+  of the drum); held, moving the front hand turned the barrel from fwd 0.90 / right 0.24 / up -0.37
+  to 0.98 / -0.17 / -0.06 with the hand on the gun; a 10 cm slide kept it, a 33 cm slide let go
+  ("slid off"), the grip coming up let go; no plasmid wheel while the left grip was the grip's.
+  Kicks: wrench 1 per swing, pistol 3 for 3, Tommy Gun 32 for 32 seam shots (all 32 on the front
+  hand too), shotgun 2 for 2. Gun in the LEFT hand (mirrored): the right hand's grab point landed
+  1.5 cm from the exact mirror, the hold mirrored the right-handed one, 2 shots 2 kicks. One crash
+  during a save load (BioshockHD.exe+0x785955, no mod frame on that thread's stack, minidump
+  `crash\bvr_20261019_233054.dmp`); the relaunch loaded and ran clean. User INIs unchanged.
+- **F10 > Controls > Two-handed grip:** Hold two-handed guns with both hands (on), Two-handed
+  grab distance (12 cm), Feel the shots (on), Shot kick strength (1.0). Pure logic in
+  `two_hand_math.h`, host suite `two-hand` (26 checks). No `src/core/` change.
+
+- **Headset run 2026-10-20 08:43 (manual-reload build) and the fixes after it.** Every shot dropped
+  the front hand: the hold paused while `handback::active` was true, and the recoil's gun motion
+  keeps it true for ~1 s per shot, so the hand left the gun and the tester let go. The pause is now
+  `handback::clip_owns` (owned, carried or moved by a reload - not the recoil). A second run found
+  three more: (1) the two-hand turn was measured from the KICKED gun, so it turned the kick back out
+  for the front hand (floaty, no recoil in the grip hand) and the kick read as a slide (the shotgun
+  let go while firing) - it is now measured from the gun as held before the kick and the kick
+  layered after, so both hands kick together; (2) a trial "front hand follows along the gun" let
+  the hand slide diagonally on every grip - removed, the hand is locked to the game's grip; (3)
+  full auto froze the reticle: during recoil `aim.cpp update_barrel` holds the barrel in the gun
+  hand's controller frame, which two-handed no longer carries the gun - two-handed it measures the
+  drawn barrel every frame, the kick included. A third run: the Tommy Gun's grip hand sat an inch
+  or two ahead of the drawn fore-grip. Root cause: the clip's point is on the AUTHORED gun, and the
+  gun is drawn at Weapon size (0.88) of that about its grip socket - every point the clip has on the
+  gun is now mapped onto the drawn gun (ENGINE_NOTES 2026-10-20, `two_hand_math.h gun_ratio`), for
+  the hold and for the reload's carry, live with every size slider. The Tommy Gun in the LEFT hand never offered a grab in that run because
+  the hand-over grip also started a manual reload (the manual-reload branch's pull entry) that held
+  for 40 s and paused the hold - a manual-reload fix, not this branch's.
+
+### Next steps
+
+- Headset: the feel - the buzz at the fore-end, the hold, the kick's strength (F10 Shot kick
+  strength). The simulator cannot say which controller a pulse reached (`m4_phys` maps the mesh to
+  the controller by the same rule hands.cpp places it); a run that feels a kick in the wrong hand
+  points there. The grenade launcher, chemical thrower and crossbow are untested (not in the save).
+- The load crash above: if it recurs, the dump's thread is the game's own.
+
+## Session 2026-10-15 - BS1 HUD overhaul: the HUD in pieces, the Dishonored VR way
+
+**Branch `claude/bs1-hud-overhaul`** (off `staging` 2954c26). Local commits only; not pushed.
+
+### Current state
+
+- **The pieces, identified (offline).** The VR build plays `HUDRadial.swf` (the pad HUD), not
+  HUDPC. Its ActionScript, placements and the UnrealScript callers give 16 pieces: health, EVE,
+  game crosshair, enemy name/health, use/hack prompts, ammo, plasmid, the weapon/plasmid wheel,
+  subtitles, tutorial, objective, radio messages, money/ADAM, audio log, Little Sister/gatherer,
+  challenge timers. Rendered whole with the real art (`tools\flash-decode.py` for the DXT
+  bitmaps, `tools\flash-merge.py` for the imported symbols). ENGINE_NOTES "2026-10-15 - The
+  HUD's pieces" and its "rendered whole" part.
+- **How the touching pieces separate.** Health/EVE: the bars are cleanly apart; the two hypo
+  gauges are one bitmap with interlocking rims, cut along a seam through the gap between them so
+  each gauge goes with its own bar (EVE's piece is its bar plus its gauge as one-pixel columns);
+  both pieces reach x 760 for the longer bars after upgrades. Where pieces
+  overlap, a priority decides who owns the pixels (carved out of the other piece, put back on the
+  panel if the owner stays). Ammo/plasmid: one slot the game swaps by the
+  held item, so two rows on one rectangle chosen by state. The wheel is a row live while a bumper
+  is held, owning everything it covers.
+- **Built, host-tested, not run in the game:** each piece has an F10 anchor (HUD > HUD pieces):
+  On the HUD panel (default - today's picture) / Hidden / In the world / Left hand / Right hand;
+  HUD > Adjust a piece: left/right, up/down and size per piece (Dishonored's WinX/WinY/Scale and
+  HandX/HandY/Scale); HUD > Menus: the pause menu, the map and the machines on the flat screen
+  (default, as before), the HUD panel, or the world (parked where you looked). Hand panel width
+  0.22 m, lift 0.06 m, faces you or like a watch (HUD on the hands). The
+  pieces are rectangles of the ONE existing HUD capture, cut on the HUD swapchain image per present
+  (a copy per moved piece, one ClearView) - no per-draw work, no new targets; core gains only
+  `set_hud_elements_provider`, inert unless registered (PORT-CANDIDATES row; decision log
+  2026-10-15). `[hudel] 3 s:` logs the plan's cost (mean/max) while any piece is moved.
+- **The rectangles are NOT measured.** They come from the movie's 16:9 layout and assume the
+  stage fills the capture. F10 > HUD > Element rectangles > **Dump the HUD** writes
+  `dumps\hud-*.bmp`, `_boxes.bmp` (every rectangle outlined) and `.txt` (each rectangle's content
+  box, and any content no rectangle covers); sliders there correct a rectangle, Save writes
+  `hud-elements.ini`.
+- **Installed:** Release `claude/bs1-hud-overhaul` tree (this session's build). Nothing armed.
+  `git diff staging...HEAD -- src/core/` is the provider seam only. BS2/Infinite untouched.
+
+### Next steps
+
+**2026-10-16 headset run 1 and what changed after it.** The wheel looked as before because
+"Pick with your hand" was never turned on (it defaulted to off; `WheelDial` absent from
+menu-settings.ini) - it is now on by default, and `[wheel] ... open: WEAPON wheel` logs every
+opening and closing so a run shows whether the game opened one. The provider dumps the HUD once
+3 s after a piece first leaves the panel and once 600 ms into the first wheel opening
+(`[hudel] ... dumping the HUD once`, files in `dumps\hud-*`).
+
+**2026-10-19, mirror runs 7-9 and a simulator measurement: the gun flips about ITS OWN centre
+plane.** Headset runs pinning at the palm, its reflection and nothing gave "doubly off", "half as
+much" and "normally off" - no pin along the palm fits all three, and the tester then noted the
+wrench never had the problem. The pistol's own skeleton (`wskel GRIP HUNT`) says why: its root
+R_Grip is at 0 but every centre-line bone (body, hammer, trigger, barrel) sits 1.4-2.2 UU along its
+sideways Y, so a flip about the grip moved the pistol twice that; the wrench has no skeleton and is
+built about its grip. The flip is now about the median of those bones along the flipped axis
+(`[bones] mirror: the held weapon flips about its centre plane, N along that axis (...)`; -1.73 for
+the pistol, 0 without a skeleton). Simulator check (mirrored controller poses, `vraim barrel` and
+PIVOTPROBE): palm on the controller fwd 3.62 right +7.86 / -7.86 up -3.27 / -3.28 cm; muzzle from
+the ray right +3.0 (right hand) / -3.2 (left) cm, against -6.0 with no plane - the 3 cm the tester
+saw; barrel direction right component -0.109 / +0.074 (~2 deg). Images mislead here: the scene's
+light is not mirrored, so the left hand shows the pistol's shadowed face. `vrbones mirrorpin
+<v>|auto` overrides the plane for checking. Same check on the other guns: Tommy Gun (plane -3.54)
+muzzle +0.7 / -0.7 cm; shotgun (-3.55; its root SG_Body is part of the gun, not a grip, so a root
+off the origin now counts) +1.0 / -1.2 cm. Every gun's barrel direction is off its mirror by the
+same ~-0.033 sideways (~2 deg yaw) - the hand's, not the gun's; open. Not yet confirmed in the
+headset.
+
+**2026-10-19, mirror run 6: "aim is perfect and model is almost perfect; the gun angle isnt quite
+right".** The weapon hangs off its grip bone through its SOCKET, whose record carries the
+socket's axes in the bone's frame - the gun's own frame is turned against the bone's. The mirror
+flipped a grip-bone axis, so the gun came out tilted by twice that turn. It now flips the socket
+axis that lies most along the mirror's normal (`mirror::mirrored_solid_u`, host-tested against a
+20 degree socket turn; `[bones] mirror: the held weapon flips its SOCKET axis ...` per weapon), and
+the sideways pin follows that axis.
+
+**2026-10-19, mirror run 5: "centred now and almost perfect"; the model position and crosshair
+settings did not carry over to the other hand, the crosshair position "accumulated" over
+hand-overs, and the aim should just be hard-locked to the barrel (as the Darkness II mod does).**
+Built, not run in the game:
+- Hand trims follow the layouts: mirrored, each hand takes the OTHER hand's rotation and position
+  trim, mirrored (`frame_context.h mirror_trim_deg`: the controller's left-right reflection plus a
+  half turn about the model's z - measured from the two hands' own grip calibrations, host-tested;
+  the position offset keeps forward/right and negates up in the same frame). The F10 step rows are
+  ignored while mirrored (logged).
+- Aim hard-locked to the barrel (`aim.cpp barrel_locked`, on while "Shots leave the barrel" and
+  "Aim along the barrel" are on - the defaults): the per-hand tilt/turn/origin trims never apply
+  (the five sliders are debug-only now), the barrel measurement is unsmoothed, a lapse holds this
+  hand's last barrel instead of dropping to the trims, and a hand-over starts clean. The trims were
+  per controller and swapped between hands with the weapon profiles - the "accumulating".
+
+**2026-10-19, mirror run 4: "I think its doubly off, but the animation is correct now".** The
+latched axis held (local axis 1 for every weapon). A solid gun keeps its sideways axis, so its
+sideways error is twice the distance from the pin to the gun model's centre plane: pinned at the
+grip bone it sat d to the left, at the right palm 2d to the left - so the centre plane lies as far
+from the grip as the palm, on the other side. The pin's sideways part is now the palm's, negated
+(`[bones] mirror: the held weapon is pinned N sideways of its grip`). This rests on reading
+"doubly off" as twice as far the SAME way; if the gun now sits off to the RIGHT, it was the other
+way and the pin is (palm sideways) / 3.
+
+**2026-10-19, mirror run 3: "the offset is still off; reload almost works, but it turns the guns
+upside down when reloading".** The log showed every weapon's socket offset is 0.00 (Pistol,
+TommyGun, Launcher): the engine hangs the weapon exactly at its grip, and the sideways shift is the
+gun MODEL's own - its handle sits off its origin, and a solid mirror keeps that on the old side. The
+grip is now pinned at the right palm's centre: the point of the gun that sat in the right palm lands
+in the mirrored palm, whatever the model; the tip (44, the muzzle effects) rides the gun rigidly as
+placed. The upside-down reload: the flipped axis was picked every frame, and a reload's tilt handed
+the choice to another axis - it is now latched per weapon from the first mirrored frame (`[bones]
+mirror: the held weapon's grip flips its local axis N`). Both host-tested (`mirror-math`, 24 checks,
+incl. a 60 degree reload roll). The socket-offset read below was removed (the offsets are zero).
+
+**2026-10-19, mirror run 2: "almost right; the pistol sat to the left, inside the left hand;
+reloads need mirroring too".** The engine hangs the weapon off its grip bone at the socket offset
+(the hands mesh's socket record named by the weapon's attach name); mirroring the bone alone left
+that offset's sideways part on the old side. The grip is now placed so the hang point lands on its
+mirror image (`mirror::mirrored_solid` with an offset, host-tested; `[bones] mirror: the gun hangs
+... off its grip (socket 'Pistol')` once per weapon). The one reload taken while mirrored ran in
+"reload at the gun" mode, and the hand-back was told the LEFT mesh held the gun while it times the
+GAME's hands (whose gun hand is still the right) - so the reload motion was layered on the wrong
+hand; it now gets the game's hand. The fork (Owloeb's) mirrored the whole picture at the renderer,
+so its reloads mirrored for free and its offsets were a per-weapon manual plane shift; nothing of it
+transfers here. Not yet mirrored: the gun's own animated parts (a magazine, a cylinder) still move
+on their unmirrored side of the gun - the gun is moved as a solid, never reflected.
+
+**2026-10-19, mirror run 1: "the hands were right, but the weapon was upside down and the arms
+were stretched super far".** The basis measured perfectly (plane y = 0, residual 0.000, every Mb a
+reflection). Two faults, both fixed: the gun's grip (no twin) flipped the bone-local axis that was
+sideways in the REST pose, not in the hand - now the sideways axis of the live pose
+(`mirror::mirrored_solid`, host-tested to keep the barrel forward and the top up for every axis
+order); and only the hands were mirrored, so each arm's IK measured its forearm from its own elbow
+to the other side's mirrored wrist - the arms (clavicle, upper arm, elbow, two twists; left
+3/4/5/22/23 with right 24/25/26/45/46) are now mirrored with the hands.
+
+**2026-10-19: the grab works (headset); the hands mirror with the gun in the left hand (built,
+not run in the game).** After a hand-over the game's right hand was drawn on the left controller.
+Now each hand takes the other's bone layout mirrored across the rig, each on its own controller,
+the gun at the mirrored grip (decision log 2026-10-19, `mirror_math.h`, host suite `mirror-math`).
+F10 > Controls > Grab and hand-over > Mirror the hands with the gun in the left hand (on). Log:
+`[palette] mirror basis MEASURED ...` once (or REFUSED with why), `[bones] hands MIRRORED ...` on
+each hand-over. Headset: hand the gun to the left hand - the left hand should hold it the way the
+right one did, the right hand should look like a left plasmid hand mirrored; check the gun sits in
+the left palm and fires along the laser; hand it back and both return to normal.
+
+**2026-10-19, headset run 1 of the grab: "the grab isnt working".** The log showed every grab
+swap the hands and swap straight back the same millisecond: the pad's bumper bits are in the
+mapping the pad was composed with, one input sync behind a swap, and the grab read them through
+the live flag. Rebuilt as BRVR's two-handed grab (its CameraHook "M6-S2" state machine, same
+numbers): eligible inside 12 cm, held until 20 cm, the grip's rising edge while eligible takes
+hold, the bumper suppressed whenever eligible (no leaked frame), a steady buzz on the hand without
+the gun while eligible and not holding (60 ms at 0.35 every 50 ms), and a `[grab] hands N cm apart
+... ELIGIBLE` probe twice a second under 25 cm. Core: the pad now carries its composition mapping
+(`PadOverride::leftHanded`), and controllers have haptics (`vr::pulse_hand`, a vibration output
+per physical hand, bound on Touch, Index, Vive and WMR). Headset: bring the hand without the gun
+to the gun hand - it should buzz inside about 12 cm; squeeze its grip - the buzz stops, the gun
+moves to that hand, and the grip opens no wheel until released.
+
+**2026-10-19: grab and hand-over (built, not run in the game).** The grip squeezed with that hand
+within 15 cm of the other hand is a grab (no wheel); a grab by the hand without the gun takes the
+gun - the roles swap live (core `set_left_handed`, the role swap ported from Owloeb's left-handed
+fork; its mirrored viewmodel and recorded grab points are not ported - decision log 2026-10-19).
+F10 > Controls > Grab and hand-over (Grab with the grip, Grab distance); the dial's status shows
+which hand has the gun. Log: `[grab] the left hand grabbed N cm from the other hand - it takes the
+weapon`, `input: weapon hand -> LEFT controller ...`. Headset: with the gun in the right hand,
+bring the left hand to it and squeeze the left grip - the left trigger should now fire and the
+laser leave the left controller (the gun is still the game's right-hand model, drawn at the left
+controller); grab back with the right. Away from the other hand each grip still opens its wheel
+(after a hand-over the LEFT grip opens the weapon wheel). Groundwork: `grab_target()` - the
+two-handed hold will return the game's second-hand spot on the weapon there.
+
+**Headset run 5 (2026-10-16).** Reported: the wheel only took a pick for about half a second
+after it opened, and Equal shares could not be turned off. Cause of the second, and likely of the
+first: the four F10 rows added this session (Hide the blurred backdrop, Open with grip + trigger,
+Hold the hand swap) sat in kSpecs out of the Setting enum's order, and `spec(id)` indexes the
+table by the enum - so a row showed one setting and validated/saved another (Equal shares'
+toggle was refused, and grip + trigger got saved ON without being asked for). Fixed by putting
+the enum in the table's order, plus a `static_assert` that every row sits at its own id. The
+tester's stray `WheelDial.GripTrigger 1` was removed from menu-settings.ini (backup
+`menu-settings.ini.bak-pre-griptrigger-fix`, CRLF kept). New: `[wheel] closed: the game passed the
+stick to the wheel N time(s) (M change checks)` on every close, so a run shows whether the stick
+reached the wheel. The hand swap hold worked in run 5: `sent the hand swap then
+class=TelekinesisAbility`.
+
+**After run 4: the hand swap held (built, not run in the game).** F10 > Controls > Weapon and
+plasmid dial > Hold the hand swap until the wheel closes (on): the movie's SwitchHandModes and
+its per-landing SelectPlasmid are held while a wheel is open and sent when it closes (ENGINE_NOTES
+"The movie's fscommands"). Log: `[swaphold] fscommands pass through the mod` once at the start,
+`[swaphold] the wheel's hand swap is held ...` at an opening, `[swaphold] the wheel closed: sent
+...` at the close. Headset run 5: a weapon in the right hand, open the plasmid wheel with the left
+grip - the left arm should keep following the controller with its old pose while you pick, and
+become the plasmid hand only after you let go, with the plasmid you picked. Try Equal shares on
+again (runs 3-4's fault fixed). Not verified: what the game does with a plasmid pick while still
+in weapon hands is only what it did before, delayed - if the picked plasmid is not the one
+equipped, the log line names what was sent.
+
+**Headset run 4 (2026-10-16).** Reported: worse - Equal shares stops picks working (also in
+run 3), the plasmid arm still went to the default pose, the wheel could not be moved around;
+and the grip alone should open the wheels again (Open with grip + trigger now off by default).
+Found: the game passes the stick to the wheel only on axis CHANGE events, and only the change
+AFTER the one that crosses a wedge delivers it (ShockPlayerController.UpdateRadialMenu and
+the movie's CheckForRightRadialChange answering through a later console command). Equal
+shares holds an exact vector, so after the first crossing nothing changed and no pick landed;
+the free mode only worked through hand jitter. The dial now alternates the stick's length by
+1.5% on every read (inside the wedge; the movie ignores the same item). The arm: the movie's
+OpenAbilityMenu runs the console command SwitchHandModes BEFORE the wheel shows (AutoSwap), so
+the game swaps to the plasmid hand and starts its equip, then pauses - the arm is that frozen
+equip pose carried to the controller (the hands compose on the engine's live pose). Holding
+the mod's hand latch (run 3's change) cannot help. Next: hold that one console command while
+the wheel opens and issue it on the close, so the arm keeps its pose until the pick lands -
+it needs a hook on the movie's fscommand handler and a check of what an ability pick does in
+weapon hands.
+
+**Headset run 3 (2026-10-16).** Reported: the wheels mostly work but do not always appear
+centred on the hand, do not feel snappy or precise, the weapon wheel's left side was cut off, and
+during the plasmid wheel the left arm went to a default position and followed the controller.
+Measured on run 3's wheel dump: the wheel's centre is (0.484, 0.500) of the capture, not where
+the 16:9 renders put it, so the old box was off-centre and too narrow on the left - the boxes are
+now centred on the measured wheel. The HUD is laid out 4:3 and stretched onto the capture (the
+wheel's cross is 1.43x taller than wide in pixels, = (H/W)*4/3), so at the hand the ring was an
+ellipse whose items sat away from the directions that pick them - the dial now undoes the
+stretch (`dial_pose` pixel aspect). The HUD swapchain was rebuilt on every wheel open and close
+(the strip's height changes) - now grow-only, so opening no longer stalls a frame. New: F10 >
+Controls > Open with grip + trigger (default on), so the grip alone is free. The plasmid arm is
+the game swapping to plasmid hand mode when that wheel opens (`HANDMODE: PLASMID`) and the mod
+re-posing the picking arm as the plasmid hand mid-pick. Asked, the tester wants the arm to keep
+following the controller as it was. Holding `hands::active_hand()`'s latch while a wheel was
+open was tried and did not help (run 4) - reverted; the cause is in the game, see run 4.
+
+**Headset run 2 (2026-10-16).** The dial worked (opened, picked, drawn at the hand). Reported:
+the pieces took far bigger sections than they needed, the wheel too little, and the blur stayed.
+Measured on run 2's dump: the stage is stretched onto the 1664x1792 capture, so the rectangles
+sit on the art, but the bars' boxes ran to x 0.594 where the clips end at 0.325 - fixed, plus a
+trim for the EVE frame's edge under Health; the Reticle and Escort boxes tightened to their clips;
+the Wheel/WheelName/WheelLabel boxes widened to the band the wheel can reach (Dial width default
+0.5 m to keep the ring ~0.35 m). The blur: the first fix skipped the wrong draw; a frame dump
+named the engine's post-effect runner, now skipped while a menu or wheel is up
+(`[menublur] menu closed: the blur pass was skipped N time(s)`). The other rows (Target, Prompt,
+Ammo, Objective, Messages, Money, AudioLog) are still the first guesses: they need a dump taken
+while each is on screen.
+
+Headset run 3: Health and EVE on hands; open the weapon wheel and hold it a second (the dump fires);
+open the pause menu - the world behind it should be sharp. For any other piece that cuts too much,
+F10 > HUD > Element rectangles > Dump the HUD while it is showing, and send the `dumps\hud-*` files.
+
+**Weapon and plasmid dial (input built, host-tested, not run in the game):**
+`docs/bioshock1/WEAPON_WHEEL.md`. A hook on the HUD movie's call routine (+0x427220, IDA fw1/fw2)
+mirrors both wheels' slots and open state (`[wheel] weapons N [...] | plasmids M [...]` on every
+change). With F10 > Controls > Weapon and plasmid dial > Pick with your hand ON, holding the right
+grip opens the weapon wheel and the right hand's movement picks; the left grip and hand do the
+plasmids (`[dial] weapon wheel: the right hand picks`, `[dial] ... closed after N ms on <slot>`,
+`[dial] 3 s:` while steering). The wheel's ring and the item name now draw AT the hand where the
+grip was pressed (F10 Dial width 0.35 m, Dial distance), held 250 ms after release for the close
+animation; the SELECT button line is hidden there.
+
+Headset for the dial: load a save with 2+ weapons, enable it, hold the right grip - the ring
+should appear facing you at the hand, the name above it - move the hand toward each item and
+release; each should equip, including the lower-left, and the ring should fade out at the hand,
+not jump to the panel. A grip tap should still cycle. Then the plasmids with the left hand. If
+the ring shows a sliver of something else, or is cut off, the Wheel/WheelName rectangles need the
+Dump (below). Send the log if a pick misses.
+
+Headset (no simulator run was done): in play with the bars, ammo and money showing, F10 > HUD >
+Element rectangles > Dump the HUD; then again with a pickup or hack prompt and with a subtitle.
+Send the `dumps\hud-*` files - the rectangles get corrected from them. Then set Health to Left
+hand and EVE to Right hand (HUD pieces): each should sit 6 cm above its controller, 22 cm wide,
+facing you, and leave the panel. Watch the log for `xr: HUD elements live` and the `[hudel] 3 s:`
+cost line (expect single-digit microseconds). Then HUD > Menus > Pause menu: On the HUD panel and
+In the world - the pause menu should stay in 3D over the world (log `[hudel] menu rides ...`);
+Flat screen must behave exactly as before. Hold a bumper with Weapon and plasmid wheel set to In
+the world. Switch weapon <-> plasmid with Ammo and Plasmid on different hands.
+
+### The brief (2026-10-14 handoff)
+
+Port the Dishonored VR mod's per-element HUD (`C:\dev\Dishonored-VR`) to BS1: the same pieces on
+the same anchors in the same spots. Today BS1 captures the whole gameswf HUD into ONE panel
+(`src/core/gfx/hud_capture.*`, F10 HUD tab: `HudPanel`, distance, width, height). Dishonored
+splits the captured HUD into elements by where each draw lands on the screen and gives each its
+own anchor (`off`, `frame`, `window`, `world`, `handL`, `handR`).
+
+Read first, in Dishonored-VR (grep, never whole-file):
+- `docs/dishonored/HUD_ANCHORS.md` sections 1-5 (from line ~1924): the pieces, the `[Hud]` keys,
+  the gate, the log lines, the traps.
+- `docs/dishonored/HUD_ELEMENTS_HOWTO.md`: measuring an element's screen rectangle and baking it.
+- `src/core/gfx/hud_layout.cpp` `kRows`: the element table and its default anchors (vitals
+  top-left, reticle, prompt right of the reticle, equipment, subtitles, objective, toast,
+  tutorial, the menu screens by UI context). The hand placement: `HandL`/`HandR` panels, 0.22 m
+  wide, billboard or watch face; vitals on the back of the hand split across both hands.
+- Then the later entries at the top of HUD_ANCHORS (semantic ownership, 2026-09-25..10-04).
+
+BS1's own pieces are a different set (health/EVE bars, ammo, money, the plasmid/weapon icons, the
+compass arrow, hack/pickup prompts, subtitles). Measure their rectangles; never copy one of
+Dishonored's numbers. BS1's HUD fingerprint and the letterbox SKIP are in ENGINE_NOTES "Session
+19" and the `hud_capture.h` banner. The decoupling rule applies: put the element routing in the
+BS1 adapter or as a purely additive core opt-in that BS2 and Infinite never take.
+
+### Performance is a requirement, not a polish item
+
+Dishonored's HUD rework lost frames to costs that were hard to find (its
+`docs/dishonored/PERFORMANCE.md` 2026-09-25/26 entries and `docs/TRAPS.md`):
+- **Per-draw work.** Its region probe read each HUD draw's vertices through the shader's
+  transform: 38,349 probes per 3 s, about 11 ms of CPU a second, plus routing locks and
+  render-target switches outside that interval. Its later fix: no per-draw searches, no
+  cross-thread mutexes; carry immutable owner records with the draw.
+- **Periodic discovery.** A 750 ms object re-collection (376 pointer probes per object, each
+  range-checked) made a ~50 ms game-thread stall once a second while walking. Average FPS hid
+  it; the frame-gap log found it.
+- **Full-size captures.** One full-resolution RGBA8 capture target is ~31 MB at 2750x2850 and
+  costs a copy every present; idle targets must be released.
+- **A cache that stops remembering.** A full lookup cache that fell back to walking GObjects
+  (~100 ms a miss) froze the game. Caches must refuse when full and batch name lookups.
+- **Logs.** A per-second warning ran 842 lines a session; state lines log once.
+
+So: no per-draw allocation, lock, engine query or GPU readback; classify once per batch or per
+present where possible; one fixed set of capture targets at the HUD's own size; every probe and
+census default off; a 3 s aggregate cost line (mean/max) from the first build, so a hitch shows
+up as a number. Judge by frame gaps and the stereo pair rate, not the average tick.
+
+## Session 2026-10-14 (second) - BS1: the reticle is a dot again; reloads play at the gun; recoil
+
+**Merged to `staging` on 2026-10-15** as #100 (`ad53e91`, reticle + reloads) and #101 (`2954c26`,
+recoil) on the tester's word after a run. That run (build `v0.8.3-213-g4112d35`, the same tree as
+`staging` 2954c26) logged recoil on every `WeaponFiring`, and one reload at the gun with the free
+hand's carry at 1.00 and `the clip brought the left palm within 18.2 cm` (join distance 35 cm).
+No explicit headset verdict on each item was recorded.
+
+### Current state
+
+- **Recoil (built, host-tested, not run in the game):** mode 4 re-pinned the gun hand to the
+  controller every frame, which cancelled the firing clip's kick. A gun's firing states now play
+  the kick on the controller, measured from the pose the frame before the shot, then settle back
+  (in at once, 250 ms hold, 350 ms out). The shot still leaves along the pre-kick barrel. Wrench
+  and plasmids excluded. F10: Hands > Reload animation > Recoil (default 1). HANDS_DISHONORED.md
+  "Recoil is back".
+- **Reticle (built, not headset-tested):** the in-image reticle from #99 was a ring at twice the
+  Reticle size slider; it is the laser's solid dot at the slider's diameter again, as the XR aim
+  dot always was (`laser_draw.cpp`).
+- **Reloads play at the gun (built, host-tested, not run in the game):** the gun hand stays on its
+  controller; the free hand takes the gun hand's palette correction, so it goes where the game's
+  reload clip has it against the gun, wherever the gun is held, and blends back after. It joins
+  only while the clip has its palm within 35 cm of the gun hand's (fading over 20 cm). The gun's
+  own parts animate as before. Optional `Gun moves with the reload` (default 0) layers the clip's
+  own motion of the gun hand on the controller. F10: Hands > Reload animation ("Reloads play":
+  Off / At the gun / In front of the face). Design: HANDS_DISHONORED.md "A reload plays AT THE
+  GUN"; script findings: ENGINE_NOTES "how a reload plays"; decision log 2026-10-14.
+- **Installed:** Release `v0.8.3-213-g4112d35`, the source tree of `staging` 2954c26; the tester ran
+  it on 2026-10-14 14:46 (log build line matches). Nothing diagnostic is armed. No simulator run.
+- **Other games:** `src/core/` untouched.
+
+### Next steps
+
+Headset: reload the pistol, the Tommy Gun and the shotgun with "Reloads play: At the gun". The left
+hand should come to the gun, do the reload there and return to its controller. After each reload
+the log has `[handback] at the gun: the clip brought the left palm within X cm`. If the hand never
+joins, raise "Other hand joins within" past that X. Also try "Gun moves with the reload" at 1 and
+"In front of the face" for comparison. Check that the reticle is a dot. Fire the pistol, the Tommy
+Gun (a long burst) and the shotgun: each should kick in the hand and settle back, and shots should
+land on the reticle. Recoil 0 is the comparison; the wrench must not change.
+
 ## Session 2026-10-14 - BS1: DLSS hand vectors; shots and the laser along the drawn barrel
 
 **Branch `claude/bs1-barrel-origin`** (off `staging` 0afc3b6), 4 commits: `4ce23e0` integration
@@ -11116,6 +11897,15 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-10-20 (evening) - BS1 manual reload: the 15:33 run's fixes, the shotgun pump after HL2VR
+
+From the 15:33-15:38 headset log and two AFW captures: a 250 ms grip-tap hold-back was tried and
+dropped (it blocked real squeezes); the pistol's carried cylinder's oscillation traced to a GetBoneCoords scale read flipping
+0.800/0.708 and fixed; no cylinder mesh exists in ShockGame.U (documented, not built); a Tommy Gun
+drum let go short of the well now falls and the drum is re-shown by ShowAmmoModel; the shotgun pump
+rebuilt as Half-Life 2 VR's ratchet on the fore-end hold (headless IDA on its server.dll, concepts
+only). Host suite reload-rig 83 checks. Not run in the game.
 
 ### Session 62f (same day) - **v0.8.2 RELEASED**: BS1 load-save crash root-caused and fixed
 

@@ -65,6 +65,12 @@ bool peek_head_pose(HeadPose& out);
 // (hand/weapon placement).
 bool get_hand_pose(int hand, bool aimPose, HeadPose& out);
 
+// 2026-10-19: one haptic pulse on a PHYSICAL controller (0 left, 1 right - not the
+// role slot get_hand_pose takes), amplitude 0..1. Any thread: queued and applied at
+// the next input sync. A newer request replaces one not yet applied. Nothing calls it
+// unless a game does (BS1's grab zone).
+void pulse_hand(int physicalHand, float amplitude, int durationMs);
+
 // --- Session 20: vrrec record+replay support ---------------------------------
 // Sim overlay on the hand-pose funnel: while armed, every consumer of
 // get_hand_pose/input_get_hand_pose (fire ray, viewmodel, laser) reads the
@@ -631,6 +637,53 @@ void get_hud_quad(float* distM, float* widthM, float* upM);
 // path, byte-identical for games that never call this.
 using HudTextureProviderFn = ID3D11Texture2D* (*)(ID3D11DeviceContext* ctx);
 void set_hud_texture_provider(HudTextureProviderFn fn);
+
+// --- HUD elements (BS1 HUD overhaul, 2026-10-15): the captured HUD as pieces --
+// A game that registers a provider has the one HUD capture split into
+// per-element quads instead of one panel, the Dishonored VR way, with no extra
+// render targets and no per-draw work: the capture is copied into the HUD
+// swapchain as before, then the provider's plan runs ON THAT IMAGE - each
+// moved element's rectangle is copied into a strip below the HUD (one
+// CopySubresourceRegion each) and cleared from its old place (one ClearView),
+// and every quad samples a sub-rectangle of the same image. Null (the
+// default) keeps the single head-locked quad byte-identical for BS2/Infinite.
+constexpr int kMaxHudElementOps = 256;
+constexpr int kMaxHudElementQuads = 8;
+struct HudElementFrame {          // what the provider sees, once per present
+    uint32_t texW = 0, texH = 0;  // the HUD capture
+    bool headValid = false;
+    float head[3] = {}, headQ[4] = {0, 0, 0, 1};       // XR LOCAL, centre eye
+    bool handValid[2] = {};
+    float hand[2][3] = {}, handQ[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}}; // grip, LOCAL
+    float winDist = 1.3f, winWidth = 1.25f, winUp = -0.1f;              // set_hud_quad
+    // Borrowed for a provider's own ONE-SHOT diagnostics (a requested dump);
+    // the plan itself must never touch them.
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11Texture2D* tex = nullptr;
+};
+struct HudElementCopy { uint32_t src[4]; uint32_t dstX, dstY; }; // x0,y0,x1,y1 px
+struct HudElementQuad {
+    uint32_t rect[4];             // x0,y0,x1,y1 in the swapchain image (px)
+    bool local = false;           // false = VIEW space (head-locked), true = LOCAL
+    float pos[3] = {}, quat[4] = {0, 0, 0, 1};
+    float widthM = 0, heightM = 0;
+};
+// Run in this order: the capture copied in, `clear` (vacated places and the
+// strip), `copy` (pieces into the strip, and pixels a piece left behind that
+// another piece owns put back), `postClear` (what a piece's copy holds that is
+// another piece's, carved out of it).
+struct HudElementPlan {
+    uint32_t stripH = 0;          // rows added below the capture for moved pieces
+    int copies = 0; HudElementCopy copy[kMaxHudElementOps];
+    int clears = 0; uint32_t clear[kMaxHudElementOps][4];
+    int postClears = 0; uint32_t postClear[kMaxHudElementOps][4];
+    int quads = 0; HudElementQuad quad[kMaxHudElementQuads];
+};
+// Render thread, per present. Pure arithmetic: no allocation, no lock, no
+// engine query. Return false to fall back to the single quad this present.
+using HudElementsProviderFn = bool (*)(const HudElementFrame& frame, int maxQuads,
+                                       HudElementPlan* out);
+void set_hud_elements_provider(HudElementsProviderFn fn);
 
 // Session 33: the session's state as a short string ("FOCUSED", "SYNCHRONIZED",
 // "none"...) and whether it has EVER been FOCUSED. Cheap, for a heartbeat.

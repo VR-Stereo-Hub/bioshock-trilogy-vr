@@ -172,6 +172,21 @@ int main() {
         }
     }
 
+    // ue_quat_to_rot inverts ue_rot_to_quat (away from straight up/down, where yaw and roll merge).
+    {
+        double worstRq = 0.0;
+        for (int p = -14000; p <= 14000; p += 3500)
+            for (int y = -32000; y <= 32000; y += 8000)
+                for (int r = -30000; r <= 30000; r += 10000) {
+                    float q[4];
+                    ue_rot_to_quat(FRotator{p, y, r}, q);
+                    const FRotator back = ue_quat_to_rot(q);
+                    const double e = fmax(fabs(wrap_rot(back.pitch - p)),
+                                          fmax(fabs(wrap_rot(back.yaw - y)), fabs(wrap_rot(back.roll - r))));
+                    worstRq = fmax(worstRq, e);
+                }
+        check(worstRq <= 2.0, "ue_quat_to_rot round-trips ue_rot_to_quat (rotator units)", worstRq, 2.0);
+    }
     printf("ue-math: %d checks over %d rotators, %d failed (worst axis err %.2e, conjugate %.3f)\n",
            g_checks, cases, g_fails, worst, worstConj);
     return g_fails ? 1 : 0;

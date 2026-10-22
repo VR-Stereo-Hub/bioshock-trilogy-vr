@@ -2013,6 +2013,24 @@ The states, from `Hands.uc`: `HandsOffscreen` (auto), `WeaponEquipping`,
 equivalents, `InjectingEve`, `UsingGathererTool`, `ExorcisingGatherer`,
 `PlayingScriptedHandAnimation`.
 
+**2026-10-14 - how a reload plays (the corpus: `Hands.uc`, `Weapon.uc`, `PlayerWeapon.uc`).**
+`ReloadWeapon()` is `ExecuteStateTransition('ReloadWeapon')`. `WeaponReloading` (Hands.uc:1242)
+calls `PlayerWeapon.PlayReloadingAnimations()` and then `FinishAnimation` on BOTH the hands'
+and the weapon's handle before it transitions, so **unlike `WeaponFiring` it lasts the whole
+clip** - the state is a sound gate for the reload's start and end. `PlayReloadingAnimations`
+goes through `PlayWeaponAnimations(handsAnim, weaponAnim, holderAnim, altFireAttachmentAnim,
+strictlySuperiorAttachmentAnim, rate, , easeIn)`: one clip on the Hands actor (channel 0), its
+partner on the weapon actor's own skeleton (the magazine, the drum, the bolt) and one on the
+third-person holder; each picked per reload rate (`GetAnimationForRate`, the reload upgrades),
+empty vs not-empty. **Three-part reloads** (`ShouldUseThreePartReloading`, the shell-fed guns)
+play start, a loop per round, then finish INSIDE the one `PlayReloadingAnimations` call, so the
+Hands state stays `WeaponReloading` from the first shell to the last: one hand-back, no gap.
+`ProceduralWeaponReloading` (:1269) is the same reload entered with the weapon hidden (it unhides
+it and plays with ease-in 0). The hand bob is a separate ADDITIVE clip on channel 2
+(`kHandBobAnimationChannel`, Hands.uc:314), weighted by the pawn's speed, so it rides on top of a
+reload. The clips are authored in the camera's frame: both hands and the gun move together in
+front of the face, which is why the reload is played at the gun in VR (handback.h).
+
 **Session 68 - where the states EXIT, which is the part the policy got wrong.**
 `WeaponFiring` (Hands.uc:1184) runs `PlayWeaponFiringAnimations()` and then
 `TransitionToNextStateInSequence()`; `PostWeaponFiring` (:1210) is a single
@@ -6319,3 +6337,1304 @@ therefore started that far above the barrel and ran parallel to it - a different
 weapon, the flash itself (at the socket) lined up. At the barrel the sliders are now bypassed, as
 tilt/turn already were. The capture now records `fresh.ray` and `fresh.muzzle` per present for
 checking a run against the drawn gun offline.
+
+## 2026-10-15 - The HUD's pieces: what the HUD movie draws, and where
+
+For the per-element HUD (`hud_elements.cpp`, the Dishonored VR mod's HUD anchors on BS1's own
+pieces). Everything here is read offline from the shipped movies and the UnrealScript corpus;
+nothing was measured in a capture yet. F10 > HUD > Element rectangles > Dump the HUD is the
+measurement.
+
+**Which movie: `HUDRadial.swf`, not `HUDPC.swf`.** `Gui.ini [HUD]` names both (`PCFilename=`
+HUDPC, `Filename=` HUDRadial); the VR build drives a pad, and the screens log has always read
+`top = "..\FlashMovies\HUDRadial.swf" -> gameplay`. The two carry the same clips and the same
+ActionScript functions (HUDPC adds only `ShowWatermark`); HUDRadial's stage is 1280x720 and its
+placements differ by a few pixels. The section below was first read from HUDPC; the rectangles
+in `hud_elements.cpp` are HUDRadial's. Machines are likewise the pad movies (`craftingstation`,
+not `craftingstationPC`); the pause menu is `PausePC.swf` for both.
+
+**The movie.** `Gui.ini [HUD]` loads it full-screen at (0,0),
+`BackgroundAlpha=0`. HUDPC's stage is 1280x719 (25600x14380 twips). `SetRes(XRes,YRes)` picks a branch:
+at exactly 4:3 the root boxes sit at x 0; otherwise `centerBox`, `HandsIcons` and
+`PhotoDisplayBox` move +160 and `rightBox` +320 - the 4:3 layout centred in a 16:9 stage. The
+VR eye is near-square but not 0.75, so it takes the 16:9 branch. How gameswf maps the stage onto
+a near-square capture (stretch or fit) is the open question the dump answers.
+**2026-10-16, the first headset run:** the capture is **1664x1792** (aspect 0.929, the eye's
+backbuffer: `[hud] capture RT created 1664x1792`). **The stage is STRETCHED onto it**, measured on
+the automatic dump (`dumps\hud-20261016-003628`): the red bar's frame is 65 capture px tall where
+the stage has 26 (x2.49 = 1792/720) and the gauge pair 211 for 91, while x scales by 1.3
+(1664/1280). So stage fractions are capture fractions, and the rectangles land where the art is
+(Health content 0.056..0.229 x 0.064..0.137, inside its row). The art on the panel is as tall as
+the flat game's would be on a 0.93 screen. The provider now also dumps once 600 ms into the first
+wheel opening of a session.
+
+The boxes were too big: the bar clips reach stage x 413 at most (`healthBar` 55..413,
+`bioAmmoBar` 111..400 across all frames, `tools`-side bounds walk of the merged movie), so the
+rows now end at 0.325 instead of 0.594. Clip bounds are no use for the rest - most clips park
+off-screen in some frame - so the other rows wait for in-game dumps.
+
+### The movie's fscommands, and the wheels' hand swap (2026-10-16, tools\ida\fc1/fc2)
+
+gameswf implements `fscommand(cmd, args)` as `getURL("FSCommand:<cmd>", args)`: the action
+executor (+0x8020B0) tests the "FSCommand:" prefix (+0x8040F2, +0x804813) and calls ONE global
+function pointer, `void __cdecl cb(movie_interface*, const char* cmd, const char* args, void*
+user)`, slot at **RVA 0x1380D68**, user data at the dword before it (`patterns.h kFsCallback*`:
+the slot is read from the code at +0x804105 `cmp [slot]`, +0x804118 `push [slot-4]`, +0x80412E
+`call [slot]`, and all three must agree). The engine turns the command into a movie EVENT: its
+names are registered by FName (+0x43B620 for the GUI controller's set - TriggerEffectEvent,
+RunConsoleCommand, LaunchMainMenu, ...; +0x1CE1B0/+0x1DD370 for ShockPlayer's - SelectWeapon,
+SelectAmmo, SelectPlasmid, ...) and reach `FlashGUIController.OnMovieEvent` (script:
+RunConsoleCommand -> `ConsoleCommand(Data.Command)`) and ShockPlayer's native `OnMovieEvent`.
+
+**The plasmid arm during the wheel.** HUDRadial's `OpenAbilityMenu` runs
+`fscommand("RunConsoleCommand","Command=SwitchHandModes")` BEFORE the wheel shows when the
+other hand is up (`AutoSwap`; without it the wheel refuses to open), and `ContextSelectAbility`
+sends `fscommand("SelectPlasmid","class=<name>")` every time the stick lands on a plasmid.
+`ShockPlayer.SwitchHandModes` from weapon hands is `SetActiveAbilityClass(LastAbility, true)`.
+So the plasmid hand equips the moment the wheel opens and again at each landing, and the open
+wheel pauses the game - the arm freezes in the equip pose, which the hands mode then carries to
+the controller. `swap_hold.cpp` swaps the callback pointer (no code patch) and, while a wheel is
+open, holds the SwitchHandModes command and the last SelectPlasmid, then sends them through the
+engine's callback, in that order, when the release call (LBReleased/RBReleased) reaches the
+movie - before the movie's own release handling, so the game sees its usual order.
+
+### The blur behind the menus (2026-10-16, tools\ida\mb1_menu_blur.py)
+
+While paused the game keeps rendering the world (AFW eye frames and CalcView carry on at full
+rate). A frame dump with the weapon wheel open shows, after the tonemap on the eye's LDR target,
+two extra full-screen passes from return +0x7C9E8C: copy the image to a 1664x1792 target, draw
+(sampling the depth copy), copy, draw. They come from the camera's **post-effect runner**
+`void __thiscall Run(this)` at **+0x7C9CB0** (`patterns.h kPostEffectRunRva`, prologue verified
+around the relocated SEH push; one caller, +0x7BCEEB), which loops over the effect list at
+`this+0x28` and draws each. The list is empty in play (no +0x7C9E8C draws in a gameplay dump); the
+paused game puts its blur in it. No UnrealScript pushes it, so it is native. The normal final
+composite is a separate call (+0x7BCF13 -> +0x7CA05F) and keeps running. `menu_blur.cpp` returns
+from the runner while a menu the player opened or a wheel is up.
+
+**The art is not in HUDPC.** 93 symbols (bars, frames, icons, reticles) are imported from
+`sharedlibrary.swf`, and every bitmap in both movies is DXT in a gameswf custom tag (512) FFDec
+cannot draw. `tools\flash-decode.py` turns them into standard bitmaps (MODEL_WORKFLOW). Decoded,
+the art confirms the pieces: `HUD_HealthBar` (red) and `HUD_EveBar` (blue), `HUD_HealthEve_Cover`
+(the two hypo gauges), `HUD_PlasmidBG` / `HUD_Ammo_Base1` / `HUD_Ammo_Base3` (the plasmid and
+ammo slots), `Adam_Counter` ($ frame), `Radio_Anim` / `Logs_Anim`, `GH_Icon_Lit` (Little
+Sister), `EnemyHealth_RedBar` (the arc above the crosshair), `Big_Box_Frame` (quest box),
+`TrainingBackground` (the paper), `HUD_Ret_<weapon>` (one crosshair per weapon).
+
+**The pieces** (root clip -> what drives it -> rest position on the 16:9 stage):
+
+| Piece | Clips | Driven by (HUDPC function; UnrealScript caller where there is one) | Where |
+|---|---|---|---|
+| Health / EVE | `healthBar`, `bioAmmoBar`, `hypoScrollBar`, `BioAmmoBankHolder` | `SetHealth`, `SetBioAmmo`, `*BarFlash`, `HighlightHypo` (native) | top-left, bars y 61-87 / 94-120 px |
+| Crosshair | `centerBox.ReticleHolder` | `SetReticleType/Info/Underlay`, `ShowHackUnderlay` (`ShockHUD`) | centre, 606-670 x 331-395 |
+| Enemy | `centerBox.EnemyType`, `FrozenHealth` | `ShowEnemyTypeInfo`, `SetHealthOfFocus`, vulnerabilities | above the crosshair |
+| Prompt | `centerBox.focusArea` (use/hack/item/take, container list), `ReRoll`, `Gatherer*Focus` | `HUDMessage` UseFocus, HackFocus, Focus, FocusNoUse, ReRollFocus, Gatherer*; `OpenContainer` | right of and below the crosshair |
+| Equipment | `HandsIcons` (weapon/plasmid selectors), `ammoScrollBar`, `CurrentAbilityName` | `AddWeapon/Ammo/Ability`, `Select*`, `ShowPCWeaponSelector`, `SetActiveHands` (`Hands.uc`) | bottom-left (ammo slots ~91-131 x 563-667) |
+| Subtitles | `centerBox.subtitleTextHolder`, `AreaNameMovie` | `HUDMessage` Subtitle / MapHUDRegion, `SetDialogSubtitles` | bottom centre, 304-973 x 556-663 |
+| Tutorial | `centerBox.trainingTextHolder` | `HUDMessage` Training, `ShowHelpTagInfoNow` | lower centre, 304-973 x 466-533 |
+| Objective | `rightBox.chatBoxMovie.importantTextHolder`, `centerBox.GPSArrow` | `HUDMessage` Quests, `ShowGPSArrow` | top-right |
+| Messages | `rightBox.chatBoxMovie.ChatMovie0-5` | `HUDMessage` Radio, AISpeech | top-right, under the objective |
+| Money | `rightBox.CreditCount`, `AdamCount`, `UnreadLogsIndicator` | `Show*CountAndAutoHide`, `Update*Count` | right edge, y ~336-398 |
+| Audio log | `rightBox.logHolder` | `HUDMessage` Log, `SetLogPhoto`, `SetRadioPhoto` | bottom-right, ~1135-1280 x 645-677 |
+| Escort / timers | `GathererHealth`, `NeedleHolder`, `flipTimer`, `dlcTimerMovie` | `EscortedGathererHealth` (`ShockPlayer`), `ShowNeedleMeter` (`ShockHUD`), `SetTimer` | top-left, under the bars |
+| Camera | `CameraOverlay`, `FocusAnimationTweener`, `PhotoDisplayBox` | `ShowCameraOverlay`, `AddPhotoInfo` | whole view / centre |
+| Full screen | `WidescreenBars` (skipped since s29), `ShutterMovie`, `DeathScreen`, `TempWatermark` | `ShowWidescreenBars`, `ActivateShutter`, `ShowDeathScreen` | whole view |
+
+**Traps found reading it.** (1) The HUD hides its own pieces by state: `HideAllExceptMessages` /
+`ShowAll` (busy) and `ShowWidescreenBars` hide the bars, ammo, selectors and crosshair - visibility
+is game state, never a reason to classify draws. (2) `SetSubtitleTimings` lifts `logHolder`,
+`ammoScrollBar` and `CurrentAbilityName` by `SubYOffset` while a subtitle shows (not at 4:3), so
+those rectangles need room for both heights. (3) Several clips rest OFF the stage and animate in
+(`ammoScrollBar` y 901, `hypoScrollBar`, `SubDrop`, the selector bars), so authored bounds are
+not screen rectangles. (4) A movie's static frame is placeholder art; the game fills it at run time.
+
+**How the split works without the Dishonored mod's costs.** Dishonored routed every HUD draw by
+its rectangle (a per-draw probe: ~11 ms of CPU a second, plus locks and target switches). Here
+the HUD is still captured whole (one target, unchanged); the pieces are rectangles OF that
+capture, cut on the HUD swapchain image after the per-present copy: one `CopySubresourceRegion`
+per moved piece into a strip below the capture, one `ClearView` for the places they left, and
+one quad layer per piece sampling a sub-rectangle of the same image. No per-draw work, no new
+capture target, no readback; the plan is arithmetic over 13 rows. The cost is that two pieces
+whose rectangles overlap cannot be separated - the rectangles are chosen not to.
+
+### The pieces rendered whole, and how each pair separates (HUDRadial, merged with its art)
+
+`tools\flash-merge.py` puts sharedlibrary.swf's 370 symbols into HUDRadial so FFDec draws the
+real clips. Measured on the merged movie, stage pixels (1280x720):
+
+- **Health and EVE.** `healthBar` (55..413 x 47..139) is the red bar AND both hypo gauges: the
+  gauge pair is ONE bitmap (`HUD_HealthEve_Cover`, 76x91) whose two gear rims interlock (rows
+  88-95, x 66-116, never under 38 of 75 columns covered), so no straight cut separates first-aid
+  from EVE hypo. `bioAmmoBar` (111..400 x 96..122) is the blue bar alone; its clip starts at
+  x 111 under the lower gear and is drawn over it. The bars themselves are cleanly apart: rows
+  90-95 are empty for x >= 118. The gauge pair is one shape (1153) with one bitmap fill (atlas
+  77), centres first aid (104.0, 78.0) and EVE hypo (85.4, 111.7); the first-aid ring passes in
+  FRONT of the EVE gauge's top. Geometry alone (nearest centre, radius-weighted, ring-then-tooth
+  rules) left tooth fragments on the wrong side - three cuts were rejected in review. What works
+  is a SEAM: the cheapest left-to-right path at 8x through the transparent gap between the gears
+  (cost = coverage; never through either disc; held to y 88.5..98 right of x 88, where the
+  first-aid ring runs along the top of the EVE drop box with no gap). It crosses drawn art for
+  63 of 544 eighth-columns, only where the rims touch. Above the seam is first aid, below it
+  EVE, and the EVE bar's own clip (from x 111, drawn over the gauge) is EVE. As one-pixel
+  columns that is 51 rectangles, 113 of 580,044 first-aid eighth-pixels inside them. Hence:
+  **Health = 71.6..760 x 46..98.9 (red bar + first-aid gauge); EVE = the columns (bar + EVE
+  gauge)**, EVE owning the overlap. When Health moves, two bits of its gauge that hang below
+  its ring (the lower-left tooth, x 72..87, and the ring's tail under the + box, x 109..118)
+  are trimmed per column from just below the gauge's own edge, so it sits flush; on the panel
+  nothing is trimmed. Both pieces run to x 760 because the bars lengthen with
+  the maximum (`setHealthBar`/`setBioAmmoBar`: BGMid width x max/100, the end cap follows).
+- **Ammo and plasmid share ONE slot.** `ammoScrollBar` (the three-ring ammo holder, ~55..290 x
+  552..668) and `CurrentAbilityName` (the plasmid gear and name bar, 58..483 x 591..670, frame 2)
+  sit on top of each other. `SetActiveHands("Weapon"|"Plasmid")` (called from `Hands.uc`) shows
+  one and hides the other (`ammoScrollBar._visible`, `CurrentAbilityName.gotoAndStop(1|2)`), so
+  they are separated by STATE: two rows on one rectangle, the active one chosen from the held
+  item (`aim.cpp`'s profile hand: plasmids are hand 0).
+- **The weapon and plasmid wheels** are `HandsIcons`' two 8-slot radials (`weaponScrollBar`,
+  `abilityScrollBar`, "SELECT WEAPON" / "SELECT PLASMID"), both at (-393,209) inside HandsIcons
+  (root 19.2+160, -25.95, scale 1.75): the wheel's centre is stage (662, 340), open size about
+  366 x 466. The pad opens it while a bumper is HELD (a tap only swaps the raised hand).
+- **Other gameplay pieces found and left on the panel:** the Little Sister rescue/harvest prompt
+  (`centerBox.Gatherer{Save,Kill,Collect}Focus`, 0.16..0.69 x 0.49..0.63 - it crosses the
+  crosshair, so no rectangle takes it alone), the unread-log indicator (`rightBox.
+  UnreadLogsIndicator`, right edge, mid height), "search again" (`ReRoll`, inside the tutorial's
+  band), the research camera overlay and photo grade (`CameraOverlay`, `PhotoDisplayBox`), the
+  death and Vita-Chamber screens (`DeathScreen`, `ShutterMovie`).
+- **Menus are other movies on the same stack**: `PausePC` (pause), `Maps`, the machines
+  (`craftingstation`, `PlasmiNow`, `PlasmidEquip`, `GeneBank`), `Hacking` (its Gui.ini entry sets
+  `ShouldPauseGameRenderingWhileActive`, so the world stops - it can only be a flat screen),
+  `ingamemanual`, `PlasmidTraining*`, `Warning`. The pause menu and the machines draw over a live
+  world through the same gameswf path, so they land in the HUD capture: that is why they can ride
+  the HUD panel or the world instead of the flat screen (F10 > HUD > Menus).
+
+## 2026-10-15 - The weapon and plasmid wheels: slots, stages, input
+
+Read from HUDRadial.swf's ActionScript (`UpdateRadialAxis`, `WeaponSelectionMenu`,
+`AbilitySelectionMenu`, `ContextSetPendingWeapon`, `ContextSelectAbility`, `RBReleased`,
+`LBReleased`, `AddWeapon`, `AddAbility`, `RemoveWeapon`) and the UnrealScript corpus, and
+rendered in every stage from the movie itself (a test SWF built from the merged HUDRadial: the
+open wheel frame, each slot's real icon from sharedlibrary.swf, the selection glow). Not yet
+compared with a capture.
+
+**Two wheels, one shape.** `HandsIcons.weaponScrollBar` (RB, "SELECT WEAPON") and
+`HandsIcons.abilityScrollBar` (LB, "SELECT PLASMID") are the same 8-position radial, both centred
+at stage (662, 340) (HandsIcons at 179.2,-25.95 x1.75; the bars at -393,209 inside). Frames 1-5
+open it (the slots scale out from the centre), 5-10 hold it open, 11-14 close it; frames 15-78
+are the PC "top bar" layout, which the pad build does not use. The title ("Do Not Translate" in
+the movie) is the highlighted item's name, filled at run time; the centre disc is
+`SelectedWeaponIcon` / `SelectedAbilityIcon`.
+
+**Slots fill in a fixed order** - `AddWeapon`/`AddAbility` put each new item in the first empty
+index (`findEmpty`), `RemoveWeapon` splices the list closed:
+
+| Index | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| Position | up | down | left | right | up-left | up-right | down-right | down-left |
+| Icon `_rotation` | 0 | -180 | 90 | -90 | 45 | -45 | -135 | 135 |
+
+An empty slot (`contents` frame 2) draws NOTHING - no ring, no spoke - so the wheel's shape is the
+stage: 2 items = a vertical pair, 4 = a cross, 6 = a cross plus the two upper diagonals, 8 = the
+full ring. Each slot (`wpnMenuN` / `abilityMenuN`) idles at frame 1 (contents at half
+brightness, glow alpha 0), plays 2..38 to the selected glow, 39/40 out.
+
+**Stages.** `MaxWeapons = MaxAbilities = 8`. Weapons: wrench, pistol, machine gun, shotgun,
+grenade launcher, chemical thrower, crossbow and the research camera (the HUD files the camera as
+a weapon; `SelectWrench`/`SelectResearchCamera` exist) - up to all 8. Plasmids: the wheel shows
+the EQUIPPED active slots: `ShockPlayer.BasePlasmidSlots = 2` (4 in the DLC challenge maps),
+grown by "Plasmid Slot" upgrades (`ActiveGeneticSlotUpgrade`, Gene Bank) to 6 - indices 6 and 7
+stay empty. With 0 items the wheel never opens (`slotsFilled == 0` returns); with 1 the bumper
+just selects it (no wheel).
+
+**Input, exactly as the movie reads it.** `UpdateRadialAxis(x, y)` gets the stick; thresholds
+`RadialCenterThreshold 0.5`, `RadialThreshold 0.2`, `RadialMidrangeThreshold 0.9`,
+`RadialFarThreshold 0.901`. Diagonals win first (|x|,|y| > 0.2 and both inside 0.9), then the
+cardinals need the far ring (> 0.901) with the other axis centred (< 0.5). An index beyond
+`slotsFilled` is ignored. WEAPONS are PENDING while RB is held (`ContextSetPendingWeapon` ->
+`MGPendingWeapon`) and committed on release (`RBReleased`: plays 39, `SelectedWeapon`,
+`SelectWeapon`, "UISelectedWeapon"); PLASMIDS switch the moment the stick lands
+(`ContextSelectAbility` -> `SelectAbility`). A bumper TAP with no stick cycles to the next
+(down) or previous (up) weapon that has ammo (`AmmoTotal > 0`), or the next plasmid. Opening the
+other hand's wheel swaps hands first when `AutoSwap` (`SwitchHandModes`). Release sends
+`UnKillLook` and `ForceUnPause` - the wheel holds the look and the game while it is open (the
+opening half is native). The ammo-type selector is separate: `ammoScrollBar`, three
+`ammoMenu` rings, bottom left.
+
+### The HUD movie's call routine - the wheels' stage seam (2026-10-15, tools\ida\fw1/fw2)
+
+Every call into a gameswf movie BY NAME goes through one routine:
+`void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)`
+at **+0x427220** (`patterns.h kFlashCallMethodRva`, prologue verified on both sides of the
+relocated SEH push). It returns at once unless `movie+0x114` (the gameswf movie interface) is set,
+formats the arguments and invokes the ActionScript function. **Both kinds of caller reach it**: the
+C++ HUD updaters (158 literal method names at 277 call sites - `AddWeapon "%ls, %ls, %d, %d, %d"`,
+`AddAbility "%ls, %ls"`, `RemoveWeapon "%ls"`, `SelectWeapon "%ls"`, `SetHealth "%d, %d"`, ...)
+and the UnrealScript natives `execCallMethodVoid/Int/Float/FloatFloat/String/...` (+0x427480 ..
++0x427CA0), which pass the FName's ANSI text. So `CallHUDFunction('OpenWeaponMenu' | 'RBReleased' |
+'OpenAbilityMenu' | 'LBReleased')` - what `OpenWeaponMenu`/`CloseWeaponMenu` (the XENON_RB / LB
+bindings) send - arrives here too. Movies are fetched by name through `GetPlayingMovie` (+0x43E220:
+a linear search of the GUI controller's playing list comparing the FName). The movie's filename is
+the string at `movie+0x40`, the same field screens.cpp reads; the HUD is `HUDRadial.swf`
+(`HUDPC.swf` on mouse and keyboard). Another trap: `AddAbility` is ALSO sent to the
+`PCWeaponSelection` movie, so a mirror must filter on the movie.
+
+`wheel_state.cpp` hooks it (observe, then forward every call unchanged: the routine reads only what
+its format asks for, at most 27 dwords at any known site) and rebuilds both wheels' slot lists and
+open state (`wheel_mirror.h`). The wheels ignore the stick until their open animation reaches frame
+5 (`weaponScrollCycling`/`abilityScrollCycling` = false, about 210 ms) and act only when the stick
+crosses into a wedge (`CheckRadialForChange`), so the hand dial holds neutral for 250 ms after the
+wheel shows and then steps to the slot.
+
+## 2026-10-20 - A hand the clip puts on the gun is on the AUTHORED gun
+
+The hands' clips (the two-handed hold, the reload) put the other hand where the gun's parts are at
+the gun's authored size beside the game's own hand - the rig actor's DrawScale (0.8). The mod draws
+the two at different sizes: the hands at the hand size (rig bone translations at size / DrawScale),
+the gun's skeleton scaled about its grip socket (bone 43, the weapon's `R_Grip` at its origin) by
+whatever `wskel_compose` wrote (Weapon size, times hand size / 0.8 while it follows the hands; 1.0
+when the lane is dropped). So a clip point on the gun sits at `ratio = drawn weapon scale x rig
+DrawScale / hand size` of its distance from socket 43 on the DRAWN gun (`two_hand_math.h
+gun_ratio`, `on_drawn_gun`). At Weapon size 0.88 the ratio is 0.88 and the Tommy Gun's fore-grip
+sat ~3.5 cm behind where the clip held the front hand (the tester: "an inch or two forward"); the
+shotgun's long pump hid the same error. `m4_compose` maps the two-handed grab point and both carries
+(the hold, the reload at the gun) through it every frame, so any size slider keeps the hand on the
+drawn grip; `[twohand] the gun is drawn at ...` logs the ratio and the correction per gun and on
+every size change. Derived from `wskel_compose` and the s86/s91 compose; not yet headset-measured.
+
+## 2026-10-20 - Script functions by name, and the reload clip held by the hands
+
+**FindFunction (RVA 0x6F5F70).** `UObject::FindFunction(FName /*8 bytes, by value*/, UBOOL global)`,
+`ret 0xC`. BS1 strips the "Failed to find function" text (`tools\ida\mr1`: no string, ASCII or
+UTF-16), so it was found by BS2's shape (`tools\ida\mr2`): the `ret 0xC` callee followed within a few
+instructions by `call [reg+0xC]` (ProcessEvent, vtable slot 3) at 70 sites (the 205-site top hit is the
+allocator, a false positive). Its body returns null unless two script-ready globals are set and
+null for a name the class lacks - it never asserts. With ProcessEvent (the outer body at the anchor
+RVA 0x375140) and GNames, `script_call.cpp` runs any script function on any object: a parameter block
+in declaration order, 4-byte slots, UBOOL 4 bytes, FName 8, the return value last. UE2's ProcessEvent
+does not destroy the caller's parameters, so a caller-owned FString is safe to pass to a function that
+only reads it (`ShockPlayer.GiveItem(Amount, "ShockGame.Pistol_ArmorPiercing")` - the `vrreload give`
+test aid).
+
+**Actor's animation API works through it.** `IsAnimationHandleValid`, `GetAnimationName`,
+`GetAnimationCurrentTime`, `SetAnimationCurrentTime`, `PauseAnimation`, `ResumeAnimation`,
+`GetAnimationLength`, `SetAnimationPlaybackRate` (Actor.uc; the corpus shows their bodies as @NULL, but
+they run). Verified on the simulator: a held reload clip stays at the exact time set (0.450 s for 2 s),
+the game waits in `WeaponReloading`, and on resume it completes and refills (39-23 -> 40-22).
+
+**The reload waits on two handles** (`Weapon.FinishAnimations`): `weapon+0x5F4` (Weapon.AnimationHandle,
+the weapon's own clip) and `weapon+0x8F0` (the Hands actor's clip). Found by `vrreload probe`, which
+offers every int slot of the weapon to IsAnimationHandleValid on the weapon, its holder and the Hands
+actor during a reload: only these two were live, both named reload clips at the same time of the same
+length. `HolderAnimationHandle` was never live (no holder clip in this view). The refill happens when
+the clip ends (PlayerWeapon: `FillWeaponClipWithAvailableAmmunition`), so a held clip holds the ammo.
+
+**The clips, measured with `vrbones reloadrec`** (weapon bones against their rest; the off hand's palm
+in the grip's frame; clip-local seconds):
+
+| Weapon | Clip (weapon / hands) | What the off hand does, clip seconds |
+|---|---|---|
+| Tommy Gun | `Reload` / `ReloadTommyGun`, 3.33 s | bolt locks back 0.09; drum (`TG_AmmoClip`) pulled 63 units down 0.27-0.57; a new drum up and in 0.93-1.22; bolt (`TG_Bolt`) pulled 17.4 back 2.06-2.24, runs home 2.43-2.80 |
+| Pistol (fast reload) | `FastReload` / `FastReloadPistol`, 1.80 s | top-break: barrel and cylinder (`Barrel`, `DrumParent`, `drum`) fold 105 deg on the hinge 0.19-0.38 (`over`, the latch, turns first); cylinder out sideways 0.47-0.66; a new one in 0.76-0.93; flicked shut 1.40-1.55 with no hand on it |
+| Shotgun | `SingleFrame` (start), `Reload_Loop` / `ReloadShotgun_LOOP` 0.49 s per shell, `Reload` / `ReloadShotgun_End` 0.95 s | start: the hand drops to the pouch; each loop presses `SG_Shell` 20 units into the port with an 84-deg turn 0.03-0.27; end: `SG_Pump` 17.6 back 0.41-0.49 and forward 0.59-0.69 |
+
+The shotgun is ShouldUseThreePartReloading: the game plays a loop per missing shell and the end only
+when full; firing during a loop interrupts the reload (the shells already in stay). An empty gun's
+automatic reload and the reload button both reach the same reload; the bound `XENON_X` is the button.
+The parts are model space (the root at 0 for the pistol and the Tommy Gun; the shotgun's root
+`SG_Body` is not at the grip), and the visible magazine is the weapon's `AmmoModel`, attached to a
+socket on that part - moving the part moves it.
+
+## 2026-10-20 - A rigid holdable's centre, from its render bounds
+
+The wrench has no skeleton (holdable +0x3FC null), so the gun-in-the-left-hand mirror had no centre
+line to flip it about and used the grip socket's origin - and every weapon socket aliases bone 43 with
+no offset (Session 91), so a mesh built off its own origin moved sideways by twice that offset into the
+left hand. `Actor.GetRenderBoundingBox()` (native final, called by name; its FBox return is the parms
+block's first 25 bytes: Min, Max, IsValid) is the drawn mesh's world bounds; taken back into the
+actor's own frame through its Location (+0x1D8) and Rotation (+0x1E4, an FRotator) its centre is a
+constant of the mesh, mirrored or not, since the engine draws the mesh with that rotation.
+`bones.cpp rigid_centre` averages 16 frames per actor; the plane is its coordinate along the socket
+axis the mirror flips, over the rig's DrawScale. Derived statically; not yet measured live.
+
+## 2026-10-20 - Script properties by name
+
+`UObject::FindFunction` (tools\ida\rf1) does not walk a class's fields: it looks the name up in a
+256-bucket function hash on the class (+0xC8 + 4 x low byte of the name), chained by +0x48, names at
++0x28/+0x2C, and checks the function flags at Class (+0x30) +0x4C8. Properties come from the console's
+GET/SET (RVA 0x6FAC20, "Unrecognized property %s", tools\ida\rf2/rf3): `FindField` at **RVA 0x1AE5A0**,
+`__fastcall (UStruct* ecx, const TCHAR* edx) -> UProperty*`, walks UStruct::Children (+0x5C) by
+UField::Next (+0x44), compares names case-insensitively, climbs the super chain through a virtual
+(+0xFC), and returns only UProperty fields; SET hands its result's **+0x74** to GlobalSetProperty as
+the value's byte offset. `script_call.cpp property_offset` calls it and trusts it only after it
+reproduces two offsets derived independently (Actor Location 0x1D8, DrawScale 0x2AC); the log says
+`[script] properties by name CHECKED` or REFUSED. Used by the cheats: `Weapon.UpgradeStats` (a travel
+TArray of UpgradeableWeaponStat) and `UpgradeableWeaponStat.PointsAllocated` (int).
+
+The upgrade path the cheats follow is the game's own New Game Plus spawn step (PlayerWeapon
+PostBeginPlay): each upgrade stat's PointsAllocated set to 1, and the first stat's attachment shown by
+`GiveAltFireMod`, the second's by `GiveStrictlySuperiorMod`. `ShockPlayer.AddWeaponStatUpgrade` is a
+dead developer function here: it calls `Weapon.AddStatUpgrade`, whose body is empty in this build.
+`ShockCheatManager.GiveAll` lists eight weapons (Wrench, Pistol, Shotgun, Crossbow, GrenadeLauncher,
+MachineGun, ChemicalThrower, ResearchCamera) and every ammunition class; the cheat manager itself needs
+cheats enabled, so the mod calls the same ShockPlayer/ShockPawn functions on the pawn directly.
+
+## 2026-10-20 - A physics prop made at runtime (the dropped magazine)
+
+From the UnrealScript corpus; not yet seen live. The visible magazine is `Weapon.AmmoModel`, a
+`VisibleAmmoModel` actor (DrawType static mesh) attached to the gun at `AmmunitionModelSocket`, its
+mesh the current ammunition's `VisualAmmoModel` (Tommy Gun `WP_TommyGun.TG_AmmoModel`, pistol
+`WP_Pistol.PI_AmmoType`, shotgun `WP_Shotgun.shotgun_shell`; `ShowAmmoModel` swaps it per ammo type).
+Dead enemies drop weapons natively (`ShockAI.DropWeapons`; an `AIAttachment` is
+`bIsHavokPhysicsEventually` with a `StaticMeshAttachmentHavokDataClass`). For a prop made by the mod:
+`Engine.HavokActor` is `bNoDelete` (level-placed only); `ShockGame.PhysicalReactiveActor` (a
+ReactiveActor: static mesh, `HavokDataClass` `Engine.HavokSimplePhysicsData`, `Physics=PHYS_Havok`,
+`bBlockActors/bBlockPlayers` false, telekinesis-able) is spawnable. The calls, all on Actor by name:
+`Spawn(class, owner, tag, location, rotation, bNoCollisionFail, label)` (return after 52 bytes of
+parameters), `SetStaticMesh`, `SetDrawScale`, `SetPhysics` (EPhysics: PHYS_None 0, PHYS_Havok 1),
+`HavokSetLinearVelocity` / `HavokSetAngularVelocity (vector, optional name bone)`, `HavokIsActive`;
+`LifeSpan` (property) removes it. The class comes from `Object.DynamicLoadObject("ShockGame.
+PhysicalReactiveActor", Class)`, the class of classes being any class's own class. `dropped_part.cpp`
+turns physics off before the mesh and size change and back on after, so the Havok body is built for
+the magazine and not for the class's default cube.
+
+**Live (12:21 headset run): `Spawn(PhysicalReactiveActor)` returned nothing every time**, though other
+natives called by name work (GetRenderBoundingBox, the animation API). Unexplained; the game itself
+spawns `NonPhysicalReactiveActor` at runtime (`SecurityCamera.OnKilled`, then `SetStaticMesh`), so the
+drop now tries that class too, and `Hands.ApplyScriptedHandAttachment(class, bone)` - a SCRIPT function
+whose bytecode calls Spawn itself, the spawned actor left in `Hands.ScriptedAttachment` - as the last
+resort (cleared there, detached, `DrawPriority` 0 so it leaves the hands' foreground layer).
+
+## 2026-10-20 - The first-person weapons, and how the reload clips hold their parts
+
+The player's weapon meshes are NOT in the maps: they are in the script package
+`Build\Final\BakedScripts\pc\ShockGame.U` (`ShockGame.WP_Pistol.WP_PistolMesh`,
+`WP_TommyGun.TommyGunMESH`, every other gun, the ammo and upgrade static meshes, `SpentShell`).
+UModel lists it (`-path=<BakedScripts\pc> ShockGame.U`) and exports its static meshes; our
+`tools\bsmesh\bs2gltf.py --bsm <ShockGame.U>` reads its skeletal meshes and their clips (TommyGunMESH:
+6 bones R_grip, TG_TommyGunBody, TG_AmmoClip, TG_PistonSOCKET, TG_Trigger, TG_Bolt, clip `Reload`;
+WP_PistolMesh: 8 bones R_grip, pistol_body, hammer, trigger, barrel, over, DrumParent, drum, clip
+`FastReload`). `PI_AmmoType` is the pistol's six ROUNDS (its cylinder is the gun's own bones);
+`TG_AmmoModel` is the Tommy Gun's drum (the gun mesh itself has no drum).
+
+`tools\blender\reload_pose.py` puts a gun's glb on the hands' `R_grip` and poses both by their reload
+clips (hands `TommyGun__ReloadTommyGun`, `Pistol__FastReloadPistol`). The part bone's distance from
+`Bip01_L_Hand`, units: Tommy Gun TG_AmmoClip 25 (0.267, the hand at the seated drum), 95 (0.567), 78
+(0.933, the fetch - the clip has tossed the new drum), 50 (1.023), 18 (1.113, the hand pushing it into
+the well), 20 (1.222, seated); pistol DrumParent 26 (0.466), 71 (0.756, the fetch - the new cylinder in
+the air above the gun), 52, 36, 30 (0.89, the hand gripping it into the open frame), 30 (0.934). The
+manual reload carries a part as the clip's hand holds it at the clip time it is held at, so the fetch
+and insert now hold the clip at 1.113 (Tommy) / 0.89 (pistol) instead of the fetch time.
+
+## 2026-10-20 - The held weapon's bone reads land before or after the size write
+
+`manual_reload.cpp weapon_space` turns weapon space into the world from two bones of the held gun,
+read with GetBoneCoords (`muzzle::bone_coords`), and their clip poses (`bones::weapon_bone_pose`, the
+engine's own, before the weapon size). The factor between the two was measured every frame - and in
+the 15:33 headset run it FLIPPED between 0.800 (the rig's DrawScale) and 0.708 (DrawScale x the
+written weapon size 0.886), frame to frame, on the pistol (the Tommy Gun's reads were steady at
+0.708). GetBoneCoords reads the skeleton instance's matrices, and those are sometimes the engine's
+fresh evaluation and sometimes the skeleton lane's scaled write (`wskel_compose`). The drawn gun is
+always the written one, so every carried part placed through the 0.800 frames sat ~11% of its
+distance from the grip toward the grip - the pistol's carried cylinder "oscillated" between two
+places, with Stereo as well as AFW, and never sat in the fingers (the captures afw-...153433 /
+153712 show it 5-12 cm off the hand). The factor is now DrawScale (Actor +0x2AC) x
+`bones::weapon_written_scale()` (what the lane last wrote); a disagreeing read is counted and logged
+(`[reload] the gun's space: N bone read(s) disagreed with the drawn scale ...`). The hold time was
+not the fault: `reload_pose.py` at 0.53 s shows the clip's left hand wrapped round the cylinder
+(thumb over, fingers under), and the carry log puts the part ~14 units from the palm there.
+
+**No separate cylinder mesh exists.** UModel's listing of `BakedScripts\pc\ShockGame.U` has these
+static meshes for the guns: `TG_AmmoModel`, `shotgun_shell`, `PI_AmmoType` (the six rounds),
+`SpentShell`, the upgrade attachments (`PI_UpgradeA/B/Balt`, `TG_upgradeA/B`, ...), `WP_WrenchMesh`,
+`WP_RPG_Projectile`, ammo pickups - and no cylinder: it exists only as `WP_PistolMesh`'s own
+`DrumParent`/`drum` bones. The UnrealScript corpus names no other pistol mesh
+(`ShockGame.WP_Pistol.*` only). So a cylinder that falls as a WORLD object (out of the hands'
+foreground layer, where the gun's own bones flicker and float on the floor - the 12:49 run) needs a
+world actor that draws `WP_PistolMesh` with every bone but DrumParent/drum collapsed - a skeletal
+mesh on a spawned actor, its own SkeletonInstance resolved and written like the held weapon's - and a
+fall the mod moves itself (or Havok on a box around it). Not built: it is new engine work that cannot
+be checked without a run. Until then the pistol's world prop is its rounds.
+
+## 2026-10-20 - The reload clip shows and hides the magazine itself
+
+`ShockGame.AnimNotify_SetAmmoVisible` (an AnimNotify_Scripted with one bool, `Show`) calls
+`Weapon.ShowAmmoModel` or `Weapon.HideAmmoModel` on the clip's owner. `ShowAmmoModel` sets the
+AmmoModel's static mesh to the pending ammunition's `VisualAmmoModel`, triggers its `AmmoUnHidden`
+effect event and `SetHidden(false)`; `HideAmmoModel` is `SetHidden(true)` (Weapon.uc; only
+`ShouldShowAmmoModel` is overridden, by the crossbow and the grenade launcher). So the gun's visible
+magazine during a reload is the clip's notifies - and a notify fires only when the clip PLAYS across
+it. The manual reload sets the clip's time as well as playing it (backward to the pouch after a
+drop, forward over the stretch between the drum seating and the bolt), so a hide could fire and the
+show after it be skipped: once in the headset a Tommy Gun fired with no drum on it. The mod now calls
+`ShowAmmoModel` by name itself when a new part is taken from the pouch (the drum in the hand is the
+AmmoModel, on TG_AmmoClip's socket) and once any manual reload that ejected has ended, refilled or
+not (`[reload] ...: its magazine shown`). The notify times in each clip are not yet known (the
+glTF export carries no notifies); a run with Weapons logging would list them.
+
+## 2026-10-20 - Half-Life 2 VR's shotgun pump (prior art, concepts only)
+
+Studied for parity with BS1's shotgun pump: Half-Life 2 VR's `hlvr\bin\server.dll` (Steam's
+`Half-Life 2 VR` install), its strings and a headless-IDA decompile of the shotgun's post-frame,
+primary attack and stroke handlers (the databases and output stay in the local IDA workspace; no
+code is copied). What it does, in our words:
+
+- **The pump IS the fore-grip.** The shotgun spawns a separate grabbable entity for its fore-end
+  (`hlvr_shotgun_slide`, model `vr_shotgun_foregrip.mdl`, a kind of its `CBaseVRWeaponForegrip`). The
+  off hand grabbing it is both the two-handed hold and the pump: there is no second grab and no "let
+  go if the hand moves along the gun" - the grip button alone lets go. The hand is drawn on the
+  fore-grip, which rides the gun along its axis.
+- **A stroke is a ratchet, not a path.** The pump's position is one number, the fore-grip's distance
+  from a point on the gun. While a back stroke is wanted, the weapon remembers the farthest-forward
+  position reached and completes the stroke once the pump is `hlvr_shotgun_pump_distance` (default
+  2, inches) behind it; then it remembers the farthest-back position and completes the forward
+  stroke the same distance ahead of it. Going the wrong way only moves the reference. Each stroke's
+  completion plays the weapon's stroke animation and sound and a controller rumble.
+- **The stroke starts at the shot.** Firing sets a "needs a pump" flag and, if the fore-grip is held,
+  sets the ratchet's reference to the pump's position at that moment - the hand can pump the instant
+  the shot is out; nothing waits for an animation.
+- **Fire is gated by the chamber, not queued.** With "needs a pump" set, the trigger plays the empty
+  click and pushes the next-attack time on a little; it fires nothing. The forward stroke clears the
+  flag and sets the next-attack time to the end of the stroke animation.
+- Its pistol slide (`CBaseVRWeaponSlide`) completes a rack the same way: the grabbed slide's
+  displacement toward the muzzle direction from where it was taken, a 0.8 threshold.
+
+**What BS1's shotgun takes from it** (`reload_rig.h` Pump, `manual_reload.cpp`, `two_hand.cpp`): the
+two-handed fore-end hold is the pump; while a stroke is in progress the hold lets go only when the
+grip comes up (the 15:37 run lost it mid-stroke - "the hand slid off along the gun" - and the gun
+pumped itself); strokes are ratchets of 6 cm in the DISTANCE BETWEEN THE TWO CONTROLLERS (as HL2VR
+measures its pump from a point on the gun; from the farthest apart / closest since the stroke began,
+re-based at each shot's clip), the clip following the hands over 9 cm and playing the rest of the
+stroke at the catch; hands 2.5 cm closer during the recoil start the stroke (the clip is played on to
+the pump); a trigger pulled while the pump waits buzzes the gun hand and fires nothing (the game is in
+its Fire clip). The reload's own last pump (two Slides) completes at 6 cm too. Not taken: a
+free-floating fore-grip entity (BS1's pump is a bone in the gun's own clip, so the clip's time IS the
+pump's position).
+
+**The first version read the front hand in the drawn gun's grip frame, and pumped itself** (19:33 run:
+every pump "completed" 0.2 s after the shot, untouched). The Fire clip moves the drawn gun - the recoil,
+and the pump's own motion as the clip is played on - so the grip frame moved, the measured hand moved
+with it, and the clip advanced on its own motion. A stroke must be read from the controllers, never from
+anything the clip animates.
+
+## 2026-10-20 - A carried part goes back to the clip through the gun's ratio, not the hand's
+
+After the scale fix above the pistol's carried cylinder stopped jumping but still sat ~8 cm off the
+fingers, toward the gun (capture afw-...193041), while the carry's own target was in the palm (~16
+units, the log's `carry` lines). The step that takes the part's drawn position back into the clip's
+space (`manual_reload.cpp carry`) undid only the gun hand's placement - its palm, turn and the hand's
+size - but the drawn gun is a further `gunRatio` (0.92 here: weapon 0.886 x rig 0.800 / hands 0.770)
+of the clip's gun about the grip socket (bone 43; "A hand the clip puts on the gun is on the AUTHORED
+gun" above). So a part at arm's length came back 8% short, toward the grip; the Tommy Gun's drum,
+held near the well, barely showed it. The carry now undoes the ratio about the drawn socket
+(`HandPlacement::socket`, `gunRatio`, filled where bones.cpp places the gun hand).
+
+## 2026-10-20 - Half-Life: Alyx's throw (prior art, concepts only)
+
+From `game\hlvr\bin\win64\client.dll` (strings and the convar registrations, headless IDA; the
+database stays in the local IDA workspace): a released object's velocity comes from a short history of
+the hand's recent frames (about ten), not from the release frame - the frame with the highest speed is
+found, and when it is at either end of the window the frame next to it is used ("0 frame is max
+velocity, using -1 frame", "-9 frame is max velocity, using -8 frame"), so one noisy or decelerating
+frame never sets the throw. The result is scaled by `vr_throw_velocity_scale`, default **1.6**, and the
+spin by `vr_throw_ang_scale`, default 1 (WMR controllers have their own scale). BS1's dropped Tommy Gun
+drum does the same (`manual_reload.cpp throw_feed / throw_velocity`): the carried part's world position
+each frame, a microsecond clock, ten frames, the peak's inner neighbour, x1.6, handed to the Havok
+copy's `HavokSetLinearVelocity` (`[reload] ... left the hand at N m/s`). Spin is not taken (the copy
+keeps its fixed tumble).
+
+## 2026-10-20 - Set, don't play, from a carry hold onto an insert; the shotgun's Fire clip after its recoil
+
+The manual reload carries a new part with the clip held BEHIND its insert, where the clip's hand grips
+it (Tommy Gun 0.30 s, pistol 0.53 s). Reaching the insert's first time by PLAYING the clip (`hold(...,
+chase)`) runs it through everything between - for the Tommy Gun the spent drum pulled 63 units down and
+the new one tossed up from the waist: "the mag teleports to the floor and shoots up into the gun in
+under half a second" (19:57 run), and its AnimNotify_SetAmmoVisible hide/show could leave the drum
+hidden. That first step is now SET (reload_rig.h `from_hold`, Output::seating), `ShowAmmoModel` is called
+at it, and the clip plays only from there.
+
+The shotgun's Fire clip after the recoil (about 0.25-0.40 s) is the game's ONE-HANDED pump: the gun hand
+swings the gun up to present the pump (renders sgf-t0.750). The hand-back layered that gun-hand motion on
+the controller for the whole clip, so the gun tilted up "in expectation" of the pump. It is now faded out
+over 0.25-0.40 s of the Fire clip (`manual_reload::gun_motion_keep`): the recoil plays, the rest does not.
+The fade times are read off the renders, not measured live.
+
+## 2026-10-20 - Correction: the reload renders had the gun at a wrong angle
+
+Every `reload_pose.py` render before this evening attached the gun to Blender's REORIENTED pose bone
+(docs/MODEL_WORKFLOW.md, Traps), so the gun sat at a wrong angle against the hands; the hold times
+chosen from those pictures are revised here. The tool now uses the game's bone frames and checks the
+hands against the live recordings (0.1-0.9 units).
+
+- **Pistol: the carry hold is 0.80 s, not 0.53.** At 0.53 the cylinder is still in the open frame
+  and the clip's hand is only beside it; at 0.80 the hand holds the new cylinder between thumb and
+  fingers on its way in (DrumParent 8 units from the palm). The "wrapped round the cylinder from
+  below at 0.53" read above came from the wrong render.
+- **Tommy Gun, 0.30 s:** with the drum (`TG_AmmoModel`) on its socket the gun now sits correctly in
+  the right hand; the tester reports this hold good, so it stays.
+- **The shotgun's Fire clip, gun hand against its first frame:** a kick 0.06-0.15 s (to 16 deg and
+  35 units back), settling until about 0.45 s (still 16 deg, 19 units), then the swing up to pump one-
+  handed (50 deg at 0.70). The gun-motion fade is 0.30-0.45 s.
+- **The shotgun's reload clips do not move the gun:** `SG_Body` stays at (10.1, -3.7, -1.7) in model
+  space through the start and every loop, and the gun hand turns at most 3 deg.
+
+The live-game Tommy Gun change of the same evening: a dry gun's own reload does not drop the drum (the
+hand pulls it, the program's first step); a reload the game begins with rounds still in the gun
+(switching ammunition) still drops it.
+
+## 2026-10-20 - The shotgun when it empties, and its last pump
+
+Measured with the corrected `reload_pose.py`: `Shotgun__EmptyFidgetShotgun` and `Shotgun__FidgetShotgun`
+hold the gun identically (the grip socket at the same place in the right hand, the left palm at the same
+point on the gun, 49.8 / 15.4 / 16.0 in the grip's frame), and the reload clips move neither the gun's
+`SG_Body` nor the gun hand by more than 3 deg. So "the empty weapon position" was not the game's: the
+shotgun's own reload begins the moment it empties, its clip takes the free hand from the fore-end to the
+pouch, and the two-handed hold - which aims from where the clip has that hand - let go and the gun
+swung to the one-handed angle. Now (bones.cpp): while no reload runs, the free hand's bones are kept
+relative to the gun hand's wrist; while one runs and the two-handed grip is still squeezed, they are put
+back there, so the hold and the drawn hand are unchanged until the grip is let go
+(`manual_reload::two_hand_allowed`). The reload's last pump is the pump between shots: a PumpHand phase
+leaves the grip to the two-handed grip, and the same Pump ratchet works the end clip's pump (0.409-0.487
+back, 0.532-0.676 forward), waiting for the hands instead of pumping itself. The recoil the gun hand
+plays from the Fire clip is halved.
+
+## 2026-10-20 - From the 21:07 run's recording: the grab lost after each pump; the grip pose
+
+The shotgun recording (`poserec-20261020-211137`, 1567 frames, replayed with `pose_capture.py --record`)
+puts the drawn free palm 5-6 units from `SG_Pump` through every shot and stroke (the hand IS on the
+pump), and 26-35 units from it within 0.1 s after each pump completes - the log's "let go - the hand
+slid off along the gun" each time: the hold's slide-off test came back on at the catch while the clip
+was still returning the pump. The whole Fire clip (and 0.4 s after) now counts as the pump's.
+
+The free hand's fingers are the clip's, and a clip can open them on the gun (the reload's end clip puts a
+flat hand on the pump). Whenever the two-handed grip holds, the fingers are now the curl that grip had on
+that gun at rest (latched while it idles held, per gun, on the free wrist) - "gripping should always make
+it the grip pose". The replay also takes the IK arms now (each sleeve's palette affine is in the capture;
+older captures carry the arm with the hand), so its wrists are no longer torn.
+
+A dry Tommy Gun's reload waits at the drum; switching ammunition then (PendingAmmoSelection changing)
+drops the drum as X does, and the game loads the new type when the clip ends.
+
+## 2026-10-20 - A designed grip for a carried part (the pistol's cylinder)
+
+The pistol's carry hold (0.80 s of FastReload) is the game's own pose, replayed exactly from a capture: an
+open hand mid-toss, the cylinder resting on the fingers - and measured on the meshes the clip's index and
+middle are 4-6 units INSIDE the cylinder there, so no curl of the clip's fingers can grip it.
+`tools\blender\grip_solve.py` designs the hold instead, by the meshes: the part as an exact cylinder fitted
+to its skin (the pistol's: length 7.97, diameter 9.55 - a puck, wider than long, and shorter than the hand
+is wide, so laid across the knuckles the index and pinky miss it); `--hold rim` puts its face in the palm
+under the fingers' bases, seats it out of the palm's skin, then closes each joint, base first, until its
+own segment touches (a capsule sized from the finger's skin), backs off any joint whose skin goes deeper
+than 0.3 - and checks the result on the deformed meshes. The pistol's: middle, ring, pinky and thumb on the
+cylinder along 57-63% of their length, the index 37%, nothing deeper than 0.3. It emits each finger joint's
+rotation against its parent and each part bone's pose against the wrist (`grip_pistol_cylinder.h`).
+
+The mod applies it while the new cylinder is carried (`manual_reload::carry_grip`): bones.cpp sets the
+left fingers to the solved rotations with the clip's own joint offsets, carry() places the part against the
+clip's wrist and moves it with the hand's placement - and draws it at the HAND's size. The simulation
+(`pose_capture.py --grip`, the mod's own math on the real capture) found that last part: the gun is drawn
+at weapon size x DrawScale, the hand at the hand size, so the carried cylinder came out 15% small (radius
+4.07 for 4.77) and every finger stopped ~0.3 short of it; at the hand's size (`set_weapon_part_scale`,
+the hand's actor x placement scale over the gun's drawn factor) every finger and the thumb touch it
+(nearest 0.00-0.05, nothing deeper than 0.28). It returns to the gun's size as the clip seats it.
+
+## 2026-10-20 - A spare magazine in the hand, and catching a thrown one (the Tommy Gun)
+
+The spare drum is a prop, not the gun's: `dropped_part::make_held` spawns the same runtime prop the drop
+uses (ShockGame.PhysicalReactiveActor / NonPhysicalReactiveActor, the weapon's AmmoModel mesh and
+DrawScale) with its physics OFF and the AmmoModel's DrawPriority (the hands' layer), then writes its
+Location/Rotation fields every frame - with physics off nothing else moves it - and keeps its LifeSpan at
+20 s while it is moved, so a spare the mod loses track of removes itself. Let go, it is released exactly as
+a drop: physics off, SetLocation, then Havok with the hand's throw velocity, LifeSpan 90 s.
+
+Where it is drawn: the reload clip's own hold of the drum (TG_AmmoClip against Bip01_L_Hand at 0.30 s of
+TommyGun__ReloadTommyGun, `tools\blender\game_frames.py`: p 20.84 -14.71 -8.09, q 0.611 0.345 0.208 0.682,
+Unreal axes, clip units) put against the drawn free wrist as the designed grips are, and the visible
+magazine against TG_AmmoClip as it sits on the gun - measured in game while the gun is idle and steady
+(`[reload] MachineGun: the visible magazine against TG_AmmoClip: ...`, AmmoModel's Location/Rotation
+against the bone's drawn pose). So when the spare goes into a reload, the gun's own drum - carried from the
+same 0.30 s hold - takes its place where it was.
+
+Identity across loads: a prop handle is the actor, its class, its name index and its Level; it is used
+only while all four read back the same AND the weapon in hand is in that Level (`dropped_part::alive`).
+After a level change both are new and the old memory is never written.
+
+Rounds to take a spare with: PlayerWeapon.Reload compares the gun's RoundsRemaining with
+Holder.GetNumberOfItems(PendingAmmoSelection), and FireWeapon reloads an empty gun while that count is
+above 0 - so the count includes the rounds in the gun; a spare is there while it is GREATER than them.
+
+Catching: a thrown spare (or a new drum let go short of the well) is tracked 4 s; while the reload waits
+at its Fetch with the well open, one whose drum bone (the prop less the measured AmmoModel offset) comes
+within 15 cm of where the spent drum sat (the latch, recorded at the eject) is removed and the machine
+seats the gun's own drum from the insert's last stretch, as a slap does.
+
+## 2026-10-20 - The cock poses, frame by frame (the 21:11 recording)
+
+`pose_capture.py --csv` now writes the free wrist's turn against the gun's attach bone and each finger's
+curl. Across the recording's pumps: every shot's Fire clip keeps the free wrist at the rest turn (140, -7.5,
+-60 deg, within 2) and the palm on SG_Pump (5-6 units) through the stroke - but its FINGERS open flat from
+0.40 to 0.85 s (index/middle/ring curl 72/103/108 deg at rest -> 17/14/15), exactly the stroke, and the
+pump waits at 0.75 with the hand flat. Which cocks looked wrong depended on where each stroke caught the
+clip. The reload's last pump held the clip at 0.409 s, where its free wrist is turned 27 deg off the rest
+grab (113, -18, -74) and 4 units over, its fingers half open (76/48/55) - the cock after a reload grabbed
+differently. Both are now the rest grab whenever the two-handed grip holds: the fingers latched at rest
+(the earlier fix), and the wrist at the rest turn against the attach bone, turned about the palm so the
+palm stays on the pump (bones.cpp, the free-hand substitution).
+
+## 2026-10-20 - The palette skins the game's bones, not the drive's: per-bone fixes
+
+The 22:54 pistol captures had the solved cylinder grip in every bone the drive composed (each finger joint
+0.0 deg from grip_solve.py's, the cylinder 0.02-0.04 units and 0.0 deg from the table, at the hand's
+scale) - and the frame itself showed an OPEN hand with the cylinder on the palm. The palette route hands the
+skinner the ENGINE's skin matrices with one rigid correction per hand composed on; the drive's substituted
+pose (the grip pose's fingers, a designed grip, the free hand kept on the gun, the shotgun's wrist at its
+rest turn) only fed the placement math. So the fingers never moved, and a substituted WRIST was worse: the
+hand's correction was computed from it while the mesh kept the game's, putting the hand off its grab (the
+22:57 shotgun "regrabbed way under the handle").
+
+`palette::HandXform` now carries per-bone rigid fixes, composed on before the hand's correction:
+fix_i = D_i * inverse(E_i), the drawn bone D against the evaluated bone E the skin matrix was made from.
+bones.cpp fills them for every free-hand bone the substitution changed (`A` against `A0`).
+
+## 2026-10-20 - The shotgun's clip motion, the spare's Havok body, a caught drum
+
+- The 22:57 recording: the moment the shotgun emptied, the reload clips turned the gun in the gun hand
+  ~40-60 deg and moved it 18-25 units (held there through the whole reload); the idle fidget moved it
+  ~20. Only the Fire clip's recoil is layered now; every other clip's gun motion is 0 for the shotgun.
+- A held spare is spawned at the gun's magazine and moved by its fields; its Havok body stays where it
+  was built, so turning Havok on dropped it from the gun. Let go, the held prop is removed and a NEW drop
+  is made where it is (drop()'s order: placed, mesh, Havok).
+- Destroy on a caught drum left it falling from the well. Removal is now physics off, moved 100000
+  units down, LifeSpan 0.1, then Destroy (`[drop] prop ... removed (Destroy ok|REFUSED ...)`).
+- After an ammunition switch the game ends its reload and begins another for the new type; with the gun
+  dry that one waited at the drum. A reload begun while Pending != Current ammunition now drops the drum.
+
+## 2026-10-20 - The 23:21 run: the barrel axis, the kept free hand, the mirrored grip
+
+- **The reticle 90 degrees left (Tommy Gun):** the aim's barrel axis is chosen once per weapon as the gun
+  bone axis nearest the aim ray. At 23:21:57 it was chosen mid equip (`gun body -Y (0.77 with the aim
+  ray)`) and kept until the weapon changed. It is now chosen only from a gun lined up with the ray (dot
+  >= 0.9); until then the direction stays the controller's and the next frame tries again.
+- **The shotgun's left arm stretched as it emptied:** the free hand kept on the gun through a reload's
+  start was kept against the gun hand's WRIST, and the reload clip moves the gun in that hand - the kept
+  palm landed 27 units off the pump, past the muzzle (capture afw-...232138: palm in the grip frame 59.6
+  19.1 -9.4 for the pump's ~45 14 15), 20 cm from the controller. It is kept against the gun's attach
+  bone now.
+- **Left-hand mode (mirrored hands):** the designed grip was solved for the left hand and only applied
+  to it. Mirrored, the free hand is the right mesh drawing the left clip pose mirrored (m4_pose); the
+  grip's joints are applied to the game's unmirrored left fingers and mirrored into the right ones, and a
+  part pose against the left wrist becomes Mb^-1 * rel * F against the right one (W_R = mx W_L Mb, the
+  mirror cancels; F flips the part's local Y, a symmetry of a cylinder or a drum) - the pistol cylinder
+  and the Tommy Gun's spare alike.
+
+## 2026-10-21 - The 00:17 run: the kept hand's first frame, the pouch's reach, the shell's hold
+
+- **The shotgun's arm stretched as it emptied, still** (the 00:20 recording, frame 1879): the free hand
+  kept on the gun through the reload's start was re-recorded FROM the reload clip on its first frame -
+  the game's clip is live a frame before the manual reload says so (it starts in the gun hand's tick,
+  after the substitution). The palm jumped 49 units off the pump and was kept there. The hands' own state
+  (Reloading, which covers ProceduralWeaponReloading - the ammunition switch's) now decides: no rest is
+  recorded while the game reloads, and the hand is kept from that first frame.
+- **No spare from the pouch, all run:** the grip arbiter gives the squeeze to the nearest grab within
+  reach. Idle, the Tommy Gun's reload offers its reach to the drum in the gun (1.6-2.2, out of reach), and
+  the pouch's 0.5 was only used when no reach was set - so the pouch never won. In the pouch it is now 0.25.
+- **The shell "above the middle finger knuckle":** carried at the palm (Phase::atPalm) by its bone, the
+  shell's model (a separate static mesh on SOCKET_AmmoSocket at SG_Shell's origin) reached out through the
+  back of the hand (the recording replayed with it hung on the bone). It is now a designed grip
+  (`grip_shotgun_shell.h`, grip_solve.py `--part-mesh`): across the fingers, middle and ring on its side,
+  the thumb over its end, nothing deeper than 0.16. The shell is 8.21 long, about the knuckle span (8.39),
+  so the index and pinky pass its ends.
+
+## 2026-10-21 - The 00:43 run: the hand-back's own "at the gun" carry, the spare's draw layer
+
+- **The shotgun's free hand at the waist as it empties, still:** the earlier fix kept the substituted
+  pose, but a second path draws the free hand: the hand-back's "reload at the gun" carry, which puts it
+  where the clip has it against the gun - the clip's hand at the pouch. It stands down for a manual
+  reload, by `manual_reload::active()`, which is a frame late on every reload's start (it begins in the
+  gun hand's tick) and false between the clips of an ammunition switch's restarted reloads (00:45:27 and
+  00:45:36: "the reload ended", a new SingleFrame the next frame). Each time the carry blended in (250 ms).
+  `manual_reload::handles_reloads()` - the gun in hand has a manual-reload program - now stands it down
+  from the first frame.
+- **The Tommy Gun's spare invisible in the hand:** it took the gun magazine's DrawPriority (the hands'
+  foreground layer), and an actor of its own there is not drawn; every drop that shows is in the world's
+  layer. The spare is in the world's layer, its collision off while held, and moved by SetLocation and
+  SetRotation (its zone and render bounds follow).
+- **The shotgun shell:** the 00:45 recording has the gun's SG_Shell bone in the solved grip. If the shell
+  still shows elsewhere, the shell actor is not following that bone; the pose files now carry the
+  engine's own placement of the visible magazine (`ammo` line) and the replay reports its distance from
+  every gun bone (`ammo_from_*`, `ammo_nearest_bone`).
+- **01:29 run: the visible spare stayed where it was grabbed.** A prop made through the hands' script spawn
+  (ApplyScriptedHandAttachment, then DetachFromBone) is still BASED on the hands: every SetLocation on it
+  is refused (each one logged "now" at the hands actor's own location), and writing its Location field
+  does not move what is drawn. `SetBase(None)` after the detach (`[drop] taken off the hands: ...`).
+
+## 2026-10-21 - The 09:30 run: the front hand slides in a reload, the start clip, the spare as a driven body
+
+- **The stretched arm, again (capture afw-...093344):** the kept hand was right this time - the palm on
+  the pump, 6.8 units off - but the two-handed hold draws the front hand at the gun's anchor, and with the
+  shotgun empty the real hand was 17 cm behind it and 14 up (pumping a dry gun, reaching to load). The arm
+  was drawn out to the pump. While the gun reloads the front hand now slides along the gun with the
+  controller (`s_reloadSlide`: the real hand's place along the anchor's line, within 30 cm), and sliding no
+  longer lets the hold go (two_hand.cpp: slide 0 through a manual reload).
+- **The hand pose flashing on an ammunition switch** (the 09:32 recording, frames 383/420/501/534): each of
+  the four restarted reloads began with the 'SingleFrame' start clip, which put the free hand in its start
+  pose, then the pouch's. Through a start clip the free hand holds as it was the frame before, against the
+  gun (`manual_reload::start_clip`).
+- **The gun in the gun hand** stays within 2 degrees of the idle hold through every reload clip (measured
+  bone 43 against the right wrist over the whole recording) - the reload clips do not turn the gun in the
+  hand; only the free hand moved.
+- **The held spare (09:31):** SetLocation stayed refused with the base cleared, and the Location field is
+  not what is drawn. The spare is now a live Havok body the hand DRIVES: each frame the velocity that brings
+  it to the hand in one frame (HavokSetLinearVelocity) and the spin to the hand's turn
+  (HavokSetAngularVelocity, the quaternion error over the frame time). Let go, it keeps the throw - no fresh
+  drop in its place (that flashed a second drum at the gun's magazine). A removed prop is shrunk with
+  SetDrawScale(0.001) before Destroy, which was refused.
+- **The Tommy Gun's ammunition switch (09:32:15):** the switch ended the dry gun's waiting reload on the
+  frame the drop was asked for, and the game's next reload already had Pending == Current. A reload begun
+  within 1.5 s of a seen switch now drops the drum.
+
+## 2026-10-21 - The 10:07 run: the approach to the free hand in a reload, re-evaluated
+
+What the recordings say, together (the 09:32 and 10:09 shotgun recordings, the 09:33 capture):
+- The gun never turns in the gun hand through a reload (bone 43 against the right wrist within 2 deg);
+  the gun hand follows its controller (the palette correction takes the clip's 74 deg wrist turn out).
+- An ammunition switch first runs **ProceduralLoweringHands** (the Offscreen state) - the hands lowered
+  procedurally - and only then the reload. The free hand's rest on the gun was recorded in every state that
+  was not a reload, the lowering included, so it was taken from the lowered pose and then kept. It is now
+  recorded only while the hands idle (held, or the first idle on that gun), and kept through the game's own
+  states (a reload, the lowering) while the grip holds.
+- The front hand slid along the gun with the controller through a reload (to stop the stretched arm), but
+  the hold had been told never to let go then; with the real hand gone to the pouch and the grip still held,
+  the drawn palm slid 30 cm back - behind the gun's grip, at the waist (10:09 recording, palm -35..-46 along
+  the gun). The hold lets go of a hand that far again (20 cm, as between shots); the slide stays inside it,
+  and the reload's last pump rides the pump itself.
+- **The Tommy Gun's dip as it runs dry (10:08:56):** the last burst sat in the firing state a second, its
+  clip pointing the gun down. For guns that reload by hand only the first 0.30 s of a firing clip's own
+  motion is layered (faded out by 0.45), none once the gun is empty.
+- **The spare in the hand:** a world prop judders in the hand under alternate frame warp and a driven
+  Havok body fought its physics. It is now the hands' own scripted attachment left ON a hands bone (drawn
+  with the hands), placed each frame by its relative location and rotation against that bone's engine
+  coordinates; let go, it comes off the hands (DetachFromBone, SetBase none), its Havok body is built where
+  it is and it is thrown. `[drop] spare on the hand: N uu from where it is asked to be` reports the fit.
+
+## 2026-10-21 - THE STRETCHED ARM, found: the arm solve's reference wrist (the 10:26 recording)
+
+Replayed (`pose_capture.py --record ... --from 125 --render`), the shotgun's first reload frame after the
+last pump shows it exactly: the left hand drawn on the gun, the left forearm swung down to the waist, the
+wrist's skin stretched between them. The arm IK takes a REFERENCE arm from the evaluated pose - clavicle,
+upper arm, forearm and wrist - and turns each segment from its reference to the solved one. Its sleeve bones
+came from the game's reload clip (the arm reaching for the pouch) while its wrist came from the substituted
+pose (the free hand kept on the gun), so the reference forearm ran a foot from the pouch to the gun and the
+solve turned the drawn forearm by that bogus segment. Every change that kept the hand on the gun more
+firmly made it worse. The reference wrist (and the reach measure) is now the game's own (`A0`), consistent
+with the sleeves it came with; the solved arm still ends at the drawn wrist.
+
+The Tommy Gun's held spare, the same day: attached to a hands bone it was also picked up by the effect
+follow (fx_actor_follow), which rewrites every hand-bone attachment to the drawn palm each frame - 25-30 uu
+off and swivelling. It is excluded, and the spare's relative pose is the engine's attachment model
+(`bones::attach_relative`: component = evaluated bone + rotate(bone, rel)), written to the attachment's
+fields. And it is a PhysicalReactiveActor (its defaults do not block players): as a NonPhysicalReactiveActor
+held in the hand it stood under the player, and a jump launched him into the ceiling.
+- **After the arm fix (12:00 run):** the reload slide of the front hand (a workaround for the stretch) and the
+  "kept angle" through a reload both go. The kept angle held the two-handed turn of the moment the hold ended -
+  the front hand already leaving - for the whole reload: the 12:02 capture's shotgun turned ~90 deg off a
+  controller pointed straight ahead ("the wrist turn when empty", worse on an ammunition switch). With the free
+  hand kept on the gun while the grip holds, a reload no longer ends the hold by itself; let go, the gun is the
+  gun hand's. The Tommy Gun's spare in the hand takes the reload clip's own fingers at 0.30 s
+  (`grip_tommy_drum.h`, the hold its placement already comes from), not the grip pose.
+
+## 2026-10-21 - The shotgun's hold: only the grip lets go; a fresh grab settles before it pumps
+
+- The two-handed hold let go when its slide measure exceeded the release distance - and a frame with no
+  measure (a frame the gun hand's branch published nothing, as after a shot) read as slid off. For the
+  shotgun only the grip coming up ends the hold (`manual_reload::sticky_grip`), and it can be taken hold of
+  at any time, a reload included (two_hand_allowed), but while the hand carries a shell to the port; its
+  reload claims the free grip only at the pouch, so away from it the squeeze is the two-handed grip's.
+- The reload's last pump "cocked itself" (12:17:18: grab at 18.353, pumped at 18.679): the hand coming back
+  from the pouch was taken hold of inside the 12 cm grab radius, and its last centimetres of approach and its
+  settle were read as the two 6 cm strokes. A fresh hold counts no stroke for 0.30 s (`PumpConfig::settleS`,
+  PumpInput::heldS), its reference taken once it has settled - between shots too.
+
+## 2026-10-21 - The shotgun cocked only by hand; the empty gun's idle
+
+- **The cock and its sound.** Between shots the Fire clip now waits right after the recoil (0.45 s) - before
+  the pump - for the hands, held or not (`shot_pump_cfg`: waitT 0.45, waitForHands), and plays on through the
+  pump only once a stroke has begun, so the clip's own pump sound (its notify lies between 0.45 and 0.75:
+  "it always plays the cocking sound after shooting even if you haven't cocked") fires with the player's pump.
+  It never pumps itself. The notify times are not exported; that bracket is from the tester's report.
+- **Firing during a reload.** The game cuts a shotgun reload short and fires the shell it just took when the
+  trigger is pulled ("it lets you shoot the first bullet without cocking"). The trigger reaches the game
+  nothing while the shotgun reloads, nor while it waits to be cocked: a reload begun from empty leaves the gun
+  uncocked until its last pump is worked by hand; cut short, the hands cock it dry - the same Pump with no
+  clip, SG_Pump drawn moving with the strokes (18 units along the gun's -X) - `[reload] Shotgun: cocked dry`.
+  (A dry cock plays no sound: no clip plays it.)
+- **The empty gun's idle (EmptyFidgetShotgun)** holds the free hand away from the pump - the grab's target
+  followed it ("it doesn't let me grip when it's empty", 12:54: every squeeze ~3.5 grab radii off) and a held
+  hand rode it away. The grab's target is the hand's place on the gun when it holds it; held, the free hand
+  keeps its rest whenever a clip has taken it more than 4 units off (a shot's pump stroke aside). The gun's
+  grip and tip sockets (43, 44) stay against the gun hand's wrist as at idle through every clip but a shot's
+  ("the tilt-up for a split second" on running out of an ammunition type).
+
+## 2026-10-21 - Effect events: AActor::TriggerEffectEvent, and the gun sound engine
+
+**Where every effect event goes** (`tools\ida\se1_effect_event.py`, static). Actor's native function table
+holds `{name, exec thunk, 0}` entries; `intAActorexecTriggerEffectEvent` sits at RVA 0x11BB6AC and its thunk
+pointer (+4) is written at startup by a static initializer (RVA 0x3AE2A: `mov [0x11BB6B0], sub @ RVA
+0x37B910`). The thunk unpacks the script's 13 parameters and calls the actor's **vtable +0x290** (RVA 0x37BB4B
+`call [eax+290h]`), thiscall with 12 dwords: the EffectEvent FName by value (index, number), Other, Material,
+FVector*, FRotator*, PlayOnOther, QueryOnly, Observer, the ReferenceTag FName by value, EffectEventInfo;
+bool in eax (`patterns.h kActorTriggerEffectEventVtbl`). Animation cues reach the same virtual. The mod hooks
+the function the hands actor's slot points at (MinHook on the code, so every actor sharing it is covered),
+refusing a slot outside the game's image (`[sound] the gun sound engine is on: ... RVA 0x...`).
+
+**What the sounds are.** A gun's action sounds are EventResponse_SoundEffectsSubsystem objects named
+`<class><event>` in the map packages: `HandsPumpShotgun`, `HandsShotgunReloadEnd` (+ ammo variants),
+`HandsShotgunReloadLoop`, `HandsShotgunReloadStart`, `HandsReloadShotgun`, `HandsFidgetShotgunSound`,
+`HandsEquipShotgun(Sound)`. The hands' SharedSkeletonAnimationMetadata objects do not hold the cue times; the
+cues are inside the Havok animation data. So the times are not read offline: the engine LOGS each event as it
+fires on the hands or the gun in hand (`[sound] event <name> on the hands|weapon`, 150 ms de-duplicated).
+
+**The sound engine** (`sound_engine.h`). While a gun's manual reload is on, its action events in the mute
+table are dropped when a clip fires them (`- MUTED`), and the mod fires them itself at the player's action
+(`[sound] played ...`). Shotgun: PumpShotgun and ShotgunReloadEnd muted; PumpShotgun played as each pump's
+back stroke begins (between shots, the reload's last pump, a dry cock). The Tommy Gun and pistol are logged
+only, their tables to be read from a run's log.
+
+**The split-second tilt** (the 12:53 recording): the drawn gun hand turned 70-79 deg in one frame as the grip
+came up mid-reload while the game's own wrist moved 0.3 deg - the two-handed aim, which (the shotgun's hold
+never letting go by distance) had turned the gun toward a free hand 20-25 cm off the pump, snapping back on
+release. A distance fade of the aim (whole within 15 cm, none past 30) was tried and REMOVED the same day: pulling
+the gun away read as the grip letting go, and the shotgun's rule is that only releasing grip ends the hold.
+The lift on the last shell (a ~12 deg pitch-up over ~150 ms with gun-in-hand constant) is still unexplained; the
+pose recording now carries an `aim <hold weight> <aim turn deg> <hand distance cm> <gun motion>` line per frame
+so the next recording says which layer turns the gun.
+
+**Dry fire.** PlayerWeapon fires `TriggerEffectEvent('DryFiring',,,,,,,, CurrentAmmoSelection.Name)` on the weapon
+for an empty pull (corpus, PlayerWeapon.uc); a pull the shotgun's manual reload zeroes never gets there. The
+engine plays DryFiring on the weapon, with the ammunition object's name as the ReferenceTag, for each pull the
+shotgun refuses (reloading, waiting to be cocked, a pump waiting).
+
+**The Tommy Gun's bolt** ("the tommy gun slide sound"): the bolt-home Play phase started at 2.244 s, the stroke
+leaving the clip at 2.20; a phase's start is set, not played, so the cue in those 44 ms never fired. It starts at
+2.20 now.
+
+That was not it: the 19:12 run's log has NO effect event at all through a Tommy reload. The Tommy's reload is
+one sound, `HandsReloadTommy` (+ `_ammoAP`/`_ammoFrost` variants), cued at the clip's start - which the manual
+reload never plays from - so none of it played.
+
+## 2026-10-21 - The guns' sounds are whole actions; parts of them through FMOD
+
+**Where the sounds are.** BS1's weapon sounds are `Sound` objects inside the map packages (UModel `-list`:
+`weapons_shotgun_pump_01`, `weapons_shotgun_reloadEndwav`, `weapons_tommy_reload_01`, ...), not in the
+`Sounds_Windows\*.fsb` banks (those hold streamed ambience, music and voice - FSB5, FMOD's own). UModel
+`-export -game=bio -sounds` writes a Sound's data as `.unk`: an MP3 (an `Info` frame, 64 kbps, 44.1 kHz mono).
+`toolssb-probe.ps1 -File` decodes it with the game's own fmodex.dll and prints its loudness over time.
+
+| Sound | Length | Parts (loudness, dB, the steps between) |
+|---|---|---|
+| `weapons_shotgun_pump_01` (PumpShotgun, the rack between shots) | 0.40 s | a click at 63 ms, the slam 93-135 ms: both strokes in 35 ms, not separable |
+| `weapons_shotgun_reloadEndwav` (ShotgunReloadEnd) | 0.84 s | shell click 80; BACK 140-300 (peak 240); a gap to -35 dB at 300-320; FORWARD 340-560 (slam 460) |
+| `weapons_tommy_reload_01` (ReloadTommy) | 2.35 s | drum out 0-520; drum in 880-1540; bolt 1850-2330 (back ~1900, home ~2050) |
+
+**Parts** (`sound_engine::play_part`). The game plays through FMOD Ex's C++ API (its imports:
+`System::playSound`, `Channel::setPosition`/`getPosition`/`stop`, ...). The mod hooks `System::playSound` (the
+fmodex.dll export, MinHook): while the mod fires an event for a part, the channel it starts for that sound is moved
+to the part's start (`setPosition`, ms) and stopped at its end (polled each tick). Every sound an event on the
+hands or the gun plays is logged (`[sound] <event> plays <sound>`), so which file an event plays is read off a
+run. The shotgun's strokes play the reload end's sound, back 130-310 ms as the back stroke begins and forward
+310 ms to its end as the forward stroke begins (without the hook: the whole PumpShotgun on the back stroke, as
+before). The Tommy's parts play as the drum comes out (or drops), as the new drum seats, and as the bolt is
+racked back. The mapping from event to file (HandsShotgunReloadEnd -> reloadEndwav, HandsReloadTommy ->
+reload_01) is by name and unverified until a run logs it; a wrong one says `does not play it` and falls back.
+
+**The lift when the shotgun runs dry, found** (the 19:12 recording with its `aim` line). Frames 2831-2835: the
+last shot's Fire clip ends, the hands go to `EmptyFidgetShotgun`, and the two-handed aim's turn dips 22 -> 12 ->
+22 deg over 150 ms with the hold weight 1 and the gun's own motion 0. The shotgun's front-hand anchor was
+re-latched from every idle frame while held, and the empty idle's first frames take the hand off the pump. It is
+now latched only from an idle that is not `EmptyFidget*`. (The same recording's 0.9 s, 33 deg rise at frames
+2928-2947 turned the drawn hand with it - the controller, not the mod.)
+
+**The reload button and the empty shotgun** (19:15 in the log). X with the shotgun empty reached the game:
+`DryReloading` (no rounds of that ammunition), then the game switched ammunition and began its own reload, which
+the manual reload adopted and held for a shell the player never fetched - fire blocked until a weapon switch.
+X is now never the game's on any gun the hands reload. And a reload waiting for the free hand (an empty gun's)
+claims its grip only at the part it waits on (`Machine::hand_free`): elsewhere the squeeze hands the gun over or
+takes the two-handed grip.
+
+**Correction, the 20:18 run.** FMOD's `Sound::getName` returns `(null)` for every sound the game plays: it makes
+them from memory, without names. Matching parts by file name failed every time, so each event played whole, the
+shotgun's two strokes as two full cocks. A part is now matched to the first sound its event starts (an event plays
+one), and its length (`Sound::getLength`) is logged to say which file it was. The stroke parts play as each stroke
+ENDS (back home, then forward home): that run detected the back stroke only 34 ms before the forward one.
+
+**The mirror axis, mid-reload.** The gun's sideways axis for the left-hand mirror was latched from the first
+mirrored frame. Handed over during a shotgun reload, the reload clip had the gun turned, and Z (0.72 along the
+mirror's normal) won over Y: the gun upside down until the weapon changed. The axis is now read from the gun held
+at rest (the hands idling) in either hand; a frame not at rest only decides it provisionally, until one is.
+
+**A Tommy Gun left without its drum** (switched away at the pouch step) had its drum shown again by the reload's
+end. It now stays without one (`HideAmmoModel` while in hand, fire refused with the dry click), and its reload is
+begun again at rest; the machine adopts it at the pouch (`Input::magOut`) instead of dropping another drum.
+
+**Correction, the 20:35 run: the timelines were 400 ms off.** `fsb-probe env` reads with `Sound::readData` on an
+open-only stream, and on both MP3s it returned ~392 ms less audio than the sound holds (3109 of 3500 ms, 2403 of
+2795), missing the START: every cut point placed from it was 400 ms early. `fsb-probe pcm` makes the sound a
+decompressed sample with FMOD's exact length (`FMOD_ACCURATETIME`) and reads it whole with `Sound::lock`;
+`fsb-probe seek` shows a channel's ms position maps 1:1 onto that decoded audio in every creation mode (sample,
+compressed sample, stream). The game's sounds report the Xing-header length (3552 ms, 2847 ms), not the exact one.
+
+| Sound | Corrected parts (ms, `pcm` timeline) |
+|---|---|
+| `weapons_shotgun_reloadEndwav` | click 280-300; shell 480; BACK 540-680 (clack 600-660); dip 700-720; FORWARD 740-900 (slam 840-860) |
+| `weapons_tommy_reload_01` | drum release and pull 50-500; drum in 1275-1925; bolt 2225-2700 (back ~2350, home ~2450) |
+
+**The upside-down shotgun, found** (the 20:36 recording, frame 448). The mirror's axis was right (Y, read at
+rest); the gun's up axis still went from +0.80 to -0.99 at the hand-over. The shotgun's gun-in-hand rest (sockets
+43/44 against the gun hand's wrist, re-applied through every clip but a shot) was latched from the RIGHT hand at
+idle and applied, mirrored, to the left wrist: that hold turned over, not mirrored. It, the two-handed grip's
+anchor and the free hand's rest on the gun are now latched one per hand.
+
+**The empty Tommy Gun's grip.** Waiting at the pouch, the reload clip holds its free hand down there, and the
+two-handed grip's target followed it: every squeeze measured 1.4-1.5 grab radii off and went to the game (a
+plasmid). The anchor latched at rest on the gun, the shotgun's since the morning, is now every gun's.
+
+**The 20:54 run.** No drum would seat: the seat (where the drum sits, the latch's target) was read only while an
+ejected drum falls, and a reload begun at the pouch with no drum in the gun never drops one - with no seat, only
+the clip's own insert path start under the gun took a drum. The Tommy Gun's seat does not move with the clip, so it
+is read at rest with the drum in (TG_AmmoClip's pose, every 0.5 s idle) and used by every reload of that gun.
+The empty gun in the left hand measured 1.48 grab radii off: the per-hand grip anchor had no left-hand latch until
+an idle in that hand. A hand with none takes the other hand's, reflected in the grip's frame about the gun's
+centre plane along its sideways axis (`g_mirU`, `g_mirPlane` - the same flip `m4_pose` gives the grip bone).
+The shotgun's gun-in-hand rest is now kept per gun across a weapon switch (four guns), and a new one is taken
+only from an idle settled for 0.5 s, not the empty gun's: after a plasmid mid-reload, the first idle frame of the
+re-equip was taken as the rest and held through the next reload.
+
+
+## 2026-10-21 - Gun geometry as constants: the fore-grip, the grip pose, the mirror axis and plane, the seat
+
+Step 1 of the held-gun redesign (docs/bioshock1/HELD_GUN_AUDIT.md 2.3, 2.8). Everything the two-handed
+grip, the left-hand mirror and the reload need to know about where a gun's parts are is now a constant of
+the gun in its grip bone's frame (bone 43), read from a table (`gun_geometry.h`, the generated
+`grip_rest_poses.h`), and nothing is latched from a live frame any more.
+
+**The fore-grip point (the two-handed anchor)** is the free hand's FIST CENTRE (`hand_grip.h`, the point the
+controller's grip pose pins) against bone 43 in the gun's idle clip. Measured in Blender on the hands rig
+(`NEWPlayerHands-all.glb`, which carries every clip; the hands' bones in engine index order, `game_frames.py`
+giving the game's own frames) at 0, 0.5, 1, 2 and 3 s of each `Fidget*` clip - every clip holds it within
+0.3 units, and the `EmptyFidget*` clips hold the same point (it is the engine's blend INTO them, not the
+clip, that takes the hand off the pump). The live check: a Python pass over the six shotgun pose recordings
+of the day (`poserec-20261021-19..21*`, 2946 frames in `WeaponIdling` with `FidgetShotgun`, the grip not
+held) puts the live fist centre at 54.03 14.69 14.31 with a spread of 0.2, against 54.08 14.75 14.29
+offline. Unreal axes, rig units at the authored size; `two_hand_math.h on_drawn_gun` maps it to the drawn gun.
+
+| Gun | Fist centre vs bone 43 (idle clip) | Wrist vs bone 43 |
+|---|---|---|
+| Shotgun | 54.05 14.70 14.30 | 45.27 7.43 14.98 |
+| Tommy Gun | 45.0 5.5 3.0 | 34.83 0.24 1.91 |
+| Grenade launcher | 51.4 20.6 15.2 | 47.07 10.62 11.44 |
+| Chemical thrower | 12.5 -10.8 22.5 | 8.23 -19.21 29.02 |
+| Crossbow | 26.9 8.7 -3.4 | 23.11 -1.60 -0.03 |
+
+**The same recordings show the latch it replaces failing.** In the two last recordings of the day (20:55,
+21:14) the HELD idle frames have the substituted free hand 60-100 units from the pump (mean -62 -44 26, spread
+57) while the unheld ones sit at the constant - the rest latched from an equip's end frame, drawn by the
+kept-on-gun rule, and copied into the anchor (the audit's bug 5). The 19:12-20:36 recordings' held frames
+are at the constant: the regression came in with the per-hand latches of the 20:54 run.
+
+**The grip pose** is the free hand's whole rest on the gun from the same clip at 0 s: each left-hand bone
+(7-21) against the wrist and the wrist against bone 43, 15 rows per gun, generated into `grip_rest_poses.h`
+by a Blender pass (the rows are the game's own quaternions: Blender's conjugated by the reflection diag(1,-1,1),
+i.e. (-x, y, -z, w)). The check that the rows are in the engine's frame: the five palm bones' mean lands at
+9.215 0.119 0.313 in the wrist on every gun - the rig's rigid palm (`palette.cpp`) - and the fist centre
+rebuilt from the rows' finger bases and carried to bone 43 by the wrist row lands on the fore-grip point
+within 0.3 (`gun-geometry-tests.cpp`, both tables from one clip agreeing). The hold applies it whenever it
+holds: the wrist at the rest turn with the palm where the clip has it, or, kept on the gun (a reload, the
+lowering, an idle that takes the hand off), the whole hand at its rest; for the left-hand hold it is built
+on the game's own left hand and mirrored into the right by the rig's pair mirror, as `m4_pose` mirrors
+every pair. Removed with it: `s_freeRel`, `s_fingerRel`, `s_wristRel`, `s_palmLocal`, their resets on a
+hand-over and a weapon switch, and the first-idle latch.
+
+**The sideways axis and the centre plane.** The socket record on bone 43 (floats 3-11, the weapon's own
+axes in the bone's frame) is a constant of the hands rig per weapon socket name, and the row that lies
+across the gun is Y on every gun (read at rest on every gun in every 2026-10-21 run: Tommy -0.341 0.940
+0.000, shotgun -0.377 0.925 -0.059 in the grip's frame); the wrench, with no record, uses the grip bone's
+Y. The plane is the median of the weapon skeleton's REST bones (`g_wRef`, the bank captured at bind) along
+that axis, a root at the origin left out, times the weapon's DrawScale over the hands' - the same
+arithmetic as before, now in `gun_geometry::centre_plane` and written to `g_mirU`/`g_mirPlane` EVERY frame,
+mirrored or not (they were written only on mirrored frames, so a reflection asked for with the mirror off
+used the last mirrored gun's). `gun_side_axis` and the rest/provisional axis latches are gone; the log line
+is `[bones] mirror: the held weapon's sideways axis is its SOCKET axis Y (...); its centre plane is N along it`.
+
+**The Tommy Gun's drum seat** is `TG_AmmoClip`'s pose in the weapon skeleton's rest bank
+(`bones::weapon_rest_bone_pose`), not a read of the live bone at idle every 0.5 s keyed by nothing.
+
+Still latched, on purpose for now: the shotgun's gun-in-hand rest (sockets 43/44 against the wrist,
+`GunRest`, per gun per hand with its 0.5 s settle), the AmmoModel-against-bone offset (`g_amRel`, to be
+derived from the ammunition socket record once a live measurement confirms it), and the free hand's
+last-frame pose through a reload's start clip. The barrel axis stays chosen once per weapon from a lined-up
+frame.
+
+## 2026-10-21 - The gun's state as one record; the dry click as one rule
+
+Step 2 of docs/bioshock1/HELD_GUN_AUDIT.md 2.8 (`gun_state.h`, pure; `manual_reload.cpp` assembles it once
+per tick after the machine and the pumps have run). The record: kind, the game's counts (rounds, magazine
+size, spare rounds - the 4 Hz read `can_reload` already made, plus a fresh read of the rounds on the frame
+a reload's clip first appears, which replaces a script call every idle frame), switching, the magazine
+(in, out, in hand), a spare in hand, the reload's stage, a part carried, the reload waiting for a free
+hand, the last pump's wait, the shotgun's cocked, a shot's pump held for the hands, two hands on the gun.
+`[reload] <gun> state: ...` logs it on every change of stage or of fire-allowed.
+
+**One rule for the trigger and the click.** `fire_allowed` = no manual reload in progress, a magazine in,
+cocked, no pump held for the hands. The XInput thread zeroes the trigger exactly while it is false, and
+every trigger rise while it is false plays the game's own `DryFiring` on the weapon (the ammunition's name
+as the tag) - the pull never reaches the game, so the game never clicks for it, and the game's own click
+stays the game's for the one case the mod lets through: an empty gun with no reload running (the game then
+reloads it or clicks itself). This replaces `g_blockFire` (the shotgun reloading or uncocked; the Tommy
+with no drum), `tommyDry`/`noDrum` (the Tommy's magazine-out stages), the Pump's `deny` click and
+`g_dryClick`. The audit's bug 2 - the dry Tommy waiting for the hand to pull its drum, nobody clicking -
+is closed by it, and so is the pistol's reload wait, which never clicked at all.
+
+**Uncocked per weapon.** The shotgun left uncocked was one bool, cleared whenever another gun was in hand
+(`if (!shotgun) g_needCock = false`), so a reload cut short by a weapon switch came back cocked - against
+the rule that only a pump by hand cocks it. It is a weapon pointer now (`g_uncockedGun`), set when a
+reload's clip begins with the rounds at 0 (`reload_begins_uncocked`; unknown rounds never block a gun on a
+guess), cleared by the end pump or the dry cock, and it survives a switch.
+
+Host tests (`gun-state-tests.cpp`, 39 checks): fire refused and clicking in every reload stage, with no
+magazine, uncocked, with a pump held, and allowed on a loaded idle gun and an empty idle gun; the
+two-handed permission per gun and stage; uncocked only for a shotgun reload begun at 0 rounds.
+
+## 2026-10-21 - The grip arbiter on the owner table; the reload's reach is a distance in every stage
+
+Step 3a of docs/bioshock1/HELD_GUN_AUDIT.md 2.8, specified by HELD_GUN_MATRIX.md rule R4. `grip_owner.h`
+(pure, 20 host checks) decides the owner of a squeeze of the free grip from four reaches - the hand-over,
+the two-handed grip, the reload and the spare magazine, each a distance over its own radius, -1 when not
+on offer - the nearest in reach wins, nothing in reach is the game's, and on a two-handed gun the fore-grip
+beats the reload when within a quarter radius of it (3 cm at 12). `dial_input::grab` calls it on the rising
+edge; the spare's squeeze is routed to the reload's pad as before. `[grab] the free grip goes to ...` now
+prints four reaches.
+
+**What changed underneath:** the machine's `Output::reach` is set in EVERY stage (`phase_reach`, the same
+measure `near_phase` tested; the pouch zone 0.5 at a fetch; -1 while a part is in the hand, during the drop,
+the seating, the clip playing and the last pump), and the glue reports it as it is. It used to report 0 -
+an absolute claim - whenever the machine claimed, so inside the drum's 12 cm the two-handed grip could never
+win on a dry Tommy Gun (the audit's bug 1), and the 0.7 s drop and the seating, which claim without wanting
+the hand, swallowed every squeeze (G1). The spare's pouch zone (0.25) is its own offer (`Output::spareReach`)
+instead of overwriting the reload's. Nothing changes for a squeeze the reload already holds: `claim` still
+withholds the bumper until the grip comes up.
+
+## 2026-10-21 - Ending a reload early through the hands' own interrupt (UNVERIFIED)
+
+Step 3c (HELD_GUN_MATRIX.md G2, G3). From the UnrealScript corpus, not a run: the Hands actor runs its
+weapon actions as a state-transition SEQUENCE (`ExecuteStateTransition('ReloadWeapon')`, a native map of
+state names walked by `TransitionToNextStateInSequence`), and its `WeaponReloading` state calls the weapon's
+latent `PlayReloadingAnimations` from state code (the shotgun's loop-per-shell lives inside it). The one
+script lever that ends a sequence is `Hands.InterruptStateTransitionExecution()`: it clears the sequence index
+and goes to `HandsOffscreen`, which ends the latent code - what a weapon switch does. No script caller of
+`Weapon.OnReloadInterrupted` exists; it is called natively on an interruption and, for the three-part
+shotgun, restores `CurrentAmmoSelection` (none through the loops) and removes the ammo contexts.
+
+`manual_reload::abort_reload` calls, by name, `OnReloadInterrupted` on the weapon, then
+`InterruptStateTransitionExecution` and `EquipWeapon` (`ExecuteStateTransition('EquipWeapon')`) on the hands,
+logging each result, and resets the machine. Used by: the shotgun, a pump stroke on the two-handed hold while
+the reload waits for a shell (the same `Pump` as the dry cock; the gun is cocked by it), and the pistol, X
+while the reload waits for a cylinder (the gun comes back closed with the rounds it had - the game refills
+only at a clip's end, so "open and empty" is not available). F10 Controls > Manual reload > "End a reload
+early" (`Reload.Abort`, default on). Open until a run: whether `EquipWeapon` is honoured from `HandsOffscreen`
+(if not, the hands stay down until the weapon wheel re-equips), and whether the loops' shells are counted
+(`RoundsRemaining` is set per loop by the game; the log's state line shows the count after).
+
+## 2026-10-21 - The hand pose engine: one decision for the free hand, blended sources
+
+Step 3b (HELD_GUN_MATRIX.md section 10). `hand_pose.h` (pure, 29 host checks) decides per frame what the
+free hand is drawn from - a wrist source (the controller, the gun's rest point, the part the clip's hand
+grips) and a finger source (the clip's, the gun's rest pose, a designed grip, a relaxed hand) - from the gun's
+state record, the hold, and the reload's "dragging" / "hand on the part" asks, in a fixed priority: a clip the
+hand-back owns; two hands on the gun; a carried part with a designed grip; the bolt; a part being pulled; a
+hand holding nothing (relaxed); anything else the clip's. `bones.cpp` has one builder: the left hand in the
+game's own frame, the wrist blended toward the rest point and each finger bone (against the wrist) blended
+toward the rest / designed / relaxed table by that source's eased weight (120/150 ms the wrist on the gun,
+100/200 the bolt, 150/150 the fingers; `hand_pose::ease`, smootherstep, continuing from wherever a reversed
+transition was), re-rooted on the blended wrist, then copied into the left cluster or mirrored into the
+right by the rig's pair mirror. `[hands] free hand: wrist ..., fingers ... (rule N; ...)` logs each decision
+change.
+
+**Gone with it:** the kept rest and its `offRest` rule (the hand is at the rest point whenever held, full
+stop - the matrix's rule R5), the grip pose's "palm where the clip has it" branch, the two designed-grip
+branches, the start-clip hold (`s_lastRel`: a restarted reload snaps nothing while held, and a hand that
+holds nothing is relaxed), and the bolt lock's own ease in `manual_reload::hand_lock` (the engine's
+`Wrist::OnPart` weight drives the same placement). The shotgun's socket rest (43/44 at the gun hand's idle)
+now runs BEFORE the free hand is built, so the hand is placed against the gun as drawn; mirrored, it is
+built against the game's own 43 and carried by the pair mirror.
+
+**The relaxed hand** (gap P1): a free hand on its controller holding nothing wore the gun's idle clip's
+fingers (a grip on nothing) or the reload clip's reach to the pouch. Its fingers are now the game's own
+lowered hands' (`Default__HandsDown` at 0.5 s, measured as the rest poses were: `grip_rest_poses.h
+kRelaxedFingers`, 15 bones against the wrist; the palm centre checks at 9.215 0.119 0.313). The gun hand
+is unchanged by this step: the controller plus its recoil window and the two-handed aim.
+
+## 2026-10-21 - The suppression record: what the game may not do, per gun
+
+Step 4 (HELD_GUN_AUDIT.md 2.4). `gun_suppress.h` (pure, 25 host checks) is one record per gun kind: X is
+the hands' (and ejects, on the pistol and the Tommy), a reload the game begins is adopted, the free hand
+never follows a reload clip, the magazine's visibility is the mod's, the gun hand follows no clip but a
+shot's, a shot's clip motion curve (the kick, its fade window, whether an empty gun keeps any), and the
+effect events the mod fires itself. `manual_reload::tick` reads it for every one of those where a flag or a
+branch used to decide: `g_handsReload`, `ejectable`, `in.adopt` (the "not within 1.5 s of X" test was a
+constant: X never reaches the game on such a gun), `g_handles` (the hand-back's manual-reload case), the
+`ShowAmmoModel` calls, and the two clip-motion branches, which were one curve for the shotgun (half the kick,
+none past 0.45 s) and another for the pistol and Tommy (all the kick, none past 0.45, none once empty) in two
+places with a script call for the rounds every firing frame - now `clip_motion_keep(record, fireClip, t,
+rounds)` with the 4 Hz count. `sound_engine` takes the record's muted list with its context instead of its
+own table. A gun with no program has the record that leaves everything to the game.
+
+## 2026-10-21 - One pump, its stroke along the barrel
+
+Step 5 (HELD_GUN_AUDIT.md 2.5; the audit's bug 4). The shotgun's pump between shots, the reload's last
+pump, the dry cock and the loop-ending pump (G2) were three `Pump` instances in three `if` blocks of the
+reload glue, and every one read its stroke as the bare DISTANCE BETWEEN THE CONTROLLERS. The 21:14 run
+showed what that measures: a back stroke completed in 43 ms, then the hands closed 10 cm while the drawn
+hand slid 20 cm forward along the gun, and the forward stroke read 1 cm until the hands opened again -
+the gun hand's own motion and anything sideways were strokes too.
+
+Now ONE `Pump` (`g_pump`) with a USE chosen per tick (shot, the reload's end, dry, loop) that picks the
+clip handles and the config; a change of use starts the ratchet afresh. Its input is the front hand's
+position ALONG THE BARREL from the gun hand (`reload_rig::along_barrel_cm`): the free controller against
+the gun controller, projected on the gun controller's aim forward (the OpenXR aim pose's -Z;
+`get_hand_pose` takes the role slot, the physical hand is the slot swapped when left-handed). Back is
+smaller; the ratchet, the 6 cm strokes, the 0.3 s settle and the 9 cm follow are unchanged. Host tests
+(`reload-rig`, 136): sideways motion, up and down, and the gun hand moving with the gun are no stroke; 6 cm
+back along the barrel is. The log's stroke lines now carry `along N cm` and the use's name
+(`[reload] Shotgun pump|reload's last pump|dry cock|pump while loading: ...`).
+
+## 2026-10-21 - The sound table: an action, a part of the game's own sound
+
+Step 6 (HELD_GUN_AUDIT.md 2.6). `gun_sounds.h` (pure, 26 host checks) is the one place that says which
+action plays which part: the Tommy Gun's drum out / drum in / bolt back as parts of its reload sound, the
+shotgun's pump back / pump forward as parts of its reload-end sound (PumpShotgun whole when the part cannot
+be cut), and the dry fire as the game's DryFiring on the weapon with the ammunition's tag - the `pcm`
+timeline numbers unchanged. The actions come from the reload machine's phase transitions BY KIND (the
+phase that ended: a first pull or the eject is the magazine out, an insert seated the magazine in, a slide
+racked the bolt back - `reload_actions`) and from the pump's strokes (`pump_actions`), so the pistol's
+reload raises the same actions and is silent only because the table has no rows for it yet (a run with
+the pistol reloading would list its events). `manual_reload::play_action` is the one caller of the sound
+engine; `tommy_sound`, `stroke_sound`'s phase numbers and the dry fire's own call are gone. No behaviour
+change intended.
+
+## 2026-10-21/22 - The six steps on the simulator: what held, what the run found
+
+One simulator run (xrsim, the 11:01 save; the log's 23:51-00:02), every step driven from the sim's hands
+and read off the log. Verified: the mirror constants log once per gun on equip (pistol plane -1.73, Tommy
+-3.54, shotgun -3.63, the wrench's rigid centre 1.88); the grip pose on the first frame of a hold and the
+relaxed hand on release (`[hands] free hand` rules 2 and 6); the owner by distance - a squeeze between the
+Tommy's drum and its fore-grip read reload 0.83 / two-handed 0.92 and went to the grip (the tie rule), at
+the drum 0.03 and went to the reload; the state record through a whole Tommy reload (starting, waiting,
+dropping, carrying, seating, finishing, none); the spare drum from the pouch, X with it in hand, the swap in
+at 0.2 s, the latch at the seat, the bolt skipped with a round in; the dry Tommy's click on every pull
+while its reload waits; the shotgun's fore-grip to 0.3 cm, its pump along the barrel (a 7 cm head-local
+move read 5.4 cm along the 40-degree-down aim, 9 cm read 6.9: the projection, not the span), both stroke
+parts, the click while the pump waits, UNCOCKED set on the reload from empty, the shell's designed grip
+(rule 3), the shell pressed in; the LOOP-ENDING PUMP (3c): all three interrupt calls honoured, the hands
+back to WeaponIdling in 0.3 s, the shell kept (the next pull fired); the hand-over and the mirrored
+fore-grip (the right hand 1.8 cm from the reflected point, the hold mirrored, rule 2).
+
+**What the run found, fixed in the same commit:**
+- `gun_state::two_hand_allowed` refused the hold through the drop (and the seating, the finish): a squeeze
+  at the fore-grip during the Tommy's 0.7 s drop went to the GAME, opened the plasmid wheel, swapped the
+  hands into ability mode and ended the reload (the gun left without a drum; the game then refused three
+  re-asks, being in ability mode). Now the hold is refused only while the hand carries or pulls a part.
+- The drum-out sound part played twice: at the eject and again when the drop ended (the phase jumping from
+  the pull's to the fetch). The action fires only for a pull completed by the hand (phase +1).
+- The dry Tommy dropped its drum instead of waiting for the hand: the eject rule read the 4 Hz round count,
+  a shot stale (1 of 40); it reads the rounds taken fresh as the clip began.
+- The reload machine kept its last program after a reload ended, so the glue's "a reload begins now" test
+  was true once per weapon: the rounds at a reload's start were not read again (the Tommy's bolt was
+  skipped on a reload begun at 0), and the state record named the old phase during the next start. The
+  machine clears its program on the end.
+- The state record read "dropping" through the pouch (a part lying where it fell reports the fall's carry
+  code), and `dragging()` was true for the eject's frame: the drop is the fall in the pull's phase only.
+Not reached in the sim: the Tommy's bolt rack (the stale-program bug skipped it), the pistol's X cancel at
+the pouch (G3), a sideways pump on a loaded gun. The sim's hands jump, so no ease was watched.
+
+## 2026-10-22 - The pump by need, the hand on the slide, the ionic buck's takes (the 09:31 headset run)
+
+**What the run said.** The tester's three shotgun findings, read off `bioshockvr.log` 09:29-09:32: (1) with the gun
+run empty and held two-handed, the game's own reload began, waited at the pouch, and the aim's drift (3 cm began a
+stroke, 6 completed it) ended it as a "pump while loading" - three times in four seconds (09:31:57.771, 59.454,
+09:32:00.917), each time with no shell in, so nothing was cocked and the reload only restarted; (2) the two-handed
+anchor is a constant of the gun (`gun_geometry.h foreGrip`), so the drawn hand stayed at the fore-grip while the
+pump bone went 18 units back; (3) every `ShotgunReloadEnd` the mod fired for a stroke on the default buck cut a
+3552 ms sound (FMOD's length of it), but with the ionic buck selected (09:30:50-09:31:24) the same event answered
+with one of SIX takes at random - 757, 809, 835, 862, 1097, 1175 ms - whose timelines the parts (580-710,
+780-1060 ms) do not fit: the forward part began past the take's end and played it whole, both strokes, after the
+back part. No other event name appeared (the ammunition variant is the response's choice, not the cue's).
+
+**What the pump is for decides its stroke** (`gun_state::pump_need`, host-tested). Required - the gun cannot fire
+until it is worked: a shot's pump with shells left (or the count unknown), the reload's last pump, the dry cock;
+the quick 6 cm stroke as before. Optional - a pump while the reload waits for a shell, once one or more are in:
+`reload_rig::kDeliberateStrokeCm`, 12 cm each way, the clip following the whole of it. None - not offered: a shot
+that ran the gun empty (the Fire clip pumps itself, its `PumpShotgun` cue plays as the game's - the cue is muted
+only while the pump is the hands', `gun_suppress::Record::mutedByHand` - and the game's reload follows), and a pump
+while the reload waits with no shell in yet. The shells in are counted per reload as the loop's Play phase ends
+(`[reload] Shotgun: N shells in this reload`); the rounds a shot leaves are read fresh as its clip begins
+(`GetRoundsRemaining`, the 4 Hz count being a shot stale). `[reload] Shotgun <use>: the quick|a deliberate stroke
+(N cm), N shells in, N rounds` logs each use as it begins.
+
+**The hand on the slide.** The free fist's travel in `Shotgun__FireShotgun` (NEWPlayerHands-all.glb, the same
+measure as the fore-grip): 54.05 14.75 14.32 at 0.75 s, 46.00 11.52 10.99 at 0.80, 38.54 8.38 7.85 at 0.85 (held
+to 1.05), 52.00 14.05 13.37 at 1.15, home by 1.30 - 17.97 units, SG_Pump's 18. `gun_geometry::Gun::pumpBack` holds
+it and `grip_point(gun, back)` is the anchor with the pump `back` (0..1) of the way; `manual_reload::pump_back()`
+publishes it each tick - from the clip's time (held, chased or running on, `reload_rig::pump_position`) for a shot's
+pump and the reload's last, from the ratchet's time for the dry cock and the loop-ending pump. The mirrored hold
+reflects the whole point. Unverified in the headset.
+
+**Another take plays whole, once.** A part row (`gun_sounds::Row`) now names the FMOD length of the take it was cut
+from (reloadEndwav 3552, tommy reload_01 2847) and whether it is its action's first part. Inside `play_part`, a
+sound of another length (2% tolerance) is another take: the first part lets it play whole, every later part stops
+it at once (`[sound] another take of ...`). So the ionic buck's pump sounds whole on the back stroke and nothing on
+the forward - the game's own way - and the Tommy's ammunition variants would do the same for its reload. The polish
+would be a timeline per take, keyed by that length (`tools/fsb-probe.ps1` on each exported variant); the lengths
+are in the log.
+
+## 2026-10-22 - The 10:14 run: what the first cut of the above got wrong, and the electric buck's two responses
+
+The 10:14 headset run, on 223bbe5, was worse than 09:31. Each cause, from its log:
+
+- **"The shotgun cocks by itself."** 10:18:06.681: `event PumpShotgun on the hands` UNMUTED - the shot that ran the
+  gun empty, which the first cut let pump itself (its `PumpNeed::None`). The tester's rule from 10-21 stands: the
+  gun never pumps itself, every shot's clip waits for the hands. `pump_need` takes the use alone now; a shot's pump
+  is always Required; the by-hand mute list is gone (PumpShotgun is muted whenever the manual reload is on, as
+  before).
+- **"It does not let me cock whenever I want."** The loop-ending pump was refused until a shell was in. Removed: it
+  is offered at every wait, deliberate. The shells-in count is gone with it.
+- **"The hand still does not follow the slide."** 223bbe5 moved the two-handed GRAB POINT (`grip_point`), which the
+  grab distance and the aim turn use - but the hand pose engine draws the on-gun wrist from the rest pose's own
+  `wristP`, a constant of its own (bones.cpp, the builder). That wrist now rides `pumpBack * pump_back()` too.
+- **"The sound is the same."** The package lists two electric responses to the reload end:
+  `HandsShotgunReloadEnd_ammoElectric` and `HandsShotgunReloadEnd_ammoElectricDefault`. With the ionic buck
+  selected, the mod's event starts the electric layer INSIDE the call (one of six takes, 757-1175 ms - what the
+  09:31 entry above took for "another take of the action") and the base 3552 ms take a moment LATER, outside the
+  call, where no cut reached it: it played whole, both strokes, on each stroke, under the layer. Now a part that
+  meets the layer inside the call keeps a 150 ms watch for a sound of its take's length and cuts that one to the
+  part (`[sound] the take started late: ...`); the layer itself plays whole with the first part and is stopped on
+  the later ones, as before. Unverified: the 150 ms, and whether the Default response starts the base on the same
+  thread (the hook sees every thread; the watch is under the engine's mutex).
+- **The Tommy Gun: "grab the mag and switch to plasmids at the same time."** 10:17:15.228: the squeeze at the pouch
+  with the drum still in went to the spare (`the free grip goes to the spare`) and the same frame opened the
+  plasmid wheel (`open: PLASMID wheel`, closed 15 ms later on the hand swap, `SelectedAbility`). The spare is a prop
+  outside the machine, so nothing claimed the press and its first frame reached the game as a bumper tap. Older
+  than 223bbe5 (207956d's arbiter): a squeeze the arbiter gives the reload or the spare is now withheld from its
+  first frame until it comes up, claimed or not.
+
+## 2026-10-22 - The 10:31 run: the pistol's dry reload, the forward stroke's shell cue, the loop clip let go
+
+- **The pistol opened by itself as it ran dry.** The game's own reload on an empty gun is adopted, and the adopted
+  reload ejected at once (`the gun ran dry: it opens and the magazine drops`) - as it had since 10-20; only the
+  Tommy had the rule that a dry gun waits for the hand to pull its part (`ejectAdopted` off, the 23:57 sim run).
+  The pistol has it now too: dry, it waits with the cylinder in for the hand to pull it (or X).
+- **Shells ejected without end.** 10:33:49-10:34:00: the forward stroke of a shot's pump, chased 1:1 by the hand
+  between the rear stop (0.85 s) and the catch, was SET back to 0.85 each time the hand retreated and chased
+  forward again - over the Fire clip's `shelleject` cue (between 1.05 and 1.063 s) every pass: 20 shells in 11 s.
+  The clip never goes back along the forward stroke now (`Pump::fwdT_`); the ratchet's reference still does, so the
+  6 cm are measured from the farthest back as before. Host-tested.
+- **A shell went into the gun on its own after every pump out of a reload.** The loop-ending pump interrupts the
+  game's reload and lets the held clips go: the hands move on to the equip, but the WEAPON's loop clip, held at its
+  fetch (0.034 s), resumed from there and animated its shell home (the log: the weapon's handle stays the loop's
+  after the equip, `hands clips 2411 / 2413`). With the gun empty the game begins its reload again on each pump,
+  so every cock showed it. The weapon's loop clip is set to its end before it is let go.

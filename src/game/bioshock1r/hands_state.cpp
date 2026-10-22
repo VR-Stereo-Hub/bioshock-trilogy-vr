@@ -47,7 +47,11 @@ const StateRow kStates[] = {
     {L"InjectingEve", State::Scripted},
     {L"UsingGathererTool", State::Scripted},
     {L"ExorcisingGatherer", State::Scripted},
-    {L"ProceduralLoweringHands", State::Scripted},
+    // 2026-10-20: NOT Scripted. The game passes through it on every weapon swap (it lowers the hands
+    // off screen and hides the holdable), and as Scripted the hand-back gave both hands to that clip
+    // for a moment - the left hand flew to the next gun's grip and back. Off screen, the hands stay on
+    // their controllers.
+    {L"ProceduralLoweringHands", State::Offscreen},
     {L"TransitionalState", State::Unknown},
 };
 

@@ -153,6 +153,20 @@ inline void ue_rot_to_quat(const FRotator& r, float out[4]) {
     }
 }
 
+// 2026-10-20: the FRotator of a quaternion in the same convention (ue_rot_to_quat's inverse): pitch from
+// the forward axis' height, yaw from its heading, roll from how the right and up axes have turned about it.
+inline FRotator ue_quat_to_rot(const float q[4]) {
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float f[3] = {1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)};       // q * X
+    const float rz = 2 * (y * z + w * x);                                                      // (q * Y).z
+    const float uz = 1 - 2 * (x * x + y * y);                                                  // (q * Z).z
+    FRotator r{};
+    r.pitch = static_cast<int32_t>(asinf(f[2] < -1.0f ? -1.0f : f[2] > 1.0f ? 1.0f : f[2]) * kRotUnitsPerRadian);
+    r.yaw = static_cast<int32_t>(atan2f(f[1], f[0]) * kRotUnitsPerRadian);
+    r.roll = static_cast<int32_t>(atan2f(-rz, uz) * kRotUnitsPerRadian);
+    return r;
+}
+
 // FRotator (pitch/yaw, roll 0) of a UE-space direction vector.
 inline FRotator ue_dir_to_rot(const float d[3]) {
     FRotator r{};

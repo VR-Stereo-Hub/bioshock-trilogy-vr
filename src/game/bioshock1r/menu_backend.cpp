@@ -9,7 +9,11 @@
 #include "bones.h"
 #include "camera.h"
 #include "game_ini.h"
+#include "handback.h"
 #include "hands.h"
+#include "hud_elements.h"
+#include "dial_input.h"
+#include "cheats.h"
 #include "resize.h"
 #include "scripted.h"
 #include "temporal.h"
@@ -57,12 +61,18 @@ float raw_read(Setting id,int hand) {
     value=bones::menu_read(id,hand);if(std::isfinite(value)) return value;
     value=temporal::menu_read(id);if(std::isfinite(value)) return value;
     value=alt_eye::menu_read(id);if(std::isfinite(value)) return value;
+    value=hud_elements::menu_read(id);if(std::isfinite(value)) return value;
+    value=dial_input::menu_read(id);if(std::isfinite(value)) return value;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
         // Current mode-4 API (hand branch s85 or newer).
         case S::HandsArmsSize: return bones::m4_arm_size();
         case S::WeaponFollowsHands: return bones::m4_weapon_follows();
+        case S::ReloadPlace: return static_cast<float>(handback::reload_place());
+        case S::ReloadGunMotion: return handback::gun_motion_amount();
+        case S::ReloadJoin: return handback::join_cm();
+        case S::GunRecoil: return handback::recoil_amount();
         case S::HandPitch: case S::HandYaw: case S::HandRoll:
             bones::off_hand_rot_deg(hand,&a,&b,&c);return id==S::HandPitch?a:id==S::HandYaw?b:c;
         case S::HandGripForward: case S::HandGripRight: case S::HandGripUp:
@@ -152,12 +162,17 @@ bool raw_write(Setting id,int hand,float value) {
     if(id==S::TextSize) {g_textSize.store(value,std::memory_order_relaxed);return true;}
     if(id==S::ViewLevel) {g_level.store(static_cast<int>(value),std::memory_order_relaxed);return true;}
     if(camera::menu_write(id,value)||aim::menu_write(id,value)||hands::menu_write(id,value)||bones::menu_write(id,hand,value)) return true;
-    if(temporal::menu_write(id,value)||alt_eye::menu_write(id,value)) return true;
+    if(temporal::menu_write(id,value)||alt_eye::menu_write(id,value)||hud_elements::menu_write(id,value)||
+       dial_input::menu_write(id,value)) return true;
     float a=0,b=0,c=0;
     switch(id) {
 #if __has_include("hand_compose.h")
         case S::HandsArmsSize: bones::set_m4_arm_size(value);break;
         case S::WeaponFollowsHands: bones::set_m4_weapon_follows(value!=0);break;
+        case S::ReloadPlace: handback::set_reload_place(static_cast<int>(value));break;
+        case S::ReloadGunMotion: handback::set_gun_motion_amount(value);break;
+        case S::ReloadJoin: handback::set_join_cm(value);break;
+        case S::GunRecoil: handback::set_recoil_amount(value);break;
         case S::HandPitch: case S::HandYaw: case S::HandRoll:
             bones::off_hand_rot_deg(hand,&a,&b,&c);
             bones::set_off_hand_rot_deg(hand,id==S::HandPitch?value:a,id==S::HandYaw?value:b,id==S::HandRoll?value:c);break;
@@ -306,6 +321,7 @@ public:
         c.handMode=static_cast<int>(hands::menu_read(S::HandMode));c.maxHandMode=hands::menu_max_mode();
         c.solverV2=bones::menu_read(S::ArmSolver,0)!=0;c.hasSolverChoice=bones::menu_has_solver_choice();
         c.cameraHook=camera::hook_live();c.engineReady=c.cameraHook;
+        c.hudPiece=static_cast<int>(hud_elements::menu_read(S::HudPiece));
         vr::HeadPose pose{};c.tracking=vr::peek_head_pose(pose);
         std::lock_guard<std::mutex> lock(g_mutex);
         c.profile=g_profile;c.profileHand=g_profileHand;c.notice=g_notice;
@@ -328,6 +344,9 @@ public:
     }
     void temporal_status() override {temporal::draw_status();}
     void diagnostics(Tab tab) override {
+        if(tab==Tab::HUD) hud_elements::draw_panel();
+        if(tab==Tab::Controls) dial_input::draw_panel();
+        if(tab==Tab::Cheats) cheats::draw_panel();
         if(tab==Tab::Runtime && theme::section("Runtime status")) {
             ImGui::Text("%.1f fps  /  %.2f ms",ImGui::GetIO().Framerate,1000.f/std::max(ImGui::GetIO().Framerate,1.f));
             ImGui::Text("OpenXR session: %s",vr::session_live()?"active":"unavailable");

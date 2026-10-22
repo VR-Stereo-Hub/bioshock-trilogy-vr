@@ -1794,18 +1794,32 @@ void on_calcview(const FrameContext& ctx) {
             std::lock_guard<std::mutex> lock(g_stepMutex);
             steps.swap(g_steps);
         }
+        // 2026-10-19: the gun in the LEFT hand with the hands mirrored (bones::mirror_hands): each
+        // hand mesh goes to its OWN controller - the role slots are swapped, so mesh h reads slot
+        // 1 - h - and the left mesh, which now shows the grip on the gun, is the held one. Each
+        // keeps its own trims (they belong to the hand, not to the role).
+        const bool mirrored = bones::mirror_hands();
+        const int heldMesh = mirrored ? 1 - hand : hand;
         if (ctx.vrDriving) {
             for (int h = 0; h < 2; ++h) {
-                if (h != hand && !bones::off_hand_tracked()) continue;
+                if (h != heldMesh && !bones::off_hand_tracked()) continue;
                 bvr::vr::HeadPose hp2{};
-                if (!bvr::vr::get_hand_pose(h, /*aimPose=*/false, hp2)) continue;
+                if (!bvr::vr::get_hand_pose(mirrored ? 1 - h : h, /*aimPose=*/false, hp2)) continue;
                 const float p2[3] = {hp2.px, hp2.py, hp2.pz};
                 const float q2[4] = {hp2.qx, hp2.qy, hp2.qz, hp2.qw};
                 float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
-                bones::off_hand_rot_deg(h, &trimP, &trimY, &trimR);
+                // Mirrored, each hand shows the OTHER hand's layout, so it takes that hand's trim,
+                // mirrored (frame_context.h mirror_trim_deg) - the left hand holding the gun sits
+                // as the tuned right hand did (headset 2026-10-19: the trims did not carry over).
+                bones::off_hand_rot_deg(mirrored ? 1 - h : h, &trimP, &trimY, &trimR);
+                if (mirrored) mirror_trim_deg(trimP, trimY, trimR, &trimP, &trimY, &trimR);
                 // s86f: the step rows, converted in THIS frame of this hand (frame_context.h).
                 for (const HandStep& st : steps) {
                     if (st.hand != h) continue;
+                    if (mirrored) { // they would write the mirrored trim into this hand's own slot
+                        BVR_LOG("[hands] step ignored while the hands are mirrored - hand the gun back to adjust");
+                        continue;
+                    }
                     if (st.rot) {
                         float p = trimP, y = trimY, r = trimR;
                         if (hand_rotation_step(ctx, q2, st.axis, st.amount, &p, &y, &r)) {
@@ -1836,7 +1850,7 @@ void on_calcview(const FrameContext& ctx) {
                 valid[h] = true;
             }
         }
-        bones::m4_frame(ctx, target, hand, valid, gps, raws);
+        bones::m4_frame(ctx, target, heldMesh, valid, gps, raws);
         g_writes.fetch_add(1, std::memory_order_relaxed);
         return;
     }

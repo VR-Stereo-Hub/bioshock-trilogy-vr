@@ -17,6 +17,7 @@
 //    its own pose - no restore bookkeeping of ours can go stale.
 
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/dropped_part.h"
 
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/arm_ik.h"
@@ -34,6 +35,16 @@
 #include "game/bioshock1r/handback.h"
 #include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/palette_math.h"
+#include "game/bioshock1r/mirror_math.h"
+#include "game/bioshock1r/manual_reload.h"
+#include "game/bioshock1r/gun_geometry.h"
+#include "game/bioshock1r/grip_rest_poses.h"
+#include "game/bioshock1r/hand_pose.h"
+#include "game/bioshock1r/cheats.h"
+#include "game/bioshock1r/script_call.h"
+#include "game/bioshock1r/two_hand.h"
+#include "game/bioshock1r/two_hand_math.h"
+#include "core/input/xinput_bridge.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
 
@@ -43,10 +54,12 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace bvr::b1r::bones {
 namespace {
@@ -929,6 +942,10 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // 2026-10-14 headset: 0.88, the tester's tune on top of that ("it's working well"), measured
 // against a hands and arms size of 0.81.
 std::atomic<float> g_wScale{0.88f};
+// 2026-10-20: the scale the skeleton lane actually wrote this frame (1.0 = authored: the lane
+// dropped, or the holdable is rigid), for m4_gun_ratio - the gun as drawn against the hands.
+std::atomic<float> g_wDrawnScale{1.0f};
+float g_wWrittenScale = 1.0f; // the ws wskel_compose last wrote (game thread), for weapon_written_scale
 // s83b/s85 mode 4: ONE size for both hands and both arms, a multiplier on the right
 // hand's scale (0.8 by default), so the two sides can never disagree. Declared here
 // because wskel_drive reads it too: while mode 4 is on and g_m4WeaponFollows is set
@@ -944,6 +961,14 @@ void* g_wSkelInst = nullptr;
 Qts* g_wBones = nullptr;
 int g_wBoneCount = 0;
 Qts g_wRef[kMaxBones]; // captured pose (restored on drop)
+char g_wName[kMaxBones][32] = {}; // the bound weapon's bone names (ASCII), "" unnamed
+// 2026-10-20: per-bone offsets the manual reload adds to the clip's pose (a part riding a hand).
+float g_wPartOff[kMaxBones][3] = {};
+bool g_wPartOn[kMaxBones] = {};
+float g_wPartQ[kMaxBones][4] = {};   // with g_wPartPose: the part's whole pose replaces the clip's
+bool g_wPartPose[kMaxBones] = {};
+float g_wPartScale[kMaxBones] = {}; // 2026-10-20: a part's own size factor while posed (0 = none): a designed grip draws it at the hand's size
+bool g_wPartAny = false;
 Qts g_wAnim[kMaxBones]; // adopted engine p/q; scale rows pinned to g_wRef
 Qts g_wWritten[kMaxBones]; // what we last wrote (adoption + reapply source)
 bool g_wWrittenValid = false;
@@ -2284,6 +2309,22 @@ bool wskel_resolve() {
                     sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]));
         }
     }
+    // The parts by name, for the manual reload (reload_rig.h): it finds a gun's magazine,
+    // cylinder, bolt, pump and shell by the names its own skeleton gives them.
+    {
+        const wchar_t* wnames[kMaxBones] = {};
+        if (sk.count > 0 && sk.count <= kMaxBones) resolve_bone_names(sk, wnames, sk.count);
+        for (int i = 0; i < kMaxBones; ++i) {
+            g_wName[i][0] = 0;
+            if (i < sk.count && wnames[i])
+                for (int c = 0; c < 31 && wnames[i][c]; ++c) {
+                    g_wName[i][c] = static_cast<char>(wnames[i][c] < 128 ? wnames[i][c] : '?');
+                    g_wName[i][c + 1] = 0;
+                }
+        }
+    }
+    memset(g_wPartOn, 0, sizeof g_wPartOn); // a new weapon carries nothing yet
+    g_wPartAny = false;
     g_wHoldable = hold;
     g_wSkelInst = sk.inst;
     g_wBones = sk.bones;
@@ -2318,17 +2359,26 @@ bool wskel_compose(float ws) {
             ++g_wAdopts;
         }
         float p[3] = {g_wAnim[i].p[0] * ws, g_wAnim[i].p[1] * ws, g_wAnim[i].p[2] * ws};
-        float sv[3] = {g_wRef[i].s[0] * ws, g_wRef[i].s[1] * ws, g_wRef[i].s[2] * ws};
-        if (!write_n(g_wBones[i].p, p, 12) || !write_n(g_wBones[i].q, g_wAnim[i].q, 16) ||
+        const float* qw = g_wAnim[i].q;
+        if (g_wPartOn[i] && g_wPartPose[i]) {
+            for (int c = 0; c < 3; ++c) p[c] = g_wPartOff[i][c] * ws;
+            qw = g_wPartQ[i];
+        } else if (g_wPartOn[i]) {
+            for (int c = 0; c < 3; ++c) p[c] += g_wPartOff[i][c] * ws;
+        }
+        const float ks = g_wPartOn[i] && g_wPartScale[i] > 0.0f ? g_wPartScale[i] : 1.0f;
+        float sv[3] = {g_wRef[i].s[0] * ws * ks, g_wRef[i].s[1] * ws * ks, g_wRef[i].s[2] * ws * ks};
+        if (!write_n(g_wBones[i].p, p, 12) || !write_n(g_wBones[i].q, qw, 16) ||
             !write_n(g_wBones[i].s, sv, 12)) {
             g_wSkelInst = nullptr;
             return false;
         }
         memcpy(g_wWritten[i].p, p, 12);
-        memcpy(g_wWritten[i].q, g_wAnim[i].q, 16);
+        memcpy(g_wWritten[i].q, qw, 16);
         memcpy(g_wWritten[i].s, sv, 12);
     }
     g_wWrittenValid = true;
+    g_wWrittenScale = ws;
     ++g_wDrives;
     wskel_set_dirty(0); // render-side evaluate-if-dirty must not rebuild over us
     return true;
@@ -2619,11 +2669,12 @@ float weapon_scale() {
 
 void wskel_drive() {
     float ws = g_wScale.load(std::memory_order_relaxed);
+    g_wDrawnScale.store(1.0f, std::memory_order_relaxed); // authored, until the skeleton lane writes below
     // s86: `weapon size` is the weapon against a 0.8 hand (BRVR's HandsScale, which the 0.8
     // GunScale default was set beside), so at size 0.8 it is exactly itself.
     if (g_m4On.load(std::memory_order_relaxed) && g_m4WeaponFollows.load(std::memory_order_relaxed))
         ws *= g_m4ArmSize.load(std::memory_order_relaxed) / 0.8f;
-    if (ws == 1.0f) {
+    if (ws == 1.0f && !g_wPartAny) { // a part riding a hand needs the lane (the manual reload)
         // 1.0 is a total drop on BOTH lanes - no adoption, no writes, no cached
         // pointers. A lane only ever exists while the knob is off 1.0. This is
         // also the one moment the rigid lane can safely restore: the holdable
@@ -2644,7 +2695,7 @@ void wskel_drive() {
             const bool same = hands::current_holdable(&live) && live == g_dsHoldable;
             ds_drop("holdable has a skeleton after all", same);
         }
-        wskel_compose(ws);
+        if (wskel_compose(ws)) g_wDrawnScale.store(ws, std::memory_order_relaxed);
         return;
     }
     // No skeleton to drive: either there is no holdable at all, or it is a
@@ -6814,6 +6865,7 @@ struct M4State {
     uint64_t ms = 0;             // when the targets were set (CalcView)
     void* actor = nullptr;
     int held = 1;
+    bool mirror = false;         // 2026-10-19: the gun in the left hand, each hand mirrored (mirror_math.h)
     M4Hand hand[2];
     // Arms: the shoulders and body axes, WORLD, from the same formula solve_arm uses.
     float shoulder[2][3] = {};
@@ -6833,6 +6885,473 @@ struct M4State {
     float camWorld[3] = {};
 };
 M4State g_m4;
+
+// ---- 2026-10-19: the hands mirrored with the gun in the left hand (mirror_math.h) ------------
+// When the grab hands the gun to the left controller, the game's rig still holds it in the RIGHT
+// hand. So each hand takes the other's bone layout, mirrored across the rig: the left hand shows
+// the right hand's grip on the gun, the right hand what the left was doing, each on its own
+// controller, the gun moved to the mirrored grip. The pose here (what the placement, the grip
+// calibration and the arms read) and the skin matrices in the palette gather are mirrored the
+// same way, so they agree. Palette route only; the basis is measured once from the rig's rest
+// pose and refused (logged) if the rig is not mirror-symmetric.
+std::atomic<bool> g_mirrorHands{true};
+// `vrbones mirrorpin <v>|auto`: the held gun's centre plane along its flipped axis, in the grip's
+// frame, instead of the one read from its skeleton (NaN = read it). For checking the reading.
+std::atomic<float> g_mirrorPinOverride{std::numeric_limits<float>::quiet_NaN()};
+// The flip m4_pose applied to the held gun this frame (its axis and centre plane, grip frame), for
+// unmirror_grip_point. Game thread.
+float g_mirU[3] = {0, 1, 0};
+float g_mirPlane = 0.0f;
+Qts g_evMirror[kMaxBones];
+
+bool mirror_wanted() {
+    return g_mirrorHands.load(std::memory_order_relaxed) && bvr::input::left_handed() && palette::active() &&
+           palette::mirror_basis() != nullptr;
+}
+
+int mirror_twin(int b) {
+    for (int k = 0; k < mirror::kPairs; ++k) {
+        if (mirror::kPairLeft[k] == b) return mirror::kPairRight[k];
+        if (mirror::kPairRight[k] == b) return mirror::kPairLeft[k];
+    }
+    return b;
+}
+
+void mirror_into(const mirror::Aff& a, Qts& q) {
+    float qq[4], p[3], s[3];
+    if (!mirror::to_frame(a, qq, p, s)) return; // keep the game's bone rather than a broken one
+    memcpy(q.p, p, 12);
+    memcpy(q.q, qq, 16);
+    memcpy(q.s, s, 12);
+}
+
+bool weapon_socket_axes(float axes[3][3]); // below, beside the socket cache
+
+// ---- 2026-10-20: THE POSE CAPTURE - the hands and the gun exactly as this frame draws them --------
+// Armed with the AFW capture (F10 > "Capture 6 presents in 5 s", temporal::request_dump), the late
+// compose writes `pose_NN.txt` into that capture's folder: the hands actor's world transform, every
+// hands bone as the engine evaluated it (component space, Unreal axes), each hand's palette correction
+// (the controller placement the skin palette applies to that hand's bones), the gun's actor transform
+// and every gun bone as the skeleton lane wrote it, the clips and their times. tools\blender\
+// pose_capture.py rebuilds that exact frame in Blender - the game's drawn pose, not a clip guessed at.
+std::atomic<int> g_poseLeft{0};
+std::atomic<uint64_t> g_poseAtMs{0};
+wchar_t g_poseDir[MAX_PATH] = L"";
+int g_poseIndex = 0;
+
+constexpr const char* kPoseHeader =
+    "bvr-pose 1\n# Unreal axes. hands bones: component space of the hands actor (engine pose, before the "
+    "palette); handfix: the palette correction p' = t + q (p - pivot) s on that hand's bones. A recording is "
+    "frames, each opened by a `frame` line\n";
+
+// 2026-10-21: the gun hand's placement layers this compose (the recording's `aim` line): the two-handed aim's weight
+// and turn, the real hand's distance from where it holds the gun, the clip's own gun motion layered.
+// The Hands actor's own clip's name begins with `prefix` (EmptyFidgetShotgun, ...). The name is read once per clip
+// handle.
+bool hands_clip_is(const wchar_t* prefix) {
+    static int32_t s_handle = -1;
+    static wchar_t s_name[64] = {};
+    if (!g_m4.actor) return false;
+    const int32_t off = script::property_offset(g_m4.actor, L"HandsAnimationHandle");
+    int32_t hh = 0;
+    if (off < 0 || !read_n(static_cast<uint8_t*>(g_m4.actor) + off, &hh, sizeof hh)) return false;
+    if (hh != s_handle) {
+        s_handle = hh;
+        s_name[0] = 0;
+        int32_t nm = -1;
+        if (hh > 0 && script::anim_name(g_m4.actor, hh, &nm) && nm >= 0)
+            if (const wchar_t* t = patterns::fname_text(nm)) wcsncpy_s(s_name, t, _TRUNCATE);
+    }
+    return s_name[0] && !_wcsnicmp(s_name, prefix, wcslen(prefix));
+}
+
+float g_dbgAimTw = 0.0f, g_dbgAimTurnDeg = 0.0f, g_dbgAimDistCm = -1.0f, g_dbgGunMotion = 0.0f;
+// The hand pose engine's "on the part" weight this compose (hand_pose.h): how much the free hand is placed where
+// the clip's own hand grips the part it works (the Tommy Gun's bolt). Game thread.
+float g_handOnPartW = 0.0f;
+
+void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
+                const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now);
+
+void pose_capture_write(const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
+                        const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now) {
+    if (g_poseLeft.load(std::memory_order_relaxed) <= 0 || now < g_poseAtMs.load(std::memory_order_relaxed) ||
+        !g_poseDir[0])
+        return;
+    wchar_t path[MAX_PATH];
+    _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\pose_%02d.txt", g_poseDir, g_poseIndex);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) {
+        g_poseLeft.store(0);
+        BVR_LOG("[pose] capture: could not write %ls", path);
+        return;
+    }
+    fputs(kPoseHeader, f);
+    write_pose(f, A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+    fclose(f);
+    BVR_LOG("[pose] capture: %ls (state %S)", path, hands_state::current_name(g_m4.actor));
+    ++g_poseIndex;
+    if (g_poseLeft.fetch_sub(1) <= 1) g_poseDir[0] = 0;
+}
+
+// ---- 2026-10-20: THE SHOTGUN RECORDING (the tester: "map all of the shotgun animations next run") ----
+// While the shotgun is in hand, every late compose up to 30 a second is appended to
+// dumps\poserec-<date>-<time>\Shotgun.bvrpose (one per session, capped at 300 MB): the same frame as the
+// pose capture, so tools\blender\pose_capture.py replays the run as an animation (--record).
+FILE* g_rec = nullptr;
+uint64_t g_recLastMs = 0, g_recBytes = 0;
+uint32_t g_recFrames = 0;
+bool g_recFull = false;
+constexpr uint64_t kRecMaxBytes = 300ull * 1024 * 1024;
+
+void pose_record(const Qts* A, int n, const float aLoc[3], const float qa[4], float k, const palette::HandXform palX[2],
+                 bool mir, bool weaponOnSocket, uint64_t now) {
+    void* weapon = nullptr;
+    if (g_recFull || !hands::current_holdable(&weapon) || !weapon) return;
+    const wchar_t* cls = patterns::object_class_name(weapon);
+    if (!cls || wcscmp(cls, L"Shotgun") != 0 || now - g_recLastMs < 33) return;
+    g_recLastMs = now;
+    if (!g_rec) {
+        const wchar_t* dd = bvr::log::data_dir();
+        if (!dd || !dd[0]) return;
+        wchar_t dir[MAX_PATH], path[MAX_PATH];
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        _snwprintf_s(dir, MAX_PATH, _TRUNCATE, L"%s\\dumps", dd);
+        CreateDirectoryW(dir, nullptr);
+        _snwprintf_s(dir, MAX_PATH, _TRUNCATE, L"%s\\dumps\\poserec-%04u%02u%02u-%02u%02u%02u", dd, t.wYear, t.wMonth,
+                     t.wDay, t.wHour, t.wMinute, t.wSecond);
+        CreateDirectoryW(dir, nullptr);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\Shotgun.bvrpose", dir);
+        if (_wfopen_s(&g_rec, path, L"w") != 0 || !g_rec) {
+            g_rec = nullptr;
+            g_recFull = true;
+            BVR_LOG("[pose] recording: could not write %ls", path);
+            return;
+        }
+        fputs(kPoseHeader, g_rec);
+        BVR_LOG("[pose] recording the shotgun into %ls (30 a second while it is in hand; pose_capture.py --record)",
+                path);
+    }
+    fprintf(g_rec, "frame %u\n", g_recFrames++);
+    write_pose(g_rec, A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+    const long at = ftell(g_rec);
+    if (at > 0) g_recBytes = static_cast<uint64_t>(at);
+    if ((g_recFrames % 30) == 0) fflush(g_rec); // the game's exit kills the process: lose at most a second
+    if ((g_recFrames % 900) == 0)
+        BVR_LOG("[pose] recording: %u shotgun frames, %.1f MB", g_recFrames, g_recBytes / 1048576.0);
+    if (g_recBytes > kRecMaxBytes) {
+        fclose(g_rec);
+        g_rec = nullptr;
+        g_recFull = true;
+        BVR_LOG("[pose] recording: stopped at %u frames (%.0f MB, the cap)", g_recFrames, g_recBytes / 1048576.0);
+    }
+}
+
+void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
+                const palette::HandXform palX[2], bool mir, bool weaponOnSocket, uint64_t now) {
+    fprintf(f, "ms %llu\nstate %S\nmirrored %d\n", static_cast<unsigned long long>(now),
+            hands_state::current_name(g_m4.actor), mir ? 1 : 0);
+    fprintf(f, "actor %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g\n", aLoc[0], aLoc[1], aLoc[2], qa[0], qa[1], qa[2], qa[3], k);
+    fprintf(f, "clusters L %d %d R %d %d weaponbone %d held %d\n", patterns::kBoneLClusterFirst,
+            patterns::kBoneLClusterLast, patterns::kBoneRClusterFirst, patterns::kBoneRClusterLast,
+            patterns::kBoneWeaponAttach, g_m4.held);
+    for (int h = 0; h < 2; ++h) {
+        const palette::HandXform& X = palX[h];
+        fprintf(f, "handfix %d %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g %.6g %.6g  %.6g\n", h, X.valid ? 1 : 0, X.q[0],
+                X.q[1], X.q[2], X.q[3], X.t[0], X.t[1], X.t[2], X.pivot[0], X.pivot[1], X.pivot[2], X.s);
+    }
+    // The arms as the IK draws them: per sleeve bone, the affine (row-major 3x4 [R | t], component space)
+    // the palette applies to the game's bone - so a replay's wrist is not torn between hand and forearm.
+    fprintf(f, "sleeves L %d %d %d %d %d R %d %d %d %d %d\n", patterns::kBoneLSleeve[0], patterns::kBoneLSleeve[1],
+            patterns::kBoneLSleeve[2], patterns::kBoneLSleeve[3], patterns::kBoneLSleeve[4], patterns::kBoneRSleeve[0],
+            patterns::kBoneRSleeve[1], patterns::kBoneRSleeve[2], patterns::kBoneRSleeve[3], patterns::kBoneRSleeve[4]);
+    for (int h = 0; h < 2; ++h)
+        for (int j = 0; j < 5; ++j) {
+            const float* m = palX[h].arm[j];
+            fprintf(f, "arm %d %d %d  %.8g %.8g %.8g %.8g  %.8g %.8g %.8g %.8g  %.8g %.8g %.8g %.8g\n", h, j,
+                    palX[h].armValid ? 1 : 0, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+        }
+    fprintf(f, "bones %d\n", n);
+    for (int i = 0; i < n; ++i)
+        fprintf(f, "b %d  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g\n", i, A[i].p[0], A[i].p[1], A[i].p[2],
+                A[i].q[0], A[i].q[1], A[i].q[2], A[i].q[3], A[i].s[0], A[i].s[1], A[i].s[2]);
+    // The hands' clip (the Hands actor's own handle) and the gun's, with their times.
+    auto clip = [&](void* who, int32_t handle, const char* tag) {
+        int32_t nm = -1;
+        float t = -1.0f;
+        if (who && handle > 0 && script::anim_name(who, handle, &nm) && nm >= 0) {
+            script::anim_time(who, handle, &t);
+            const wchar_t* s = patterns::fname_text(nm);
+            fprintf(f, "clip %s %S %.4f\n", tag, s ? s : L"?", t);
+        }
+    };
+    void* weapon = nullptr;
+    hands::current_holdable(&weapon);
+    if (g_m4.actor) {
+        const int32_t off = script::property_offset(g_m4.actor, L"HandsAnimationHandle");
+        int32_t hh = 0;
+        if (off >= 0) read_n(static_cast<uint8_t*>(g_m4.actor) + off, &hh, sizeof hh);
+        clip(g_m4.actor, hh, "hands");
+    }
+    if (weapon && weapon == g_wHoldable) {
+        clip(weapon, manual_reload::weapon_clip_handle(weapon), "weapon");
+        const wchar_t* cls = patterns::object_class_name(weapon);
+        float wLoc[3] = {}, kw = 1.0f, wq[4] = {0, 0, 0, 1};
+        int32_t wRot[3] = {};
+        read_n(static_cast<uint8_t*>(weapon) + patterns::kActorLocOffset, wLoc, 12);
+        read_n(static_cast<uint8_t*>(weapon) + patterns::kActorViewDirOffset, wRot, 12);
+        if (!ds_read(weapon, &kw) || !(kw > 0.01f)) kw = 1.0f;
+        ue_rot_to_quat(FRotator{wRot[0], wRot[1], wRot[2]}, wq);
+        fprintf(f, "weapon %S onsocket %d  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g  size %.6g\n", cls ? cls : L"?",
+                weaponOnSocket ? 1 : 0, wLoc[0], wLoc[1], wLoc[2], wq[0], wq[1], wq[2], wq[3], kw,
+                g_wWrittenValid ? g_wWrittenScale : 1.0f);
+        fprintf(f, "wbones %d\n", g_wBoneCount);
+        for (int i = 0; i < g_wBoneCount && i < kMaxBones; ++i) {
+            const Qts& w = g_wWrittenValid ? g_wWritten[i] : g_wAnim[i];
+            fprintf(f, "w %d %s  %.6g %.6g %.6g  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g\n", i, g_wName[i][0] ? g_wName[i] : "-",
+                    w.p[0], w.p[1], w.p[2], w.q[0], w.q[1], w.q[2], w.q[3], w.s[0], w.s[1], w.s[2]);
+        }
+        // 2026-10-21: the visible magazine as the ENGINE placed it (a separate actor on a gun socket - the shotgun's
+        // shell): world location, rotator, DrawScale. The replay compares it with the bone it should hang on.
+        float amLoc[3], amScale = 1.0f;
+        int32_t amRot[3];
+        if (dropped_part::ammo_model_pose(weapon, amLoc, amRot, &amScale))
+            fprintf(f, "ammo  %.6g %.6g %.6g  %d %d %d  %.6g\n", amLoc[0], amLoc[1], amLoc[2], amRot[0], amRot[1], amRot[2],
+                    amScale);
+    }
+    fprintf(f, "aim  %.4g %.4g %.4g  %.4g\n", g_dbgAimTw, g_dbgAimTurnDeg, g_dbgAimDistCm, g_dbgGunMotion);
+}
+
+// ---- `vrbones reloadrec <seconds>`: what a reload clip does, part by part ----------------------
+// Armed, the next reload is logged at 30 Hz for that long: every gun part the clip moves away from
+// its rest (translation in the gun's own units, rotation in degrees) and both palms in the frame of
+// the gun's grip (43). That is the material a manual reload is cut from: which part moves, when,
+// along what, and where the clip has the other hand while it does.
+std::atomic<float> g_reloadRecSec{0.0f};
+uint64_t g_reloadRecStart = 0, g_reloadRecLast = 0;
+void reload_rec_tick(const Qts* A, uint64_t now) {
+    const float sec = g_reloadRecSec.load(std::memory_order_relaxed);
+    if (!(sec > 0.0f) || !g_wHoldable) return;
+    const hands_state::State st = hands_state::current(g_m4.actor);
+    if (!g_reloadRecStart) {
+        if (st != hands_state::State::Reloading) return;
+        g_reloadRecStart = now;
+        g_reloadRecLast = 0;
+        BVR_LOG("[reloadrec] START (%S), %d weapon bone(s)", hands_state::current_name(g_m4.actor), g_wBoneCount);
+    }
+    const float t = static_cast<float>(now - g_reloadRecStart) * 0.001f;
+    if (t > sec) {
+        BVR_LOG("[reloadrec] END after %.2f s (%S)", t, hands_state::current_name(g_m4.actor));
+        g_reloadRecSec.store(0.0f, std::memory_order_relaxed);
+        g_reloadRecStart = 0;
+        return;
+    }
+    if (g_reloadRecLast && now - g_reloadRecLast < 33) return;
+    g_reloadRecLast = now;
+    char line[1400];
+    // The weapon's own reload clip and its time (manual_reload.h: the handle the reload waits on).
+    float clipT = -1.0f;
+    const wchar_t* clip = L"-";
+    {
+        const int32_t h = manual_reload::weapon_clip_handle(g_wHoldable);
+        int32_t nm = -1;
+        if (h > 0 && script::anim_name(g_wHoldable, h, &nm) && nm >= 0) {
+            const wchar_t* tx = patterns::fname_text(nm);
+            if (tx) clip = tx;
+            script::anim_time(g_wHoldable, h, &clipT);
+        }
+    }
+    int at = _snprintf_s(line, sizeof line, _TRUNCATE, "[reloadrec] t=%.3f %S clip %S %.3f |", t,
+                         hands_state::current_name(g_m4.actor), clip, clipT);
+    for (int i = 0; i < g_wBoneCount && at > 0 && at < static_cast<int>(sizeof line) - 96; ++i) {
+        const float d[3] = {g_wAnim[i].p[0] - g_wRef[i].p[0], g_wAnim[i].p[1] - g_wRef[i].p[1],
+                            g_wAnim[i].p[2] - g_wRef[i].p[2]};
+        const float dl = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        float dq = 0.0f;
+        for (int c = 0; c < 4; ++c) dq += g_wAnim[i].q[c] * g_wRef[i].q[c];
+        const float deg = 2.0f * acosf(fminf(1.0f, fabsf(dq))) * 57.29578f;
+        if (dl < 0.3f && deg < 2.0f) continue;
+        at += _snprintf_s(line + at, sizeof line - at, _TRUNCATE, " %s d(%.1f %.1f %.1f) r%.0f", g_wName[i], d[0], d[1],
+                          d[2], deg);
+    }
+    mirror::Aff g = mirror::from_frame(A[patterns::kBoneWeaponAttach].q, A[patterns::kBoneWeaponAttach].p,
+                                       A[patterns::kBoneWeaponAttach].s);
+    mirror::Aff gi;
+    if (mirror::inverse(g, &gi)) {
+        for (int hnd = 0; hnd < 2; ++hnd) {
+            const int* pb = hnd ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
+            arm_ik::Vec pm{0, 0, 0};
+            for (int j = 0; j < 5; ++j) pm = pm + arm_ik::vec(A[pb[j]].p) * 0.2f;
+            const arm_ik::Vec o = mirror::apply(gi, pm);
+            if (at > 0 && at < static_cast<int>(sizeof line) - 48)
+                at += _snprintf_s(line + at, sizeof line - at, _TRUNCATE, " | %c palm (%.1f %.1f %.1f)", hnd ? 'R' : 'L',
+                                  o.x, o.y, o.z);
+        }
+    }
+    BVR_LOG("%s", line);
+}
+
+// The physical controller (0 left, 1 right) hand mesh h is drawn on, for its haptics: hands.cpp
+// gives mesh h the role slot (mirrored ? 1 - h : h), and a slot's controller swaps with the gun.
+int m4_phys(int h) {
+    const int slot = g_m4.mirror ? 1 - h : h;
+    return bvr::input::left_handed() ? 1 - slot : slot;
+}
+
+// A rigid holdable's mesh centre in its own actor frame (world units: fwd, right, up), from the
+// engine's render bounds - the average of 16 frames, latched per actor (2026-10-20, the mirror's
+// pin for a holdable with no skeleton). False until latched or when the engine refuses.
+bool rigid_centre(void* actor, float out[3]) {
+    static void* s_actor = nullptr;
+    static int s_n = 0;
+    static float s_sum[3] = {};
+    if (actor != s_actor) {
+        s_actor = actor;
+        s_n = 0;
+        s_sum[0] = s_sum[1] = s_sum[2] = 0.0f;
+    }
+    constexpr int kSamples = 16;
+    if (s_n < kSamples) {
+        struct {
+            float mn[3], mx[3];
+            uint8_t valid;
+            uint8_t pad[39];
+        } box{}; // Actor.GetRenderBoundingBox's return value (FBox), at the parms block's start
+        float loc[3];
+        FRotator rot{};
+        if (!script::ready() || !script::call(actor, "GetRenderBoundingBox", &box) || !box.valid ||
+            !read_n(static_cast<uint8_t*>(actor) + patterns::kActorLocOffset, loc, 12) ||
+            !read_n(static_cast<uint8_t*>(actor) + patterns::kActorLocOffset + 12, &rot, 12))
+            return false;
+        float f[3], r[3], u[3];
+        ue_rot_basis(rot, f, r, u);
+        const float d[3] = {0.5f * (box.mn[0] + box.mx[0]) - loc[0], 0.5f * (box.mn[1] + box.mx[1]) - loc[1],
+                            0.5f * (box.mn[2] + box.mx[2]) - loc[2]};
+        s_sum[0] += d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+        s_sum[1] += d[0] * r[0] + d[1] * r[1] + d[2] * r[2];
+        s_sum[2] += d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+        if (++s_n < kSamples) return false;
+        BVR_LOG("[bones] rigid holdable %p: its mesh's centre is %.2f %.2f %.2f (fwd right up, world units) from its "
+                "origin, from the engine's render bounds",
+                actor, s_sum[0] / kSamples, s_sum[1] / kSamples, s_sum[2] / kSamples);
+    }
+    for (int i = 0; i < 3; ++i) out[i] = s_sum[i] / kSamples;
+    return true;
+}
+
+// The held gun's row in the geometry table (gun_geometry.h), by its class, cached per holdable. Null for
+// a holdable the table does not know.
+const gun_geometry::Gun* gun_row(void* weapon) {
+    static void* s_of = nullptr;
+    static const gun_geometry::Gun* s_row = nullptr;
+    if (weapon != s_of) {
+        s_of = weapon;
+        s_row = weapon ? gun_geometry::find(patterns::object_class_name(weapon)) : nullptr;
+    }
+    return s_row;
+}
+const gun_geometry::RestPose* gun_rest(void* weapon) {
+    static void* s_of = nullptr;
+    static const gun_geometry::RestPose* s_rest = nullptr;
+    if (weapon != s_of) {
+        s_of = weapon;
+        s_rest = weapon ? gun_geometry::rest_pose(patterns::object_class_name(weapon)) : nullptr;
+    }
+    return s_rest;
+}
+
+// The evaluated pose as the drive reads it: the game's, or with the gun in the left hand the
+// mirrored one (each hand the other's layout; 43/44, the gun's grip and tip, at their mirror).
+const Qts* m4_pose(const Qts* A, int n) {
+    // 2026-10-21 (HELD_GUN_AUDIT.md 2.3): THE GUN'S SIDEWAYS AXIS AND CENTRE PLANE ARE CONSTANTS OF THE GUN.
+    // They used to be latched from a frame - the first mirrored one, then the first at rest - and a reload's
+    // tilt or an ability idle decided them (the shotgun upside down in the left hand, 20:36). Now the axis is
+    // the socket record's row the table names (every gun's Y; the grip bone's Y with no record), the plane is
+    // the median of the weapon skeleton's REST bones along it, and both are written every frame, mirrored or
+    // not, so a point of the gun can be reflected to the other hand at any time (unmirror_grip_point, the
+    // anchor, the rest pose).
+    void* weapon = nullptr;
+    if (!hands::current_holdable(&weapon)) weapon = nullptr;
+    const gun_geometry::Gun* row = gun_row(weapon);
+    const int uAxis = row ? row->sideAxis : 1;
+    float ax[3][3];
+    const bool fromSocket = weapon && weapon_socket_axes(ax);
+    const arm_ik::Vec u = gun_geometry::side_axis(fromSocket ? &ax[0][0] : nullptr, uAxis);
+    float plane = 0.0f; // along u, in the grip's frame (rig units)
+    const char* planeFrom = "no weapon skeleton: the grip's own origin";
+    if (weapon && weapon == g_wHoldable && g_wBoneCount > 2 && g_wBoneCount <= kMaxBones) {
+        // The pin: the gun's OWN centre plane. Flipping u mirrors the gun about the plane through the grip's
+        // origin, which is the model's centre only if the model is built about its grip. The pistol is not:
+        // its own skeleton (wskel GRIP HUNT) puts every centre-line bone - body, hammer, trigger, barrel -
+        // 1.4-2.2 UU off its R_Grip root along its sideways axis, so a flip about the root moved it twice
+        // that, into the back of the left hand (simulator, 2026-10-19). The plane is the median sideways
+        // position of those bones (a root at the origin is the grip, not the gun), taken from the weapon's
+        // space to the grip's by the two DrawScales.
+        float restP[kMaxBones][3];
+        for (int i = 0; i < g_wBoneCount; ++i) memcpy(restP[i], g_wRef[i].p, 12);
+        float kw = 1.0f, kh = 1.0f;
+        if (!ds_read(weapon, &kw) || !(kw > 0.01f)) kw = 1.0f;
+        if (!g_m4.actor || !ds_read(g_m4.actor, &kh) || !(kh > 0.01f)) kh = 1.0f;
+        plane = gun_geometry::centre_plane(&restP[0][0], g_wBoneCount, uAxis, kw, kh);
+        planeFrom = "the weapon skeleton's centre line";
+    } else if (weapon) {
+        // 2026-10-20: NO SKELETON (the wrench, any rigid holdable): its mesh's own centre. A flip
+        // about the grip's origin moves a mesh built off its origin by twice that offset - the
+        // wrench went sideways into the left hand. The engine's render bounds (Actor
+        // GetRenderBoundingBox, world) taken back into the actor's own frame (Location +0x1D8,
+        // Rotation +0x1E4) are a constant of the mesh: the engine draws it with that rotation,
+        // mirrored or not. Its coordinate along the socket axis u, in the grip's component units.
+        float local[3];
+        if (rigid_centre(weapon, local)) {
+            float kh = 1.0f;
+            if (!g_m4.actor || !ds_read(g_m4.actor, &kh) || !(kh > 0.01f)) kh = 1.0f;
+            plane = local[uAxis] / kh;
+            planeFrom = "the rigid mesh's own centre (its render bounds)";
+        }
+    }
+    const float ovr = g_mirrorPinOverride.load(std::memory_order_relaxed);
+    if (ovr == ovr) { plane = ovr; planeFrom = "OVERRIDE (vrbones mirrorpin)"; }
+    // u is the socket's axis as the record signs it, so the skeleton's coordinate along it is the
+    // plane's distance along u.
+    arm_ik::put(u, g_mirU);
+    g_mirPlane = plane;
+    static void* s_pinLogged = nullptr;
+    static float s_pinLoggedV = 0.0f;
+    if (s_pinLogged != weapon || std::fabs(s_pinLoggedV - plane) > 0.01f) {
+        s_pinLogged = weapon;
+        s_pinLoggedV = plane;
+        BVR_LOG("[bones] mirror: the held weapon's sideways axis is its %s %c (in the grip's frame %.3f %.3f %.3f); its "
+                "centre plane is %.2f along it (%s)",
+                fromSocket ? "SOCKET axis" : "grip bone's axis", "XYZ"[uAxis], u.x, u.y, u.z, plane, planeFrom);
+    }
+    const mirror::Basis* b = n >= patterns::kHandsRigBoneCount ? palette::mirror_basis() : nullptr;
+    if (!g_m4.mirror || !b) return A;
+    memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
+    auto aff = [&](int i) { return mirror::from_frame(A[i].q, A[i].p, A[i].s); };
+    for (int k = 0; k < mirror::kPairs; ++k) {   // the hands AND the arms
+        const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+        mirror_into(mirror::mirrored_pose(*b, aff(R), b->mbLeft[k]), g_evMirror[L]);
+        mirror_into(mirror::mirrored_pose(*b, aff(L), b->mbRight[k]), g_evMirror[R]);
+    }
+    // The gun's grip and tip, as a solid: the gun's sideways axis flipped about its centre plane. THE PLANE
+    // FLIPPED IS THE GUN'S: the weapon hangs off the grip through its socket, whose rotation (the socket
+    // record's axes) turns the gun's own frame against the bone's, so the sideways axis is a SOCKET axis in
+    // the grip's frame, not a bone axis (flipping the bone's left the gun tilted by twice the socket's turn).
+    const mirror::Aff grip = aff(patterns::kBoneWeaponAttach);
+    mirror::Aff gripInv;
+    if (!mirror::inverse(grip, &gripInv)) return g_evMirror;
+    const float off[3] = {g_mirU[0] * plane, g_mirU[1] * plane, g_mirU[2] * plane};
+    const mirror::Aff grip2 = mirror::mirrored_solid_u(*b, grip, g_mirU, off);
+    mirror_into(grip2, g_evMirror[patterns::kBoneWeaponAttach]);
+    // The tip (44: the muzzle effects) rides the gun as it is now placed: rigid with the grip.
+    for (int j = 0; j < mirror::kSockets; ++j) {
+        const int s = mirror::kSocketBone[j];
+        if (s == patterns::kBoneWeaponAttach) continue;
+        mirror_into(mirror::mul(grip2, mirror::mul(gripInv, aff(s))), g_evMirror[s]);
+    }
+    return g_evMirror;
+}
 std::atomic<bool> g_pivotProbe{false};
 // s86: per side, the solved upper-arm head, body cm (fwd, right, up) from the bar centre,
 // and the wrist's distance from its shoulder as a fraction of the arm. For the HANDS line.
@@ -6992,6 +7511,25 @@ struct SockCache {
 SockCache g_sock;
 std::atomic<uint32_t> g_sockDriven{0};
 
+// The held weapon's socket on its grip (43): the hands mesh's socket record named by the weapon's
+// attach name (weapon +0xF0, AActor::AttachToBone - 'Pistol', 'TommyGun', ...). Floats 3-11 are
+// the socket's X, Y and Z axes in the bone's frame (socket_follow reads them the same way): the
+// weapon's own frame on the bone. False when the record is not found.
+bool weapon_socket_axes(float axes[3][3]) {
+    void* weapon = nullptr;
+    if (!hands::current_holdable(&weapon) || !weapon || !g_sock.coords) return false;
+    int32_t nm[2] = {};
+    if (!read_n(static_cast<uint8_t*>(weapon) + patterns::kActorAttachBoneNameOffset, nm, 8)) return false;
+    for (int i = 0; i < g_sock.count; ++i) {
+        if (g_sock.bone[i] != patterns::kBoneWeaponAttach || memcmp(g_sock.name[i], nm, 8)) continue;
+        float rec[12];
+        if (!read_n(g_sock.coords + 12 * i, rec, 48)) return false;
+        for (int a = 0; a < 3; ++a) memcpy(axes[a], rec + 3 + 3 * a, 12);
+        return true;
+    }
+    return false;
+}
+
 bool socket_is_written(int bone) {
     if (!g_socketWrite.load(std::memory_order_relaxed)) return false;
     for (int h = 0; h < 2; ++h)
@@ -7046,6 +7584,8 @@ void fx_actor_restore() {
     g_fxaN = 0;
 }
 
+std::atomic<void*> g_fxaIgnore{nullptr}; // an actor on the hands that its owner places (attach_relative)
+
 void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k, arm_ik::Vec tAttach) {
     namespace ik = arm_ik;
     void* hands = g_m4.actor;
@@ -7066,6 +7606,7 @@ void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k
             g_fxa[r] = g_fxa[--g_fxaN];
         }
         for (int j = 0; j < nl && g_fxaN < 32; ++j) {
+            if (linked[j] == g_fxaIgnore.load(std::memory_order_relaxed)) continue; // placed by its owner (the spare)
             bool known = false;
             for (int r = 0; r < g_fxaN; ++r) known = known || g_fxa[r].actor == linked[j];
             if (known) continue;
@@ -7206,9 +7747,16 @@ void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) 
                 g_attachOriginComp.x, g_attachOriginComp.y, g_attachOriginComp.z);
     }
     const arm_ik::Vec tAttach = g_attachOriginComp;
+    // Mirrored (the gun in the left hand, A the mirrored pose): a hand's socket follows the OTHER
+    // hand, at its twin bone - a plasmid's palm effect leaves the right hand, which now shows
+    // what the left hand was doing. Its offset is the game's, unmirrored (a small error on an
+    // effect's origin, never on the hands).
+    const bool mir = g_m4.mirror && A != g_evCopy;
     for (int i = 0; i < g_sock.count; ++i) {
-        const int b = g_sock.bone[i], h = g_sock.hand[i];
-        if (h < 0 || b < 0 || b >= n || socket_is_written(b)) continue;
+        const int b0 = g_sock.bone[i], h0 = g_sock.hand[i];
+        if (h0 < 0 || b0 < 0 || b0 >= n || socket_is_written(b0)) continue;
+        const int h = mir ? 1 - h0 : h0;
+        const int b = mir ? mirror_twin(b0) : b0;
         float cur[12];
         if (!read_n(coords + 12 * i, cur, 48)) continue;
         if (!X[h].valid) { // that hand is not tracked this frame: the game's own offset back
@@ -7339,7 +7887,10 @@ void m4_compose(bool late) {
         for (int i = 0; i < 3; ++i) out[i] /= k;
     };
     auto to_comp_v = [&](const float w[3], float out[3]) { qts_rotate(qaInv, w, out); };
-    const Qts* A = g_evCopy;
+    // The game's own pose to the palette until it has measured the mirror from it; then, with
+    // the gun in the left hand, the drive reads the mirrored pose (each hand the other's layout).
+    palette::publish_pose(g_evCopy[0].p, n, static_cast<int>(sizeof(Qts) / sizeof(float)));
+    const Qts* A = m4_pose(g_evCopy, n);
     namespace hc = hand_compose;
     namespace ik = arm_ik;
     const uint64_t now = GetTickCount64();
@@ -7347,11 +7898,333 @@ void m4_compose(bool late) {
     bool haveWrist[2] = {false, false};
     // s87: the palette route (palette.h). Off, or the hook refused: the bone writes below.
     const bool usePalette = palette::active();
-    float hbWeight[2] = {handback::weight(0, now), handback::weight(1, now)};
+    // Mirrored, hand h shows the OTHER hand's animation, so the game's hand-back for that
+    // animation is the other hand's (a reload played on the right hand now plays on the left).
+    const bool mir = g_m4.mirror && A != g_evCopy;
+    auto hb = [&](int h) { return mir ? 1 - h : h; };
+    float hbWeight[2] = {handback::weight(hb(0), now), handback::weight(hb(1), now)};
     palette::HandXform palX[2];
     float palmComposed[2][3] = {};
     bool socketsWritten[2] = {false, false};
-    for (int h = 0; h < 2; ++h) {
+    // 2026-10-14: an animation played AT THE GUN (handback.h, a sibling VR mod's "animation at the hand")
+    // carries the free hand by the weapon hand's final correction, so the weapon hand is
+    // composed first. The gun hand's pose just before (the rest the clip's own motion of the
+    // gun is measured from) is kept per hand while no hand-back touches it.
+    const int gunHand = g_m4.held == 0 ? 0 : 1;
+    // ---- 2026-10-20: THE FREE HAND KEPT ON THE GUN THROUGH A RELOAD'S START ---------------------------
+    // The 20:35 run: the shotgun emptied with both hands on it, the game's reload began, and its clip took
+    // the free hand off the fore-end (to the pouch) - the two-handed hold, which aims from where the clip
+    // has that hand, let go and the gun swung. While the two-handed grip holds through a reload (or the
+    // lowering of an ammunition switch, or an idle that takes the hand off the gun), the free hand is drawn
+    // at its REST ON THE GUN, so the hold and the drawn hand stay as they were until the grip is let go.
+    // 2026-10-21 (HELD_GUN_AUDIT.md 2.3): that rest, and the grip pose, are constants of the gun
+    // (grip_rest_poses.h) - the clip's own hold at idle, measured once. They were latched from the first idle
+    // frame seen and reset by a hand-over and a weapon switch, so a hand-over mid-reload drew the hand at the
+    // pouch (nothing to keep) and a plasmid switch latched an equip's end pose, which the anchor then copied.
+    const Qts* const A0 = A; // the evaluated pose the skin matrices were made from
+    // (The free hand's pose is decided and built below, after the shotgun's sockets are put at their rest, so it
+    // is built against the gun as drawn: the hand pose engine, hand_pose.h.)
+    // 2026-10-21 (the tester: "completely running out of ammo within an ammo type causes the tilt up animation for a
+    // split second"): the shotgun stays in the gun hand exactly as it rests there - its grip and tip sockets (43,
+    // 44, which carry the drawn gun) against the gun hand's wrist as at idle - through every clip but a shot's: the
+    // empty gun's idle, the lowering of an ammunition switch and the reloads can no longer turn it in the hand.
+    // 2026-10-21 (the 20:36 recording, frame 448: the shotgun handed to the left hand mid-reload rolled 180 deg,
+    // its up axis from +0.80 to -0.99): the rest is ONE PER HAND. Mirrored, the gun hand is the left wrist of the
+    // mirrored pose, and the right hand's rest put on it is that hold turned over, not mirrored.
+    if (manual_reload::sticky_grip() && patterns::kBoneWeaponAttach < n && 44 < n) {
+        // 2026-10-21 (the 20:56 run: a plasmid mid-reload, the shotgun back, a reload begun 0.3 s later - the wrist
+        // way off): the rest is KEPT per gun across a switch (a few guns), and a new one is taken only from an idle
+        // that has settled (0.5 s, not the empty gun's idle) - the first idle frame after an equip is still the
+        // equip's swing, and that pose was held through the whole reload.
+        struct GunRest {
+            void* gun = nullptr;
+            Qts rel[2][2];
+            bool ok[2] = {false, false};
+        };
+        static GunRest s_rests[4];
+        static int s_restNext = 0;
+        void* g = nullptr;
+        hands::current_holdable(&g);
+        GunRest* rest = nullptr;
+        for (GunRest& e : s_rests)
+            if (g && e.gun == g) rest = &e;
+        if (!rest && g) {
+            rest = &s_rests[s_restNext];
+            s_restNext = (s_restNext + 1) % 4;
+            *rest = GunRest{};
+            rest->gun = g;
+        }
+        static GunRest s_none;
+        if (!rest) rest = &s_none;
+        const int mi = g_m4.mirror ? 1 : 0;
+        Qts* s_gunRel = rest->rel[mi];
+        bool& s_gunRelOk = rest->ok[mi];
+        const int gw = m4_wrist(gunHand);
+        const ik::Quat wq = ik::normalized(ik::quat(A[gw].q));
+        const ik::Vec wp = ik::vec(A[gw].p);
+        const int sockets[2] = {patterns::kBoneWeaponAttach, 44};
+        const hands_state::State hs = hands_state::current(g_m4.actor);
+        Qts now[2];
+        for (int j = 0; j < 2; ++j) {
+            const int i = sockets[j];
+            ik::put(ik::rotate(ik::conj(wq), ik::vec(A[i].p) - wp), now[j].p);
+            const ik::Quat rq = ik::normalized(ik::mul(ik::conj(wq), ik::quat(A[i].q)));
+            memcpy(now[j].q, rq.v, 16);
+        }
+        // Recorded at idle, and only near the rest it has (an empty idle that tilts the gun is not a rest).
+        float dev = 0.0f;
+        if (s_gunRelOk) {
+            float d = 0.0f;
+            for (int c = 0; c < 4; ++c) d += now[0].q[c] * s_gunRel[0].q[c];
+            dev = 2.0f * std::acos(std::fmin(1.0f, std::fabs(d))) * 57.29578f;
+        }
+        static uint64_t s_idleSince = 0;
+        static void* s_idleGun = nullptr;
+        const uint64_t nowMs = GetTickCount64();
+        if (hs != hands_state::State::Idling || g != s_idleGun) s_idleSince = nowMs;
+        s_idleGun = g;
+        const bool settled = hs == hands_state::State::Idling && nowMs - s_idleSince >= 500 && !hands_clip_is(L"EmptyFidget");
+        if (hs == hands_state::State::Idling && ((!s_gunRelOk && settled) || (s_gunRelOk && dev < 3.0f))) {
+            memcpy(s_gunRel, now, sizeof(Qts) * 2);
+            s_gunRelOk = true;
+        } else if (s_gunRelOk && hs != hands_state::State::Firing) {
+            static Qts s_gsub[kMaxBones];
+            if (A != s_gsub) memcpy(s_gsub, A, sizeof(Qts) * static_cast<size_t>(n));
+            for (int j = 0; j < 2; ++j) {
+                const int i = sockets[j];
+                ik::put(wp + ik::rotate(wq, ik::vec(s_gunRel[j].p)), s_gsub[i].p);
+                const ik::Quat q = ik::normalized(ik::mul(wq, ik::quat(s_gunRel[j].q)));
+                memcpy(s_gsub[i].q, q.v, 16);
+            }
+            A = s_gsub;
+        }
+    }
+    // ---- 2026-10-21: THE HAND POSE ENGINE (hand_pose.h; HELD_GUN_MATRIX.md section 10, step 3b) ---------------
+    // One decision per frame for the free hand - a wrist source and a finger source read off the gun's state record
+    // and the hands' state - and one builder: the hand in the game's own left-hand frame, each source blended in
+    // and out over its own ease against the clip's pose, then mirrored into the right cluster for the left-hand
+    // hold by the rig's pair mirror. This replaces the kept rest with its offRest rule, the grip pose, the two
+    // designed-grip branches and the start-clip hold, which each decided on their own.
+    {
+        static Qts s_sub[kMaxBones];
+        const int fh = 1 - gunHand;
+        const int lo = fh ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+        const int hi = fh ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+        const int gw = m4_wrist(gunHand);
+        if (n > hi && n <= kMaxBones && gw < n && patterns::kBoneWeaponAttach < n) {
+            void* curGun = nullptr;
+            hands::current_holdable(&curGun);
+            const gun_geometry::RestPose* rest = gun_rest(curGun);
+            // The tables are the LEFT hand's on the gun in the right; they serve the free hand when that is the
+            // left (unmirrored) or, with the gun in the left hand, the right drawing the left's clip mirrored.
+            const bool leftFrameOk = (fh == 0 && !g_m4.mirror) ||
+                                     (fh == 1 && g_m4.mirror && palette::mirror_basis() && n >= patterns::kHandsRigBoneCount);
+            int relaxedN = 0;
+            const gun_geometry::RestBone* relaxed = gun_geometry::relaxed_fingers(&relaxedN);
+            const manual_reload::GripTable* designed = manual_reload::carry_grip();
+            hand_pose::Inputs in;
+            in.gun = manual_reload::state();
+            in.clipOwnsHand = handback::weight(hb(fh), now) < 0.999f;
+            in.held = two_hand::held();
+            in.hasRestPose = rest != nullptr && leftFrameOk;
+            in.designedGrip = designed != nullptr && leftFrameOk;
+            in.partLocked = manual_reload::hand_lock_wanted();
+            in.dragging = manual_reload::dragging();
+            in.hasRelaxed = relaxed != nullptr && relaxedN > 0 && leftFrameOk;
+            in.weaponInHand = curGun != nullptr && (manual_reload::handles_reloads() || gun_row(curGun) != nullptr);
+            const hand_pose::Decision d = hand_pose::resolve_free(in);
+            static hand_pose::Ease s_eOnGun, s_eOnPart, s_eRest, s_eDesigned, s_eRelaxed;
+            const float wGun = hand_pose::ease(s_eOnGun, d.wrist == hand_pose::Wrist::OnGun, now, hand_pose::kOnGunInMs, hand_pose::kOnGunOutMs);
+            g_handOnPartW = hand_pose::ease(s_eOnPart, d.wrist == hand_pose::Wrist::OnPart, now, hand_pose::kOnPartInMs, hand_pose::kOnPartOutMs);
+            const float wRest = hand_pose::ease(s_eRest, d.fingers == hand_pose::Fingers::Rest, now, hand_pose::kFingersInMs, hand_pose::kFingersOutMs);
+            const float wDes = hand_pose::ease(s_eDesigned, d.fingers == hand_pose::Fingers::Designed, now, hand_pose::kFingersInMs, hand_pose::kFingersOutMs);
+            const float wRel = hand_pose::ease(s_eRelaxed, d.fingers == hand_pose::Fingers::Relaxed, now, hand_pose::kFingersInMs, hand_pose::kFingersOutMs);
+            static int s_ruleWas = -1;
+            if (!late && d.rule != s_ruleWas) {
+                s_ruleWas = d.rule;
+                BVR_LOG("[hands] free hand: wrist %s, fingers %s (rule %d; held %d, carrying %d, dragging %d, locked %d, stage %s)",
+                        hand_pose::wrist_name(d.wrist), hand_pose::fingers_name(d.fingers), d.rule, in.held, in.gun.carryingPart,
+                        in.dragging, in.partLocked, gun_state::stage_name(in.gun.stage));
+            }
+            if (wGun > 0.001f || wRest > 0.001f || wDes > 0.001f || wRel > 0.001f) {
+                // THE BUILDER, in the game's own left-hand frame (g_evCopy). The wrist: the clip's, blended toward the
+                // gun's rest point (against the gun's attach bone as drawn: the unmirrored A[43], which the shotgun's
+                // socket rest has already placed; mirrored, the game's own 43 - the pair mirror carries the cluster
+                // onto the mirrored gun). The fingers: each bone against the wrist, the clip's blended toward the
+                // rest pose, a designed grip and the relaxed hand by their weights, then re-rooted on the wrist.
+                static Qts s_left[kMaxBones];
+                memcpy(s_left, g_evCopy, sizeof(Qts) * static_cast<size_t>(n));
+                const int ga = patterns::kBoneWeaponAttach;
+                const Qts& g43 = g_m4.mirror ? g_evCopy[ga] : A[ga];
+                const ik::Quat gq0 = ik::normalized(ik::quat(g43.q));
+                const ik::Vec gp0 = ik::vec(g43.p);
+                const int lw = patterns::kBoneLWrist;
+                const ik::Quat cq = ik::normalized(ik::quat(g_evCopy[lw].q));
+                const ik::Vec cp = ik::vec(g_evCopy[lw].p);
+                auto blend_q = [](const ik::Quat& a, const ik::Quat& b, float w) {
+                    const float d0 = a.v[0] * b.v[0] + a.v[1] * b.v[1] + a.v[2] * b.v[2] + a.v[3] * b.v[3];
+                    const float sgn = d0 < 0.0f ? -1.0f : 1.0f;
+                    ik::Quat r;
+                    for (int c = 0; c < 4; ++c) r.v[c] = a.v[c] + (sgn * b.v[c] - a.v[c]) * w;
+                    return ik::normalized(r);
+                };
+                // The wrist.
+                ik::Quat fq = cq;
+                ik::Vec fp = cp;
+                if (rest && wGun > 0.001f) {
+                    const ik::Quat rq = ik::normalized(ik::mul(gq0, ik::normalized(ik::quat(rest->wristQ))));
+                    // 2026-10-22: the wrist rides the pump as it is worked (the fist's measured travel to the rear
+                    // stop, gun_geometry::Gun::pumpBack): 223bbe5 moved the grab point and left the drawn hand here.
+                    ik::Vec wristRel = ik::vec(rest->wristP);
+                    if (const gun_geometry::Gun* row = gun_row(curGun)) wristRel = wristRel + row->pumpBack * manual_reload::pump_back();
+                    const ik::Vec rp = gp0 + ik::rotate(gq0, wristRel);
+                    fq = blend_q(cq, rq, wGun);
+                    fp = cp + (rp - cp) * wGun;
+                }
+                // Each finger bone against the clip's wrist, then blended toward the sources that are on.
+                struct Rel { ik::Vec p; ik::Quat q; };
+                Rel rel[kMaxBones];
+                const ik::Quat cqi = ik::conj(cq);
+                for (int i = lw + 1; i <= patterns::kBoneLClusterLast; ++i) {
+                    rel[i].p = ik::rotate(cqi, ik::vec(g_evCopy[i].p) - cp);
+                    rel[i].q = ik::normalized(ik::mul(cqi, ik::quat(g_evCopy[i].q)));
+                }
+                auto blend_table = [&](const gun_geometry::RestBone* rows, int count, float w) {
+                    if (!rows || w <= 0.001f) return;
+                    for (int j = 0; j < count; ++j) {
+                        const gun_geometry::RestBone& rb = rows[j];
+                        if (rb.bone <= lw || rb.bone > patterns::kBoneLClusterLast || rb.bone >= n) continue;
+                        rel[rb.bone].p = rel[rb.bone].p + (ik::vec(rb.p) - rel[rb.bone].p) * w;
+                        rel[rb.bone].q = blend_q(rel[rb.bone].q, ik::normalized(ik::quat(rb.q)), w);
+                    }
+                };
+                if (rest) blend_table(rest->bones, rest->n, wRest);
+                if (designed && wDes > 0.001f) {
+                    // The designed grip: each finger joint's solved rotation against its parent, with the clip's own
+                    // joint offsets (grips.h) - built on the clip's left hand, then taken against the wrist.
+                    Qts dg[kMaxBones];
+                    memcpy(dg, g_evCopy, sizeof(Qts) * static_cast<size_t>(n));
+                    for (int j = 0; j < designed->jointCount; ++j) {
+                        const grips::GripJoint& J = designed->joints[j];
+                        if (J.bone < 0 || J.bone >= n || J.parent < 0 || J.parent >= n) continue;
+                        const ik::Quat cpq = ik::normalized(ik::quat(g_evCopy[J.parent].q));
+                        const ik::Vec off = ik::rotate(ik::conj(cpq), ik::vec(g_evCopy[J.bone].p) - ik::vec(g_evCopy[J.parent].p));
+                        const ik::Quat pq = ik::normalized(ik::quat(dg[J.parent].q));
+                        ik::put(ik::vec(dg[J.parent].p) + ik::rotate(pq, off), dg[J.bone].p);
+                        const ik::Quat q = ik::normalized(ik::mul(pq, ik::normalized(ik::quat(J.q))));
+                        memcpy(dg[J.bone].q, q.v, 16);
+                    }
+                    for (int i = lw + 1; i <= patterns::kBoneLClusterLast && i < n; ++i) {
+                        const ik::Vec dp = ik::rotate(cqi, ik::vec(dg[i].p) - cp);
+                        const ik::Quat dq = ik::normalized(ik::mul(cqi, ik::quat(dg[i].q)));
+                        rel[i].p = rel[i].p + (dp - rel[i].p) * wDes;
+                        rel[i].q = blend_q(rel[i].q, dq, wDes);
+                    }
+                }
+                blend_table(relaxed, relaxedN, wRel);
+                // Re-rooted on the (blended) wrist.
+                ik::put(fp, s_left[lw].p);
+                memcpy(s_left[lw].q, fq.v, 16);
+                for (int i = lw + 1; i <= patterns::kBoneLClusterLast && i < n; ++i) {
+                    ik::put(fp + ik::rotate(fq, rel[i].p), s_left[i].p);
+                    const ik::Quat q = ik::normalized(ik::mul(fq, rel[i].q));
+                    memcpy(s_left[i].q, q.v, 16);
+                }
+                if (A != s_sub) memcpy(s_sub, A, sizeof(Qts) * static_cast<size_t>(n));
+                if (!g_m4.mirror) {
+                    for (int i = patterns::kBoneLClusterFirst; i <= patterns::kBoneLClusterLast && i < n; ++i) s_sub[i] = s_left[i];
+                } else {
+                    const mirror::Basis& mb = *palette::mirror_basis();
+                    for (int k = 0; k < mirror::kHandPairs; ++k) {
+                        const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+                        mirror_into(mirror::mirrored_pose(mb, mirror::from_frame(s_left[L].q, s_left[L].p, s_left[L].s),
+                                                          mb.mbRight[k]),
+                                    s_sub[R]);
+                    }
+                }
+                A = s_sub;
+            }
+        }
+    }
+    // The skin follows the substitution (palette.h HandXform::fix*): each free-hand bone drawn other than the
+    // game evaluated it carries the game's bone onto the drawn one, D * inverse(E). Without it the hand's
+    // placement was computed from the substituted wrist while the mesh kept the game's - fingers open, and a
+    // turned wrist put the hand off its grab.
+    palette::HandXform boneFix[2];
+    if (A != A0) {
+        const int fh = 1 - gunHand;
+        const int lo = fh ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+        const int hi = fh ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+        for (int i = lo; i <= hi && i < n && i - lo < palette::HandXform::kMaxFix; ++i) {
+            if (!memcmp(A[i].p, A0[i].p, 12) && !memcmp(A[i].q, A0[i].q, 16)) continue;
+            const ik::Quat d = ik::normalized(ik::quat(A[i].q)), e = ik::normalized(ik::quat(A0[i].q));
+            const ik::Quat r = ik::normalized(ik::mul(d, ik::conj(e)));
+            const ik::Vec t = ik::vec(A[i].p) - ik::rotate(r, ik::vec(A0[i].p));
+            const int f = i - lo;
+            boneFix[fh].fixValid[f] = true;
+            memcpy(boneFix[fh].fixQ[f], r.v, 16);
+            ik::put(t, boneFix[fh].fixT[f]);
+        }
+    }
+    static ik::Bone s_gunRest[2];
+    static bool s_gunRestValid[2] = {false, false};
+    static float s_joinMinCm[2] = {1e9f, 1e9f};
+    static bool s_carrying[2] = {false, false};
+    static ik::Quat s_twoTurnLocal[2]; // the two-handed turn, in the gun hand's frame, and its weight
+    static float s_twoTurnW[2] = {0.0f, 0.0f};
+    // 2026-10-19: the two-handed grip (two_hand.h). The gun hand's branch needs the FREE hand's
+    // anchor in the clip - where the game's animation has that hand against the gun - derived as
+    // the loop below derives every hand's: the palm centre, rigid on the palette route, the fist
+    // centre when that is on.
+    auto anchor_of = [&](int hh) {
+        const int ww = m4_wrist(hh);
+        const int* pbb = hh == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
+        ik::Bone wb;
+        memcpy(wb.p, A[ww].p, 12);
+        memcpy(wb.q, A[ww].q, 16);
+        ik::Vec pc{};
+        for (int j = 0; j < 5; ++j) pc = pc + ik::vec(A[pbb[j]].p) * 0.2f;
+        float pl[3];
+        if (usePalette && palette::rigid_palm_local(hh, pl)) pc = hc::apply(hc::frame_of(wb), ik::vec(pl));
+        if (g_fistAnchor.load(std::memory_order_relaxed)) {
+            hand_grip::Frame fr;
+            if (hand_grip::head_frame(ik::vec(A[ww].p), ik::vec(A[pbb[1]].p), ik::vec(A[pbb[2]].p),
+                                      ik::vec(A[pbb[4]].p), hh == 1 ? 1.0f : -1.0f, &fr))
+                pc = hand_grip::point(fr, hand_grip::kFistCentre);
+        }
+        return pc;
+    };
+    float twoHold = 0.0f; // how much the free hand rides the gun for the two-handed grip, this compose
+    manual_reload::HandPlacement mrPlace; // the gun hand's placement, for a part the free hand carries
+    bool mrGun = false;
+    void* twoGun = nullptr;
+    const bool twoGunOk = hands::current_holdable(&twoGun) && two_hand::applicable(twoGun);
+    // 2026-10-20: THE GUN AS DRAWN, NOT AS THE CLIP ASSUMES IT. The game's clip puts the other hand
+    // where the gun's grip is at its authored size against the game's hand (rig DrawScale k). The
+    // drawn gun is scaled about its grip socket (43) by what the skeleton lane wrote, and the hands
+    // by their own size, so the clip's point is off the drawn grip by (1 - ratio) of its distance
+    // from the socket - at Weapon size 0.88 the Tommy Gun's fore-grip sat ~3.5 cm behind the hand.
+    // A point the clip has against the gun maps onto the drawn gun through on_gun (two_hand_math.h).
+    const float gunRatio = two_hand::gun_ratio(g_wDrawnScale.load(std::memory_order_relaxed), k, g_m4.scale);
+    const ik::Vec gunRoot = ik::vec(A[patterns::kBoneWeaponAttach].p);
+    auto on_gun = [&](ik::Vec x) { return two_hand::on_drawn_gun(gunRoot, x, gunRatio); };
+    if (!late && twoGunOk) {
+        // Once per gun, and again whenever a size slider moves it.
+        static const void* s_told = nullptr;
+        static float s_toldRatio = 0.0f;
+        if (s_told != twoGun || std::fabs(gunRatio - s_toldRatio) > 0.005f) {
+            s_told = twoGun;
+            s_toldRatio = gunRatio;
+            const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+            const ik::Vec a = anchor_of(gunHand == 1 ? 0 : 1);
+            BVR_LOG("[twohand] the gun is drawn at %.3f of the size its animation holds it at (weapon %.3f, rig %.3f, "
+                    "hands %.3f): the grip point moves %.1f cm along it to the drawn grip",
+                    gunRatio, g_wDrawnScale.load(std::memory_order_relaxed), k, g_m4.scale,
+                    ik::length(on_gun(a) - a) * g_m4.scale / k * toCm);
+        }
+    }
+    for (int hi = 0; hi < 2; ++hi) {
+        const int h = hi == 0 ? gunHand : 1 - gunHand;
         const M4Hand& T = g_m4.hand[h];
         if (!T.valid) continue;
         const int w = m4_wrist(h);
@@ -7435,7 +8308,170 @@ void m4_compose(bool late) {
             // game position and the target (Dishonored blend_transform_palm: interpolating the
             // translation instead swung the palm on an arc about the mesh origin).
             const float wgt = hbWeight[h];
-            const palette_math::Blended bl = palette_math::blend_hand(D.q, sPos, palmComp, target.t, wgt);
+            // ---- 2026-10-14: AN ANIMATION AT THE GUN (handback.h) ---------------------------
+            // The controller side of the blend, before the hand-back to the game: the hand's own
+            // correction (q, palm at, size), then
+            //   gun hand:  the clip's own motion of the hand against its pose just before, layered
+            //              on the controller - D measured from that rest pose instead of the live
+            //              one, x -> target + Drest.q (x - restPalm) s (BRVR's HandAnim=1);
+            //   free hand: the WEAPON hand's final correction applied to this hand's bones, so it
+            //              stands where the clip has it against the gun (hand_compose.h carried_by), gated by
+            //              how near the clip has it to the gun.
+            hc::Placement own{D.q, target.t, sPos};
+            const float toCmClip = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+            if (h == gunHand) {
+                // 2026-10-20: the shotgun's Fire clip after its recoil is the one-handed pump - the gun
+                // swung up to show the pump - and in VR the pump is the player's: only the recoil plays.
+                const float g = handback::gun_motion(hb(h), now) * manual_reload::gun_motion_keep();
+                g_dbgGunMotion = g;
+                g_dbgAimTw = 0.0f; // set below while two hands hold
+                g_dbgAimTurnDeg = 0.0f;
+                g_dbgAimDistCm = -1.0f;
+                if (!handback::active(hb(h), now)) {
+                    memcpy(s_gunRest[h].p, A[w].p, 12);
+                    memcpy(s_gunRest[h].q, A[w].q, 16);
+                    s_gunRestValid[h] = true;
+                }
+                // The gun as held, before the clip's own motion (the recoil's kick): the two-handed
+                // grip measures and aims from this, so a kick neither reads as the hand sliding off
+                // nor gets turned back out of the gun (2026-10-20).
+                const hc::Placement pinned = own;
+                if (g > 0.0f && s_gunRestValid[h])
+                    own = hc::toward(own, hc::from_rest(target, s_gunRest[h], palmLocal, palmComp, sPos), g);
+                // ---- 2026-10-19: TWO HANDS ON THE GUN (two_hand.h) ------------------------------
+                // Where the drawn gun has the other hand (its anchor in the clip, carried by this
+                // hand's placement) against where that hand really is (its own target). Unheld, the
+                // distance between them is the grab test; held, the gun turns about this palm until
+                // that point lies on the line to the real hand - its roll stays this hand's - and
+                // the other hand rides it there (the free hand's branch). A clip that owns either
+                // hand (a reload) pauses it: the carry above already puts the hand on the gun.
+                const M4Hand& O = g_m4.hand[1 - h];
+                if (twoGunOk && O.valid && toCmClip > 0.0f && manual_reload::two_hand_allowed()) {
+                    float op[3];
+                    to_comp_p(O.p, op);
+                    const ik::Vec real = ik::vec(op);
+                    // 2026-10-21 (12:54 run: "it still doesn't let me grip when it's empty" - every squeeze at the
+                    // pump measured ~3.5 grab radii off): the empty shotgun's idle clip (EmptyFidgetShotgun) holds
+                    // the free hand away from the pump, and the grab's target followed it. For the shotgun the
+                    // target is where that hand is on the gun when it holds it, against the gun.
+                    // 2026-10-21 (the 20:35 run): every gun's, not only the shotgun's - the empty Tommy Gun's reload
+                    // waits at the pouch with the clip's free hand down there, and its grab measured 1.4-1.5 radii off
+                    // the fore-grip the hand was on. One latch per hand (mirrored, the pose is the other hand's).
+                    // 2026-10-21 (HELD_GUN_AUDIT.md 2.3): THE GRAB POINT IS A CONSTANT OF THE GUN - the free fist centre
+                    // against bone 43 in the gun's own idle clip (gun_geometry.h), reflected about the gun's centre
+                    // plane for the left-hand hold. It was a latch of the clip's hand: per hand, from the first idle
+                    // seen, re-taken every idle frame while held - and the frames it took were an equip's end, a
+                    // post-pump return, an ability idle, or the substituted pose itself (the 21:1x run's grabs 9 cm
+                    // back along the gun, then 10 grab radii off). A gun the table does not know keeps the clip's hand.
+                    ik::Vec anc = anchor_of(1 - h);
+                    if (const gun_geometry::Gun* row = gun_row(twoGun); row && row->twoHanded && patterns::kBoneWeaponAttach < n) {
+                        const ik::Quat aq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
+                        const ik::Vec ap = ik::vec(A[patterns::kBoneWeaponAttach].p);
+                        // 2026-10-22: on the pump as it is worked (the fist's measured travel to the rear stop).
+                        ik::Vec rel = gun_geometry::grip_point(*row, manual_reload::pump_back());
+                        if (g_m4.mirror) rel = gun_geometry::mirror_point(rel, ik::vec(g_mirU), g_mirPlane);
+                        anc = ap + ik::rotate(aq, rel);
+                    }
+                    const ik::Vec authored = hc::place(pinned, palmComp, on_gun(anc));
+                    // A shot's recoil is not a pause: the kick plays on this hand and the front
+                    // hand rides it (handback::clip_owns, 2026-10-20).
+                    const bool paused = handback::clip_owns(hb(h), now) || handback::clip_owns(hb(1 - h), now);
+                    const float distCm = ik::length(real - authored) * toCmClip;
+                    const float slideCm =
+                        std::fabs(ik::length(real - pinned.at) - ik::length(authored - pinned.at)) * toCmClip;
+                    // From the real hand to that point in the body's frame (PIVOTPROBE's), for the probe.
+                    float toward[3] = {};
+                    {
+                        float dc[3], dw[3];
+                        ik::put((authored - real) * k, dc);
+                        qts_rotate(qa, dc, dw);
+                        const float toCm = g_m4.uuPerCm > 1e-4f ? 1.0f / g_m4.uuPerCm : 0.0f;
+                        toward[0] = (dw[0] * g_m4.F[0] + dw[1] * g_m4.F[1] + dw[2] * g_m4.F[2]) * toCm;
+                        toward[1] = (dw[0] * g_m4.R[0] + dw[1] * g_m4.R[1] + dw[2] * g_m4.R[2]) * toCm;
+                        toward[2] = dw[2] * toCm;
+                    }
+                    two_hand::publish(distCm, slideCm, paused, toward, now);
+                    // (2026-10-21: a fade of the aim with the hand's distance was tried for the tilt on letting go
+                    // mid-reload and dropped - "it can lose grip by pulling the gun away": the shotgun's rule one is
+                    // that a held grip never lets go, in any part.)
+                    const float tw = paused ? 0.0f : two_hand::hold_weight(now);
+                    g_dbgAimTw = tw;
+                    g_dbgAimDistCm = distCm;
+                    if (tw > 0.0f) {
+                        // The turn from the gun as held; applied to the kicked gun it keeps the kick
+                        // in the gun's own frame (turn * pinned.q * (pinned.q^-1 * own.q)), and the
+                        // front hand, carried by this placement, kicks with it.
+                        const ik::Quat turn = two_hand::aim_turn(pinned.at, authored, real, 5.0f / toCmClip);
+                        g_dbgAimTurnDeg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(turn.v[3]))) * 57.29578f;
+                        const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
+                        own = hc::toward(own, aimed, tw);
+                        twoHold = tw;
+                        // Kept in this hand's own frame, for a manual reload to hold the gun's angle by.
+                        s_twoTurnLocal[h] = ik::normalized(ik::mul(ik::conj(pinned.q), ik::mul(turn, pinned.q)));
+                        s_twoTurnW[h] = tw;
+                    } else {
+                        s_twoTurnW[h] = 0.0f;
+                    }
+                } else {
+                    // (2026-10-21: no more "kept angle" through a reload. It held the two-handed turn of the
+                    // moment the hold ended - the front hand already leaving - for the whole reload: the 12:02
+                    // capture's shotgun turned ~90 deg off a controller pointed straight ahead, "the wrist turn
+                    // when empty". The free hand is kept on the gun while the grip holds, so a reload no longer
+                    // ends the hold by itself; let go, the gun is the gun hand's, as at any other time.)
+                    s_twoTurnW[h] = 0.0f;
+                    two_hand::publish_none(now);
+                }
+                // ---- 2026-10-19: THE GUNSHOT KICK -------------------------------------------------
+                // A shot is the player's fire seam running (aim.h player_shots: one per bullet,
+                // pellet volley or cast - two_hand_math.h Kick says why not BRVR's wrist jerk); the
+                // wrench, which never reaches a seam, kicks once as each swing begins (the hands'
+                // firing state). Read once per evaluation, not again at the scene build.
+                if (!late) reload_rec_tick(A, now);
+                if (!late) {
+                    static uint32_t s_shots = aim::player_shots();
+                    static bool s_firing = false;
+                    const uint32_t shots = aim::player_shots();
+                    const bool firing = hands_state::current(g_m4.actor) == hands_state::State::Firing;
+                    const bool swing = firing && !s_firing && two_hand::melee(twoGun);
+                    s_firing = firing;
+                    two_hand::shot(m4_phys(h), m4_phys(1 - h), shots != s_shots || swing, now);
+                    s_shots = shots;
+                }
+            } else if (palX[gunHand].valid) {
+                const float c0 = handback::carry(hb(h), now);
+                const palette::HandXform& G = palX[gunHand];
+                const float clipCm = ik::length(palmComp - ik::vec(G.pivot)) * toCmClip;
+                // Carried by the gun hand's final placement to where the clip has this hand on the
+                // DRAWN gun (on_gun): the hand's own bones keep the clip's shape, its anchor moves
+                // with the gun's size.
+                auto carried_on_gun = [&]() {
+                    const hc::Placement gun{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                    hc::Placement c = hc::carried_by(gun, ik::vec(G.pivot), palmComp);
+                    c.at = hc::place(gun, ik::vec(G.pivot), on_gun(palmComp));
+                    return c;
+                };
+                if (c0 > 0.0f) {
+                    if (!s_carrying[h]) s_joinMinCm[h] = 1e9f;
+                    s_carrying[h] = true;
+                    if (clipCm < s_joinMinCm[h]) s_joinMinCm[h] = clipCm;
+                    const float c = c0 * handback::join_gate(clipCm);
+                    own = hc::toward(own, carried_on_gun(), c);
+                } else if (s_carrying[h]) {
+                    s_carrying[h] = false;
+                    if (!late)
+                        BVR_LOG("[handback] at the gun: the clip brought the %s palm within %.1f cm of the gun hand's "
+                                "(join distance %.0f cm)",
+                                h ? "right" : "left", s_joinMinCm[h], handback::join_cm());
+                }
+                // Two hands on the gun: this hand rides it where the game's clip has it (the same
+                // carry, at the hold's weight).
+                if (twoHold > 0.0f) own = hc::toward(own, carried_on_gun(), twoHold);
+                // 2026-10-20: the manual reload's bolt held - this hand drawn ON it, where the clip's own
+                // hand grips it (fingers and all), riding it back as the bolt follows the real hand.
+                // Its weight is the hand pose engine's (hand_pose.h, Wrist::OnPart, eased 100 / 200 ms).
+                if (g_handOnPartW > 0.0f) own = hc::toward(own, carried_on_gun(), g_handOnPartW);
+            }
+            const palette_math::Blended bl = palette_math::blend_hand(own.q, own.s, palmComp, own.at, wgt);
             const ik::Quat qb = bl.q;
             const float sb = bl.s;
             const ik::Vec palmAt = bl.palmAt;
@@ -7451,13 +8487,88 @@ void m4_compose(bool late) {
             for (int j = 0; j < 5; ++j) memcpy(X.palmPoseP[j], A[pb[j]].p, 12);
             ik::put(palmAt, palmComposed[h]);
             ik::put(wristNow, composedWrist[h].p);
+            // ---- 2026-10-20: THE MANUAL RELOAD (manual_reload.h) -----------------------------------
+            // The gun hand is placed: hand it the drawn grip (43) and the free hand against it - in the
+            // grip's frame at the clip's scale, as the reload clips were recorded - once per evaluation.
+            if (h == gunHand && !late) {
+                ik::put(palmComp, mrPlace.gunPalm);
+                ik::put(palmAt, mrPlace.gunPalmAt);
+                for (int c = 0; c < 4; ++c) mrPlace.gunQ[c] = qb.v[c];
+                mrPlace.gunS = sb;
+                memcpy(mrPlace.socket, A[patterns::kBoneWeaponAttach].p, 12);
+                mrPlace.gunRatio = gunRatio;
+                mrGun = true;
+                manual_reload::Frame mf;
+                mf.weapon = twoGun;
+                mf.hands = g_m4.actor;
+                mf.now = now;
+                const ik::Vec sp = palmAt + ik::rotate(qb, (ik::vec(A[patterns::kBoneWeaponAttach].p) - palmComp) * sb);
+                const ik::Quat sq = ik::normalized(ik::mul(qb, ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q))));
+                const M4Hand& F = g_m4.hand[1 - h];
+                ik::Vec handGrip{1e4f, 1e4f, 1e4f};
+                if (F.valid && sb > 1e-4f) {
+                    float fc[3];
+                    to_comp_p(F.p, fc);
+                    handGrip = ik::rotate(ik::conj(sq), ik::vec(fc) - sp) * (1.0f / sb);
+                    float hp[3];
+                    ik::put(handGrip, hp);
+                    if (mir) unmirror_grip_point(hp);
+                    // The paths were recorded on the AUTHORED gun; the drawn one is gunRatio of it about
+                    // this socket (on_gun), so the hand is read back onto the authored gun.
+                    handGrip = ik::vec(hp) * (1.0f / gunRatio);
+                }
+                ik::put(handGrip, mf.hand);
+                mf.unitsPerCm = toCmClip > 0.0f && sb > 1e-4f ? 1.0f / (toCmClip * sb * gunRatio) : 1.0f;
+                float spk[3] = {sp.x * k, sp.y * k, sp.z * k}, spw[3];
+                qts_rotate(qa, spk, spw);
+                for (int c = 0; c < 3; ++c) mf.gripO[c] = aLoc[c] + spw[c];
+                const ik::Quat gq = ik::normalized(ik::mul(ik::quat(qa), sq));
+                for (int c = 0; c < 4; ++c) mf.gripQ[c] = gq.v[c];
+                mf.gripScale = k * sb * gunRatio;
+                if (F.valid) {
+                    const float uu = g_m4.uuPerCm > 1e-4f ? g_m4.uuPerCm : 1.0f;
+                    const float dz = (g_m4.camWorld[2] - F.p[2]) / uu;
+                    const float dx = (g_m4.camWorld[0] - F.p[0]) / uu, dy = (g_m4.camWorld[1] - F.p[1]) / uu;
+                    mf.inPouch = dz > 38.0f && dz < 100.0f && std::sqrt(dx * dx + dy * dy) < 50.0f;
+                }
+                static ik::Quat s_gunQ;
+                static uint64_t s_gunMs = 0;
+                const ik::Quat gnow = ik::normalized(ik::quat(T.q));
+                if (s_gunMs && now > s_gunMs) {
+                    const ik::Quat d = ik::normalized(ik::mul(gnow, ik::conj(s_gunQ)));
+                    const float ang = 2.0f * acosf(fminf(1.0f, fabsf(d.v[3]))) * 57.29578f;
+                    mf.gunDegPerSec = ang / (static_cast<float>(now - s_gunMs) * 0.001f);
+                }
+                s_gunQ = gnow;
+                s_gunMs = now;
+                mf.gunPhys = m4_phys(h);
+                mf.freePhys = m4_phys(1 - h);
+                memcpy(mf.bodyF, g_m4.F, 12);
+                memcpy(mf.bodyR, g_m4.R, 12);
+                mf.uuPerCm = g_m4.uuPerCm;
+                manual_reload::tick(mf);
+                cheats::tick(twoGun); // F10 > Cheats: a queued request runs here, on the game thread
+            } else if (h != gunHand && !late && mrGun) {
+                // The free hand is placed: a part it carries moves with it (manual_reload.h carry).
+                manual_reload::HandPlacement hp = mrPlace;
+                memcpy(hp.wristP, A[m4_wrist(h)].p, 12);
+                memcpy(hp.wristQ, A[m4_wrist(h)].q, 16);
+                memcpy(hp.actorLoc, aLoc, 12);
+                memcpy(hp.actorQ, qa, 16);
+                hp.actorScale = k;
+                ik::put(palmComp, hp.palm);
+                ik::put(palmAt, hp.palmAt);
+                for (int c = 0; c < 4; ++c) hp.q[c] = qb.v[c];
+                hp.s = sb;
+                manual_reload::carry(hp);
+            }
             // s88: the hand-back trace (30 Hz per hand while it is in effect): where the drawn
             // palm is against the controller target and the game's own palm, and how far the
             // game's clip has carried its palm from where it was when the hand-back began.
             {
                 static uint64_t s_tr[2] = {0, 0}, s_t0[2] = {0, 0};
                 static ik::Vec s_start[2];
-                const bool on = handback::active(h, now);
+                const bool on = handback::active(hb(h), now);
                 if (on && !s_t0[h]) {
                     s_t0[h] = now;
                     s_start[h] = palmComp;
@@ -7486,7 +8597,9 @@ void m4_compose(bool late) {
             // channel is consumed by the attachment math (ENGINE_NOTES s16).
             if (g_socketWrite.load(std::memory_order_relaxed) && g_bones) {
                 for (int j = 0; j < kMaxSockets; ++j) {
-                    const int i = g_sockets[h][j].load(std::memory_order_relaxed);
+                    // Mirrored, the other hand's sockets ride this hand: the gun's grip (43) goes
+                    // with the left hand that now shows the grip on it.
+                    const int i = g_sockets[mir ? 1 - h : h][j].load(std::memory_order_relaxed);
                     if (i < 0 || i >= n) continue;
                     const ik::Vec sp = palmAt + ik::rotate(qb, (ik::vec(A[i].p) - palmComp) * sb);
                     const ik::Quat sq = ik::normalized(ik::mul(qb, ik::normalized(ik::quat(A[i].q))));
@@ -7573,8 +8686,13 @@ void m4_compose(bool late) {
                 memcpy(rb[j]->p, A[sl[j]].p, 12);
                 memcpy(rb[j]->q, A[sl[j]].q, 16);
             }
-            memcpy(ref[h].wristP, A[w].p, 12);
-            memcpy(ref[h].wristQ, A[w].q, 16);
+            // 2026-10-21 THE STRETCHED ARM (the 10:26 recording, replayed: the shotgun's last pump, empty - the
+            // left hand drawn on the gun, the forearm swung down to the waist and the wrist's skin stretched between
+            // them). The reference arm is the game's: its sleeve bones from the clip (the reload's arm reaching for
+            // the pouch) AND its own wrist - not the free hand kept on the gun (the substitution above), which made
+            // a reference forearm a foot long from the pouch to the gun, and the solve turned the drawn forearm by it.
+            memcpy(ref[h].wristP, A0[w].p, 12);
+            memcpy(ref[h].wristQ, A0[w].q, 16);
             float sc[3];
             to_comp_p(g_m4.shoulder[h], sc);
             nominal[h] = ik::vec(sc);
@@ -7605,7 +8723,7 @@ void m4_compose(bool late) {
             // A stretched arm is a longer, bigger arm ("the arms were waaay too big").
             {
                 const float rig = ik::length(ik::vec(A[sl[2]].p) - ik::vec(A[sl[1]].p)) * I.upperLength +
-                                  ik::length(ik::vec(A[w].p) - ik::vec(A[sl[2]].p)) * I.foreLength;
+                                  ik::length(ik::vec(A0[w].p) - ik::vec(A[sl[2]].p)) * I.foreLength;
                 const float reach = rig * I.scale * 0.995f;
                 const float dist = ik::length(I.wrist - I.shoulder);
                 if (!late) g_m4ReachFrac[h] = reach > 1e-3f ? dist / reach : 0.0f;
@@ -7685,7 +8803,8 @@ void m4_compose(bool late) {
         void* weapon = nullptr;
         // s91: with the weapon's socket written engine-side the engine already draws it on the hand;
         // composing the correction onto its draw as well would move it twice.
-        const bool weaponOnSocket = socketsWritten[held] && held == 1 && g_sockets[1][0].load() == patterns::kBoneWeaponAttach;
+        const int heldSockets = mir ? 1 - held : held; // whose socket list the held hand carried
+        const bool weaponOnSocket = socketsWritten[held] && heldSockets == 1 && g_sockets[1][0].load() == patterns::kBoneWeaponAttach;
         if (palX[held].valid && !weaponOnSocket && hands::current_holdable(&weapon) && weapon) {
             float wLoc[3];
             int32_t wRot[3];
@@ -7713,8 +8832,18 @@ void m4_compose(bool late) {
                 wx.lWeapon = lw;
             }
         }
+        if (late) {
+            pose_capture_write(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+            pose_record(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
+        }
         socket_follow(palX, A, n, k); // s91: the effects' sockets onto the drawn hands
-        palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx);
+        for (int h = 0; h < 2; ++h) {
+            memcpy(palX[h].fixValid, boneFix[h].fixValid, sizeof palX[h].fixValid);
+            memcpy(palX[h].fixQ, boneFix[h].fixQ, sizeof palX[h].fixQ);
+            memcpy(palX[h].fixT, boneFix[h].fixT, sizeof palX[h].fixT);
+        }
+        palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx,
+                         mir);
         palette::set_link_probe(g_m4.actor, g_skelInst);
         (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
     }
@@ -7863,10 +8992,22 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
     g_m4On.store(true, std::memory_order_relaxed);
     g_m4.actor = handsActor;
     g_m4.held = held == 1 ? 1 : 0;
+    // The gun in the left hand (hands.cpp already passes the LEFT hand as held and each hand its
+    // own controller): each hand takes the other's layout, mirrored.
+    {
+        const bool m = mirror_wanted();
+        if (m != g_m4.mirror)
+            BVR_LOG("[bones] hands %s", m ? "MIRRORED - the gun in the left hand: each hand shows the other's "
+                                            "layout, mirrored across the rig, on its own controller"
+                                          : "as the game draws them (the gun in the right hand)");
+        g_m4.mirror = m;
+    }
     const uint64_t now = GetTickCount64();
     g_m4.ms = now;
     // s88: which hands the game's animation owns this frame, and the blend toward it.
-    handback::tick(handsActor, g_m4.held, now);
+    // The hand-back reads the GAME's hands: mirrored, the game's gun hand is still its right hand
+    // (headset 2026-10-19: passing the left mesh here timed the reload on the wrong hand).
+    handback::tick(handsActor, g_m4.mirror ? 1 - g_m4.held : g_m4.held, now);
     const float uuPerCm = ctx.worldScale / 100.0f;
 
     // ---- both hands: the wrist on the controller (s86, Dishonored's placement) ----------
@@ -7918,7 +9059,7 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
         // (zero by default since s89). Without it the hand's handle axis met the controller's only
         // as far as eye-tuned trims got it, and the fist pivot above would sit on a tilted axis.
         if (g_evCopyValid && g_evCopyInst == g_skelInst && g_evCopyCount >= patterns::kHandsRigBoneCount) {
-            const Qts* A = g_evCopy;
+            const Qts* A = m4_pose(g_evCopy, g_evCopyCount); // mirrored with the gun in the left hand
             const int w = m4_wrist(h);
             const int* pb = h == 1 ? patterns::kBoneRPalmBones : patterns::kBoneLPalmBones;
             const float side = h == 1 ? 1.0f : -1.0f;
@@ -7973,9 +9114,13 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
         // s86b controller-frame placement lane (`offHandView*`) is no longer applied: its
         // axes were the grip pose's, which tilt up the handle, and the rows do its job.
         (void)rf; (void)rr; (void)ru;
-        const float o0 = g_offHandPosCm[h][0].load(std::memory_order_relaxed) * uuPerCm;
-        const float o1 = g_offHandPosCm[h][1].load(std::memory_order_relaxed) * uuPerCm;
-        const float o2 = g_offHandPosCm[h][2].load(std::memory_order_relaxed) * uuPerCm;
+        // Mirrored: the OTHER hand's offset, mirrored. The hand model mirrors across its own
+        // local up in this (trimmed) frame - the same reflection mirror_trim_deg measured from the
+        // two hands' grip calibrations - so forward and right carry over and up changes sign.
+        const int oh = g_m4.mirror ? 1 - h : h;
+        const float o0 = g_offHandPosCm[oh][0].load(std::memory_order_relaxed) * uuPerCm;
+        const float o1 = g_offHandPosCm[oh][1].load(std::memory_order_relaxed) * uuPerCm;
+        const float o2 = g_offHandPosCm[oh][2].load(std::memory_order_relaxed) * uuPerCm * (g_m4.mirror ? -1.0f : 1.0f);
         for (int i = 0; i < 3; ++i) p[i] += tf[i] * o0 + tbr[i] * o1 + tu[i] * o2;
         memcpy(H.p, p, 12);
     }
@@ -8175,6 +9320,25 @@ void handle_command(const char* args) {
     const char* rest = args + consumed;
     while (*rest == ' ' || *rest == '\t') ++rest;
 
+    if (strcmp(verb, "reloadrec") == 0) {
+        float s = 4.0f;
+        sscanf_s(rest, "%f", &s);
+        g_reloadRecSec.store(s, std::memory_order_relaxed);
+        g_reloadRecStart = 0;
+        BVR_LOG("[reloadrec] armed: the next reload is logged for %.1f s", s);
+        return;
+    }
+    if (strcmp(verb, "mirrorpin") == 0) {
+        float v = 0.0f;
+        if (sscanf_s(rest, "%f", &v) == 1) {
+            g_mirrorPinOverride.store(v, std::memory_order_relaxed);
+            BVR_LOG("[bones] mirrorpin: the held gun flips about %.2f along its axis (override)", v);
+        } else {
+            g_mirrorPinOverride.store(std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
+            BVR_LOG("[bones] mirrorpin: auto (the weapon skeleton's centre line)");
+        }
+        return;
+    }
     if (strcmp(verb, "status") == 0) {
         BVR_LOG("[bones] inst=%p bones=%p count=%d writes=%u lastHand=%d refValid=%d "
                 "collapse=%d hideinactive=%d hiddenHand=%d",
@@ -9142,6 +10306,112 @@ void draw_debug_ui() {
                 g_lockSolves.load(std::memory_order_relaxed),
                 g_lockSkips.load(std::memory_order_relaxed));
     (void)g_status;
+}
+
+bool mirror_hands() { return mirror_wanted(); }
+bool attach_relative(void* actor, int bone, const float worldP[3], const float worldQ[4], float relP[3], float relQ[4]) {
+    namespace ik = arm_ik;
+    g_fxaIgnore.store(actor, std::memory_order_relaxed);
+    if (!g_m4.actor || !g_evCopyValid || bone < 0 || bone >= g_evCopyCount) return false;
+    float aLoc[3], k = 1.0f;
+    int32_t aRot[3];
+    if (!read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorLocOffset, aLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorViewDirOffset, aRot, 12))
+        return false;
+    if (!ds_read(g_m4.actor, &k) || !(k > 0.01f)) k = 1.0f;
+    float qa[4];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    const ik::Quat qA = ik::normalized(ik::quat(qa));
+    // The engine's attachment on a hands bone (fx_actor_follow's model): component = bone + rotate(bone, rel),
+    // the bone as the game evaluated it; world = the actor's place of component.
+    const ik::Vec comp = ik::rotate(ik::conj(qA), ik::vec(worldP) - ik::vec(aLoc)) * (1.0f / k);
+    const ik::Quat bq = ik::normalized(ik::quat(g_evCopy[bone].q));
+    ik::put(ik::rotate(ik::conj(bq), comp - ik::vec(g_evCopy[bone].p)), relP);
+    const ik::Quat q = ik::normalized(ik::mul(ik::conj(ik::mul(qA, bq)), ik::normalized(ik::quat(worldQ))));
+    memcpy(relQ, q.v, 16);
+    return true;
+}
+
+bool mirror_free_rel(const float p[3], const float q[4], float outP[3], float outQ[4]) {
+    const mirror::Basis* b = palette::mirror_basis();
+    if (!g_m4.mirror || !b) return false;
+    // W_R = mx W_L Mb, P_R = mx W_L rel F  =>  W_R^-1 P_R = Mb^-1 rel F (the mirror itself cancels).
+    mirror::Aff mbInv;
+    if (!mirror::inverse(b->mbRight[0], &mbInv)) return false;
+    const float one[3] = {1, 1, 1};
+    mirror::Aff flip;
+    flip.R[4] = -1.0f;
+    float s[3];
+    return mirror::to_frame(mirror::mul(mbInv, mirror::mul(mirror::from_frame(q, p, one), flip)), outQ, outP, s);
+}
+bool mirror_hands_enabled() { return g_mirrorHands.load(std::memory_order_relaxed); }
+
+int weapon_bone_count() { return g_wHoldable ? g_wBoneCount : 0; }
+int weapon_bone_index(const char* name) {
+    if (!g_wHoldable || !name) return -1;
+    for (int i = 0; i < g_wBoneCount && i < kMaxBones; ++i)
+        if (_stricmp(g_wName[i], name) == 0) return i;
+    return -1;
+}
+const char* weapon_bone_name(int i) { return i >= 0 && i < g_wBoneCount && i < kMaxBones ? g_wName[i] : ""; }
+bool weapon_bone_pose(int i, float p[3], float q[4]) {
+    if (!g_wHoldable || i < 0 || i >= g_wBoneCount || i >= kMaxBones) return false;
+    memcpy(p, g_wAnim[i].p, 12);
+    memcpy(q, g_wAnim[i].q, 16);
+    return true;
+}
+bool weapon_rest_bone_pose(int i, float p[3], float q[4]) {
+    if (!g_wHoldable || i < 0 || i >= g_wBoneCount || i >= kMaxBones) return false;
+    memcpy(p, g_wRef[i].p, 12);
+    memcpy(q, g_wRef[i].q, 16);
+    return true;
+}
+void set_weapon_part_offset(int i, const float d[3]) {
+    if (i < 0 || i >= kMaxBones) return;
+    memcpy(g_wPartOff[i], d, 12);
+    g_wPartOn[i] = true;
+    g_wPartPose[i] = false;
+    g_wPartAny = true;
+}
+void set_weapon_part_pose(int i, const float p[3], const float q[4]) {
+    if (i < 0 || i >= kMaxBones) return;
+    memcpy(g_wPartOff[i], p, 12);
+    memcpy(g_wPartQ[i], q, 16);
+    g_wPartOn[i] = true;
+    g_wPartPose[i] = true;
+    g_wPartAny = true;
+}
+float weapon_written_scale() { return g_wHoldable && g_wWrittenValid ? g_wWrittenScale : 1.0f; }
+void arm_pose_capture(const wchar_t* dir, uint32_t delayMs, int frames) {
+    if (!dir || !dir[0] || frames <= 0) return;
+    wcsncpy_s(g_poseDir, dir, _TRUNCATE);
+    g_poseIndex = 0;
+    g_poseAtMs.store(GetTickCount64() + delayMs);
+    g_poseLeft.store(frames);
+    BVR_LOG("[pose] capture armed: %d frame(s) from %.1f s into %ls (tools\\blender\\pose_capture.py)", frames,
+            delayMs / 1000.0, dir);
+}
+void set_weapon_part_scale(int i, float k) {
+    if (i < 0 || i >= kMaxBones || !(k > 0.05f && k < 20.0f)) return;
+    g_wPartScale[i] = k;
+}
+void clear_weapon_part_offsets() {
+    memset(g_wPartOn, 0, sizeof g_wPartOn);
+    memset(g_wPartPose, 0, sizeof g_wPartPose);
+    memset(g_wPartScale, 0, sizeof g_wPartScale);
+    g_wPartAny = false;
+}
+void unmirror_grip_dir(float d[3]) {
+    const float k = d[0] * g_mirU[0] + d[1] * g_mirU[1] + d[2] * g_mirU[2];
+    for (int c = 0; c < 3; ++c) d[c] -= 2.0f * k * g_mirU[c];
+}
+void unmirror_grip_point(float p[3]) {
+    const float d = p[0] * g_mirU[0] + p[1] * g_mirU[1] + p[2] * g_mirU[2] - g_mirPlane;
+    for (int c = 0; c < 3; ++c) p[c] -= 2.0f * d * g_mirU[c];
+}
+void set_mirror_hands(bool on) {
+    if (g_mirrorHands.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[bones] mirror the hands with the gun in the left hand: %s", on ? "ON" : "off");
 }
 
 } // namespace bvr::b1r::bones

@@ -15,6 +15,7 @@
 // bound by the hierarchy here either; "hands only" collapses each sleeve bone's matrix to the
 // composed wrist point (Dishonored cuts the mesh; this is the palette's nearest equivalent).
 
+#include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/palette_math.h"
 
 namespace bvr::b1r::palette {
@@ -43,6 +44,15 @@ struct HandXform {
     // hand-back weight, so at weight 0 the arm is exactly the game's.
     bool armValid = false;
     float arm[5][12] = {};
+    // 2026-10-20: per-bone poses of this hand the drive drew differently from the game's (the grip pose's
+    // fingers, a designed grip) - x' = t + rotate(q, x), component space, composed on BEFORE the hand's
+    // correction, carrying the game's evaluated bone to the drive's. Indexed from the cluster's first bone.
+    // Without this the skinned fingers stayed the game's however the drive posed them (the 22:54
+    // captures: the solved cylinder grip in every bone, an open hand on screen).
+    static constexpr int kMaxFix = 24;
+    bool fixValid[kMaxFix] = {};
+    float fixQ[kMaxFix][4] = {};
+    float fixT[kMaxFix][3] = {};
 };
 
 // Hook the gather (once; fail-soft with a log line). Game thread.
@@ -73,7 +83,17 @@ Sim sim_world(const Sim& L, const Sim& S);
 
 // Publish this frame's corrections for the mesh instance OWNED by this actor (the hands actor;
 // patterns.h kMeshInstOwnerOffset). hideArms collapses the sleeves.
-void publish(void* ownerActor, const HandXform hands[2], bool hideArms, const WeaponXform& weapon);
+// `mirrored`: the gun is in the left hand and each hand shows the other's layout, mirrored
+// (mirror_math.h) - the gather swaps in the mirrored skin matrices before composing `hands`,
+// which the drive computed from the mirrored pose.
+void publish(void* ownerActor, const HandXform hands[2], bool hideArms, const WeaponXform& weapon,
+             bool mirrored = false);
+// 2026-10-19: the engine's evaluated pose (bones.cpp Qts: p[4] q[4] s[4], `stride` floats per
+// bone), every frame until the mirror basis is measured from it against the skin matrices.
+void publish_pose(const float* frames, int count, int stride);
+// The rig's mirror, measured once from its rest pose; null until then, or if the rig did not
+// measure as mirror-symmetric (logged).
+const mirror::Basis* mirror_basis();
 // Diagnostic link (s87): the hands actor and its SkeletonInstance, to find which field of the
 // skinned instance points back at them.
 void set_link_probe(void* actor, void* skelInst);

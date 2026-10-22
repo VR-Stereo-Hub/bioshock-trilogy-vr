@@ -42,6 +42,13 @@ const char* top_movie();
 // leaves placement exactly as it was.
 bool panel_screen_up();
 
+// Which panel screen is up, for the HUD pieces' Menus rows (hud_elements):
+// the pause menu, the map, a machine (vending, U-Invent, the Gatherer's Garden,
+// the Gene Bank), or any other panel (manual, plasmid training, hacking,
+// warnings), which never leaves the flat screen. None while no panel is up.
+enum class PanelKind { None = 0, Pause, Map, Machine, Other };
+PanelKind panel_kind();
+
 // Located LevelInfo, for anything else that needs it. Null until found.
 void* level();
 

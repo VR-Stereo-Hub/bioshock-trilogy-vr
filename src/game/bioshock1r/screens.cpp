@@ -225,6 +225,17 @@ bool contains_ci(const char* hay, const char* needle) {
     return false;
 }
 
+std::atomic<int> g_kind{0};
+
+PanelKind classify_panel(const char* name) {
+    if (contains_ci(name, "PausePC")) return PanelKind::Pause;
+    if (contains_ci(name, "Maps")) return PanelKind::Map;
+    if (contains_ci(name, "craftingstation") || contains_ci(name, "PlasmiNow") ||
+        contains_ci(name, "PlasmidEquip") || contains_ci(name, "GeneBank"))
+        return PanelKind::Machine;
+    return PanelKind::Other;
+}
+
 bool is_panel_movie(const char* name) {
     for (int i = 0; i < kPanelMovieCount; ++i)
         if (contains_ci(name, kPanelMovies[i])) return true;
@@ -411,6 +422,7 @@ void on_calcview(void* pc, void* viewActor) {
 
     strncpy_s(g_top, name, _TRUNCATE);
     const bool panel = is_panel_movie(name);
+    g_kind.store(static_cast<int>(panel ? classify_panel(name) : PanelKind::None), std::memory_order_relaxed);
     const bool was = g_panelUp.exchange(panel, std::memory_order_relaxed);
     // The Pauser hunt rides the panel edges - see its banner. Baseline while
     // nothing is up, diff on the way in, confirm on the way out.
@@ -425,6 +437,9 @@ void on_calcview(void* pc, void* viewActor) {
 
 const char* top_movie() { return g_top; }
 bool panel_screen_up() { return g_panelUp.load(std::memory_order_relaxed); }
+PanelKind panel_kind() {
+    return panel_screen_up() ? static_cast<PanelKind>(g_kind.load(std::memory_order_relaxed)) : PanelKind::None;
+}
 void* level() { return g_level; }
 
 void handle_command(const char* args) {

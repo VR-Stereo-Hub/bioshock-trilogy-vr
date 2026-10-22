@@ -229,6 +229,53 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
                      const FRotator& gripFrameRot);
 void set_off_hand_tracked(bool on);
 bool off_hand_tracked();
+// 2026-10-19: with the gun in the left hand (bvr::input::left_handed), each hand takes the
+// other's bone layout mirrored across the rig, each on its own controller (mirror_math.h).
+// True while that is in effect: the switch on, the gun in the left hand, the palette route up
+// and the rig measured as mirror-symmetric. hands.cpp then places each hand on its own
+// controller and passes the LEFT hand as the one holding the gun.
+bool mirror_hands();
+bool mirror_hands_enabled();
+// 2026-10-20: a pose against the LEFT wrist (a designed grip's part, the spare drum's hold), mirrored to the
+// same pose against the RIGHT wrist of the mirrored hands (the free hand with the gun in the left hand):
+// inverse(Mb wrist) * rel * a flip of the part's local Y (a part symmetric about it - a cylinder, a drum).
+// False when the hands are not mirrored now.
+bool mirror_free_rel(const float p[3], const float q[4], float outP[3], float outQ[4]);
+// 2026-10-21: the relative location and rotation that put an actor attached to a hands bone (the game's
+// evaluated `bone`, an index) at a world pose - the engine's attachment model (fx_actor_follow's), in the hands'
+// component space. The actor is from then on left to its owner (the effect follow does not rewrite it).
+bool attach_relative(void* actor, int bone, const float worldP[3], const float worldQ[4], float relP[3], float relQ[4]);
+void set_mirror_hands(bool on);
+
+// ---- 2026-10-20: the held weapon's own skeleton, for the manual reload (manual_reload.h) ----
+// The bound weapon's bones: count, index by name (-1 absent), the pose its clip has them in now
+// (weapon space, before the weapon size), and a per-bone offset added to that pose when the
+// skeleton is written (the part a hand carries). Offsets last until cleared. Game thread.
+int weapon_bone_count();
+int weapon_bone_index(const char* name);
+const char* weapon_bone_name(int i);
+bool weapon_bone_pose(int i, float p[3], float q[4]);
+// The same bone in the weapon skeleton's REST pose (the bank captured at bind): where a part sits in the gun
+// as authored - the magazine's seat - a constant of the gun, not a frame read at idle (2026-10-21).
+bool weapon_rest_bone_pose(int i, float p[3], float q[4]);
+void set_weapon_part_offset(int i, const float d[3]);
+// The whole pose of a part instead (weapon space, before the weapon size): the part a hand carries.
+void set_weapon_part_pose(int i, const float p[3], const float q[4]);
+void clear_weapon_part_offsets();
+// A posed part's own size factor (on top of the weapon size) until cleared - a part held by a designed
+// grip is drawn at the hand's size, the size the grip was solved at.
+void set_weapon_part_scale(int i, float k);
+// The weapon size the skeleton lane last WROTE (1.0 while no lane is bound): the factor between a
+// bone's clip pose and the drawn gun, steady across the frame - a GetBoneCoords read can land before
+// or after the write (2026-10-20, the pistol's carried cylinder jumping between the two).
+float weapon_written_scale();
+// 2026-10-20: write the hands' and the gun's drawn pose (pose_NN.txt) into `dir`, `frames` late composes
+// from `delayMs` on - armed with the AFW capture, for tools\blender\pose_capture.py.
+void arm_pose_capture(const wchar_t* dir, uint32_t delayMs, int frames);
+// Mirrored (the gun in the left hand): reflect a point in the grip's frame across the gun's own
+// centre plane, so it reads as it would with the gun in the right hand (m4_pose's flip).
+void unmirror_grip_point(float p[3]);
+void unmirror_grip_dir(float d[3]); // the same for a direction (no plane offset)
 void off_hand_cm(int hand, float* fwd, float* right, float* up);
 void set_off_hand_cm(int hand, float fwd, float right, float up);
 void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll);

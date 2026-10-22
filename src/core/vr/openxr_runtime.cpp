@@ -22,6 +22,7 @@
 
 #include <windows.h>
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -216,6 +217,11 @@ std::atomic<bool> g_loggedFirstHudQuad{false};
 // s52: the HUD quad's texture provider (Infinite's GFx lane). Null = BS1's
 // bvr::hud::texture() path, byte-identical for games that never set it.
 std::atomic<HudTextureProviderFn> g_hudTexProvider{nullptr};
+// HUD elements (BS1, 2026-10-15): the plan provider, and one RTV per HUD
+// swapchain image for ClearView (made once with the swapchain, never per frame).
+std::atomic<HudElementsProviderFn> g_hudElementsProvider{nullptr};
+std::vector<ID3D11RenderTargetView*> g_hudImageRtvs;
+bool g_loggedHudElements = false, g_loggedHudClearFail = false;
 
 // Cached backbuffer RTV for the post-capture window HUD composite.
 ID3D11RenderTargetView* g_backbufferRtv = nullptr;
@@ -1958,6 +1964,9 @@ void destroy_hud_swapchain() {
         xrDestroySwapchain(g_hudSwapchain);
         g_hudSwapchain = XR_NULL_HANDLE;
     }
+    for (auto* rtv : g_hudImageRtvs)
+        if (rtv) rtv->Release();
+    g_hudImageRtvs.clear();
     g_hudImages.clear();
     g_hudSwapW = g_hudSwapH = 0;
 }
@@ -3583,6 +3592,145 @@ uint32_t build_hand_ref_quad(XrCompositionLayerQuad* quad) {
     return 1;
 }
 
+// HUD elements (BS1 HUD overhaul): run a provider's plan on the HUD swapchain
+// image and append its quads. One acquire, one full copy (as the single quad
+// does), then one CopySubresourceRegion per moved piece and one ClearView for
+// all the vacated rectangles. False = nothing submitted; the caller falls
+// back to the single quad.
+bool submit_hud_elements(HudElementsProviderFn provider, ID3D11Texture2D* hudTex,
+                         const D3D11_TEXTURE2D_DESC& hd, int room,
+                         XrCompositionLayerQuad* quads,
+                         const XrCompositionLayerBaseHeader** layers, uint32_t* layerCount) {
+    if (room < 1 || !g_viewsValid) return false;
+    HudElementFrame f;
+    f.texW = hd.Width;
+    f.texH = hd.Height;
+    f.headValid = true;
+    f.head[0] = (g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f;
+    f.head[1] = (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f;
+    f.head[2] = (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f;
+    f.headQ[0] = g_views[0].pose.orientation.x;
+    f.headQ[1] = g_views[0].pose.orientation.y;
+    f.headQ[2] = g_views[0].pose.orientation.z;
+    f.headQ[3] = g_views[0].pose.orientation.w;
+    for (int h = 0; h < 2; ++h)
+        f.handValid[h] = input_get_hand_pose(h, /*aimPose=*/false, f.hand[h], f.handQ[h]);
+    f.winDist = g_hudDistM.load(std::memory_order_relaxed);
+    f.winWidth = g_hudWidthM.load(std::memory_order_relaxed);
+    f.winUp = g_hudUpM.load(std::memory_order_relaxed);
+    f.ctx = g_context;
+    f.tex = hudTex;
+
+    static HudElementPlan plan; // render thread only; too big for the stack frame
+    plan = HudElementPlan{};
+    const int maxQuads = room < kMaxHudElementQuads ? room : kMaxHudElementQuads;
+    if (!provider(f, maxQuads, &plan) || plan.quads < 1) return false;
+    if (plan.quads > maxQuads) plan.quads = maxQuads;
+    if (plan.copies > kMaxHudElementOps) plan.copies = kMaxHudElementOps;
+    if (plan.clears > kMaxHudElementOps) plan.clears = kMaxHudElementOps;
+    if (plan.postClears > kMaxHudElementOps) plan.postClears = kMaxHudElementOps;
+
+    // GROW-ONLY: the strip changes height whenever a piece starts or stops moving (a wheel
+    // opening adds its rows), and recreating the swapchain each time stalled the frame the
+    // wheel opened on. A taller image is reused; rows below the strip are never shown.
+    const uint32_t needH = hd.Height + plan.stripH;
+    if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width || g_hudSwapH < needH)
+        create_hud_swapchain(hd.Width, (needH + 63u) & ~63u);
+    const uint32_t imgH = g_hudSwapH;
+    if (g_hudSwapchain == XR_NULL_HANDLE) return false;
+    if ((plan.clears || plan.postClears) && g_hudImageRtvs.size() != g_hudImages.size()) {
+        g_hudImageRtvs.assign(g_hudImages.size(), nullptr);
+        for (size_t i = 0; i < g_hudImages.size(); ++i) {
+            D3D11_RENDER_TARGET_VIEW_DESC rd{};
+            rd.Format = static_cast<DXGI_FORMAT>(g_swapFormat);
+            rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            if (FAILED(g_device->CreateRenderTargetView(g_hudImages[i].texture, &rd,
+                                                        &g_hudImageRtvs[i])))
+                g_hudImageRtvs[i] = nullptr;
+        }
+    }
+
+    uint32_t idx = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(xrAcquireSwapchainImage(g_hudSwapchain, &ai, &idx))) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    const bool ready = XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwapchain, &wi)) &&
+                       idx < g_hudImages.size();
+    if (ready) {
+        ID3D11Texture2D* img = g_hudImages[idx].texture;
+        if (imgH == hd.Height)
+            g_context->CopyResource(img, hudTex);
+        else
+            g_context->CopySubresourceRegion(img, 0, 0, 0, 0, hudTex, 0, nullptr);
+        ID3D11RenderTargetView* rtv = idx < g_hudImageRtvs.size() ? g_hudImageRtvs[idx] : nullptr;
+        ID3D11DeviceContext1* ctx1 = nullptr;
+        if ((plan.clears || plan.postClears) &&
+            (!rtv || FAILED(g_context->QueryInterface(__uuidof(ID3D11DeviceContext1),
+                                                      reinterpret_cast<void**>(&ctx1))))) {
+            ctx1 = nullptr;
+            if (!g_loggedHudClearFail) {
+                g_loggedHudClearFail = true;
+                BVR_LOG("xr: HUD elements cannot clear (no RTV on the HUD swapchain image or no "
+                        "D3D11.1 context) - a moved element also stays on the window");
+            }
+        }
+        auto clear_rects = [&](const uint32_t (*r)[4], int n) {
+            if (!ctx1 || n <= 0) return;
+            D3D11_RECT rects[kMaxHudElementOps];
+            for (int i = 0; i < n; ++i)
+                rects[i] = {static_cast<LONG>(r[i][0]), static_cast<LONG>(r[i][1]),
+                            static_cast<LONG>(r[i][2]), static_cast<LONG>(r[i][3])};
+            const float zero[4] = {0, 0, 0, 0};
+            ctx1->ClearView(rtv, zero, rects, static_cast<UINT>(n));
+        };
+        // Clear BEFORE the piece copies: the vacated places in the capture, and
+        // the strip (the provider lists it), so a piece that stops being moved
+        // leaves nothing behind. The copies read the capture, not this image.
+        clear_rects(plan.clear, plan.clears);
+        for (int i = 0; i < plan.copies; ++i) {
+            const HudElementCopy& c = plan.copy[i];
+            if (c.src[2] <= c.src[0] || c.src[3] <= c.src[1] || c.src[2] > hd.Width ||
+                c.src[3] > hd.Height || c.dstX + (c.src[2] - c.src[0]) > hd.Width ||
+                c.dstY + (c.src[3] - c.src[1]) > imgH)
+                continue; // a box outside either image is a D3D error, not a picture
+            D3D11_BOX box{c.src[0], c.src[1], 0, c.src[2], c.src[3], 1};
+            g_context->CopySubresourceRegion(img, 0, c.dstX, c.dstY, 0, hudTex, 0, &box);
+        }
+        // AFTER the copies: carve out of a piece what another piece owns.
+        clear_rects(plan.postClear, plan.postClears);
+        if (ctx1) ctx1->Release();
+    }
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(g_hudSwapchain, &ri);
+    if (!ready) return false;
+
+    for (int i = 0; i < plan.quads; ++i) {
+        const HudElementQuad& e = plan.quad[i];
+        XrCompositionLayerQuad& q = quads[i];
+        q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+        q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // premultiplied
+        q.space = e.local ? g_space : g_viewSpace;
+        q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        q.subImage.swapchain = g_hudSwapchain;
+        q.subImage.imageRect = {{static_cast<int32_t>(e.rect[0]), static_cast<int32_t>(e.rect[1])},
+                                {static_cast<int32_t>(e.rect[2] - e.rect[0]),
+                                 static_cast<int32_t>(e.rect[3] - e.rect[1])}};
+        q.pose.position = {e.pos[0], e.pos[1], e.pos[2]};
+        q.pose.orientation = {e.quat[0], e.quat[1], e.quat[2], e.quat[3]};
+        q.size = {e.widthM, e.heightM};
+        layers[(*layerCount)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
+    }
+    g_hudFramesSubmitted.fetch_add(1, std::memory_order_relaxed);
+    if (!g_loggedHudElements) {
+        g_loggedHudElements = true;
+        BVR_LOG("xr: HUD elements live (%ux%u capture + %u-row strip, %d quad(s), %d copy(ies), "
+                "%d clear(s); room for %d)",
+                hd.Width, hd.Height, plan.stripH, plan.quads, plan.copies, plan.clears, room);
+    }
+    return true;
+}
+
 // Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
 // audit. Absolute convention is arbitrary; only deltas are read.
 float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
@@ -3679,8 +3827,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // The game frame is layer 0; the aim laser(s) add one quad per dot on top -
     // BOTH slots share the kMaxLaserDots budget - then up to two aim dots, the
     // s51 hand ref, HUD and overlay quads (worst case 14 of the 16 runtimes
-    // must accept).
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 5] = {};
+    // must accept). The HUD elements (a registered provider only) are capped at
+    // submission so the total never passes 16.
+    XrCompositionLayerQuad hudElementQuads[kMaxHudElementQuads] = {};
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 4 + kMaxHudElementQuads] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -4408,11 +4558,25 @@ void on_present_end(IDXGISwapChain* swapchain) {
         HudTextureProviderFn prov = g_hudTexProvider.load(std::memory_order_relaxed);
         ID3D11Texture2D* hudTex =
             prov ? prov(g_context) : bvr::hud::texture(g_context); // alpha-repaired
+        HudElementsProviderFn elements =
+            prov ? nullptr : g_hudElementsProvider.load(std::memory_order_relaxed);
+        if (hudTex && elements) {
+            D3D11_TEXTURE2D_DESC hd{};
+            hudTex->GetDesc(&hd);
+            const int room = 16 - 1 /*the F10 overlay*/ - static_cast<int>(layerCount);
+            if (submit_hud_elements(elements, hudTex, hd, room, hudElementQuads, layers,
+                                    &layerCount))
+                hudTex = nullptr; // submitted as pieces: skip the single quad
+        }
         if (hudTex) {
             D3D11_TEXTURE2D_DESC hd{};
             hudTex->GetDesc(&hd);
-            if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width ||
-                g_hudSwapH != hd.Height)
+            // With an elements provider registered (BS1), its taller swapchain is reused
+            // here too, so moving between "pieces" and "whole" never rebuilds it. Without
+            // one (every other game) the test is exactly the old one.
+            const bool fits = elements ? g_hudSwapW == hd.Width && g_hudSwapH >= hd.Height
+                                       : g_hudSwapW == hd.Width && g_hudSwapH == hd.Height;
+            if (g_hudSwapchain == XR_NULL_HANDLE || !fits)
                 create_hud_swapchain(hd.Width, hd.Height);
             if (g_hudSwapchain != XR_NULL_HANDLE) {
                 uint32_t idx = 0;
@@ -4420,8 +4584,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_hudSwapchain, &ai, &idx))) {
                     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                     wi.timeout = XR_INFINITE_DURATION;
-                    if (XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwapchain, &wi)))
-                        g_context->CopyResource(g_hudImages[idx].texture, hudTex);
+                    if (XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwapchain, &wi))) {
+                        if (g_hudSwapH == hd.Height)
+                            g_context->CopyResource(g_hudImages[idx].texture, hudTex);
+                        else
+                            g_context->CopySubresourceRegion(g_hudImages[idx].texture, 0, 0, 0, 0,
+                                                             hudTex, 0, nullptr);
+                    }
                     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                     xrReleaseSwapchainImage(g_hudSwapchain, &ri);
 
@@ -5736,6 +5905,10 @@ void set_hud_texture_provider(HudTextureProviderFn fn) {
     g_hudTexProvider.store(fn, std::memory_order_relaxed);
 }
 
+void set_hud_elements_provider(HudElementsProviderFn fn) {
+    g_hudElementsProvider.store(fn, std::memory_order_relaxed);
+}
+
 void sr_push_eye(int eyeSign) {
     uint32_t head = g_srHead.load(std::memory_order_relaxed);
     uint32_t tail = g_srTail.load(std::memory_order_acquire);
@@ -5903,6 +6076,8 @@ void get_hud_quad(float* d, float* w, float* u) {
     if (u) *u = 0;
 }
 void set_hud_texture_provider(HudTextureProviderFn) {}
+void set_hud_elements_provider(HudElementsProviderFn) {}
+void pulse_hand(int, float, int) {}
 
 } // namespace bvr::vr
 

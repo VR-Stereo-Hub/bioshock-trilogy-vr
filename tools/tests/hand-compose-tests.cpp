@@ -118,6 +118,71 @@ int main() {
         r.update(false, 375);
         check(r.weight(375) <= 0.0001f + r.weight(375) && r.target == 1, "a reversal re-targets the controller");
         check(fabsf(smootherstep(0.5f) - 0.5f) < 1e-6f && smootherstep(0) == 0 && smootherstep(1) == 1, "smootherstep");
+        // The recoil's Handoff (handback.cpp make_kick): in at once, out over 350 ms after the
+        // 250 ms release, so the first frames of the kick are never eased away.
+        Handoff kick;
+        kick.inMs = 0;
+        kick.update(false, 0);
+        kick.update(true, 1000);
+        check(kick.weight(1000) == 0, "the kick is in on the shot's frame", kick.weight(1000), 0);
+        kick.update(false, 1100); // the state leaves at the top of the kick
+        check(kick.weight(1300) == 0, "the kick holds through the release", kick.weight(1300), 0);
+        kick.update(false, 1350);
+        check(kick.weight(1350 + 175) > 0.4f && kick.weight(1350 + 175) < 0.6f, "and settles over 350 ms");
+        kick.update(true, 1360); // a second shot mid-settle: back in at once, from where it stood
+        check(kick.weight(1360) == 0, "a second shot is in at once");
+    }
+    {   // An animation at the gun (2026-10-14): the free hand carried by the gun hand.
+        // The clip: a gun-hand palm and a free-hand palm with a magazine bone off it.
+        const Vec gunPivot{20, 5, -3}, freePivot{34, -12, 6}, mag{38, -10, 9};
+        const Placement gun{axis_angle({0.3f, 1, -0.2f}, 0.9f), {-50, 80, 20}, 1.06f};
+        const Placement carried = carried_by(gun, gunPivot, freePivot);
+        // Every free-hand bone lands where the GUN's placement would put it: the clip's
+        // free hand against the gun, wherever the gun is held.
+        check(arm_ik::length(place(carried, freePivot, mag) - place(gun, gunPivot, mag)) < 1e-3f,
+              "a carried bone stands where the gun hand's placement puts it");
+        check(arm_ik::length(place(carried, freePivot, freePivot) - place(gun, gunPivot, freePivot)) < 1e-3f,
+              "the carried palm stands where the gun hand's placement puts it");
+        // So the free hand's distance to the gun hand is the clip's, scaled by the size.
+        const float clipDist = arm_ik::length(freePivot - gunPivot);
+        const float drawnDist = arm_ik::length(place(carried, freePivot, freePivot) - gun.at);
+        check(fabsf(drawnDist - clipDist * gun.s) < 1e-3f, "the clip's spacing survives the carry", drawnDist,
+              clipDist * gun.s);
+        // toward: exact at its ends, and the palm on the straight line between.
+        const Placement own{axis_angle({1, 0, 0}, -0.4f), {10, 10, 10}, 1.0f};
+        const Placement a = toward(own, carried, 0), b = toward(own, carried, 1), m = toward(own, carried, 0.5f);
+        check(qdiff(a.q, own.q) < 1e-6f && arm_ik::length(a.at - own.at) < 1e-6f && a.s == own.s, "toward 0 is the own");
+        check(qdiff(b.q, carried.q) < 1e-6f && arm_ik::length(b.at - carried.at) < 1e-6f && b.s == carried.s,
+              "toward 1 is the carried");
+        check(arm_ik::length(m.at - (own.at + carried.at) * 0.5f) < 1e-3f, "the palm goes the straight line");
+        check(fabsf(qdiff(m.q, own.q) - qdiff(m.q, carried.q)) < 1e-3f, "the turn is halfway at 0.5",
+              qdiff(m.q, own.q), qdiff(m.q, carried.q));
+        // from_rest: with no motion since the rest it is the pinned placement; the clip's motion
+        // since the rest moves the palm by that motion, carried onto the controller.
+        const Bone rest = bone({12, -18, 30}, axis_angle({0.1f, 0.4f, 1}, 0.7f));
+        const Rigid target{axis_angle({0.2f, -1, 0.5f}, 1.1f), {-5, 40, 12}};
+        const float s = 1.06f;
+        const Rigid pinned = delta(target, rest, palmLocal);
+        const Placement still = from_rest(target, rest, palmLocal, palm_of(rest, palmLocal), s);
+        check(qdiff(still.q, pinned.q) < 1e-6f && arm_ik::length(still.at - target.t) < 1e-4f,
+              "from_rest at rest is the pinned hand");
+        const Rigid clipMove{axis_angle({0, 0, 1}, 0.3f), {2, -1, 4}}; // the clip turns and lifts the hand
+        const Bone moved = carry(clipMove, rest);
+        const Vec livePalm = palm_of(moved, palmLocal);
+        const Placement anim = from_rest(target, rest, palmLocal, livePalm, s);
+        // The live palm lands where the rest palm's correction carries the clip's motion.
+        check(arm_ik::length(anim.at - (target.t + arm_ik::rotate(pinned.q, (livePalm - palm_of(rest, palmLocal)) * s))) <
+                  1e-3f,
+              "from_rest moves the palm by the clip's motion since the rest");
+        // And the wrist turns by the clip's turn relative to the controller: q * moved wrist.
+        const Quat drawnWrist = arm_ik::mul(anim.q, arm_ik::normalized(arm_ik::quat(moved.q)));
+        const Quat pinnedWrist = arm_ik::mul(pinned.q, arm_ik::normalized(arm_ik::quat(rest.q)));
+        check(fabsf(qdiff(drawnWrist, pinnedWrist) - 0.3f) < 1e-3f, "the gun turns by the clip's turn",
+              qdiff(drawnWrist, pinnedWrist), 0.3f);
+        // NEGATIVE CONTROL: carrying with the free hand's own pivot in place of the gun's misses.
+        const Placement wrongCarry{gun.q, place(gun, freePivot, freePivot), gun.s};
+        check(arm_ik::length(place(wrongCarry, freePivot, mag) - place(gun, gunPivot, mag)) > 1.0f,
+              "negative control: the wrong pivot misses");
     }
     printf("hand-compose: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
