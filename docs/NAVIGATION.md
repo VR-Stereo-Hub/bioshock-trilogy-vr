@@ -81,6 +81,7 @@ grep -n "^## M7" docs/ROADMAP.md        # then sed that range
 | BS1's arm IK (the Dishonored solver): what it does, how it was validated, the headset test | `bioshock1/ARM_IK.md` | ~170 lines, the test is at the top |
 | BS1's package, skeletal-mesh and Havok formats (what `bsmesh-export` reads) | `bioshock1/HAVOK_AND_PACKAGES.md` | ~150 lines, read the section you need |
 | BS1 DLSS/DLAA and the alternate frame warp: design, offline numbers, headset questions | `bioshock1/TEMPORAL.md` | ~120 lines, read whole |
+| BS1's held-gun mechanics (manual reload, two-handed grip, pump, hand-over): every piece of state and latch, every game override, the open bugs, and the redesign | `bioshock1/HELD_GUN_AUDIT.md` | ~590 lines; 1.6 is the bug list, Part 2 the design |
 | The Unofficial BioShock SDK, compiling new classes, CodeRed for Infinite | `MODDING_SDKS.md` | ~190 lines; the open-questions table is last |
 
 ---

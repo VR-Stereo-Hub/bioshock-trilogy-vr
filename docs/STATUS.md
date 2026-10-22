@@ -2,6 +2,31 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-21 (evening) - BS1: audit and redesign of the held-gun mechanics (no code)
+
+**Branch `claude/bs1-manual-reload`**, local commits only. Docs only this session; the installed build
+is unchanged (74d975d). Nothing run.
+
+### Current state
+
+- **`docs/bioshock1/HELD_GUN_AUDIT.md`** is the deliverable: Part 1 audits the manual reload, the
+  two-handed grip, the hand-over, the pump, the held parts and every override of the game (the state
+  inventory per module, the fourteen latches and what makes each wrong, the grip ownership flow per gun
+  state, the five bugs of the 21:1x run with their mechanisms, nine more findings). Part 2 proposes one
+  gun-state record, one ownership table, one suppression record per gun, gun geometry as per-gun
+  constants with one mirror function, one pump on the barrel axis, and sounds as an action table, in six
+  steps.
+- The five bugs, in one line each (details in 1.6): the dry Tommy's reload claims the squeeze absolutely
+  inside the drum's reach; nobody clicks while a dry gun waits at its first pull; a hand-over mid-reload
+  clears the free hand's rest latches, so the two-handed carry draws the hand at the pouch; the pump
+  stroke is the controllers' distance, which the gun hand's motion and sideways motion feed; after a
+  plasmid switch the free hand's rest is the equip's end pose and the anchor copies it while held.
+
+### Next steps
+
+- Wait for the tester's approval of the design (and the four questions in 2.9), then step 1 of 2.8:
+  the geometry table and its tests. No code until then.
+
 ## Session 2026-10-20 (evening) - BS1: the 15:33 headset run's four issues, the shotgun pump after HL2VR
 
 **Branch `claude/bs1-manual-reload`**, local commits only (the cylinder, the drum and the pump).
