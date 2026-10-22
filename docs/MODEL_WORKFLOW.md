@@ -110,7 +110,7 @@ py tools\flash-merge.py shared.xml radial.xml merged.xml ; ffdec-cli -xml2swf me
 
 **The game's own frames, captured and replayed** (2026-10-20). The mod writes what it DRAWS: the
 F10 AFW capture ("Capture 6 presents in 5 s") also writes `pose_00..02.txt` into its folder, and
-while the shotgun is in hand every frame (30 a second) is appended to
+while a gun is in hand every frame (30 a second) is appended to
 `dumps\poserec-<date>\Shotgun.bvrpose` - the hands' engine pose, each hand's palette correction,
 the hands actor, the gun actor and every gun bone as written, the clips and their times.
 `tools\blender\pose_capture.py` rebuilds them on the glbs (game_frames.py: the game's bone frames

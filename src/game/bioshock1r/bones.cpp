@@ -6994,10 +6994,11 @@ void pose_capture_write(const Qts* A, int n, const float aLoc[3], const float qa
     if (g_poseLeft.fetch_sub(1) <= 1) g_poseDir[0] = 0;
 }
 
-// ---- 2026-10-20: THE SHOTGUN RECORDING (the tester: "map all of the shotgun animations next run") ----
-// While the shotgun is in hand, every late compose up to 30 a second is appended to
-// dumps\poserec-<date>-<time>\Shotgun.bvrpose (one per session, capped at 300 MB): the same frame as the
-// pose capture, so tools\blender\pose_capture.py replays the run as an animation (--record).
+// ---- 2026-10-20: THE POSE RECORDING (the tester: "map all of the shotgun animations next run") ----
+// While a gun is in hand, every late compose up to 30 a second is appended to
+// dumps\poserec-<date>-<time>\<Class>.bvrpose (one folder per session, one file per gun, 300 MB in all): the
+// same frame as the pose capture, so tools\blender\pose_capture.py replays the run as an animation (--record).
+// 2026-10-22: every gun, not the shotgun alone (the other three guns' reloads are next).
 FILE* g_rec = nullptr;
 uint64_t g_recLastMs = 0, g_recBytes = 0;
 uint32_t g_recFrames = 0;
@@ -7009,29 +7010,40 @@ void pose_record(const Qts* A, int n, const float aLoc[3], const float qa[4], fl
     void* weapon = nullptr;
     if (g_recFull || !hands::current_holdable(&weapon) || !weapon) return;
     const wchar_t* cls = patterns::object_class_name(weapon);
-    if (!cls || wcscmp(cls, L"Shotgun") != 0 || now - g_recLastMs < 33) return;
+    if (!cls || !cls[0] || now - g_recLastMs < 33) return;
+    // 2026-10-22 (MANUAL_RELOAD_PLAN.md step 7): any gun in hand, one file per class in the session's folder
+    // (<Class>.bvrpose) - it was the shotgun only. A change of gun closes the file and opens the next gun's.
+    static wchar_t s_recDir[MAX_PATH] = L"";
+    static wchar_t s_recCls[64] = L"";
+    if (g_rec && wcscmp(cls, s_recCls) != 0) {
+        fclose(g_rec);
+        g_rec = nullptr;
+        g_recFrames = 0;
+    }
     g_recLastMs = now;
     if (!g_rec) {
         const wchar_t* dd = bvr::log::data_dir();
         if (!dd || !dd[0]) return;
-        wchar_t dir[MAX_PATH], path[MAX_PATH];
-        SYSTEMTIME t;
-        GetLocalTime(&t);
-        _snwprintf_s(dir, MAX_PATH, _TRUNCATE, L"%s\\dumps", dd);
-        CreateDirectoryW(dir, nullptr);
-        _snwprintf_s(dir, MAX_PATH, _TRUNCATE, L"%s\\dumps\\poserec-%04u%02u%02u-%02u%02u%02u", dd, t.wYear, t.wMonth,
-                     t.wDay, t.wHour, t.wMinute, t.wSecond);
-        CreateDirectoryW(dir, nullptr);
-        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\Shotgun.bvrpose", dir);
-        if (_wfopen_s(&g_rec, path, L"w") != 0 || !g_rec) {
+        wchar_t path[MAX_PATH];
+        if (!s_recDir[0]) {
+            SYSTEMTIME t;
+            GetLocalTime(&t);
+            _snwprintf_s(s_recDir, MAX_PATH, _TRUNCATE, L"%s\\dumps", dd);
+            CreateDirectoryW(s_recDir, nullptr);
+            _snwprintf_s(s_recDir, MAX_PATH, _TRUNCATE, L"%s\\dumps\\poserec-%04u%02u%02u-%02u%02u%02u", dd, t.wYear,
+                         t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+            CreateDirectoryW(s_recDir, nullptr);
+        }
+        wcsncpy_s(s_recCls, cls, _TRUNCATE);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\%ls.bvrpose", s_recDir, s_recCls);
+        if (_wfopen_s(&g_rec, path, L"a") != 0 || !g_rec) {
             g_rec = nullptr;
             g_recFull = true;
             BVR_LOG("[pose] recording: could not write %ls", path);
             return;
         }
-        fputs(kPoseHeader, g_rec);
-        BVR_LOG("[pose] recording the shotgun into %ls (30 a second while it is in hand; pose_capture.py --record)",
-                path);
+        if (ftell(g_rec) == 0) fputs(kPoseHeader, g_rec);
+        BVR_LOG("[pose] recording the %ls into %ls (30 a second while it is in hand; pose_capture.py --record)", cls, path);
     }
     fprintf(g_rec, "frame %u\n", g_recFrames++);
     write_pose(g_rec, A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
@@ -7039,7 +7051,7 @@ void pose_record(const Qts* A, int n, const float aLoc[3], const float qa[4], fl
     if (at > 0) g_recBytes = static_cast<uint64_t>(at);
     if ((g_recFrames % 30) == 0) fflush(g_rec); // the game's exit kills the process: lose at most a second
     if ((g_recFrames % 900) == 0)
-        BVR_LOG("[pose] recording: %u shotgun frames, %.1f MB", g_recFrames, g_recBytes / 1048576.0);
+        BVR_LOG("[pose] recording: %u %ls frames, %.1f MB", g_recFrames, s_recCls, g_recBytes / 1048576.0);
     if (g_recBytes > kRecMaxBytes) {
         fclose(g_rec);
         g_rec = nullptr;

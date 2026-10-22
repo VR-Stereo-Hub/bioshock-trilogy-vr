@@ -45,7 +45,9 @@ args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 exports = os.path.join(ws, "exports", "bs1")
 place = lambda p: p if os.path.isabs(p) else os.path.join(ws, "verification", p)
-GUNS = {"MachineGun": "TommyGunMESH.glb", "Pistol": "WP_PistolMesh.glb", "Shotgun": "WP_ShotgunMesh.glb"}
+GUNS = {"MachineGun": "TommyGunMESH.glb", "Pistol": "WP_PistolMesh.glb", "Shotgun": "WP_ShotgunMesh.glb",
+        "GrenadeLauncher": "WP_GrenadeLauncherMesh.glb", "Crossbow": "WP_CrossbowMesh.glb",
+        "ChemicalThrower": "WP_ChemicalThrowerMesh.glb"}
 AMMO = {"MachineGun": "TG_AmmoModel.pskx", "Pistol": "PI_AmmoType.pskx", "Shotgun": "shotgun_shell.pskx"}
 PALM = {0: (9.21, 0.12, 0.31), 1: (9.21, 0.12, -0.31)}  # the palette's palm anchors, Unreal, in the wrist's frame
 R = {"problems": []}
