@@ -7294,3 +7294,14 @@ anchor and the free hand's rest on the gun are now latched one per hand.
 two-handed grip's target followed it: every squeeze measured 1.4-1.5 grab radii off and went to the game (a
 plasmid). The anchor latched at rest on the gun, the shotgun's since the morning, is now every gun's.
 
+**The 20:54 run.** No drum would seat: the seat (where the drum sits, the latch's target) was read only while an
+ejected drum falls, and a reload begun at the pouch with no drum in the gun never drops one - with no seat, only
+the clip's own insert path start under the gun took a drum. The Tommy Gun's seat does not move with the clip, so it
+is read at rest with the drum in (TG_AmmoClip's pose, every 0.5 s idle) and used by every reload of that gun.
+The empty gun in the left hand measured 1.48 grab radii off: the per-hand grip anchor had no left-hand latch until
+an idle in that hand. A hand with none takes the other hand's, reflected in the grip's frame about the gun's
+centre plane along its sideways axis (`g_mirU`, `g_mirPlane` - the same flip `m4_pose` gives the grip bone).
+The shotgun's gun-in-hand rest is now kept per gun across a weapon switch (four guns), and a new one is taken
+only from an idle settled for 0.5 s, not the empty gun's: after a plasmid mid-reload, the first idle frame of the
+re-equip was taken as the rest and held through the next reload.
+
