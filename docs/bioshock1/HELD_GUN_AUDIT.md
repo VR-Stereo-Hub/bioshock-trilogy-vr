@@ -588,7 +588,10 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    "Ending a reload early"): the aborts G2 (a pump stroke ends a shotgun loop) and G3 (X at the pouch cancels
    the pistol's reload) through the hands' own `InterruptStateTransitionExecution` and a re-equip, behind
    F10 "End a reload early".
-4. `Suppress` per gun, replacing the scattered flags and the free-hand rules. Fixes item 6 and 12.
+4. **DONE 2026-10-21** (ENGINE_NOTES "The suppression record"): `gun_suppress.h`, one record per gun kind
+   read by the reload glue for X, the eject, the adopted reload, the free hand, the magazine, the clip
+   motion curve and the muted cues; the sound engine's own table is gone. (Items 6 and 12 were taken by
+   step 3b's engine: a hold is drawn whenever held; a grab is refused by the owner table.)
 5. One `Pump` on the barrel axis. Fixes bug 4 and 5's second half (a hold that measures right can cock).
 6. The sound table. No behaviour change intended; a regression check by log (`[sound] played ...`).
 

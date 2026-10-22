@@ -160,26 +160,15 @@ void install_fmod() {
 std::atomic<void*> g_hands{nullptr};
 std::atomic<void*> g_weapon{nullptr};
 std::atomic<bool> g_muteOn{false};
-wchar_t g_cls[64] = {};
+// The action events the gun's manual reload fires itself - muted when its clips fire them. The list is the gun's
+// suppression record's (gun_suppress.h), handed over with the context (2026-10-21; it was a table here).
+std::atomic<const wchar_t* const*> g_muted{nullptr};
 thread_local bool t_playing = false; // play() is firing its own: let it through
 
-// The action events each gun's manual reload fires itself (sound_engine::play) - muted when its clips fire them.
-struct Muted {
-    const wchar_t* cls;
-    const wchar_t* event;
-};
-// Shotgun: its pump (fired by every shot's Fire clip as it plays past its pump cue, before the player pumps) and its
-// reload's end (the end clip's pump). The engine fires PumpShotgun as the player begins each pump.
-const Muted kMuted[] = {
-    {L"Shotgun", L"PumpShotgun"},
-    {L"Shotgun", L"ShotgunReloadEnd"},
-    // The Tommy Gun's whole reload sound, should its clip's cue ever fire it: the reload plays it a part at a time.
-    {L"MachineGun", L"ReloadTommy"},
-};
-
 bool muted(const wchar_t* event) {
-    for (const Muted& m : kMuted)
-        if (!_wcsicmp(m.cls, g_cls) && !_wcsicmp(m.event, event)) return true;
+    const wchar_t* const* list = g_muted.load(std::memory_order_relaxed);
+    for (const wchar_t* const* e = list; e && *e; ++e)
+        if (!_wcsicmp(*e, event)) return true;
     return false;
 }
 
@@ -252,10 +241,10 @@ bool install(void* anyActor) {
     return true;
 }
 
-void set_context(void* hands, void* weapon, const wchar_t* weaponClass, bool manualReloadOn) {
+void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, bool manualReloadOn) {
     g_hands.store(hands, std::memory_order_relaxed);
     g_weapon.store(weapon, std::memory_order_relaxed);
-    wcsncpy_s(g_cls, weaponClass ? weaponClass : L"", _TRUNCATE);
+    g_muted.store(mutedEvents, std::memory_order_relaxed);
     g_muteOn.store(manualReloadOn, std::memory_order_relaxed);
 }
 

@@ -8,6 +8,7 @@
 #include "game/bioshock1r/grip_pistol_cylinder.h"
 #include "game/bioshock1r/grip_shotgun_shell.h"
 #include "game/bioshock1r/grip_tommy_drum.h"
+#include "game/bioshock1r/gun_suppress.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
@@ -964,7 +965,8 @@ void tick(const Frame& f) {
     if (f.hands) sound_engine::install(f.hands);
     {
         const wchar_t* wc = f.weapon ? patterns::object_class_name(f.weapon) : nullptr;
-        sound_engine::set_context(f.hands, f.weapon, wc, f.weapon && g_on.load(std::memory_order_relaxed));
+        const gun_suppress::Record& sr = gun_suppress::record(gun_state::kind_of(wc));
+        sound_engine::set_context(f.hands, f.weapon, sr.mutedEvents, f.weapon && g_on.load(std::memory_order_relaxed));
     }
     if (g_spare.actor && (!f.weapon || !g_on.load(std::memory_order_relaxed))) {
         if (f.weapon && dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
@@ -1005,6 +1007,9 @@ void tick(const Frame& f) {
         g_lastHandle = 0;
         g_canMs = 0;
     }
+    // What the game may not do with this gun (gun_suppress.h): one record, read below for X, the adopted reload,
+    // the gun hand's clip motion, the free hand's clip, the magazine's visibility and the muted cues.
+    const gun_suppress::Record& rec = gun_suppress::record(gun_state::kind_of(g_cls));
     // The game's reload clip, when it is playing one.
     const hands_state::State st = hands_state::current(f.hands);
     rr::Input in;
@@ -1039,17 +1044,10 @@ void tick(const Frame& f) {
             }
             if (pi.fireClip) script::anim_time(f.weapon, pw, &pi.clipT);
         }
-        {
-            constexpr float kRecoilEnd0 = 0.30f, kRecoilEnd1 = 0.45f; // reload_pose.py: kick 0.06-0.15, settling to 0.45, then the swing up
-            float u = pi.fireClip ? (pi.clipT - kRecoilEnd0) / (kRecoilEnd1 - kRecoilEnd0) : 0.0f;
-            u = u < 0 ? 0 : u > 1 ? 1 : u;
-            // Half the clip's kick through the recoil (20:35 run: "too much recoil"), none after it.
-            constexpr float kShotgunKick = 0.5f;
-            // Nothing of any other clip (the 22:57 recording: the reload clips turned the gun in the hand up to
-            // 60 deg and 25 units the moment it emptied, the idle fidget 20 units - "still has problems
-            // suppressing animations when the gun runs out"): the gun is where the controller is.
-            g_gunKeep = pi.fireClip ? kShotgunKick * (1.0f - u * u * (3.0f - 2.0f * u)) : 0.0f;
-        }
+        // The gun hand's clip motion: the suppression record's curve (gun_suppress.h) - half the shotgun's kick
+        // through the recoil, none after it (the one-handed pump), nothing of any other clip (the 22:57 recording:
+        // the reload clips turned the gun in the hand up to 60 deg the moment it emptied, the idle fidget 20 units).
+        g_gunKeep = gun_suppress::clip_motion_keep(rec, pi.fireClip, pi.clipT, g_rounds > 0);
         static int32_t s_fireHandle = 0;
         pi.clipNew = pi.fireClip && pw != s_fireHandle;
         s_fireHandle = pi.fireClip ? pw : 0;
@@ -1107,25 +1105,18 @@ void tick(const Frame& f) {
         g_pumping.store(false, std::memory_order_relaxed);
         g_pumpHolding = false;
         // 2026-10-21 (10:08 run: the Tommy Gun's last burst sat in the firing state a second and pointed the gun
-        // down - "the game normally does that when they run out, we need to suppress it"): of any other gun's
-        // clips only a shot's recoil is layered - the first 0.30 s of a firing clip, faded out by 0.45, and none
-        // once the gun is empty.
-        // (Guns that reload by hand only: the wrench and the rest keep their clips as they were.)
-        g_gunKeep = rr::entry(g_cls) ? 0.0f : 1.0f;
-        if (g_gunKeep == 0.0f && st == hands_state::State::Firing) {
+        // down): the suppression record's curve - of a hands-reloaded gun's clips only a shot's recoil is layered,
+        // the first 0.30 s faded out by 0.45, none once the gun is empty; a gun with no program keeps every clip.
+        bool fireClip = false;
+        float ft = 0.0f;
+        if (st == hands_state::State::Firing) {
             const int32_t fh = weapon_clip_handle(f.weapon);
             int32_t nm = -1;
-            float ft = 0.0f;
             const wchar_t* cn = nullptr;
             if (fh > 0 && script::anim_name(f.weapon, fh, &nm) && nm >= 0) cn = patterns::fname_text(nm);
-            struct { int32_t ret; int32_t pad[3]; } rr2{};
-            const bool rounds = script::call(f.weapon, "GetRoundsRemaining", &rr2) && rr2.ret > 0;
-            if (cn && wcsstr(cn, L"Fire") && rounds && script::anim_time(f.weapon, fh, &ft)) {
-                float u = (ft - 0.30f) / 0.15f;
-                u = u < 0 ? 0 : u > 1 ? 1 : u;
-                g_gunKeep = 1.0f - u * u * (3.0f - 2.0f * u);
-            }
+            fireClip = cn && wcsstr(cn, L"Fire") && script::anim_time(f.weapon, fh, &ft);
         }
+        g_gunKeep = gun_suppress::clip_motion_keep(rec, fireClip, ft, g_rounds > 0);
     }
     in.clipLive = clipName != nullptr;
     in.clip = clipName;
@@ -1134,7 +1125,7 @@ void tick(const Frame& f) {
     g_lastHandle = in.clipLive ? hw : 0;
     in.clipProgram = in.clipLive ? rr::find(g_cls, clipName) : nullptr;
     in.entryProgram = rr::entry(g_cls);
-    g_handles.store(in.entryProgram != nullptr, std::memory_order_relaxed);
+    g_handles.store(rec.freeHandClip && in.entryProgram != nullptr, std::memory_order_relaxed);
     g_sticky.store(!_wcsicmp(g_cls, L"Shotgun"), std::memory_order_relaxed);
     in.hand = Vec{f.hand[0], f.hand[1], f.hand[2]};
     in.unitsPerCm = f.unitsPerCm;
@@ -1147,12 +1138,15 @@ void tick(const Frame& f) {
     in.canReload = !g_machine.active() && in.entryProgram ? can_reload(f.weapon, f.now) : true;
     // A reload that began without the reload button (the gun ran dry): the game's own, but it waits
     // for the hands. One the button began plays as it always has.
-    in.adopt = in.clipNew && f.now - g_reloadButtonMs.load(std::memory_order_relaxed) > 1500;
+    // (The record says the game's own reload is adopted; X never reaches the game on such a gun, so every reload
+    // it begins is its own: the old "not within 1.5 s of the button" test is a constant now.)
+    in.adopt = in.clipNew && rec.adoptGameReload;
     // 2026-10-20: the reload button ejects, on a gun whose program fetches a new magazine (the
     // pistol, the Tommy Gun; the shotgun's reload starts at the pouch, and its button does nothing - pad()).
-    const bool ejectable = in.entryProgram && !in.entryProgram->entryAtPouch && rr::first_fetch(in.entryProgram) >= 0;
+    const bool ejectable = rec.ejectOnButton && in.entryProgram && !in.entryProgram->entryAtPouch &&
+                           rr::first_fetch(in.entryProgram) >= 0;
     g_ejectable.store(ejectable, std::memory_order_relaxed);
-    g_handsReload.store(in.entryProgram != nullptr, std::memory_order_relaxed);
+    g_handsReload.store(rec.reloadButton && in.entryProgram != nullptr, std::memory_order_relaxed);
     const bool xPressed = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable;
     in.eject = xPressed && !g_machine.active();
     in.ejectNow = xPressed && g_machine.active(); // a reload waiting at its first pull drops the magazine
@@ -1324,7 +1318,7 @@ void tick(const Frame& f) {
     const rr::Program* prog = g_machine.program();
     const bool ejects = prog && prog->ejectT >= 0;
     // The shotgun's shell too (20:35 run: "the other bullets turned invisible while I put them in").
-    if (o.fetched || (o.seating && ejects)) {
+    if (rec.ammoModelVisible && (o.fetched || (o.seating && ejects))) {
         struct { int32_t pad[4]; } none{};
         const bool ok = script::call(f.weapon, "ShowAmmoModel", &none);
         BVR_LOG("[reload] %S: %s %s - its magazine shown (%s)", g_cls, o.fetched ? "a new one from the pouch:" : "seating:",

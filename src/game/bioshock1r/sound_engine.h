@@ -12,9 +12,10 @@ namespace bvr::b1r::sound_engine {
 
 // Game thread: hook the effect-event native through this actor's vtable (once; fail-soft, logged).
 bool install(void* anyActor);
-// Game thread, each tick: the actors whose events are this gun's (the Hands actor, the weapon), its class name, and
-// whether its manual reload is on (the mute table applies only then).
-void set_context(void* hands, void* weapon, const wchar_t* weaponClass, bool manualReloadOn);
+// Game thread, each tick: the actors whose events are this gun's (the Hands actor, the weapon), the events the mod
+// fires itself for this gun (its suppression record's null-terminated list, gun_suppress.h; muted when a clip fires
+// them), and whether its manual reload is on (the mute applies only then).
+void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, bool manualReloadOn);
 // Game thread: fire `event` (an effect event name, e.g. "PumpShotgun") on `actor` as the game would - passes the mute.
 bool play(void* actor, const char* event, const char* referenceTag = nullptr);
 // Game thread: fire `event` on `actor`, but of its sound named `sound` (FMOD's name, e.g. weapons_shotgun_reloadEndwav)

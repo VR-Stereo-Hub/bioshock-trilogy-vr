@@ -7468,3 +7468,18 @@ fingers (a grip on nothing) or the reload clip's reach to the pouch. Its fingers
 lowered hands' (`Default__HandsDown` at 0.5 s, measured as the rest poses were: `grip_rest_poses.h
 kRelaxedFingers`, 15 bones against the wrist; the palm centre checks at 9.215 0.119 0.313). The gun hand
 is unchanged by this step: the controller plus its recoil window and the two-handed aim.
+
+## 2026-10-21 - The suppression record: what the game may not do, per gun
+
+Step 4 (HELD_GUN_AUDIT.md 2.4). `gun_suppress.h` (pure, 25 host checks) is one record per gun kind: X is
+the hands' (and ejects, on the pistol and the Tommy), a reload the game begins is adopted, the free hand
+never follows a reload clip, the magazine's visibility is the mod's, the gun hand follows no clip but a
+shot's, a shot's clip motion curve (the kick, its fade window, whether an empty gun keeps any), and the
+effect events the mod fires itself. `manual_reload::tick` reads it for every one of those where a flag or a
+branch used to decide: `g_handsReload`, `ejectable`, `in.adopt` (the "not within 1.5 s of X" test was a
+constant: X never reaches the game on such a gun), `g_handles` (the hand-back's manual-reload case), the
+`ShowAmmoModel` calls, and the two clip-motion branches, which were one curve for the shotgun (half the kick,
+none past 0.45 s) and another for the pistol and Tommy (all the kick, none past 0.45, none once empty) in two
+places with a script call for the rounds every firing frame - now `clip_motion_keep(record, fireClip, t,
+rounds)` with the 4 Hz count. `sound_engine` takes the record's muted list with its context instead of its
+own table. A gun with no program has the record that leaves everything to the game.
