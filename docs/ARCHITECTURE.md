@@ -3096,3 +3096,17 @@ stroke. BS1 now does the same over the game's own Fire clip: the clip's time is 
 plays the rest, the stroke may begin during the recoil, the hold cannot slide off mid-stroke, and a
 trigger while the pump waits only buzzes. Rejected: a separate pump grab (two grabs on one fore-end)
 and a free fore-grip object (the pump is a bone the clip animates). Pure logic in `reload_rig.h` Pump.
+
+### 2026-10-21: BS1's gun geometry is a per-gun table, never a latched frame
+
+The two-handed grab point, the grip pose, the free hand's rest on the gun, the mirror's sideways axis and
+centre plane, and the magazine's seat used to be latched from live frames - the first idle seen, the first
+mirrored frame, every idle frame while held - with rules on top for the frames that must not count (an
+empty idle, an equip, a settle time, per hand, per gun). The audit (docs/bioshock1/HELD_GUN_AUDIT.md 1.4)
+traced five regressions of one day to those latches: each fix added a condition, and the next clip or
+state found a frame the conditions let through. All of them are constants of the gun in its grip bone's
+frame, measured once offline from the game's own idle clip and the weapon's rest skeleton
+(`gun_geometry.h`, `grip_rest_poses.h`, ENGINE_NOTES 2026-10-21 "Gun geometry as constants"), checked
+against 2946 live frames, and mirrored by one function. A gun the table does not know keeps the clip's
+hand. BRVR latched its anchor because it could not read a driven cluster; the constant is the same number
+taken once, and it is the design rule from here: a point of the gun is table data, not a memory.

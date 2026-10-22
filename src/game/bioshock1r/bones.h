@@ -255,6 +255,9 @@ int weapon_bone_count();
 int weapon_bone_index(const char* name);
 const char* weapon_bone_name(int i);
 bool weapon_bone_pose(int i, float p[3], float q[4]);
+// The same bone in the weapon skeleton's REST pose (the bank captured at bind): where a part sits in the gun
+// as authored - the magazine's seat - a constant of the gun, not a frame read at idle (2026-10-21).
+bool weapon_rest_bone_pose(int i, float p[3], float q[4]);
 void set_weapon_part_offset(int i, const float d[3]);
 // The whole pose of a part instead (weapon space, before the weapon size): the part a hand carries.
 void set_weapon_part_pose(int i, const float p[3], const float q[4]);

@@ -7305,3 +7305,67 @@ The shotgun's gun-in-hand rest is now kept per gun across a weapon switch (four 
 only from an idle settled for 0.5 s, not the empty gun's: after a plasmid mid-reload, the first idle frame of the
 re-equip was taken as the rest and held through the next reload.
 
+
+## 2026-10-21 - Gun geometry as constants: the fore-grip, the grip pose, the mirror axis and plane, the seat
+
+Step 1 of the held-gun redesign (docs/bioshock1/HELD_GUN_AUDIT.md 2.3, 2.8). Everything the two-handed
+grip, the left-hand mirror and the reload need to know about where a gun's parts are is now a constant of
+the gun in its grip bone's frame (bone 43), read from a table (`gun_geometry.h`, the generated
+`grip_rest_poses.h`), and nothing is latched from a live frame any more.
+
+**The fore-grip point (the two-handed anchor)** is the free hand's FIST CENTRE (`hand_grip.h`, the point the
+controller's grip pose pins) against bone 43 in the gun's idle clip. Measured in Blender on the hands rig
+(`NEWPlayerHands-all.glb`, which carries every clip; the hands' bones in engine index order, `game_frames.py`
+giving the game's own frames) at 0, 0.5, 1, 2 and 3 s of each `Fidget*` clip - every clip holds it within
+0.3 units, and the `EmptyFidget*` clips hold the same point (it is the engine's blend INTO them, not the
+clip, that takes the hand off the pump). The live check: a Python pass over the six shotgun pose recordings
+of the day (`poserec-20261021-19..21*`, 2946 frames in `WeaponIdling` with `FidgetShotgun`, the grip not
+held) puts the live fist centre at 54.03 14.69 14.31 with a spread of 0.2, against 54.08 14.75 14.29
+offline. Unreal axes, rig units at the authored size; `two_hand_math.h on_drawn_gun` maps it to the drawn gun.
+
+| Gun | Fist centre vs bone 43 (idle clip) | Wrist vs bone 43 |
+|---|---|---|
+| Shotgun | 54.05 14.70 14.30 | 45.27 7.43 14.98 |
+| Tommy Gun | 45.0 5.5 3.0 | 34.83 0.24 1.91 |
+| Grenade launcher | 51.4 20.6 15.2 | 47.07 10.62 11.44 |
+| Chemical thrower | 12.5 -10.8 22.5 | 8.23 -19.21 29.02 |
+| Crossbow | 26.9 8.7 -3.4 | 23.11 -1.60 -0.03 |
+
+**The same recordings show the latch it replaces failing.** In the two last recordings of the day (20:55,
+21:14) the HELD idle frames have the substituted free hand 60-100 units from the pump (mean -62 -44 26, spread
+57) while the unheld ones sit at the constant - the rest latched from an equip's end frame, drawn by the
+kept-on-gun rule, and copied into the anchor (the audit's bug 5). The 19:12-20:36 recordings' held frames
+are at the constant: the regression came in with the per-hand latches of the 20:54 run.
+
+**The grip pose** is the free hand's whole rest on the gun from the same clip at 0 s: each left-hand bone
+(7-21) against the wrist and the wrist against bone 43, 15 rows per gun, generated into `grip_rest_poses.h`
+by a Blender pass (the rows are the game's own quaternions: Blender's conjugated by the reflection diag(1,-1,1),
+i.e. (-x, y, -z, w)). The check that the rows are in the engine's frame: the five palm bones' mean lands at
+9.215 0.119 0.313 in the wrist on every gun - the rig's rigid palm (`palette.cpp`) - and the fist centre
+rebuilt from the rows' finger bases and carried to bone 43 by the wrist row lands on the fore-grip point
+within 0.3 (`gun-geometry-tests.cpp`, both tables from one clip agreeing). The hold applies it whenever it
+holds: the wrist at the rest turn with the palm where the clip has it, or, kept on the gun (a reload, the
+lowering, an idle that takes the hand off), the whole hand at its rest; for the left-hand hold it is built
+on the game's own left hand and mirrored into the right by the rig's pair mirror, as `m4_pose` mirrors
+every pair. Removed with it: `s_freeRel`, `s_fingerRel`, `s_wristRel`, `s_palmLocal`, their resets on a
+hand-over and a weapon switch, and the first-idle latch.
+
+**The sideways axis and the centre plane.** The socket record on bone 43 (floats 3-11, the weapon's own
+axes in the bone's frame) is a constant of the hands rig per weapon socket name, and the row that lies
+across the gun is Y on every gun (read at rest on every gun in every 2026-10-21 run: Tommy -0.341 0.940
+0.000, shotgun -0.377 0.925 -0.059 in the grip's frame); the wrench, with no record, uses the grip bone's
+Y. The plane is the median of the weapon skeleton's REST bones (`g_wRef`, the bank captured at bind) along
+that axis, a root at the origin left out, times the weapon's DrawScale over the hands' - the same
+arithmetic as before, now in `gun_geometry::centre_plane` and written to `g_mirU`/`g_mirPlane` EVERY frame,
+mirrored or not (they were written only on mirrored frames, so a reflection asked for with the mirror off
+used the last mirrored gun's). `gun_side_axis` and the rest/provisional axis latches are gone; the log line
+is `[bones] mirror: the held weapon's sideways axis is its SOCKET axis Y (...); its centre plane is N along it`.
+
+**The Tommy Gun's drum seat** is `TG_AmmoClip`'s pose in the weapon skeleton's rest bank
+(`bones::weapon_rest_bone_pose`), not a read of the live bone at idle every 0.5 s keyed by nothing.
+
+Still latched, on purpose for now: the shotgun's gun-in-hand rest (sockets 43/44 against the wrist,
+`GunRest`, per gun per hand with its 0.5 s settle), the AmmoModel-against-bone offset (`g_amRel`, to be
+derived from the ammunition socket record once a live measurement confirms it), and the free hand's
+last-frame pose through a reload's start clip. The barrel axis stays chosen once per weapon from a lined-up
+frame.

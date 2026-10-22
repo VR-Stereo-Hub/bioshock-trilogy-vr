@@ -113,6 +113,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/two_hand.cpp
     game/bioshock1r/two_hand.h
     game/bioshock1r/two_hand_math.h
+    game/bioshock1r/gun_geometry.h
+    game/bioshock1r/grip_rest_poses.h
     game/bioshock1r/attach_census.cpp
     game/bioshock1r/muzzle.cpp
     game/bioshock1r/muzzle.h

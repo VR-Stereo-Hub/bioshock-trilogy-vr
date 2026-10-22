@@ -565,10 +565,13 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
 
 ### 2.8 Order of work and what each step removes
 
-1. Geometry table and its mirror function, with host tests against the measured constants and the
-   existing pose recordings (`pose_capture.py --record` replays can assert the fore-grip point against
-   the drawn palm). Removes eleven latches (2.3). Headset check: grabs land on the fore-grip in both hands,
-   after a plasmid switch, after a pump, on an empty gun.
+1. **DONE 2026-10-21** (ENGINE_NOTES "Gun geometry as constants"): `gun_geometry.h`, `grip_rest_poses.h`,
+   `gun-geometry-tests.cpp`. The fore-grip, the grip pose and the rest on the gun, the mirror axis and
+   plane and the Tommy's seat are constants; removed `s_ancRelBy`, `s_freeRel`, `s_fingerRel`, `s_wristRel`,
+   `s_palmLocal`, `s_restU`, `s_u`/`s_provisional`, `g_restSeat*`, and the EmptyFidget / first-idle /
+   per-hand rules around them. Kept for step 4: `GunRest` (the shotgun's 43/44 rest), `g_amRel`,
+   `s_lastRel`. Headset check: grabs land on the fore-grip in both hands, after a plasmid switch, after a
+   pump, on an empty gun; the grip pose from a hold's first frame.
 2. `GunState` and the dry click. Removes six copies of the gun's state. Headset check: a click on every
    refused pull, every gun, every stage.
 3. The ownership table and the arbiter on it. Fixes bug 1. Headset check: the empty Tommy's fore-grip.

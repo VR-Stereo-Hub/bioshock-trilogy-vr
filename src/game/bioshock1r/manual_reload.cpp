@@ -301,12 +301,9 @@ bool g_seatValid = false;
 int g_seatBone = -1;
 float g_seatP[3] = {};
 // 2026-10-21 (the 20:54 run: no drum would go in at all): the seat was read only while an ejected drum falls, and a
-// reload begun at the pouch (no drum in the gun) never has one - with no seat, only the clip's own path start under
-// the gun took a drum. The Tommy Gun's drum sits where it sits, open or not: its seat is read at rest, drum in.
-void* g_restSeatGun = nullptr;
-int g_restSeatBone = -1;
-float g_restSeatP[3] = {};
-uint64_t g_restSeatMs = 0;
+// reload begun at the pouch (no drum in the gun) never has one. The Tommy Gun's drum sits where it sits, open or
+// not: its seat is the part bone's REST pose in the weapon skeleton (bones::weapon_rest_bone_pose), a constant of
+// the gun - it was read from idle frames every 0.5 s, keyed by nothing (HELD_GUN_AUDIT.md 1.4).
 float g_partSeatCm = -1.0f;
 uint64_t g_partSeatMs = 0;
 float g_uuPerCm = 1.0f;
@@ -1231,22 +1228,14 @@ void tick(const Frame& f) {
     // the pistol's cylinder seats with the barrel folded, not where it sat closed). The pose read is
     // the clip's own, without the fall's offset.
     const bool tommy = !_wcsicmp(g_cls, L"MachineGun");
-    if (tommy && !g_machine.active() && st == hands_state::State::Idling && g_magOut != f.weapon &&
-        f.now - g_restSeatMs >= 500) {
-        g_restSeatMs = f.now;
+    if (tommy && g_machine.active() && !g_seatValid) {
         int bone = -1;
         for_parts("TG_AmmoClip", [&](int i) { if (bone < 0) bone = i; });
-        float p[3], q[4];
-        if (bone >= 0 && bones::weapon_bone_pose(bone, p, q)) {
-            g_restSeatGun = f.weapon;
-            g_restSeatBone = bone;
-            memcpy(g_restSeatP, p, sizeof p);
+        float q[4];
+        if (bone >= 0 && bones::weapon_rest_bone_pose(bone, g_seatP, q)) {
+            g_seatBone = bone;
+            g_seatValid = true;
         }
-    }
-    if (tommy && g_machine.active() && !g_seatValid && g_restSeatGun == f.weapon && g_restSeatBone >= 0) {
-        g_seatBone = g_restSeatBone;
-        memcpy(g_seatP, g_restSeatP, sizeof g_seatP);
-        g_seatValid = true;
     }
     if (o.carry == 3 && !g_seatValid && o.fallS > 0.06f && o.part) {
         g_seatBone = -1;

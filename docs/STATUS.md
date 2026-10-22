@@ -2,14 +2,28 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Session 2026-10-21 (evening) - BS1: audit and redesign of the held-gun mechanics (no code)
+## Session 2026-10-21 (evening) - BS1: the held-gun audit, then step 1 - gun geometry as constants
 
-**Branch `claude/bs1-manual-reload`**, local commits only. Docs only this session; the installed build
-is unchanged (74d975d). Nothing run.
+**Branch `claude/bs1-manual-reload`**, local commits only. Built (Release), host-tested (15 suites), lint
+clean, INSTALLED. NOT run in the simulator or the headset.
 
 ### Current state
 
-- **`docs/bioshock1/HELD_GUN_AUDIT.md`** is the deliverable: Part 1 audits the manual reload, the
+- **Step 1 of the redesign is in** (ENGINE_NOTES "Gun geometry as constants", ARCHITECTURE decision log):
+  `gun_geometry.h` (the fore-grip point and sideways axis per gun, the mirror and centre-plane functions)
+  and the generated `grip_rest_poses.h` (the free hand's rest pose on each two-handed gun: 15 bones
+  against the wrist, the wrist against bone 43). The two-handed anchor, the grip pose, the kept-on-gun
+  rest, the mirror axis and plane and the Tommy's drum seat read them; the latches they replace are gone
+  (`s_freeRel`, `s_fingerRel`, `s_wristRel`, `s_ancRelBy`, `s_restU`/`s_u`, `g_restSeat*`). The grip pose
+  applies the moment the grip holds, every gun, both hands, and survives a hand-over and a switch.
+  Host-tested: `gun-geometry` (56 checks: the tables, the mirror, the plane, and the two tables agreeing on
+  the fist centre within 0.3). Measured offline in Blender and checked against 2946 live frames.
+- **Headset check for step 1:** grabs land on the fore-grip (Tommy and shotgun) in both hands, after a
+  plasmid switch, right after a pump, on an empty gun; the grip pose from the first frame of a hold; the
+  shotgun in the left hand not upside down; the log's `[bones] mirror: the held weapon's sideways axis`
+  line once per gun; `[twohand] the right/left hand took hold ... N cm` small (under 6) when grabbing at the
+  fore-end.
+- **`docs/bioshock1/HELD_GUN_AUDIT.md`** is the design: Part 1 audits the manual reload, the
   two-handed grip, the hand-over, the pump, the held parts and every override of the game (the state
   inventory per module, the fourteen latches and what makes each wrong, the grip ownership flow per gun
   state, the five bugs of the 21:1x run with their mechanisms, nine more findings). Part 2 proposes one
@@ -24,8 +38,10 @@ is unchanged (74d975d). Nothing run.
 
 ### Next steps
 
-- Wait for the tester's approval of the design (and the four questions in 2.9), then step 1 of 2.8:
-  the geometry table and its tests. No code until then.
+- Headset: the step-1 checks above. Then step 2 of HELD_GUN_AUDIT.md 2.8: the gun-state record and the
+  dry click (every refused pull clicks, every gun, every stage).
+- Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
+  offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 
 ## Session 2026-10-20 (evening) - BS1: the 15:33 headset run's four issues, the shotgun pump after HL2VR
 
