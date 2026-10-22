@@ -84,8 +84,13 @@ int main() {
         o = s.step(kTommyDrumOut[0].p + Vec{2, 0, 0}, true);
         check(o.act == Act::StartReload && s.m.active(), "a grip at the drum asks the game to reload");
         s.clip(L"Reload", 3.33f);
+        o = s.step(Vec{40, 7, 2}, false);
+        check(!o.claim && s.m.hand_free(), "waiting, the hand away from the drum: its grip is free (hand-over, two hands)");
+        o = s.step(kTommyDrumOut[0].p, false);
+        check(o.claim && s.m.hand_free(), "waiting at the drum: the grip is the reload's");
         o = s.step(kTommyDrumOut[0].p, true);
         check(o.hold && std::fabs(o.t - 0.267f) < 0.01f, "held at the drum's segment start", o.t, 0.267);
+        check(!s.m.hand_free(), "pulling the drum: the hand is the reload's (negative control)");
         o = s.step(kTommyDrumOut[2].p, true);
         check(o.hold && std::fabs(o.t - 0.466f) < 0.01f, "the clip follows the hand down", o.t, 0.466);
         o = s.step(kTommyDrumOut[1].p, true);

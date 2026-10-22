@@ -6943,6 +6943,25 @@ constexpr const char* kPoseHeader =
 
 // 2026-10-21: the gun hand's placement layers this compose (the recording's `aim` line): the two-handed aim's weight
 // and turn, the real hand's distance from where it holds the gun, the clip's own gun motion layered.
+// The Hands actor's own clip's name begins with `prefix` (EmptyFidgetShotgun, ...). The name is read once per clip
+// handle.
+bool hands_clip_is(const wchar_t* prefix) {
+    static int32_t s_handle = -1;
+    static wchar_t s_name[64] = {};
+    if (!g_m4.actor) return false;
+    const int32_t off = script::property_offset(g_m4.actor, L"HandsAnimationHandle");
+    int32_t hh = 0;
+    if (off < 0 || !read_n(static_cast<uint8_t*>(g_m4.actor) + off, &hh, sizeof hh)) return false;
+    if (hh != s_handle) {
+        s_handle = hh;
+        s_name[0] = 0;
+        int32_t nm = -1;
+        if (hh > 0 && script::anim_name(g_m4.actor, hh, &nm) && nm >= 0)
+            if (const wchar_t* t = patterns::fname_text(nm)) wcsncpy_s(s_name, t, _TRUNCATE);
+    }
+    return s_name[0] && !_wcsnicmp(s_name, prefix, wcslen(prefix));
+}
+
 float g_dbgAimTw = 0.0f, g_dbgAimTurnDeg = 0.0f, g_dbgAimDistCm = -1.0f, g_dbgGunMotion = 0.0f;
 
 void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float qa[4], float k,
@@ -8362,7 +8381,12 @@ void m4_compose(bool late) {
                         }
                         const ik::Quat aq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
                         const ik::Vec ap = ik::vec(A[patterns::kBoneWeaponAttach].p);
-                        const bool idle = hands_state::current(g_m4.actor) == hands_state::State::Idling;
+                        // 2026-10-21 (the 19:12 recording, frames 2831-2835: "it still tried to lift for a split second
+                        // when ammo was completely out"): latched only from an idle that has the hand on the pump -
+                        // the empty gun's idle (EmptyFidgetShotgun) begins by taking it off, and re-latching from those
+                        // frames while held turned the aim 22 -> 12 -> 22 deg over 150 ms as the last shell went.
+                        const bool idle = hands_state::current(g_m4.actor) == hands_state::State::Idling &&
+                                          !hands_clip_is(L"EmptyFidget");
                         if (idle && (two_hand::held() || !s_ancOk)) {
                             s_ancRel = ik::rotate(ik::conj(aq), anc - ap);
                             s_ancOk = true;

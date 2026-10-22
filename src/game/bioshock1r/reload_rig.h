@@ -332,6 +332,17 @@ public:
     bool active() const { return state_ != State::Idle; }
     const Program* program() const { return prog_; }
     int phase() const { return phase_; }
+    // A reload waiting for the free hand, which has nothing of it: at a Pull or Slide not yet taken hold of, or at a
+    // Fetch with nothing carried. The hand may grip the gun two-handed or take the gun over meanwhile.
+    bool hand_free() const {
+        if (state_ != State::Running || carrying_ || dropping_ || !prog_ || phase_ >= prog_->n) return false;
+        switch (prog_->phases[phase_].kind) {
+            case Kind::Pull:
+            case Kind::Slide: return sub_ == Sub::Wait;
+            case Kind::Fetch: return true;
+            default: return false;
+        }
+    }
 
     Output update(const Input& in, const Config& c) {
         Output o;
@@ -657,6 +668,10 @@ private:
                 if (sub_ == Sub::Wait) {
                     const bool near = near_phase(p, in.hand, grabU);
                     o.buzz = near;
+                    // 2026-10-21 ("it doesn't let you swap hands on an empty gun"; "2 hand grip on empty weapons"):
+                    // a reload waiting for the hand claims its grip only at the part - elsewhere the squeeze is the
+                    // hand-over's or the two-handed grip's (hand_free()).
+                    o.claim = near;
                     o.hold = true;
                     o.t = T(p.t0);
                     if (near && in.gripRise) {
@@ -691,6 +706,7 @@ private:
                 if (sub_ == Sub::Wait) {
                     const bool near = near_phase(p, in.hand, grabU);
                     o.buzz = near;
+                    o.claim = near; // as the Pull's: only at the part
                     o.t = T(p.t0);
                     if (near && in.gripRise) {
                         sub_ = Sub::Drag;
@@ -780,9 +796,9 @@ private:
                     o.fallS = in.now - dropAt_;
                 }
                 o.buzz = in.inPouch;
-                // 2026-10-21: a reload that starts at the pouch (the shotgun's) claims the free grip only there - away
-                // from it the squeeze is free for the two-handed grip ("you can always grip it").
-                if (prog_->entryAtPouch && !in.inPouch && !in.spareInHand) o.claim = false;
+                // 2026-10-21: a Fetch claims the free grip only at the pouch - away from it the squeeze is free for the
+                // two-handed grip ("you can always grip it") and the hand-over (an empty gun changes hands).
+                if (!in.inPouch && !in.spareInHand) o.claim = false;
                 if (in.inPouch && in.gripRise) {
                     lying_ = false;
                     carrying_ = true;

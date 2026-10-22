@@ -17,6 +17,13 @@ bool install(void* anyActor);
 void set_context(void* hands, void* weapon, const wchar_t* weaponClass, bool manualReloadOn);
 // Game thread: fire `event` (an effect event name, e.g. "PumpShotgun") on `actor` as the game would - passes the mute.
 bool play(void* actor, const char* event, const char* referenceTag = nullptr);
+// Game thread: fire `event` on `actor`, but of its sound named `sound` (FMOD's name, e.g. weapons_shotgun_reloadEndwav)
+// play only fromMs..toMs - one file is a whole action (both strokes of a pump), and each part goes with its own motion.
+// The times are read off the sound with tools/fsb-probe.ps1. False: no FMOD hook, or the event plays another sound
+// (logged) - the caller falls back.
+bool play_part(void* actor, const char* event, const char* sound, unsigned fromMs, unsigned toMs);
+// Game thread, each tick: stop each part at its end.
+void tick();
 // The weapon's current ammunition's class name - the ReferenceTag the game's own weapon events carry (DryFiring, ...).
 bool ammo_tag(void* weapon, char* out, int n);
 

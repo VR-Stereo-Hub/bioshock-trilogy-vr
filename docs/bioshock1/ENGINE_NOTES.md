@@ -7213,3 +7213,46 @@ shotgun refuses (reloading, waiting to be cocked, a pump waiting).
 **The Tommy Gun's bolt** ("the tommy gun slide sound"): the bolt-home Play phase started at 2.244 s, the stroke
 leaving the clip at 2.20; a phase's start is set, not played, so the cue in those 44 ms never fired. It starts at
 2.20 now.
+
+That was not it: the 19:12 run's log has NO effect event at all through a Tommy reload. The Tommy's reload is
+one sound, `HandsReloadTommy` (+ `_ammoAP`/`_ammoFrost` variants), cued at the clip's start - which the manual
+reload never plays from - so none of it played.
+
+## 2026-10-21 - The guns' sounds are whole actions; parts of them through FMOD
+
+**Where the sounds are.** BS1's weapon sounds are `Sound` objects inside the map packages (UModel `-list`:
+`weapons_shotgun_pump_01`, `weapons_shotgun_reloadEndwav`, `weapons_tommy_reload_01`, ...), not in the
+`Sounds_Windows\*.fsb` banks (those hold streamed ambience, music and voice - FSB5, FMOD's own). UModel
+`-export -game=bio -sounds` writes a Sound's data as `.unk`: an MP3 (an `Info` frame, 64 kbps, 44.1 kHz mono).
+`toolssb-probe.ps1 -File` decodes it with the game's own fmodex.dll and prints its loudness over time.
+
+| Sound | Length | Parts (loudness, dB, the steps between) |
+|---|---|---|
+| `weapons_shotgun_pump_01` (PumpShotgun, the rack between shots) | 0.40 s | a click at 63 ms, the slam 93-135 ms: both strokes in 35 ms, not separable |
+| `weapons_shotgun_reloadEndwav` (ShotgunReloadEnd) | 0.84 s | shell click 80; BACK 140-300 (peak 240); a gap to -35 dB at 300-320; FORWARD 340-560 (slam 460) |
+| `weapons_tommy_reload_01` (ReloadTommy) | 2.35 s | drum out 0-520; drum in 880-1540; bolt 1850-2330 (back ~1900, home ~2050) |
+
+**Parts** (`sound_engine::play_part`). The game plays through FMOD Ex's C++ API (its imports:
+`System::playSound`, `Channel::setPosition`/`getPosition`/`stop`, ...). The mod hooks `System::playSound` (the
+fmodex.dll export, MinHook): while the mod fires an event for a part, the channel it starts for that sound is moved
+to the part's start (`setPosition`, ms) and stopped at its end (polled each tick). Every sound an event on the
+hands or the gun plays is logged (`[sound] <event> plays <sound>`), so which file an event plays is read off a
+run. The shotgun's strokes play the reload end's sound, back 130-310 ms as the back stroke begins and forward
+310 ms to its end as the forward stroke begins (without the hook: the whole PumpShotgun on the back stroke, as
+before). The Tommy's parts play as the drum comes out (or drops), as the new drum seats, and as the bolt is
+racked back. The mapping from event to file (HandsShotgunReloadEnd -> reloadEndwav, HandsReloadTommy ->
+reload_01) is by name and unverified until a run logs it; a wrong one says `does not play it` and falls back.
+
+**The lift when the shotgun runs dry, found** (the 19:12 recording with its `aim` line). Frames 2831-2835: the
+last shot's Fire clip ends, the hands go to `EmptyFidgetShotgun`, and the two-handed aim's turn dips 22 -> 12 ->
+22 deg over 150 ms with the hold weight 1 and the gun's own motion 0. The shotgun's front-hand anchor was
+re-latched from every idle frame while held, and the empty idle's first frames take the hand off the pump. It is
+now latched only from an idle that is not `EmptyFidget*`. (The same recording's 0.9 s, 33 deg rise at frames
+2928-2947 turned the drawn hand with it - the controller, not the mod.)
+
+**The reload button and the empty shotgun** (19:15 in the log). X with the shotgun empty reached the game:
+`DryReloading` (no rounds of that ammunition), then the game switched ammunition and began its own reload, which
+the manual reload adopted and held for a shell the player never fetched - fire blocked until a weapon switch.
+X is now never the game's on any gun the hands reload. And a reload waiting for the free hand (an empty gun's)
+claims its grip only at the part it waits on (`Machine::hand_free`): elsewhere the squeeze hands the gun over or
+takes the two-handed grip.

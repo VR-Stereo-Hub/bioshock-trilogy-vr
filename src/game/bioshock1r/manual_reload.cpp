@@ -62,6 +62,8 @@ rr::PumpConfig g_pumpCfg = shot_pump_cfg();
 rr::Pump g_dryPump;
 bool g_needCock = false;
 std::atomic<bool> g_blockFire{false};
+std::atomic<bool> g_handsReload{false}; // the gun in hand has a manual reload: the reload button is never the game's
+std::atomic<bool> g_handFree{false}; // the reload waits for a hand that holds nothing of it (Machine::hand_free)
 bool g_dryClick = false; // game thread: a pump refused a pull this tick (the dry fire's sound)
 // The shotgun reload's last pump (reload_rig.h Kind::PumpHand): the same Pump over the end clip's own pump
 // times, waiting for the hands instead of pumping itself.
@@ -554,7 +556,10 @@ bool two_hand_allowed() {
     if (g_sticky.load(std::memory_order_relaxed) && !(g_carryMode == 1 && g_machine.active())) return true;
     // A manual reload leaves the two-handed grip on: at its last pump (the grip IS the pump), and through
     // any wait while that grip is still squeezed (the shotgun emptied with both hands on it - 20:35 run).
-    return !active() || g_pumpWait.load(std::memory_order_relaxed) || two_hand::held();
+    // 2026-10-21: and while a reload waits for a hand that holds nothing of it (an empty gun: "it should let you do
+    // 2 hand grip on empty weapons as well").
+    return !active() || g_pumpWait.load(std::memory_order_relaxed) || g_handFree.load(std::memory_order_relaxed) ||
+           two_hand::held();
 }
 bool sticky_grip() { return g_sticky.load(std::memory_order_relaxed); }
 float gun_motion_keep() { return g_gunKeep; }
@@ -716,14 +721,17 @@ bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
     constexpr uint16_t kX = 0x4000;  // the pad's X: the game's reload (XENON_X)
     const bool x = (pad->buttons & kX) != 0;
     // Fresh only: tick() stops with no weapon in hand (a plasmid), and X is then the game's again.
-    const bool ejectable = g_ejectable.load(std::memory_order_relaxed) &&
-                           GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) < 250;
-    if (g_on.load(std::memory_order_relaxed) && ejectable) {
+    const bool fresh = GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) < 250;
+    const bool ejectable = g_ejectable.load(std::memory_order_relaxed) && fresh;
+    // 2026-10-21 ("it still let me press x to reload which shouldnt happen"): on every gun the hands reload, the
+    // game never sees the reload button - the shotgun's, which ejects nothing, too: its reload began a reload the
+    // hands then had to finish ("automatically reloaded one round ... wouldnt let me fire it").
+    if (g_on.load(std::memory_order_relaxed) && fresh && g_handsReload.load(std::memory_order_relaxed)) {
         // The reload button ejects: the game never sees it (its own reload would play the whole clip).
         if (x) {
             pad->buttons = static_cast<uint16_t>(pad->buttons & ~kX);
             *changed = true;
-            if (!g_xDown) g_ejectReq.store(true, std::memory_order_relaxed);
+            if (!g_xDown && ejectable) g_ejectReq.store(true, std::memory_order_relaxed);
         }
     } else if (x) {
         g_reloadButtonMs.store(GetTickCount64(), std::memory_order_relaxed);
@@ -848,7 +856,34 @@ static float held_seconds(uint64_t now) {
     return h ? static_cast<float>(now - s_since) * 0.001f : 0.0f;
 }
 
+// 2026-10-21 (the tester: "the sound effect is both cocking motions in one, so can you analyze the sound file and
+// play each part with each corresponding direction"): the shotgun's cock, a stroke at a time. The game's PumpShotgun
+// sound (weapons_shotgun_pump_01, 0.4 s) has both strokes 35 ms apart - a rack between shots, too quick to part - so the
+// strokes play the reload end's (weapons_shotgun_reloadEndwav), whose strokes stand apart: the pump back 130-310 ms,
+// forward 310 ms to its end (tools/fsb-probe.ps1 on the Sound object UModel exports, 10 ms steps: a gap at -27 dB
+// between them). Without FMOD's channel, the back stroke plays the whole PumpShotgun as before.
+constexpr const char* kSgStrokeSound = "weapons_shotgun_reloadEndwav";
+void stroke_sound(void* hands, const rr::Pump& p, bool wasWorking, bool wasFwd) {
+    if (!wasWorking && p.working() && !p.backDone()) {
+        if (!sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 130, 310))
+            sound_engine::play(hands, "PumpShotgun");
+    }
+    if (!wasFwd && p.backDone()) sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 310, 900);
+}
+
+// The Tommy Gun's reload is one sound too (HandsReloadTommy: weapons_tommy_reload_01, 2.35 s), and its clip is
+// never played from its start, so its cue never fires: each part plays as the hands do it. Its loud parts
+// (fsb-probe, 25 ms steps): the drum out 0-520 ms, the drum in 880-1540 (seated at ~1050-1100), the bolt 1850-2330
+// (back at ~1900, home at ~2050).
+constexpr const char* kTgReloadSound = "weapons_tommy_reload_01";
+void tommy_sound(void* hands, int phaseWas, int phase, bool ejected) {
+    if (ejected || (phaseWas == 0 && phase == 1)) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 0, 520);
+    if (phaseWas == 3 && phase > 3) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1000, 1540);
+    if (phaseWas == 4 && phase == 5) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1850, 2330);
+}
+
 void tick(const Frame& f) {
+    sound_engine::tick();
     // The gun sound engine (sound_engine.h): hooked through the hands actor once; told whose events are the gun's.
     if (f.hands) sound_engine::install(f.hands);
     {
@@ -871,6 +906,8 @@ void tick(const Frame& f) {
         g_handles.store(false, std::memory_order_relaxed);
         g_claim.store(false, std::memory_order_relaxed);
         g_ejectable.store(false, std::memory_order_relaxed);
+        g_handsReload.store(false, std::memory_order_relaxed);
+        g_handFree.store(false, std::memory_order_relaxed);
         g_ejectReq.store(false, std::memory_order_relaxed);
         return;
     }
@@ -950,10 +987,10 @@ void tick(const Frame& f) {
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         pi.triggerRise = pulls != g_seenPulls;
         g_seenPulls = pulls;
-        const bool sndWas = g_pump.working();
+        const bool sndWas = g_pump.working(), fwdWas = g_pump.backDone();
         const rr::PumpOutput po = g_pump.update(pi, g_pumpCfg);
-        // The sound engine: the pump's sound as the player begins the stroke (its clip's own cue is muted).
-        if (!sndWas && g_pump.working()) sound_engine::play(f.hands, "PumpShotgun");
+        // The sound engine: each stroke's sound as the player begins it (its clip's own cue is muted).
+        stroke_sound(f.hands, g_pump, sndWas, fwdWas);
         g_pumping.store(g_pump.working(), std::memory_order_relaxed);
         // 21:11 recording: the hold let go ("slid off") ~0.1 s after each pump - the clip still returning
         // the pump, the hand where the stroke left it. The whole Fire clip, and a moment after, is the pump's.
@@ -1030,9 +1067,10 @@ void tick(const Frame& f) {
     // for the hands. One the button began plays as it always has.
     in.adopt = in.clipNew && f.now - g_reloadButtonMs.load(std::memory_order_relaxed) > 1500;
     // 2026-10-20: the reload button ejects, on a gun whose program fetches a new magazine (the
-    // pistol, the Tommy Gun; the shotgun's reload starts at the pouch and keeps the game's button).
+    // pistol, the Tommy Gun; the shotgun's reload starts at the pouch, and its button does nothing - pad()).
     const bool ejectable = in.entryProgram && !in.entryProgram->entryAtPouch && rr::first_fetch(in.entryProgram) >= 0;
     g_ejectable.store(ejectable, std::memory_order_relaxed);
+    g_handsReload.store(in.entryProgram != nullptr, std::memory_order_relaxed);
     const bool xPressed = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable;
     in.eject = xPressed && !g_machine.active();
     in.ejectNow = xPressed && g_machine.active(); // a reload waiting at its first pull drops the magazine
@@ -1102,7 +1140,10 @@ void tick(const Frame& f) {
     in.spareOk = spareGun && g_spareAmmo;
     in.spareInHand = g_spare.actor != nullptr;
     in.caught = spareGun && catch_check(f);
+    const int phaseWas = g_machine.active() ? g_machine.phase() : -1;
     const rr::Output o = g_machine.update(in, g_cfg);
+    if (!_wcsicmp(g_cls, L"MachineGun"))
+        tommy_sound(f.hands, phaseWas, g_machine.active() ? g_machine.phase() : -1, o.ejected);
     if (o.spareTake && !g_spare.actor) {
         g_spare = dropped_part::make_held(f.weapon, f.hands);
         BVR_LOG("[reload] %S: a spare from the pouch - %s", g_cls, g_spare.actor ? "in the hand" : "NO prop (nothing shows)");
@@ -1243,10 +1284,9 @@ void tick(const Frame& f) {
             const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
             pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
         }
-        const bool sndWas = g_endPump.working();
+        const bool sndWas = g_endPump.working(), fwdWas = g_endPump.backDone();
         const rr::PumpOutput po = g_endPump.update(pi, s_cfg);
-        // The sound engine: the pump's sound as the player begins the stroke (its clip's own cue is muted).
-        if (!sndWas && g_endPump.working()) sound_engine::play(f.hands, "PumpShotgun");
+        stroke_sound(f.hands, g_endPump, sndWas, fwdWas);
         if (po.hold)
             hold(f.weapon, f.hands, hw, hh, po.t, po.chase);
         else if (po.run) {
@@ -1293,10 +1333,9 @@ void tick(const Frame& f) {
             const float d[3] = {a.px - b.px, a.py - b.py, a.pz - b.pz};
             pi.spanCm = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 100.0f;
         }
-        const bool sndWas = g_dryPump.working();
+        const bool sndWas = g_dryPump.working(), fwdWas = g_dryPump.backDone();
         const rr::PumpOutput po = g_dryPump.update(pi, g_pumpCfg);
-        // The sound engine: the pump's sound as the player begins the stroke (its clip's own cue is muted).
-        if (!sndWas && g_dryPump.working()) sound_engine::play(f.hands, "PumpShotgun");
+        stroke_sound(f.hands, g_dryPump, sndWas, fwdWas);
         // The pump along the gun as the strokes go: back over backT0..backT1, forward over fwdT0..fwdT1.
         const rr::PumpConfig& c = g_pumpCfg;
         float back = 0.0f;
@@ -1352,6 +1391,7 @@ void tick(const Frame& f) {
     g_reach.store(o.active ? (o.claim ? 0.0f : -1.0f) : o.reach, std::memory_order_relaxed);
     g_claimMs.store(f.now, std::memory_order_relaxed);
     g_active.store(o.active, std::memory_order_relaxed);
+    g_handFree.store(g_machine.hand_free(), std::memory_order_relaxed);
     // `vrreload watch on`: twice a second, where the free hand should go next - the current phase's
     // path start (or the entry's), from the hand, in the body's frame (cm).
     if (g_watch.load(std::memory_order_relaxed) && f.now - g_watchMs >= 500) {
