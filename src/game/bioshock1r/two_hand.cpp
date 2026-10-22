@@ -64,9 +64,9 @@ std::atomic<bool> g_takeHeld{false}; // take_held_grip: the next pad() counts a 
 std::atomic<int> g_grabs{0};
 std::atomic<float> g_liveDistCm{-1.0f};
 
-// Game thread.
+// Game thread (the class flag is read by the XInput thread's arbiter too).
 const void* g_classOf = nullptr;
-bool g_classTwoHanded = false;
+std::atomic<bool> g_classTwoHanded{false};
 float g_weight = 0.0f;
 bool g_weightHeld = false;
 uint64_t g_weightMs = 0;
@@ -88,13 +88,14 @@ bool applicable(const void* holdable) {
     if (holdable != g_classOf) {
         g_classOf = holdable;
         const wchar_t* c = patterns::object_class_name(holdable);
-        g_classTwoHanded = two_handed_class(c);
+        const bool two = two_handed_class(c);
+        g_classTwoHanded.store(two, std::memory_order_relaxed);
         BVR_LOG("[twohand] %S %s", c ? c : L"(no class)",
-                g_classTwoHanded ? "is two-handed: the grip near where the game has the other hand takes hold"
-                                 : "is one-handed");
+                two ? "is two-handed: the grip near where the game has the other hand takes hold" : "is one-handed");
     }
-    return g_classTwoHanded;
+    return g_classTwoHanded.load(std::memory_order_relaxed);
 }
+bool two_handed() { return g_classTwoHanded.load(std::memory_order_relaxed); }
 
 bool melee(const void* holdable) {
     static const void* s_of = nullptr;

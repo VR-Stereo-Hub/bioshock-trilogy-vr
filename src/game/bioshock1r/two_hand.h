@@ -54,6 +54,8 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
 // reach), 0 while holding, -1 no grab point.
 float reach(bool busy);
 bool held();
+// Any thread: the gun in hand is a two-handed one (the last class applicable() saw) - the arbiter's tie rule.
+bool two_handed();
 // The grip arbiter hands this squeeze on (a reload ended under it): the next pad() takes the grip
 // already down as the grab's press, if the hand is in reach.
 void take_held_grip();

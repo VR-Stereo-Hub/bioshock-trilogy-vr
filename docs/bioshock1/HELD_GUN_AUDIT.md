@@ -577,8 +577,14 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    Removed `g_blockFire`, `g_needCock` (now per weapon, surviving a switch), `g_chambered` (a fresh read at
    the clip's start), `g_dryClick`, `tommyDry`/`noDrum`. Headset check: a click on every refused pull,
    every gun, every stage; the shotgun stays uncocked across a weapon switch.
-3. The ownership table and the arbiter on it, as `HELD_GUN_MATRIX.md` specifies it (every state per gun,
-   the zone priority, the gaps G1-G7). Fixes bug 1. Headset check: the empty Tommy's fore-grip.
+3. **3a DONE 2026-10-21** (ENGINE_NOTES "The grip arbiter on the owner table"): `grip_owner.h` decides
+   the squeeze from four reaches; the reload's reach is a distance in every stage, the spare's its own.
+   Fixes bug 1 (G7) and G1. Headset check: a squeeze under the dry Tommy's fore-grip takes the grip, at
+   the drum well takes the drum; a squeeze at the fore-grip while a drum drops or seats takes the grip.
+   **3b (next):** the hand pose engine, `HELD_GUN_MATRIX.md` section 10 - one resolver per hand per
+   frame from a source table, replacing the six places that substitute hand bones. **3c:** the aborts
+   G2 (a pump stroke ends a shotgun loop) and G3 (X at the pouch cancels the pistol's reload) through the
+   hands' own `InterruptStateTransitionExecution` and a re-equip - engine state work, headset-verified only.
 4. `Suppress` per gun, replacing the scattered flags and the free-hand rules. Fixes item 6 and 12.
 5. One `Pump` on the barrel axis. Fixes bug 4 and 5's second half (a hold that measures right can cock).
 6. The sound table. No behaviour change intended; a regression check by log (`[sound] played ...`).

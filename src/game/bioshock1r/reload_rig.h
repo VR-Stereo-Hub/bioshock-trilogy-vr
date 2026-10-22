@@ -297,9 +297,14 @@ struct Output {
     bool atPalm = false;        // carried at the palm, not where the clip's hand holds it
     Vec carryFrom{};            // the clip's palm where the carried part sits on it (grip frame)
     bool claim = false;         // the free hand's grip is the reload's (no bumper reaches the game)
-    float reach = -1;           // idle: the free hand's distance to what starts a reload, over the grab
-                                // radius (<= 1 in reach; the grip arbiter compares it with the other
-                                // grabs'); -1 nothing to start
+    // For the grip arbiter (grip_owner.h): the free hand's distance to what the reload wants next, over the
+    // grab radius (<= 1 in reach) - idle, the part that starts a reload; running, the part the machine waits
+    // for (a pull, the bolt) or the pouch zone (0.5) at a fetch; -1 while it wants nothing of the hand (a part
+    // in the hand, the drop, the seating, the clip playing, the last pump). 2026-10-21: it was 0, an absolute
+    // claim, whenever the machine claimed - the two-handed grip could never win inside the drum's reach, and
+    // the drop and the seating swallowed every squeeze (HELD_GUN_MATRIX.md G1, G7).
+    float reach = -1;
+    float spareReach = -1;      // the spare magazine's own offer: the pouch zone (0.25) while one may be taken
     bool buzz = false;          // the hand is within reach of what it should take next
     Haptic haptic = Haptic::None;
     const char* event = nullptr;// a transition worth a log line
@@ -464,10 +469,10 @@ private:
         }
         if (!in.spareOk || !in.inPouch || !spare_free()) return;
         o.buzz = true; // the pouch has one (22:55 run: "the rumble doesn't show up")
-        // A zone, not a point: well within reach - and NEARER than the gun's own drum, whose reach idle() set
-        // first (00:18-00:20 run: "reload 1.71" out of reach while the hand was at the pouch, the squeeze went to
-        // the game and no spare came out, ever).
-        if (state_ == State::Idle && (o.reach < 0 || o.reach > 0.25f)) o.reach = 0.25f;
+        // A zone, not a point: well within reach - and NEARER than the gun's own drum, whose reach is a real
+        // distance (00:18-00:20 run: the drum 1.7 radii off while the hand was at the pouch, the squeeze went to
+        // the game and no spare came out, ever). Its own offer to the arbiter, beside the reload's.
+        o.spareReach = 0.25f;
         if (state_ == State::Idle) o.claim = true;
         if (in.gripRise) {
             o.spareTake = true;
@@ -494,17 +499,19 @@ private:
     static bool within(const Pt* path, int n, Vec p, float r) { return n > 0 && arm_ik::length(p - path[0].p) <= r; }
     // A phase's own reach and path, for a part with handles on both sides (Phase::bothSides): the
     // sideways axis (y, the grip frame's) does not count, and the reach is grabScale times further.
-    static bool near_phase(const Phase& p, Vec h, float r) {
-        if (!p.path || p.n <= 0) return false;
+    // The hand's distance to the part over the phase's reach (<= 1 near); a large number when off the gun's side.
+    static float phase_reach(const Phase& p, Vec h, float r) {
+        if (!p.path || p.n <= 0 || !(r > 0.0f)) return 1e9f;
         Vec a = p.path[0].p;
         if (p.bothSides) {
             // Either side of the gun, but at the gun: sideways no farther out than the handle's own side
             // plus the reach (19:31 run: with sideways ignored, the buzz reached the other shoulder).
-            if (std::fabs(h.y) > std::fabs(a.y) + r) return false;
+            if (std::fabs(h.y) > std::fabs(a.y) + r) return 1e9f;
             a.y = h.y = 0;
         }
-        return arm_ik::length(h - a) <= r * p.grabScale;
+        return arm_ik::length(h - a) / (r * p.grabScale);
     }
+    static bool near_phase(const Phase& p, Vec h, float r) { return phase_reach(p, h, r) <= 1.0f; }
     static Projection project_phase(const Phase& p, Vec h) {
         if (!p.bothSides) return project(p.path, p.n, h);
         Pt flat[8];
@@ -681,12 +688,14 @@ private:
                     break;
                 }
                 if (sub_ == Sub::Wait) {
-                    const bool near = near_phase(p, in.hand, grabU);
+                    const float reach = phase_reach(p, in.hand, grabU);
+                    const bool near = reach <= 1.0f;
                     o.buzz = near;
                     // 2026-10-21 ("it doesn't let you swap hands on an empty gun"; "2 hand grip on empty weapons"):
                     // a reload waiting for the hand claims its grip only at the part - elsewhere the squeeze is the
-                    // hand-over's or the two-handed grip's (hand_free()).
+                    // hand-over's or the two-handed grip's (hand_free()). Its reach is a distance, for the arbiter.
                     o.claim = near;
+                    o.reach = reach < 1e8f ? reach : -1.0f;
                     o.hold = true;
                     o.t = T(p.t0);
                     if (near && in.gripRise) {
@@ -719,9 +728,11 @@ private:
             case Kind::Slide: {
                 o.hold = true;
                 if (sub_ == Sub::Wait) {
-                    const bool near = near_phase(p, in.hand, grabU);
+                    const float reach = phase_reach(p, in.hand, grabU);
+                    const bool near = reach <= 1.0f;
                     o.buzz = near;
                     o.claim = near; // as the Pull's: only at the part
+                    o.reach = reach < 1e8f ? reach : -1.0f;
                     o.t = T(p.t0);
                     if (near && in.gripRise) {
                         sub_ = Sub::Drag;
@@ -814,6 +825,7 @@ private:
                 // 2026-10-21: a Fetch claims the free grip only at the pouch - away from it the squeeze is free for the
                 // two-handed grip ("you can always grip it") and the hand-over (an empty gun changes hands).
                 if (!in.inPouch && !in.spareInHand) o.claim = false;
+                o.reach = in.inPouch ? 0.5f : -1.0f; // the pouch zone, as the shotgun's start offers it
                 if (in.inPouch && in.gripRise) {
                     lying_ = false;
                     carrying_ = true;

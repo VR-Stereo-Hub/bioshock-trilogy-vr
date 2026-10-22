@@ -188,3 +188,57 @@ state and ownership need no change.
 Adding a gun: a geometry row (two Blender runs), a reload program, and its rows in section 3-6 shape.
 Adding a hold rule (say, a grip on the Tommy's drum well to pull it out two-handed): one owner row. Adding
 an ammunition behaviour: it is a game fact, read through the state record. The left hand: nothing, ever.
+
+## 10. The hands: what each hand is drawn from, per state (the hand pose engine)
+
+Asked 2026-10-21: are the hand POSE combinations covered too? Not by sections 3-6, which say who owns a
+squeeze and what the gun does. What each hand is drawn from is decided today in six places (the hand-back's
+four blends, the free-hand substitution block, the bolt lock, the shotgun's socket rest, the two-hand
+carry, the palette's per-bone fixes), each with its own ease and its own idea of the state. This section
+enumerates it, and the engine that should replace the six is step 3b of the audit's order.
+
+**The sources** a hand's bones can come from, by layer (the arm is the IK solver's in every case, ending
+at the drawn wrist; the gun's sockets 43/44 ride the gun hand):
+
+| Source | Wrist | Fingers | Where it exists today |
+|---|---|---|---|
+| CONTROLLER | the controller's grip pose with the calibration | the clip's own | the palette correction (default) |
+| CONTROLLER + CLIP MOTION | the controller plus a window of the clip's own motion | the clip's | `handback::gun_motion` x `gun_motion_keep` (the recoil window only) |
+| CONTROLLER + AIM | the gun hand turned about its palm toward the real free hand | the clip's | the two-hand aim turn, eased 120 / 150 ms |
+| ON THE GUN (rest) | at the gun's fore-grip, the rest turn | the gun's rest pose | step 1: `grip_rest_poses.h`, whenever held |
+| CARRIED BY THE CLIP AT THE GUN | where the clip has it against the gun | the clip's | hand-back "at the gun" (guns with no program), gated by the join distance |
+| CLIP IN VIEW | the game's, outright | the game's | hand-back "in view": scripted animations, the melee attack |
+| DESIGNED GRIP | the controller | a solved table for the carried part | the pistol's cylinder, the shell, the spare drum |
+| LOCKED ON A PART | where the clip's hand grips the part | the clip's | the Tommy's bolt, eased 100 / 200 ms |
+| LAST FRAME | as the frame before, against the gun | as before | the start-clip hold (to go with the engine) |
+
+**Per state** (unmirrored; mirrored is the same table through the pair mirror, done):
+
+| Gun / hands state | Gun hand | Free hand wrist | Free hand fingers |
+|---|---|---|---|
+| idle, one-handed | CONTROLLER | CONTROLLER | the clip's (the gun's idle fidget) **gap P1**: the idle clip's fingers on a hand that is off the gun look like a grip on nothing; proposal: a relaxed open hand (the game's `HandsDown` clip's fingers) whenever the free hand is on its controller and holds nothing |
+| idle, two-handed | CONTROLLER + AIM | ON THE GUN | rest pose |
+| firing, one-handed | + CLIP MOTION (the recoil window) | CONTROLLER | the clip's |
+| firing, two-handed | + CLIP MOTION + AIM | ON THE GUN (kept through the kick) | rest pose |
+| shotgun pump wait / stroke, two-handed | + AIM | ON THE GUN | rest pose |
+| reload waiting at a part, hand free | CONTROLLER (clip motion 0) | CONTROLLER | the clip's **P1** |
+| reload waiting at the pouch, hand free | CONTROLLER | CONTROLLER | the clip's (reaching the pouch) **P1** |
+| reload, the hold kept (grip squeezed through it) | + AIM | ON THE GUN | rest pose |
+| pulling / dragging a part | CONTROLLER | CONTROLLER | the clip's at the held time (the hand on the drum, on the latch) |
+| carrying a part | CONTROLLER | CONTROLLER | DESIGNED GRIP (cylinder, shell, spare); the Tommy's drum: the clip's hold at 0.30 s |
+| dropping, seating (clip plays) | CONTROLLER | CONTROLLER | the clip's **P1** |
+| bolt | CONTROLLER | LOCKED ON THE BOLT | the clip's (on the bolt) |
+| the shotgun's last pump | + AIM | ON THE GUN | rest pose |
+| start clip (shotgun, a restart) | CONTROLLER | LAST FRAME (or ON THE GUN when held) | as before |
+| the game's own reload (launcher, chem, crossbow) | CONTROLLER | CARRIED BY THE CLIP AT THE GUN | the clip's |
+| scripted animation, melee attack | CLIP IN VIEW | CLIP IN VIEW | the clip's |
+| equip, unequip, lowering (an ammunition switch) | CONTROLLER | CONTROLLER, or ON THE GUN when held | the clip's / rest |
+| plasmid in the free hand (ability mode) | CONTROLLER | CONTROLLER (the plasmid clip's fingers) | the clip's |
+| the shotgun's sockets 43/44, every state but a shot | at the gun hand's idle rest (per gun, per hand) | | |
+
+**The engine** (step 3b): one resolver per hand per frame that returns `{wristSource, fingerSource, weight}`
+from a table keyed by the gun's state record and the hands' state, with one ease per transition pair,
+producing every substitution in one place; the palette's per-bone fixes then follow it as they do now.
+It removes the start-clip hold (ON THE GUN covers it), `keep`/`offRest` (the table says ON THE GUN
+whenever held), the bolt's separate ease, and the hand-back's manual-reload special case. New sources
+are rows, not code: a relaxed hand (P1), a hand on the drum well, a hand cupping a shell.

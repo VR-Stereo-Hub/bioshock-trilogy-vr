@@ -95,6 +95,7 @@ std::atomic<bool> g_gripDown{false};
 std::atomic<uint32_t> g_gripPresses{0};
 std::atomic<bool> g_claim{false};
 std::atomic<float> g_reach{-1.0f}; // Output::reach, for the grip arbiter
+std::atomic<float> g_spareReach{-1.0f}; // Output::spareReach
 std::atomic<uint64_t> g_claimMs{0};
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_handles{false}; // handles_reloads()
@@ -735,6 +736,12 @@ float reach() {
         GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) >= 250)
         return -1.0f;
     return g_reach.load(std::memory_order_relaxed);
+}
+float spare_reach() {
+    if (!g_on.load(std::memory_order_relaxed) ||
+        GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) >= 250)
+        return -1.0f;
+    return g_spareReach.load(std::memory_order_relaxed);
 }
 
 bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
@@ -1524,7 +1531,9 @@ void tick(const Frame& f) {
     g_handLock = o.handLock;
     g_claim.store(o.claim, std::memory_order_relaxed);
     // For the grip arbiter (dial_input): a reload in progress that wants the grip owns it outright.
-    g_reach.store(o.active ? (o.claim ? 0.0f : -1.0f) : o.reach, std::memory_order_relaxed);
+    // 2026-10-21 (HELD_GUN_MATRIX.md G1, G7): a distance in every stage, never an absolute claim; the spare's own.
+    g_reach.store(o.reach, std::memory_order_relaxed);
+    g_spareReach.store(o.spareReach, std::memory_order_relaxed);
     g_claimMs.store(f.now, std::memory_order_relaxed);
     g_active.store(o.active, std::memory_order_relaxed);
     g_handFree.store(g_machine.hand_free(), std::memory_order_relaxed);

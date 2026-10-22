@@ -99,9 +99,11 @@ float gun_motion_keep();
 // the reload claims it. True when claimed this frame. `locked`: the grip arbiter gave this squeeze
 // to another grab - it is no press here.
 bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked);
-// For the grip arbiter (XInput thread): how near the free hand is to what starts a reload, over the
-// grab radius (<= 1 in reach); 0 while a reload in progress wants the grip; -1 nothing.
+// For the grip arbiter (XInput thread, grip_owner.h): how near the free hand is to what the reload wants next,
+// over the grab radius (<= 1 in reach) - a distance in every stage; -1 while it wants nothing of the hand.
 float reach();
+// ...and the spare magazine's own offer (the pouch zone, 0.25) while one may be taken; -1 otherwise.
+float spare_reach();
 
 // The handle of the weapon's own animation (Weapon.AnimationHandle, which the reload waits on), 0
 // when unreadable. Game thread.

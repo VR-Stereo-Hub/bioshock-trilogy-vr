@@ -4,6 +4,7 @@
 #include "swap_hold.h"
 #include "two_hand.h"
 #include "manual_reload.h"
+#include "grip_owner.h"
 #include "bones.h"
 #include "menu_theme.h"
 #include "core/input/xinput_bridge.h"
@@ -139,15 +140,18 @@ bool grab(bvr::input::PadOverride* pad) {
     // 2026-10-19: the two-handed grip goes first (its own F10 switch). While the hand without
     // the gun is at the gun's second grip (or holding it), that grip is the two-handed grip's and
     // the hand-over leaves it alone - reaching for a fore-end cannot hand the gun over.
-    // 2026-10-20: ONE OWNER PER SQUEEZE. The free hand's grip is wanted by three grabs - the
+    // 2026-10-20: ONE OWNER PER SQUEEZE. The free hand's grip is wanted by four grabs - the
     // hand-over (the other hand), the two-handed grip (the gun's second grip), the manual reload
-    // (the part a reload starts with) - and each used to read the same press on its own, so one
-    // squeeze handed the gun over AND started a reload (headset, 2026-10-20 08:45). Now, as the
-    // grip goes down, each says how near the hand is to its own target over its own radius, and
-    // the nearest one within reach owns the whole squeeze; to the others it is no press at all.
-    // Nothing in reach: the squeeze is the game's (the plasmid wheel).
-    enum Owner { kNone, kHandOver, kTwoHand, kReload };
-    static Owner s_owner = kNone;
+    // (the part it waits for, or the pouch), the spare magazine (the pouch) - and each used to read
+    // the same press on its own, so one squeeze handed the gun over AND started a reload (headset,
+    // 2026-10-20 08:45). As the grip goes down, each says how near the hand is to its own target over
+    // its own radius, and grip_owner::decide picks the owner of the whole squeeze (the nearest in
+    // reach; the fore-grip over the reload on a tie; nothing in reach: the game's plasmid wheel); to
+    // the others it is no press at all. 2026-10-21: the reload's reach is a distance in every stage
+    // (HELD_GUN_MATRIX.md G1, G7), so the two-handed grip can win at a dry gun's drum and nothing is
+    // swallowed while a part drops or seats.
+    using grip_owner::Owner;
+    static Owner s_owner = Owner::Game;
     static bool s_freeWas = false;
     constexpr uint16_t kFreeBump = kLB; // the hand without the gun is always the plasmid role
     const bool freeGrip = (pad->buttons & kFreeBump) != 0;
@@ -155,37 +159,35 @@ bool grab(bvr::input::PadOverride* pad) {
     const bool tracked = grab_distance_cm(&cm);
     const float grabCm = g_grabCm.load(std::memory_order_relaxed);
     if (freeGrip && !s_freeWas) {
-        const float scores[4] = {
-            -1.0f,
-            g_grabOn.load(std::memory_order_relaxed) && tracked && !busy && grabCm > 0.0f ? cm / grabCm : -1.0f,
-            two_hand::reach(busy), manual_reload::reach()};
-        s_owner = kNone;
-        float best = 1.0f;
-        for (int i = kHandOver; i <= kReload; ++i)
-            if (scores[i] >= 0.0f && scores[i] <= best) {
-                best = scores[i];
-                s_owner = static_cast<Owner>(i);
-            }
-        static const char* const kNames[4] = {"the game", "the hand-over", "the two-handed grip", "the reload"};
-        BVR_LOG("[grab] the free grip goes to %s (reach: hand-over %.2f, two-handed %.2f, reload %.2f)",
-                kNames[s_owner], scores[kHandOver], scores[kTwoHand], scores[kReload]);
+        grip_owner::Reaches r;
+        r.handOver = g_grabOn.load(std::memory_order_relaxed) && tracked && !busy && grabCm > 0.0f ? cm / grabCm : -1.0f;
+        r.twoHand = two_hand::reach(busy);
+        r.reload = manual_reload::reach();
+        r.spare = manual_reload::spare_reach();
+        grip_owner::Policy p;
+        p.twoHandedGun = two_hand::two_handed();
+        s_owner = grip_owner::decide(r, p);
+        BVR_LOG("[grab] the free grip goes to %s (reach: hand-over %.2f, two-handed %.2f, reload %.2f, spare %.2f)",
+                grip_owner::name(s_owner), r.handOver, r.twoHand, r.reload, r.spare);
     }
-    if (!freeGrip) s_owner = kNone;
+    if (!freeGrip) s_owner = Owner::Game;
     // A reload that ended under a squeeze (the shotgun's last pump) hands it on to the two-handed grip
     // when the hand is at the fore-end: the hand stays on the gun, as it was before the reload.
-    if (freeGrip && s_owner == kReload && !manual_reload::active()) {
+    if (freeGrip && s_owner == Owner::Reload && !manual_reload::active()) {
         const float r = two_hand::reach(busy);
         if (r >= 0.0f && r <= 1.0f) {
-            s_owner = kTwoHand;
+            s_owner = Owner::TwoHand;
             two_hand::take_held_grip();
             BVR_LOG("[grab] the reload ended under the squeeze: it goes to the two-handed grip (reach %.2f)", r);
         }
     }
     s_freeWas = freeGrip;
-    const bool reloadClaim = manual_reload::pad(pad, &changed, freeGrip && s_owner != kReload);
+    // The reload's pad handles the spare too (the machine takes it from the pouch).
+    const bool reloadOwns = s_owner == Owner::Reload || s_owner == Owner::Spare;
+    const bool reloadClaim = manual_reload::pad(pad, &changed, freeGrip && !reloadOwns);
     const int freeClaimedPhys =
-        (two_hand::pad(pad, gunPhys, busy, &changed, freeGrip && s_owner != kTwoHand) || reloadClaim) ? 1 - gunPhys
-                                                                                                       : -1;
+        (two_hand::pad(pad, gunPhys, busy, &changed, freeGrip && s_owner != Owner::TwoHand) || reloadClaim) ? 1 - gunPhys
+                                                                                                             : -1;
     if (!g_grabOn.load(std::memory_order_relaxed)) {
         g_grabPhys = -1;
         g_eligible = false;
@@ -202,7 +204,7 @@ bool grab(bvr::input::PadOverride* pad) {
         const bool rising = grip && !g_physGripWas[phys];
         g_physGripWas[phys] = grip;
         // The free hand's squeeze hands the gun over only when the arbiter gave it to the hand-over.
-        if (phys == 1 - gunPhys && g_grabPhys != phys && (freeGrip ? s_owner != kHandOver : phys == freeClaimedPhys))
+        if (phys == 1 - gunPhys && g_grabPhys != phys && (freeGrip ? s_owner != Owner::HandOver : phys == freeClaimedPhys))
             continue;
         if (g_grabPhys == phys) {
             if (!grip) {

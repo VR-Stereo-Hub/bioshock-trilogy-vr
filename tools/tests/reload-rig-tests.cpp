@@ -144,10 +144,17 @@ int main() {
         s.clip(L"Reload", 3.33f);
         o = s.step(Vec{10, 0, -90}, false);
         check(o.ejected, "the clip starts: the drum drops");
+        o = s.step(Vec{40, 7, 2}, false);
+        check(o.carry == 3 && o.reach < 0.0f, "dropping: the reload wants nothing of the hand (G1: a squeeze is the grip's)", o.reach, -1);
         for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
         check(s.m.phase() == 2, "then the reload waits at the pouch", s.m.phase(), 2);
+        check(o.reach < 0.0f, "at the fetch, away from the pouch: nothing offered", o.reach, -1);
+        o = s.step(Vec{10, 0, -90}, false, true);
+        check(std::fabs(o.reach - 0.5f) < 1e-6f, "at the pouch: the pouch zone", o.reach, 0.5);
         o = s.step(Vec{10, 0, -90}, true, true);
         check(o.fetched && s.m.phase() == 3, "a drum from the pouch: fetched", s.m.phase(), 3);
+        o = s.step(Vec{10, 0, -60}, true);
+        check(o.carry == 1 && o.reach < 0.0f, "carrying: nothing offered (the grip is down anyway)", o.reach, -1);
         o = s.step(Vec{10, 0, -60}, true);
         o = s.step(Vec{10, 0, -60}, false); // let go away from the gun
         check(o.dropped && o.carry == 2 && s.m.phase() == 2, "let go away from the gun: it falls, back to the pouch",
@@ -176,6 +183,11 @@ int main() {
         Output o = s.step(Vec{40, 7, 2}, false);
         s.in.adopt = false;
         check(s.m.active() && s.m.phase() == 0 && !o.ejected, "dry: the reload waits at the drum, nothing dropped");
+        // 2026-10-21 (HELD_GUN_MATRIX.md G7): a waiting reload's reach is a DISTANCE for the arbiter, never 0.
+        check(o.reach > 1.0f && !o.claim, "waiting, the hand at the fore-grip: the drum is out of reach, a distance (not 0)", o.reach, 2);
+        o = s.step(kTommyDrumOut[0].p + Vec{3, 0, 0}, false);
+        check(o.reach > 0.0f && o.reach <= 1.0f && o.claim, "the hand near the drum: in reach, still a distance", o.reach, 0.25);
+        o = s.step(Vec{40, 7, 2}, false);
         s.in.ejectNow = true;
         o = s.step(Vec{40, 7, 2}, false);
         s.in.ejectNow = false;
@@ -203,13 +215,14 @@ int main() {
         Sim s;
         s.in.spareOk = true;
         Output o = s.step(Vec{10, 0, -90}, false, true);
-        check(!s.m.active() && o.claim && o.reach > 0 && o.buzz, "idle, at the pouch: the grip would take a spare (it buzzes)");
-        check(o.reach <= 0.25f, "and the pouch outranks the gun's own drum (the arbiter takes the nearest)", o.reach, 0.25);
+        check(!s.m.active() && o.claim && o.spareReach > 0 && o.buzz, "idle, at the pouch: the grip would take a spare (it buzzes)");
+        check(o.spareReach <= 0.25f && o.reach > 1.0f, "the spare's pouch zone is its own offer; the drum's reach is a real distance",
+              o.spareReach, 0.25);
         o = s.step(Vec{10, 0, -90}, true, true);
         check(o.spareTake && !s.m.active() && o.act == Act::None, "a grip at the pouch takes a spare - no reload starts");
         s.in.spareInHand = true;
         o = s.step(Vec{20, 0, -40}, true);
-        check(o.claim && o.reach == 0 && !o.spareTake && !o.spareLetGo, "held: the grip is the spare's");
+        check(o.claim && !o.spareTake && !o.spareLetGo, "held: the grip is the spare's");
         s.in.eject = true;
         o = s.step(Vec{20, 0, -40}, true);
         s.in.eject = false;

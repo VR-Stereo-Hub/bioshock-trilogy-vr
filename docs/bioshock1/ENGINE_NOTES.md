@@ -7399,3 +7399,22 @@ guess), cleared by the end pump or the dry cock, and it survives a switch.
 Host tests (`gun-state-tests.cpp`, 39 checks): fire refused and clicking in every reload stage, with no
 magazine, uncocked, with a pump held, and allowed on a loaded idle gun and an empty idle gun; the
 two-handed permission per gun and stage; uncocked only for a shotgun reload begun at 0 rounds.
+
+## 2026-10-21 - The grip arbiter on the owner table; the reload's reach is a distance in every stage
+
+Step 3a of docs/bioshock1/HELD_GUN_AUDIT.md 2.8, specified by HELD_GUN_MATRIX.md rule R4. `grip_owner.h`
+(pure, 20 host checks) decides the owner of a squeeze of the free grip from four reaches - the hand-over,
+the two-handed grip, the reload and the spare magazine, each a distance over its own radius, -1 when not
+on offer - the nearest in reach wins, nothing in reach is the game's, and on a two-handed gun the fore-grip
+beats the reload when within a quarter radius of it (3 cm at 12). `dial_input::grab` calls it on the rising
+edge; the spare's squeeze is routed to the reload's pad as before. `[grab] the free grip goes to ...` now
+prints four reaches.
+
+**What changed underneath:** the machine's `Output::reach` is set in EVERY stage (`phase_reach`, the same
+measure `near_phase` tested; the pouch zone 0.5 at a fetch; -1 while a part is in the hand, during the drop,
+the seating, the clip playing and the last pump), and the glue reports it as it is. It used to report 0 -
+an absolute claim - whenever the machine claimed, so inside the drum's 12 cm the two-handed grip could never
+win on a dry Tommy Gun (the audit's bug 1), and the 0.7 s drop and the seating, which claim without wanting
+the hand, swallowed every squeeze (G1). The spare's pouch zone (0.25) is its own offer (`Output::spareReach`)
+instead of overwriting the reload's. Nothing changes for a squeeze the reload already holds: `claim` still
+withholds the bumper until the grip comes up.
