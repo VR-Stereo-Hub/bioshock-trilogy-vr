@@ -7648,3 +7648,19 @@ fire start while the reticle sat on the controller ray - the tester's "reticle o
 `X_BoltSocket` 22 units along it: the bolt's seat), logged as the barrel origin. The direction logic is unchanged
 (the axis of the socket or its bone nearest the ray, within 0.9); the first crossbow run says which axis it took
 and how far the origin sits from the ray. MANUAL_RELOAD_PLAN.md step 1. Unverified in a run.
+
+## 2026-10-22 - The chemical thrower's spray is an emitter on the muzzle socket: aimed along the ray
+
+Weapon.uc: `OnSpawnedDamageEmitter` keeps the spray's `DamageEmitter` actor in `CurrentDamageEmitter` and
+`AttachToBone`s it to `DamageEmitterSocket` ("muzzle"); the game spawns one per trigger pull and clears it when
+the spray ends. Attached, it points where the socket points - on the 18:03 run the socket was 12.7 deg off the
+gun body (`muzzle socket +X (0.90)` against the body's 0.97 with the ray) and sat 34 cm left of and 21 cm below
+the ray: the spray missed the reticle by that whole offset, while every bullet of the other guns leaves along the
+ray through the fire-start seam, which an emitter never passes. `aim.cpp aim_spray` (in the barrel-origin block,
+the thrower only): the emitter's forward in the socket's frame is set to the line from the socket to the ray's
+point at the reticle distance (the laser reach with the reticle off), through the game's own
+`Actor.SetRelativeRotation`, at most 20 times a second and only on a change of about a degree; once per emitter
+`[aim] chem spray: emitter ... aimed along the ray` says the angle it took off the socket's X (~27 deg
+expected). Unverified in a run: if the spray is still off by the socket's own 12.7 deg, the attachment composes
+on the socket's bone rather than the socket, and the bone's axes are the frame to use. MANUAL_RELOAD_PLAN.md
+step 2.

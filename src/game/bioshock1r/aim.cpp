@@ -1741,6 +1741,76 @@ static void to_ray_cm(const FRotator& rot, const float v[3], float uuPerCm, floa
         out[k] = (v[0] * axes[k][0] + v[1] * axes[k][1] + v[2] * axes[k][2]) / uuPerCm;
 }
 
+// 2026-10-22 (MANUAL_RELOAD_PLAN.md step 2; the 18:03 run: the chemical thrower's spray missed the reticle). The
+// thrower's spray is a DamageEmitter actor the weapon attaches to its "muzzle" socket (Weapon.uc
+// OnSpawnedDamageEmitter -> AttachToBone(CurrentDamageEmitter, DamageEmitterSocket)), so it points where the
+// socket points: 12.7 deg off the gun body and ~27 deg off the ray, from a socket 34 cm left of and 21 cm below
+// it. Bullets leave along the ray through the fire-start seam; an emitter has no seam. So the emitter's relative
+// rotation is written through the game's own Actor.SetRelativeRotation: its forward the line from the socket to
+// the ray's point at the reticle distance (the laser reach with the reticle off) - the line a bullet takes.
+// Only when it changes by about a degree, at most 20 times a second; once per emitter it is logged (the game
+// spawns one per trigger pull). Unverified in a run: if the spray is still off by the socket's own 12.7 deg, the
+// attachment's frame is the socket's BONE and `boneAxes` is the frame to use.
+static bool read_ptr_guarded(const void* at, void** out) {
+    __try {
+        memcpy(out, at, sizeof *out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+static void aim_spray(void* weapon, const float m[3], const float socketAxes[3][3], const RayBase& b, float worldScale,
+                      uint64_t now) {
+    static void* s_emitter = nullptr;
+    static FRotator s_last{};
+    static uint64_t s_ms = 0;
+    static uint64_t s_failMs = 0;
+    const wchar_t* cls = patterns::object_class_name(weapon);
+    if (!cls || _wcsicmp(cls, L"ChemicalThrower") != 0 || !script::properties_ready(weapon)) return;
+    const int32_t off = script::property_offset(weapon, L"CurrentDamageEmitter");
+    void* em = nullptr;
+    if (off < 0 || !read_ptr_guarded(static_cast<const uint8_t*>(weapon) + off, &em) || !em) {
+        s_emitter = nullptr;
+        return;
+    }
+    const bool fresh = em != s_emitter;
+    if (!fresh && now - s_ms < 50) return;
+    float dir[3];
+    ue_rot_to_dir(b.rayRot, dir);
+    const float reachM = g_dot.load(std::memory_order_relaxed) ? g_dotDistM.load(std::memory_order_relaxed)
+                                                                : g_laserFarM.load(std::memory_order_relaxed);
+    const float reachUu = reachM * (worldScale > 1.0f ? worldScale : 100.0f);
+    float want[3] = {b.rayOrigin.x + dir[0] * reachUu - m[0], b.rayOrigin.y + dir[1] * reachUu - m[1],
+                     b.rayOrigin.z + dir[2] * reachUu - m[2]};
+    const float len = sqrtf(want[0] * want[0] + want[1] * want[1] + want[2] * want[2]);
+    if (!(len > 1.0f)) return;
+    for (float& v : want) v /= len;
+    // In the socket's frame (its axes are world unit vectors): forward X, right Y, up Z.
+    float l[3];
+    for (int k = 0; k < 3; ++k) l[k] = want[0] * socketAxes[k][0] + want[1] * socketAxes[k][1] + want[2] * socketAxes[k][2];
+    const float lz = l[2] > 1.0f ? 1.0f : l[2] < -1.0f ? -1.0f : l[2];
+    FRotator r{};
+    r.pitch = static_cast<int32_t>(asinf(lz) * kRotUnitsPerRadian);
+    r.yaw = static_cast<int32_t>(atan2f(l[1], l[0]) * kRotUnitsPerRadian);
+    r.roll = 0;
+    auto wrap = [](int32_t d) { d = ((d % 65536) + 65536) % 65536; return d > 32767 ? d - 65536 : d; };
+    if (!fresh && abs(wrap(r.pitch - s_last.pitch)) < 180 && abs(wrap(r.yaw - s_last.yaw)) < 180) return; // ~1 deg
+    struct { int32_t pitch, yaw, roll; int32_t ret; } p{r.pitch, r.yaw, r.roll, 0};
+    if (script::call(em, "SetRelativeRotation", &p)) {
+        if (fresh)
+            BVR_LOG("[aim] chem spray: emitter %p aimed along the ray - pitch %.1f yaw %.1f deg in the socket's frame "
+                    "(%.1f deg off the socket's X)",
+                    em, r.pitch / kRotUnitsPerRadian * 57.29578f, r.yaw / kRotUnitsPerRadian * 57.29578f,
+                    acosf(l[0] > 1.0f ? 1.0f : l[0] < -1.0f ? -1.0f : l[0]) * 57.29578f);
+        s_emitter = em;
+        s_last = r;
+        s_ms = now;
+    } else if (now - s_failMs > 5000) {
+        s_failMs = now;
+        BVR_LOG("[aim] chem spray: SetRelativeRotation on emitter %p FAILED (the spray keeps the socket's direction)", em);
+    }
+}
+
 // The barrel's direction from the socket's axes. Which axis runs along the barrel is chosen once
 // per weapon - the signed axis nearest the ray the gun was aimed with (calibrated to within a
 // few tens of degrees of the barrel, and the axes are 90 apart) - and refused below cos 60 deg.
@@ -1893,6 +1963,7 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
                 BVR_LOG("[aim] barrel origin: %s hand, muzzle at fwd %+.1f right %+.1f up %+.1f cm from the ray",
                         hand ? "RIGHT" : "LEFT", rc[0], rc[1], rc[2]);
             update_barrel_direction(b, socketAxes, boneAxes, a);
+            aim_spray(weapon, m, socketAxes, b, ctx.worldScale, now);
             g_barrel.valid = true;
             g_barrel.held = true;
             g_barrel.hand = hand;
