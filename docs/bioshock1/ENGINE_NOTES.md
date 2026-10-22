@@ -7638,3 +7638,13 @@ The 10:14 headset run, on 223bbe5, was worse than 09:31. Each cause, from its lo
   fetch (0.034 s), resumed from there and animated its shell home (the log: the weapon's handle stays the loop's
   after the equip, `hands clips 2411 / 2413`). With the gun empty the game begins its reload again on each pump,
   so every cock showed it. The weapon's loop clip is set to its end before it is let go.
+
+## 2026-10-22 - The crossbow has no muzzle socket: the round's seat is its barrel origin
+
+The 17:53 run (`[muzzle] weapon mesh ... has no 'muzzle' socket (3: XB_UpgradeA, XB_UpgradeB, AmmoDummy)`):
+every other gun's equip logs a barrel origin, the crossbow's never did, so its bolt left from the game's own
+fire start while the reticle sat on the controller ray - the tester's "reticle off to the left". Without a
+`muzzle` socket `muzzle::locate` now takes `AmmoDummy` (the crossbow's `AmmunitionModelSocket`, on
+`X_BoltSocket` 22 units along it: the bolt's seat), logged as the barrel origin. The direction logic is unchanged
+(the axis of the socket or its bone nearest the ray, within 0.9); the first crossbow run says which axis it took
+and how far the origin sits from the ray. MANUAL_RELOAD_PLAN.md step 1. Unverified in a run.

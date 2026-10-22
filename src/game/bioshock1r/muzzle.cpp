@@ -51,6 +51,11 @@ bool call_guarded(void* actor, float* out, int32_t idx, int32_t num, int32_t bSo
 
 // The "muzzle" entry of a mesh instance's socket table, searched once per instance. A weapon
 // without one logs its socket names, so a run says what to look for instead.
+// 2026-10-22 (MANUAL_RELOAD_PLAN.md step 1; the 18:00 run: the crossbow's reticle sat left of where the bolt
+// landed): the crossbow's mesh has no "muzzle" socket (XB_UpgradeA, XB_UpgradeB, AmmoDummy), so it had no barrel
+// origin and its bolt left from the game's own fire start while the reticle sat on the controller ray - a
+// parallax of the whole hand-to-eye offset. Without a muzzle, the socket the round SITS in (AmmunitionModelSocket:
+// the crossbow's AmmoDummy on X_BoltSocket, the bolt's seat) is where it leaves from.
 bool muzzle_name(void* inst, int32_t out[2]) {
     if (inst != g_cache.inst) {
         g_cache = Cache{};
@@ -62,6 +67,8 @@ bool muzzle_name(void* inst, int32_t out[2]) {
             names && count > 0 && count <= 256) {
             g_cache.count = count;
             char list[512] = "";
+            int seat = -1;
+            int32_t seatName[2] = {};
             for (int i = 0; i < count; ++i) {
                 int32_t nm[2] = {};
                 if (!read_n(names + 2 * i, nm, sizeof nm)) break;
@@ -70,13 +77,23 @@ bool muzzle_name(void* inst, int32_t out[2]) {
                     memcpy(g_cache.name, nm, sizeof nm);
                     g_cache.socket = i;
                 }
+                if (t && !_wcsicmp(t, L"AmmoDummy") && seat < 0) {
+                    memcpy(seatName, nm, sizeof nm);
+                    seat = i;
+                }
                 const size_t used = strlen(list);
                 if (used + 40 < sizeof list) _snprintf_s(list + used, sizeof list - used, _TRUNCATE, "%s%ls", i ? ", " : "", t ? t : L"?");
             }
-            if (g_cache.socket >= 0)
+            if (g_cache.socket >= 0) {
                 BVR_LOG("[muzzle] weapon mesh %p: 'muzzle' is socket %d of %d", inst, g_cache.socket, count);
-            else
+            } else if (seat >= 0) {
+                memcpy(g_cache.name, seatName, sizeof seatName);
+                g_cache.socket = seat;
+                BVR_LOG("[muzzle] weapon mesh %p has no 'muzzle' socket: the round's seat 'AmmoDummy' (socket %d of %d) is the "
+                        "barrel origin", inst, seat, count);
+            } else {
                 BVR_LOG("[muzzle] weapon mesh %p has no 'muzzle' socket (%d: %s)", inst, count, list);
+            }
         } else {
             BVR_LOG("[muzzle] weapon mesh %p: no socket table", inst);
         }
