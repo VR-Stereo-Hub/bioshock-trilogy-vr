@@ -18,6 +18,15 @@ clean, INSTALLED. NOT run in the simulator or the headset.
   applies the moment the grip holds, every gun, both hands, and survives a hand-over and a switch.
   Host-tested: `gun-geometry` (56 checks: the tables, the mirror, the plane, and the two tables agreeing on
   the fist centre within 0.3). Measured offline in Blender and checked against 2946 live frames.
+- **Step 2 is in** (ENGINE_NOTES "The gun's state as one record"): `gun_state.h`, one record per tick
+  (`[reload] <gun> state: ...` on every change); the trigger is zeroed exactly while `fire_allowed` is
+  false and every refused pull clicks with the game's own DryFiring - every gun, every stage (the dry
+  Tommy at its drum, the pistol's open frame, the shotgun's reload, uncocked chamber and pump wait).
+  The uncocked shotgun is remembered per weapon and survives a switch. Host-tested (`gun-state`, 39).
+- **Headset check for step 2:** pull the trigger on a dry Tommy before pulling the drum (click), on the
+  pistol mid-reload (click), on the shotgun while its pump waits (click, no shot); switch away from an
+  uncocked shotgun and back: still dead until pumped by hand. The game's own click on an empty idle gun
+  (before any reload) is unchanged.
 - **Headset check for step 1:** grabs land on the fore-grip (Tommy and shotgun) in both hands, after a
   plasmid switch, right after a pump, on an empty gun; the grip pose from the first frame of a hold; the
   shotgun in the left hand not upside down; the log's `[bones] mirror: the held weapon's sideways axis`
@@ -38,8 +47,8 @@ clean, INSTALLED. NOT run in the simulator or the headset.
 
 ### Next steps
 
-- Headset: the step-1 checks above. Then step 2 of HELD_GUN_AUDIT.md 2.8: the gun-state record and the
-  dry click (every refused pull clicks, every gun, every stage).
+- Headset: the step-1 and step-2 checks above. Then step 3 of HELD_GUN_AUDIT.md 2.8: the ownership table
+  and the arbiter on it (the empty Tommy's fore-grip; the reload's claim as a distance, not an absolute).
 - Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
   offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 

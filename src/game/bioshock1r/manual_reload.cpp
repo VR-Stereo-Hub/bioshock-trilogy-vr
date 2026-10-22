@@ -60,11 +60,18 @@ rr::PumpConfig g_pumpCfg = shot_pump_cfg();
 // A dry cock: the shotgun loaded from empty and not yet pumped (the reload ended before its last pump) - the
 // trigger fires nothing until the hands pump it, the pump drawn moving with them.
 rr::Pump g_dryPump;
-bool g_needCock = false;
-std::atomic<bool> g_blockFire{false};
+// 2026-10-21 (HELD_GUN_AUDIT.md 2.1): THE GUN'S STATE IS ONE RECORD, assembled once per tick (gun_state.h), and the
+// trigger block, the dry click and the two-handed grip's permission are functions of it. The shotgun left uncocked
+// is remembered per weapon (a reload begun empty, cut short or not yet pumped by hand) and survives a switch; it
+// used to be one bool cleared by any other gun in hand.
+gun_state::State g_state;
+void* g_uncockedGun = nullptr;
+bool g_pumpHolding = false;    // the shot pump holds the Fire clip for the hands this tick (a stroke or its wait)
+int g_rounds = -1, g_magSize = -1, g_spareRounds = -1; // the game's counts, as last read (can_reload, 4 Hz)
+int g_roundsAtStart = -1;      // the rounds the gun had as its reload's clip began (read fresh then)
+std::atomic<bool> g_fireAllowed{true}; // gun_state::fire_allowed(g_state), for the XInput thread's trigger
 std::atomic<bool> g_handsReload{false}; // the gun in hand has a manual reload: the reload button is never the game's
 std::atomic<bool> g_handFree{false}; // the reload waits for a hand that holds nothing of it (Machine::hand_free)
-bool g_dryClick = false; // game thread: a pump refused a pull this tick (the dry fire's sound)
 // The shotgun reload's last pump (reload_rig.h Kind::PumpHand): the same Pump over the end clip's own pump
 // times, waiting for the hands instead of pumping itself.
 rr::Pump g_endPump;
@@ -313,7 +320,6 @@ float g_floorZ = -1e9f;
 const char* g_carryPart = nullptr;
 void* g_carryWeapon = nullptr;
 bool g_carryAtPalm = false;
-bool g_chambered = false;       // the gun had a round left as this reload began (reload_rig Input)
 // 2026-10-20 THE SPARE DRUM (reload_rig Program::spare): a prop of the gun's own magazine in the free hand,
 // taken from the pouch whenever the Tommy Gun is held; let go it is thrown, and a thrown one can be caught
 // in the open well.
@@ -478,7 +484,10 @@ bool can_reload(void* weapon, uint64_t now) {
     if (now - g_canMs < 250 && weapon == g_weapon) return g_can;
     g_canMs = now;
     struct { int32_t ret; int32_t pad[3]; } r{}, m{};
-    if (script::call(weapon, "GetRoundsRemaining", &r) && script::call(weapon, "GetMagazineSize", &m) && m.ret > 0)
+    g_rounds = g_magSize = -1;
+    if (script::call(weapon, "GetRoundsRemaining", &r)) g_rounds = r.ret;
+    if (script::call(weapon, "GetMagazineSize", &m)) g_magSize = m.ret;
+    if (g_rounds >= 0 && g_magSize > 0)
         g_can = r.ret < m.ret;
     else
         g_can = true;
@@ -497,6 +506,7 @@ bool can_reload(void* weapon, uint64_t now) {
     }
     // A spare magazine is there to take while the player carries more rounds than the gun holds (unknown: yes).
     g_spareAmmo = true;
+    g_spareRounds = -1;
     if (script::properties_ready(weapon)) {
         const int32_t ammoOff = script::property_offset(weapon, L"PendingAmmoSelection");
         void* ammo = nullptr;
@@ -506,12 +516,17 @@ bool can_reload(void* weapon, uint64_t now) {
             read_n(static_cast<uint8_t*>(weapon) + patterns::kWeaponOwnerOffset, &holder, sizeof holder) && holder &&
             script::call(weapon, "GetRoundsRemaining", &rr2)) {
             struct { void* cls; int32_t ret; int32_t pad[2]; } n{ammo, 0, {}};
-            if (script::call(holder, "GetNumberOfItems", &n)) g_spareAmmo = n.ret > rr2.ret;
+            if (script::call(holder, "GetNumberOfItems", &n)) {
+                g_spareAmmo = n.ret > rr2.ret;
+                g_spareRounds = n.ret - rr2.ret; // the count includes the rounds in the gun
+            }
         }
     }
     return g_can;
 }
 } // namespace
+
+const gun_state::State& state() { return g_state; }
 
 bool active() { return g_active.load(std::memory_order_relaxed); }
 bool handles_reloads() { return g_handles.load(std::memory_order_relaxed); }
@@ -560,16 +575,12 @@ const GripTable* carry_grip() {
     if (g_spare.actor) return &kTommyDrum;
     return nullptr;
 }
+// The two-handed grip may hold now: a function of the gun's state (gun_state.h), with the hold read live so a
+// hold already on is never dropped by a reload beginning.
 bool two_hand_allowed() {
-    // 2026-10-21: the shotgun can always be taken hold of - through a reload too - but while its hand carries a
-    // shell to the port.
-    if (g_sticky.load(std::memory_order_relaxed) && !(g_carryMode == 1 && g_machine.active())) return true;
-    // A manual reload leaves the two-handed grip on: at its last pump (the grip IS the pump), and through
-    // any wait while that grip is still squeezed (the shotgun emptied with both hands on it - 20:35 run).
-    // 2026-10-21: and while a reload waits for a hand that holds nothing of it (an empty gun: "it should let you do
-    // 2 hand grip on empty weapons as well").
-    return !active() || g_pumpWait.load(std::memory_order_relaxed) || g_handFree.load(std::memory_order_relaxed) ||
-           two_hand::held();
+    gun_state::State s = g_state;
+    s.twoHanded = two_hand::held();
+    return gun_state::two_hand_allowed(s);
 }
 bool sticky_grip() { return g_sticky.load(std::memory_order_relaxed); }
 float gun_motion_keep() { return g_gunKeep; }
@@ -750,10 +761,10 @@ bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
     const bool trig = pad->rt >= 128; // the weapon hand's trigger, half a pull
     if (trig && !g_triggerWas) g_triggerPulls.fetch_add(1, std::memory_order_relaxed);
     g_triggerWas = trig;
-    // The shotgun fires nothing while it reloads (the game would cut the reload short and fire the shell it just
-    // took - "it lets you shoot the first bullet without cocking") or while it waits to be cocked.
-    if (g_blockFire.load(std::memory_order_relaxed) && GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) < 250 &&
-        pad->rt) {
+    // The trigger reaches the game only while the gun's state allows a shot (gun_state::fire_allowed: no manual
+    // reload in progress, a magazine in, the shotgun cocked, no pump waiting for the hands); a pull it refuses is
+    // counted above and clicks in tick().
+    if (!g_fireAllowed.load(std::memory_order_relaxed) && fresh && pad->rt) {
         pad->rt = 0;
         *changed = true;
     }
@@ -931,6 +942,9 @@ void tick(const Frame& f) {
         }
         g_ejectedThis = false;
         g_gunKeep = 1.0f;
+        g_state = gun_state::State{};
+        g_pumpHolding = false;
+        g_fireAllowed.store(true, std::memory_order_relaxed);
         g_active.store(false, std::memory_order_relaxed);
         g_handles.store(false, std::memory_order_relaxed);
         g_claim.store(false, std::memory_order_relaxed);
@@ -1030,10 +1044,11 @@ void tick(const Frame& f) {
             hold(f.weapon, f.hands, pw, ph, po.t, po.chase);
         else if (po.run)
             run(f.weapon, f.hands, pw, ph, po.jump, po.t);
+        g_pumpHolding = po.hold; // the clip held for the hands: no shot until they pump (gun_state)
         haptic(po.haptic, f);
-        // Fire is gated while the pump waits (Half-Life 2 VR's dry click): the gun hand says so.
+        // Fire is gated while the pump waits (Half-Life 2 VR's dry click): the gun hand says so; the click itself
+        // is the gun state's (every refused pull, below).
         if (po.deny) {
-            g_dryClick = true;
             bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
             BVR_LOG("[reload] Shotgun pump: the trigger while the pump waits - click (%s stroke %.1f cm of %.0f)",
                     g_pump.backDone() ? "forward" : "back", po.strokeCm, g_pumpCfg.strokeCm);
@@ -1053,6 +1068,7 @@ void tick(const Frame& f) {
         }
     } else {
         g_pumping.store(false, std::memory_order_relaxed);
+        g_pumpHolding = false;
         // 2026-10-21 (10:08 run: the Tommy Gun's last burst sat in the firing state a second and pointed the gun
         // down - "the game normally does that when they run out, we need to suppress it"): of any other gun's
         // clips only a shot's recoil is layered - the first 0.30 s of a firing clip, faded out by 0.45, and none
@@ -1126,17 +1142,18 @@ void tick(const Frame& f) {
     in.ejectAdopted = ejectable;
     // The carried part's distance from its latch (carry(), last frame), while one is known.
     in.partSeatCm = g_seatValid && f.now - g_partSeatMs < 150 ? g_partSeatCm : -1.0f;
-    // A round still in the gun (read once as each reload begins; the game refills only at the clip's end).
-    in.chambered = g_chambered;
     in.magOut = g_magOut && g_magOut == f.weapon;
 
     const bool wasActive = g_machine.active();
-    if (!wasActive && in.entryProgram) {
-        // Before this frame's update: a reload that begins now reads the rounds the gun has left.
+    const rr::Program* progWas = g_machine.program();
+    // The rounds the gun has as its reload's clip begins, read fresh on that frame (the game refills only at the
+    // clip's end; the 4 Hz count may be a shot stale): the Tommy's bolt is skipped with a round in, and a shotgun
+    // begun empty is uncocked until pumped by hand. (This was a script call every idle frame.)
+    if (in.clipNew && in.entryProgram && !progWas) {
         struct { int32_t ret; int32_t pad[3]; } r{};
-        g_chambered = script::call(f.weapon, "GetRoundsRemaining", &r) && r.ret > 0;
-        in.chambered = g_chambered;
+        g_roundsAtStart = script::call(f.weapon, "GetRoundsRemaining", &r) ? r.ret : -1;
     }
+    in.chambered = g_roundsAtStart > 0;
     // 2026-10-20 (the tester): the Tommy Gun running dry does not drop its drum - the hand pulls it out
     // (the program's own first step). A reload the game begins with rounds still in the gun (switching
     // ammunition) still drops it.
@@ -1156,7 +1173,7 @@ void tick(const Frame& f) {
     // reload begun within 1.5 s of a seen switch is the switch's: it drops the drum.
     if (switching) g_switchMs = f.now;
     const bool afterSwitch = g_switchMs && f.now - g_switchMs < 1500;
-    if (!_wcsicmp(g_cls, L"MachineGun") && !g_chambered && !switching && !afterSwitch) in.ejectAdopted = false;
+    if (!_wcsicmp(g_cls, L"MachineGun") && !(g_rounds > 0) && !switching && !afterSwitch) in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
     // one quickly", and "throw one up in the air and slap the gun into it").
     const bool spareGun = in.entryProgram && in.entryProgram->spare;
@@ -1362,7 +1379,7 @@ void tick(const Frame& f) {
         else if (po.run) {
             run(f.weapon, f.hands, hw, hh, po.jump, po.t);
             g_endPumpDone = true;
-            g_needCock = false; // cocked by hand
+            if (g_uncockedGun == f.weapon) g_uncockedGun = nullptr; // cocked by hand
         }
         haptic(po.haptic, f);
         if (po.event) BVR_LOG("[reload] Shotgun reload's last pump: %s", po.event);
@@ -1384,11 +1401,15 @@ void tick(const Frame& f) {
     // 2026-10-21 THE COCK. A shotgun reload begun from empty leaves the gun uncocked until its last pump is worked
     // by hand; a reload cut short before it (a weapon change, the wheel) leaves it uncocked, and then the hands
     // cock it dry - the same pump, the pump bone drawn moving with the strokes. Until then the trigger is dead.
+    // Remembered per weapon (gun_state): switching away and back does not cock it.
     const bool shotgun = !_wcsicmp(g_cls, L"Shotgun");
-    if (shotgun && !wasActive && g_machine.active() && !g_chambered) g_needCock = true;
-    if (!shotgun) g_needCock = false;
+    const gun_state::Kind kind = gun_state::kind_of(g_cls);
+    if (!progWas && g_machine.program() && gun_state::reload_begins_uncocked(kind, g_roundsAtStart)) {
+        g_uncockedGun = f.weapon;
+        BVR_LOG("[reload] Shotgun: reloading from empty - uncocked until its last pump is worked by hand");
+    }
     static bool s_dryWas = false;
-    const bool dry = shotgun && g_needCock && !g_machine.active() && st != hands_state::State::Reloading &&
+    const bool dry = shotgun && g_uncockedGun == f.weapon && !g_machine.active() && st != hands_state::State::Reloading &&
                      st != hands_state::State::Firing;
     if (dry) {
         rr::PumpInput pi;
@@ -1423,37 +1444,78 @@ void tick(const Frame& f) {
             bones::set_weapon_part_offset(pump, dw);
         }
         if (po.run) {
-            g_needCock = false;
+            g_uncockedGun = nullptr;
             BVR_LOG("[reload] Shotgun: cocked dry by hand - it fires again");
         }
-        if (po.deny) {
-            g_dryClick = true;
-            bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
-        }
+        if (po.deny) bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
     } else if (s_dryWas) {
         rr::PumpInput off;
         g_dryPump.update(off, g_pumpCfg);
     }
     s_dryWas = dry;
-    // The dry fire (2026-10-21, "all of the sounds besides a shotgun dry fire"): a pull the reload holds back never
-    // reaches PlayerWeapon, so its own DryFiring (on the weapon, the ammunition's name as the tag) never fires - the
-    // sound engine plays it for each pull the shotgun refuses, as the game does for an empty gun.
+    // ---- THE GUN'S STATE, assembled once (gun_state.h) ---------------------------------------------------------
+    {
+        gun_state::State s;
+        s.kind = kind;
+        s.handsReload = in.entryProgram != nullptr;
+        s.rounds = g_rounds;
+        s.magazineSize = g_magSize;
+        s.spareRounds = g_spareRounds;
+        s.switching = switching;
+        const rr::Program* p = g_machine.program();
+        const bool ejects = p && p->ejectT >= 0;
+        if ((g_magOut && g_magOut == f.weapon) || g_machine.mag_out())
+            s.magazine = gun_state::Magazine::Out;
+        else if (ejects && o.carry == 1 && o.part)
+            s.magazine = gun_state::Magazine::InHand;
+        s.spareInHand = g_spare.actor != nullptr;
+        if (g_machine.active()) {
+            using K = rr::Kind;
+            const int ph = g_machine.phase();
+            if (!p) s.stage = gun_state::Stage::Starting;
+            else if (o.carry == 3) s.stage = gun_state::Stage::Dropping;
+            else if (ph >= p->n) s.stage = gun_state::Stage::Finishing;
+            else switch (p->phases[ph].kind) {
+                case K::Carry: case K::Insert: s.stage = o.carry == 0 ? gun_state::Stage::Seating : gun_state::Stage::Carrying; break;
+                case K::Play: s.stage = gun_state::Stage::Seating; break;
+                case K::PumpHand: s.stage = gun_state::Stage::Pumping; break;
+                case K::Finish: s.stage = gun_state::Stage::Finishing; break;
+                default: s.stage = gun_state::Stage::Waiting; break;
+            }
+        }
+        s.carryingPart = g_carryMode == 1 && g_carryPart != nullptr;
+        s.handFree = g_machine.hand_free();
+        s.pumpWait = o.pumpWait;
+        s.cocked = g_uncockedGun != f.weapon;
+        s.pumpHolding = g_pumpHolding;
+        s.twoHanded = two_hand::held();
+        static gun_state::Stage s_stageWas = gun_state::Stage::None;
+        static bool s_fireWas = true;
+        const bool fire = gun_state::fire_allowed(s);
+        if (s.stage != s_stageWas || fire != s_fireWas)
+            BVR_LOG("[reload] %S state: %s, magazine %s%s%s, rounds %d/%d (+%d), %s%s", g_cls, gun_state::stage_name(s.stage),
+                    s.magazine == gun_state::Magazine::In ? "in" : s.magazine == gun_state::Magazine::Out ? "OUT" : "in hand",
+                    s.spareInHand ? ", a spare in hand" : "", s.cocked ? "" : ", UNCOCKED", s.rounds, s.magazineSize,
+                    s.spareRounds, fire ? "fire allowed" : "FIRE REFUSED", s.twoHanded ? ", two-handed" : "");
+        s_stageWas = s.stage;
+        s_fireWas = fire;
+        g_state = s;
+        g_fireAllowed.store(fire, std::memory_order_relaxed);
+    }
+    // THE DRY CLICK: every pull the gun refuses (the trigger is zeroed exactly then, so the game never sees it and
+    // never clicks for it) plays the game's own DryFiring on the weapon, the ammunition's name as the tag, as the
+    // game does for an empty gun. One rule, every gun, every stage - a dry Tommy Gun waiting at its drum, the
+    // pistol's open frame, the shotgun's reload, its uncocked chamber and its pump between shots alike.
     {
         static uint32_t s_dryPulls = 0;
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         const bool rose = pulls != s_dryPulls;
         s_dryPulls = pulls;
-        const bool tommyDry = (g_magOut && g_magOut == f.weapon) ||
-                              (!_wcsicmp(g_cls, L"MachineGun") && g_machine.mag_out());
-        if ((shotgun || tommyDry) && (g_dryClick || (rose && (g_blockFire.load(std::memory_order_relaxed) || tommyDry)))) {
+        if (rose && gun_state::dry_click_on_pull(g_state)) {
             char tag[64];
             sound_engine::play(f.weapon, "DryFiring", sound_engine::ammo_tag(f.weapon, tag, sizeof tag) ? tag : nullptr);
         }
-        g_dryClick = false;
     }
-    // No drum: none left in after a reload, or the reload's drum out of the gun (the click as the trigger is pulled).
-    const bool noDrum = (g_magOut && g_magOut == f.weapon) || (!_wcsicmp(g_cls, L"MachineGun") && g_machine.mag_out());
-    g_blockFire.store((shotgun && (g_machine.active() || g_needCock)) || noDrum, std::memory_order_relaxed);
     haptic(o.haptic, f);
     if (o.buzz && f.now - g_lastBuzzMs >= kBuzzEveryMs) {
         g_lastBuzzMs = f.now;

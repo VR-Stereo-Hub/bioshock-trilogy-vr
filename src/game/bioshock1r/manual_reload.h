@@ -9,6 +9,7 @@
 
 #include "menu_model.h"
 #include "game/bioshock1r/grips.h"
+#include "game/bioshock1r/gun_state.h"
 
 #include <cstdint>
 
@@ -64,6 +65,9 @@ struct GripTable {
 const GripTable* carry_grip();
 void carry(const HandPlacement& hp);
 
+// Game thread: the held gun's state as this tick assembled it (gun_state.h) - the one record the trigger, the
+// dry click and the two-handed grip's permission are read off. A default record with no weapon in hand.
+const gun_state::State& state();
 // A manual reload is in progress (the hands stay on their controllers; the two-handed grip waits).
 bool active();
 // Any thread: the gun in hand reloads by hand (the manual reload is on and has a program for it) - so any reload

@@ -572,8 +572,11 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    per-hand rules around them. Kept for step 4: `GunRest` (the shotgun's 43/44 rest), `g_amRel`,
    `s_lastRel`. Headset check: grabs land on the fore-grip in both hands, after a plasmid switch, after a
    pump, on an empty gun; the grip pose from a hold's first frame.
-2. `GunState` and the dry click. Removes six copies of the gun's state. Headset check: a click on every
-   refused pull, every gun, every stage.
+2. **DONE 2026-10-21** (ENGINE_NOTES "The gun's state as one record"): `gun_state.h`, assembled once per
+   tick in `manual_reload.cpp`; `fire_allowed`, the dry click and `two_hand_allowed` are functions of it.
+   Removed `g_blockFire`, `g_needCock` (now per weapon, surviving a switch), `g_chambered` (a fresh read at
+   the clip's start), `g_dryClick`, `tommyDry`/`noDrum`. Headset check: a click on every refused pull,
+   every gun, every stage; the shotgun stays uncocked across a weapon switch.
 3. The ownership table and the arbiter on it. Fixes bug 1. Headset check: the empty Tommy's fore-grip.
 4. `Suppress` per gun, replacing the scattered flags and the free-hand rules. Fixes item 6 and 12.
 5. One `Pump` on the barrel axis. Fixes bug 4 and 5's second half (a hold that measures right can cock).

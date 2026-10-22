@@ -7369,3 +7369,33 @@ Still latched, on purpose for now: the shotgun's gun-in-hand rest (sockets 43/44
 derived from the ammunition socket record once a live measurement confirms it), and the free hand's
 last-frame pose through a reload's start clip. The barrel axis stays chosen once per weapon from a lined-up
 frame.
+
+## 2026-10-21 - The gun's state as one record; the dry click as one rule
+
+Step 2 of docs/bioshock1/HELD_GUN_AUDIT.md 2.8 (`gun_state.h`, pure; `manual_reload.cpp` assembles it once
+per tick after the machine and the pumps have run). The record: kind, the game's counts (rounds, magazine
+size, spare rounds - the 4 Hz read `can_reload` already made, plus a fresh read of the rounds on the frame
+a reload's clip first appears, which replaces a script call every idle frame), switching, the magazine
+(in, out, in hand), a spare in hand, the reload's stage, a part carried, the reload waiting for a free
+hand, the last pump's wait, the shotgun's cocked, a shot's pump held for the hands, two hands on the gun.
+`[reload] <gun> state: ...` logs it on every change of stage or of fire-allowed.
+
+**One rule for the trigger and the click.** `fire_allowed` = no manual reload in progress, a magazine in,
+cocked, no pump held for the hands. The XInput thread zeroes the trigger exactly while it is false, and
+every trigger rise while it is false plays the game's own `DryFiring` on the weapon (the ammunition's name
+as the tag) - the pull never reaches the game, so the game never clicks for it, and the game's own click
+stays the game's for the one case the mod lets through: an empty gun with no reload running (the game then
+reloads it or clicks itself). This replaces `g_blockFire` (the shotgun reloading or uncocked; the Tommy
+with no drum), `tommyDry`/`noDrum` (the Tommy's magazine-out stages), the Pump's `deny` click and
+`g_dryClick`. The audit's bug 2 - the dry Tommy waiting for the hand to pull its drum, nobody clicking -
+is closed by it, and so is the pistol's reload wait, which never clicked at all.
+
+**Uncocked per weapon.** The shotgun left uncocked was one bool, cleared whenever another gun was in hand
+(`if (!shotgun) g_needCock = false`), so a reload cut short by a weapon switch came back cocked - against
+the rule that only a pump by hand cocks it. It is a weapon pointer now (`g_uncockedGun`), set when a
+reload's clip begins with the rounds at 0 (`reload_begins_uncocked`; unknown rounds never block a gun on a
+guess), cleared by the end pump or the dry cock, and it survives a switch.
+
+Host tests (`gun-state-tests.cpp`, 39 checks): fire refused and clicking in every reload stage, with no
+magazine, uncocked, with a pump held, and allowed on a loaded idle gun and an empty idle gun; the
+two-handed permission per gun and stage; uncocked only for a shotgun reload begun at 0 rounds.
