@@ -70,6 +70,7 @@ int main() {
         s.kind = Kind::Shotgun;
         check(two_hand_allowed(s), "shotgun idle: grips");
         s.stage = Stage::Waiting;
+        s.handFree = true; // the shotgun's wait is at the pouch: the hand holds nothing of it
         check(two_hand_allowed(s), "shotgun reloading, no shell in hand: grips");
         s.carryingPart = true;
         check(!two_hand_allowed(s), "shotgun carrying a shell to the port: that hand is the shell's");
@@ -96,6 +97,11 @@ int main() {
         t.stage = Stage::Pumping;
         t.pumpWait = true;
         check(two_hand_allowed(t), "the reload's last pump: the grip is the pump");
+        t.pumpWait = false;
+        for (Stage st : {Stage::Starting, Stage::Dropping, Stage::Seating, Stage::Finishing}) {
+            t.stage = st;
+            check(two_hand_allowed(t), "the start, the drop, the seating, the finish: the hand holds nothing - grips (G1)");
+        }
     }
     // ---- cocked ----
     {

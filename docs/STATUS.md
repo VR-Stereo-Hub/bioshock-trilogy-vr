@@ -4,8 +4,10 @@
 
 ## Session 2026-10-21 (evening) - BS1: the held-gun audit, then step 1 - gun geometry as constants
 
-**Branch `claude/bs1-manual-reload`**, local commits only. Built (Release), host-tested (15 suites), lint
-clean, INSTALLED. NOT run in the simulator or the headset.
+**Branch `claude/bs1-manual-reload`**, local commits only. Built (Release), host-tested (20 suites), lint
+clean, INSTALLED. **Run once on the SIMULATOR** (ENGINE_NOTES "The six steps on the simulator"): every
+step's mechanics verified there but the Tommy's bolt rack, the pistol's X cancel and the eases, which
+want the headset. Five fixes came out of the run and are in the installed build. Not yet in the headset.
 
 ### Current state
 
@@ -86,9 +88,9 @@ clean, INSTALLED. NOT run in the simulator or the headset.
 
 ### Next steps
 
-- Headset: every check above (steps 1-6), in one run: grabs and the grip pose (1, 3b), clicks (2), the
-  owner at the dry Tommy's fore-grip (3a), the early-end aborts (3c, unverified engine work), the pump
-  along the barrel (5), and the sounds unchanged (4, 6). Then whatever the run turns up.
+- Headset: the feel of it all (the eases of the hand pose engine, the pump's stroke length along the
+  barrel, the relaxed hand), the Tommy's bolt rack on a reload begun empty, the pistol's X cancel at the
+  pouch (3c), and the shotgun's loop-ending pump as a player does it. The sim run verified the mechanics.
 - Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
   offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 

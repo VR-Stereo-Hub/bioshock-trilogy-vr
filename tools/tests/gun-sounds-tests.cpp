@@ -53,6 +53,7 @@ int main() {
         check(tommy && reload_actions(tommy, 0, 1, false, out) == 1 && out[0] == Action::DrumOut, "the first pull ending: drum out");
         check(reload_actions(tommy, -1, 0, true, out) == 1 && out[0] == Action::DrumOut, "the eject: drum out");
         check(reload_actions(tommy, 0, 1, true, out) == 1, "the eject and the pull together: once");
+        check(reload_actions(tommy, 0, 2, false, out) == 0, "the drop ending (the pull's phase to the fetch): nothing - it played at the eject");
         check(reload_actions(tommy, 3, 4, false, out) == 1 && out[0] == Action::DrumIn, "the insert ending: drum in");
         check(reload_actions(tommy, 3, 6, false, out) == 1 && out[0] == Action::DrumIn, "the insert ending straight to the finish (a round in): drum in");
         check(reload_actions(tommy, 4, 5, false, out) == 1 && out[0] == Action::BoltBack, "the bolt racked: bolt back");

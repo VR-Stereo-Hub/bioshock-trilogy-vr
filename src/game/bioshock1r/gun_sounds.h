@@ -58,7 +58,9 @@ inline int reload_actions(const reload_rig::Program* prog, int phaseWas, int pha
     if (!prog || phaseWas < 0 || phaseWas >= prog->n || phase <= phaseWas) return n;
     switch (prog->phases[phaseWas].kind) {
         case reload_rig::Kind::Pull:
-            if (phaseWas == 0 && !ejected) out[n++] = Action::DrumOut; // the first pull: the magazine out
+            // The first pull completed by the hand: the magazine out. A drop that ENDS jumps from the pull's
+            // phase to the fetch (0 -> 2) and has already played at the eject (the 23:53 sim run: twice).
+            if (phaseWas == 0 && !ejected && phase == phaseWas + 1) out[n++] = Action::DrumOut;
             break;
         case reload_rig::Kind::Insert: out[n++] = Action::DrumIn; break;
         case reload_rig::Kind::Slide: out[n++] = Action::BoltBack; break;

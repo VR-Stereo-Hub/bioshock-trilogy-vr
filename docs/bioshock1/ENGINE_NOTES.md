@@ -7516,3 +7516,38 @@ reload raises the same actions and is silent only because the table has no rows 
 the pistol reloading would list its events). `manual_reload::play_action` is the one caller of the sound
 engine; `tommy_sound`, `stroke_sound`'s phase numbers and the dry fire's own call are gone. No behaviour
 change intended.
+
+## 2026-10-21/22 - The six steps on the simulator: what held, what the run found
+
+One simulator run (xrsim, the 11:01 save; the log's 23:51-00:02), every step driven from the sim's hands
+and read off the log. Verified: the mirror constants log once per gun on equip (pistol plane -1.73, Tommy
+-3.54, shotgun -3.63, the wrench's rigid centre 1.88); the grip pose on the first frame of a hold and the
+relaxed hand on release (`[hands] free hand` rules 2 and 6); the owner by distance - a squeeze between the
+Tommy's drum and its fore-grip read reload 0.83 / two-handed 0.92 and went to the grip (the tie rule), at
+the drum 0.03 and went to the reload; the state record through a whole Tommy reload (starting, waiting,
+dropping, carrying, seating, finishing, none); the spare drum from the pouch, X with it in hand, the swap in
+at 0.2 s, the latch at the seat, the bolt skipped with a round in; the dry Tommy's click on every pull
+while its reload waits; the shotgun's fore-grip to 0.3 cm, its pump along the barrel (a 7 cm head-local
+move read 5.4 cm along the 40-degree-down aim, 9 cm read 6.9: the projection, not the span), both stroke
+parts, the click while the pump waits, UNCOCKED set on the reload from empty, the shell's designed grip
+(rule 3), the shell pressed in; the LOOP-ENDING PUMP (3c): all three interrupt calls honoured, the hands
+back to WeaponIdling in 0.3 s, the shell kept (the next pull fired); the hand-over and the mirrored
+fore-grip (the right hand 1.8 cm from the reflected point, the hold mirrored, rule 2).
+
+**What the run found, fixed in the same commit:**
+- `gun_state::two_hand_allowed` refused the hold through the drop (and the seating, the finish): a squeeze
+  at the fore-grip during the Tommy's 0.7 s drop went to the GAME, opened the plasmid wheel, swapped the
+  hands into ability mode and ended the reload (the gun left without a drum; the game then refused three
+  re-asks, being in ability mode). Now the hold is refused only while the hand carries or pulls a part.
+- The drum-out sound part played twice: at the eject and again when the drop ended (the phase jumping from
+  the pull's to the fetch). The action fires only for a pull completed by the hand (phase +1).
+- The dry Tommy dropped its drum instead of waiting for the hand: the eject rule read the 4 Hz round count,
+  a shot stale (1 of 40); it reads the rounds taken fresh as the clip began.
+- The reload machine kept its last program after a reload ended, so the glue's "a reload begins now" test
+  was true once per weapon: the rounds at a reload's start were not read again (the Tommy's bolt was
+  skipped on a reload begun at 0), and the state record named the old phase during the next start. The
+  machine clears its program on the end.
+- The state record read "dropping" through the pouch (a part lying where it fell reports the fall's carry
+  code), and `dragging()` was true for the eject's frame: the drop is the fall in the pull's phase only.
+Not reached in the sim: the Tommy's bolt rack (the stale-program bug skipped it), the pistol's X cancel at
+the pouch (G3), a sideways pump on a loaded gun. The sim's hands jump, so no ease was watched.

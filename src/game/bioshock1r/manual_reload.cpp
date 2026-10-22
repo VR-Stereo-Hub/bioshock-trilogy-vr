@@ -593,7 +593,9 @@ bool hand_lock_wanted() { return g_handLock && g_machine.active(); }
 bool dragging() {
     // Waiting at a part and taken hold of (Pull / Slide / Flick dragging): the machine says the hand is not free.
     const rr::Program* p = g_machine.program();
-    if (!g_machine.active() || !p || g_machine.phase() >= p->n || g_machine.hand_free() || g_carryMode == 1) return false;
+    if (!g_machine.active() || !p || g_machine.phase() >= p->n || g_machine.hand_free() || g_carryMode == 1 ||
+        g_state.stage == gun_state::Stage::Dropping)
+        return false;
     const rr::Kind k = p->phases[g_machine.phase()].kind;
     return k == rr::Kind::Pull || k == rr::Kind::Slide || k == rr::Kind::Flick;
 }
@@ -1143,7 +1145,9 @@ void tick(const Frame& f) {
     // reload begun within 1.5 s of a seen switch is the switch's: it drops the drum.
     if (switching) g_switchMs = f.now;
     const bool afterSwitch = g_switchMs && f.now - g_switchMs < 1500;
-    if (!_wcsicmp(g_cls, L"MachineGun") && !(g_rounds > 0) && !switching && !afterSwitch) in.ejectAdopted = false;
+    // The rounds as the clip began (read fresh above on that frame), never the 4 Hz count: the 23:57 sim run's dry
+    // Tommy Gun still showed 1 round in the cache and dropped its drum instead of waiting for the hand.
+    if (!_wcsicmp(g_cls, L"MachineGun") && !(g_roundsAtStart > 0) && !switching && !afterSwitch) in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
     // one quickly", and "throw one up in the air and slap the gun into it").
     const bool spareGun = in.entryProgram && in.entryProgram->spare;
@@ -1512,10 +1516,12 @@ void tick(const Frame& f) {
         if (g_machine.active()) {
             using K = rr::Kind;
             const int ph = g_machine.phase();
+            // (A spent part LYING where it fell through the fetch reports the same carry code as the fall, so the
+            // drop is the fall held in the pull's phase only - the 23:57 sim run read "dropping" through the pouch.)
             if (!p) s.stage = gun_state::Stage::Starting;
-            else if (o.carry == 3) s.stage = gun_state::Stage::Dropping;
             else if (ph >= p->n) s.stage = gun_state::Stage::Finishing;
             else switch (p->phases[ph].kind) {
+                case K::Pull: s.stage = o.carry == 3 ? gun_state::Stage::Dropping : gun_state::Stage::Waiting; break;
                 case K::Carry: case K::Insert: s.stage = o.carry == 0 ? gun_state::Stage::Seating : gun_state::Stage::Carrying; break;
                 case K::Play: s.stage = gun_state::Stage::Seating; break;
                 case K::PumpHand: s.stage = gun_state::Stage::Pumping; break;

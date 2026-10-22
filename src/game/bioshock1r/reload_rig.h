@@ -632,6 +632,17 @@ private:
             enter(in);
         }
     }
+    // The reload is over (its clip gone): idle, with NO program left behind. 2026-10-21 (the 23:55 sim run): the
+    // last program and phase used to stay, so the glue's "a reload begins now" test (program() null before) was
+    // true only once per weapon - the rounds at a reload's start were not read again, and the state record named
+    // the old phase while the next reload was only starting.
+    void ended(Output& o) {
+        state_ = State::Idle;
+        carrying_ = false;
+        prog_ = nullptr;
+        phase_ = 0;
+        o.event = "the reload ended";
+    }
 
     void running(const Input& in, const Config& c, float grabU, Output& o, bool fresh = false) {
         // The clip changed under us (the shotgun's next loop or its end): its own program.
@@ -640,16 +651,12 @@ private:
                 begin(in.clipProgram, in);
                 o.event = "next clip";
             } else if (!in.clipLive) {
-                state_ = State::Idle;
-                carrying_ = false;
-                o.event = "the reload ended";
+                ended(o);
                 return;
             }
         }
         if (!in.clipLive) {
-            state_ = State::Idle;
-            carrying_ = false;
-            o.event = "the reload ended";
+            ended(o);
             return;
         }
         // The eject: the gun held open, the spent part falling out of it; then the first Fetch.

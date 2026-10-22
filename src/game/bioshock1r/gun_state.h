@@ -52,13 +52,16 @@ inline bool fire_allowed(const State& s) {
 // game never sees one of these and never clicks for it.)
 inline bool dry_click_on_pull(const State& s) { return !fire_allowed(s); }
 
-// The two-handed grip may hold now. The shotgun can always be taken hold of - through a reload, empty,
-// uncocked - but while its hand carries a shell to the port (that hand is the shell's). Any other gun: no
-// reload, or the reload's last pump (the grip IS the pump), or the reload waits for a hand that holds nothing
-// of it, or the hold is already on and must not be dropped by a reload beginning.
+// The two-handed grip may hold now: whenever the free hand holds or works nothing of the gun - not while it
+// carries a part (a drum, a cylinder, a shell), not while it pulls or slides one (a reload waiting at a part
+// and taken hold of). Everything else - no reload, a reload waiting for the hand, the pouch, the drop, the
+// seating, the clip playing on, the last pump (the grip IS the pump), an empty or uncocked gun - allows it,
+// and a hold already on is never dropped by a reload beginning. (2026-10-21 23:53 sim run: the drop refused
+// the hold and a squeeze at the fore-grip went to the game - HELD_GUN_MATRIX.md G1.)
 inline bool two_hand_allowed(const State& s) {
-    if (s.kind == Kind::Shotgun) return !(s.carryingPart && reload_active(s));
-    return !reload_active(s) || s.pumpWait || s.handFree || s.twoHanded;
+    if (s.twoHanded) return true;
+    if (!reload_active(s)) return true;
+    return !s.carryingPart && !(s.stage == Stage::Waiting && !s.handFree);
 }
 
 // A reload beginning on this gun with these rounds leaves it uncocked (the shotgun loaded from empty: its
