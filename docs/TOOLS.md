@@ -69,6 +69,7 @@ game, BRVR, a public engine tree) form hypotheses; only the game's own binary co
 | Did a glTF import intact (armature, skin, actions, posed renders)? | `.\tools\blender-run.ps1 tools\blender\gltf_check.py -- --gltf <f> [--action <regex>] [--render p]` |
 | The Havok class layouts of a game build (what each packfile byte means) | `py tools\bsmesh\hkclass_dump.py <exe> <class...>` (`--all --json` is what `bsmesh-export` caches) |
 | A Vengeance package's names, imports, exports (maps AND `BakedScripts\*.U`) | `tools\bsmesh\vpackage.py` (`Package(path)`) |
+| **Where the parts of a BS1 sound are** (a pump's two strokes, a reload's steps) | export the Sound object outside the repo: `umodel -export -game=bio -sounds -out=<dir> 1-Welcome <sound>` (an MP3, as `.unk`), then `.\tools\fsb-probe.ps1 -File <x.unk> [-StepMs 10]` - its loudness over time, decoded by the game's own fmodex.dll. `-Filter <text>` lists the stream banks (`Sounds_Windows\*.fsb`: ambience and voice, not weapons) |
 
 UModel cannot read BS1 skeletal meshes or animations (Havok); `bsmesh-export` can (measured
 2026-10-08, `docs/bioshock1/HAVOK_AND_PACKAGES.md`). Textures, static meshes, UI movies and
