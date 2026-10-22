@@ -11,7 +11,19 @@ launcher's reload detaches its ammo box and slides the breech open - the "splitt
 game's own clip with no hand on the parts; the crossbow's takes its bolt box off and works the lever; the
 chem thrower's turns the valve wrench), the crossbow reticle (no `muzzle` socket, so no barrel origin:
 parallax), the chem spray (its emitter is attached to a socket 34 cm off and 27 deg from the ray), and
-eight ordered steps. No code this session.
+eight ordered steps. **Steps 1, 2 and 7 are in** (12b8836 the crossbow's barrel origin from its bolt's seat,
+7136b24 the chem thrower's spray emitter aimed along the ray, cec65e8 the pose recorder for any gun), built and
+installed, none run. The launcher's reload is timed (plan section 3b); its program waits on one recording with
+the launcher in hand (which section the game's hand holds while the breech slides).
+
+### Next steps
+
+- A run with the new build: the crossbow (does the reticle sit on the bolt now; the log's `[muzzle]` and
+  `[aim] barrel origin` lines on its equip), the chem thrower (does the spray reach the reticle; `[aim] chem
+  spray:` says the angle it took), the launcher reloaded once (its `GrenadeLauncher.bvrpose` in
+  `dumps\poserec-...`), and the three guns from before for regressions.
+- Then plan steps 3-5 against that recording; 6 and 8 after.
+
 
 ## Session 2026-10-21 (evening) - BS1: the held-gun audit, then step 1 - gun geometry as constants
 

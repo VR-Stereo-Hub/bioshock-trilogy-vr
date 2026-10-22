@@ -68,17 +68,40 @@ grip, hand-over, dial and arbiter work on them (the run: all three `is two-hande
 engine logs their events. `gun_state`, `gun_suppress`, `gun_sounds` and `reload_rig` treat them as
 `Kind::Other`: the game keeps its reload, its clips, its cues.
 
+## 3b. The launcher's reload, timed (reload_pose.py, gun model space, 2026-10-22 evening)
+
+| Clip time | What moves |
+|---|---|
+| 0.0-0.5 | the gun hand tips the gun up (26 -> 44 deg); nothing on the gun |
+| 0.5-0.75 | `MainBarrelBone` (the revolving chamber, with the ammo box on it) turns 70 deg: the box swings from (23 2 2) to (23 -43 -15), the loading port comes round |
+| 1.0-1.25 | the breech opens: `Dummy02` (the handle section) slides 29 back (21.7 -> -7.4 along X), the barrel 20 forward (42 -> 62) |
+| 1.25-3.0 | `AmmoDummy` (the grenade pack, the ammo model) travels from (38 -27 -29) to (32 -6 -3): the pack pushed home over 1.75 s; the breech drifts shut (the barrel back to 43 by 2.0, the handle to 5.6 by 2.0 and 22 by 3.0) |
+| 3.0-3.25 | the chamber turns back (58 -> 6 deg), the box with it |
+| 3.25-4.0 | the gun hand levels (33 deg at 3.75, 2 at 3.95) |
+
+The free fist: at the fore-grip (51 21 15) until 0.25, up and forward to (69 12 40) at 1.2 - on the
+barrel section as the gun tips - and about (48 10 38) through 2.0-3.2 (over the open port), back by 3.95.
+
+The program this suggests: the free hand grips the barrel section; the gun hand pulls back (the
+two controllers separating along the barrel, the pump's own measure) and the clip follows the stroke
+from 0.5 to 1.25 - the chamber turns, the breech opens; Fetch the pack at the pouch, Insert it along
+`AmmoDummy`'s 35-unit path to the port; push the breech shut (the controllers closing) with the clip
+played 3.0 -> 3.25; Finish. What the exported clip cannot say is which section the game's own hand
+holds while the handle moves 29 units relative to the grip root - the pose recorder (step 7, in) with
+the launcher in hand once answers that from the engine's own bones, and the program is written
+against that recording.
+
 ## 4. The work, in order
 
 Each step is one commit with its host tests, built and installed; the simulator for the mechanics
 (one run per step, asked for), the headset for the feel.
 
-1. **Crossbow barrel origin** (small, first: it is a reticle bug today). `muzzle::locate` falls
+1. **Crossbow barrel origin** - DONE 12b8836, unverified in a run. `muzzle::locate` falls
    back to a per-gun muzzle point when the mesh has no `muzzle` socket: a `gun_geometry::Gun`
    column `muzzle` (bone 43 frame; the crossbow's from `X_BoltSocket` + 22 along X, the bolt's
    rest, measured in Blender like the fore-grip). Log the rejected axis dots so the next run says
    why a gun has no origin. Check: a crossbow equip logs a barrel origin; the dot lands on the bolt.
-2. **Chem thrower spray along the ray.** The mod already knows the ray and the drawn body each
+2. **Chem thrower spray along the ray** - DONE 7136b24, unverified in a run. The mod already knows the ray and the drawn body each
    frame (`update_barrel_direction`). Each tick while the thrower is in hand, write the
    `CurrentDamageEmitter`'s `RelativeRotation` (a script property on the weapon, the emitter is
    attached to the socket) so the emitter's +X is the ray in the socket's frame. Fallback if the
@@ -116,7 +139,7 @@ Each step is one commit with its host tests, built and installed; the simulator 
    `HandsReloadTommy_ammo*` response's sounds with UModel, probe each with `fsb-probe.ps1`, and
    add rows keyed by length (`gun_sounds::Row::lengthMs` already selects the take). Until then a
    variant plays whole once (the current rule).
-7. **The pose recorder for any gun.** `bones.cpp` writes `Shotgun.bvrpose` for the shotgun only;
+7. **The pose recorder for any gun** - DONE cec65e8. `bones.cpp` writes `Shotgun.bvrpose` for the shotgun only;
    make it the gun in hand, so steps 3-5 can be checked frame by frame against the clips
    (`pose_capture.py --record`) the way the shotgun was.
 8. **Headset pass** on all six guns with the matrix as the checklist: every row of
