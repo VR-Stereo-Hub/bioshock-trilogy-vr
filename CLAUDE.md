@@ -27,6 +27,8 @@ that back those rules up.
 - **NEVER commit game-derived content**: no decompiled UnrealScript, no extracted assets, no
   RenderDoc captures, nothing from the game folder. `tools/uscript/` is gitignored for a reason.
   Summarize findings in the per-game ENGINE_NOTES instead of pasting game code.
+- **No direct quotes in code or the repo.** Comments, docs, commit messages and logs describe what a tester
+  or reviewer reported in our own words; they never quote a person verbatim.
 - **Commit messages**: plain conventional commits (`feat:`/`fix:`/`docs:`/`build:`/`tools:`/`chore:`),
   imperative, subject ≤72 chars. No trailers.
 - **32-bit (Win32) only.** All three games are x86. The CMake guard will stop you; don't fight it.
