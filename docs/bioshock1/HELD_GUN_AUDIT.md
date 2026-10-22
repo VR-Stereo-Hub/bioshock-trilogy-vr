@@ -592,7 +592,10 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    read by the reload glue for X, the eject, the adopted reload, the free hand, the magazine, the clip
    motion curve and the muted cues; the sound engine's own table is gone. (Items 6 and 12 were taken by
    step 3b's engine: a hold is drawn whenever held; a grab is refused by the owner table.)
-5. One `Pump` on the barrel axis. Fixes bug 4 and 5's second half (a hold that measures right can cock).
+5. **DONE 2026-10-21** (ENGINE_NOTES "One pump, its stroke along the barrel"): one `Pump` with a use per
+   tick; the stroke is the front hand's travel along the gun controller's aim forward from the gun hand.
+   Fixes bug 4. Headset check: a pump with the hands offset sideways or up/down completes only on the
+   along-the-barrel travel; the gun hand swinging forward is no stroke; `along N cm` in the stroke lines.
 6. The sound table. No behaviour change intended; a regression check by log (`[sound] played ...`).
 
 Each step is one commit with its tests and its ENGINE_NOTES/ARCHITECTURE entry; none is pushed or merged.

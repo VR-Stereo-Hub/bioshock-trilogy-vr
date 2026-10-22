@@ -28,6 +28,11 @@ clean, INSTALLED. NOT run in the simulator or the headset.
   fore-grip over the reload on a tie; the reload's reach is a distance in every stage, never an absolute
   claim. Host-tested (`grip-owner` 20, `reload-rig` 130). `HELD_GUN_MATRIX.md` is the specification;
   its section 10 enumerates the hand POSE sources per state and designs the hand pose engine (step 3b).
+- **Step 5 is in** (ENGINE_NOTES "One pump, its stroke along the barrel"): one `Pump` for the shot, the
+  reload's last pump, the dry cock and the loop-ending pump, its stroke the front hand's travel along the
+  gun controller's aim forward from the gun hand (not the controllers' distance). Host-tested
+  (`reload-rig` 136). Headset check: pump with the hands offset sideways, and with the gun hand swinging:
+  only travel along the barrel counts; the stroke lines say `along N cm`.
 - **Step 4 is in** (ENGINE_NOTES "The suppression record"): `gun_suppress.h`, one record per gun of what
   the game may not do (X, the eject, the adopted reload, the free hand, the magazine, the shot's clip-motion
   curve, the muted cues), read in one place; no behaviour change intended. Host-tested (`gun-suppress` 25).

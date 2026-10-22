@@ -1044,11 +1044,22 @@ struct PumpInput {
     bool clipNew = false;  // a new 'Fire' clip (the next shot) began this frame
     float clipT = 0;       // its time (seconds)
     bool held = false;     // two hands on the gun
-    float spanCm = 0;      // the distance between the two controllers (the pump back = shorter)
-    bool spanOk = false;   // both controllers tracked
+    // 2026-10-21 (step 5, the audit's bug 4): the front hand's position ALONG THE BARREL from the gun hand, cm,
+    // forward positive (along_barrel_cm) - the pump back = smaller. It was the bare distance between the two
+    // controllers, which the gun hand's own motion and any sideways motion fed as strokes (the 21:14 run: a back
+    // stroke in 43 ms, then the forward stroke stuck at 1 cm while the hands closed 10 cm).
+    float alongCm = 0;
+    bool alongOk = false;   // both controllers tracked
     bool triggerRise = false; // the trigger was pulled this frame
     float heldS = 1e9f;    // seconds since the two-handed hold began (a fresh grab settles first)
 };
+// The front hand's position along the barrel from the gun hand, in cm: the free controller against the gun
+// controller, projected on the barrel's direction (unit, the gun controller's aim forward). Metres in, cm out.
+inline float along_barrel_cm(const float freeM[3], const float gunM[3], const float dir[3]) {
+    const float d[3] = {freeM[0] - gunM[0], freeM[1] - gunM[1], freeM[2] - gunM[2]};
+    return (d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2]) * 100.0f;
+}
+
 struct PumpOutput {
     bool hold = false;     // hold the clip at t
     bool run = false;      // let it run (with jump: from t)
@@ -1104,13 +1115,13 @@ public:
             o.deny = in.triggerRise;
             return o;
         }
-        if (!in.spanOk) { // a controller lost: hold where it is, measure nothing
+        if (!in.alongOk) { // a controller lost: hold where it is, measure nothing
             if (stage_ == Stage::Firing) return o;
             o.hold = true;
             o.t = stage_ == Stage::Back ? c.backT0 : c.backT1;
             return o;
         }
-        const float along = -in.spanCm; // + is back: the hands closer together
+        const float along = -in.alongCm; // + is back: the hands closer together
         if (rebase_) {
             ref_ = along;
             rebase_ = false;

@@ -7483,3 +7483,22 @@ none past 0.45 s) and another for the pistol and Tommy (all the kick, none past 
 places with a script call for the rounds every firing frame - now `clip_motion_keep(record, fireClip, t,
 rounds)` with the 4 Hz count. `sound_engine` takes the record's muted list with its context instead of its
 own table. A gun with no program has the record that leaves everything to the game.
+
+## 2026-10-21 - One pump, its stroke along the barrel
+
+Step 5 (HELD_GUN_AUDIT.md 2.5; the audit's bug 4). The shotgun's pump between shots, the reload's last
+pump, the dry cock and the loop-ending pump (G2) were three `Pump` instances in three `if` blocks of the
+reload glue, and every one read its stroke as the bare DISTANCE BETWEEN THE CONTROLLERS. The 21:14 run
+showed what that measures: a back stroke completed in 43 ms, then the hands closed 10 cm while the drawn
+hand slid 20 cm forward along the gun, and the forward stroke read 1 cm until the hands opened again -
+the gun hand's own motion and anything sideways were strokes too.
+
+Now ONE `Pump` (`g_pump`) with a USE chosen per tick (shot, the reload's end, dry, loop) that picks the
+clip handles and the config; a change of use starts the ratchet afresh. Its input is the front hand's
+position ALONG THE BARREL from the gun hand (`reload_rig::along_barrel_cm`): the free controller against
+the gun controller, projected on the gun controller's aim forward (the OpenXR aim pose's -Z;
+`get_hand_pose` takes the role slot, the physical hand is the slot swapped when left-handed). Back is
+smaller; the ratchet, the 6 cm strokes, the 0.3 s settle and the 9 cm follow are unchanged. Host tests
+(`reload-rig`, 136): sideways motion, up and down, and the gun hand moving with the gun are no stroke; 6 cm
+back along the barrel is. The log's stroke lines now carry `along N cm` and the use's name
+(`[reload] Shotgun pump|reload's last pump|dry cock|pump while loading: ...`).

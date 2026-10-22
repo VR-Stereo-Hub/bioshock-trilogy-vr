@@ -496,9 +496,9 @@ int main() {
         c.waitForHands = true;
         Pump p;
         PumpInput in;
-        in.fireClip = in.clipNew = in.spanOk = true;
+        in.fireClip = in.clipNew = in.alongOk = true;
         in.clipT = 0.41f;
-        in.spanCm = 40.0f;
+        in.alongCm = 40.0f;
         PumpOutput po = p.update(in, c);
         in.clipNew = false;
         check(po.hold && !po.run && std::fabs(po.t - 0.409f) < 0.01f, "not two-handed: it waits at the pump", po.t, 0.409);
@@ -506,30 +506,30 @@ int main() {
         check(po.hold && !po.run, "and keeps waiting (never pumps itself)");
         in.held = true;
         po = p.update(in, c);
-        in.spanCm = 33.5f;
+        in.alongCm = 33.5f;
         po = p.update(in, c);
         check(p.backDone(), "two-handed: 6 cm closer, the back stroke");
-        in.spanCm = 40.0f;
+        in.alongCm = 40.0f;
         po = p.update(in, c);
         check(po.run && !p.working(), "6 cm apart: pumped, the clip plays out");
         // 12:17 run: the hand back from the pouch, taken hold of as it came, cocked it in 0.33 s. A fresh grab settles.
         Pump p2;
         in.held = false;
         in.clipNew = true;
-        in.spanCm = 45.0f;
+        in.alongCm = 45.0f;
         po = p2.update(in, c);
         in.clipNew = false;
         in.held = true;
         in.heldS = 0.05f;
-        in.spanCm = 38.0f; // still coming in: 7 cm
+        in.alongCm = 38.0f; // still coming in: 7 cm
         po = p2.update(in, c);
         in.heldS = 0.15f;
-        in.spanCm = 46.0f; // and settling back out: 8 cm
+        in.alongCm = 46.0f; // and settling back out: 8 cm
         po = p2.update(in, c);
         check(po.hold && !po.run && !p2.backDone(), "a fresh grab's approach and settle count no stroke");
         in.heldS = 0.5f;
         po = p2.update(in, c);
-        in.spanCm = 39.5f;
+        in.alongCm = 39.5f;
         po = p2.update(in, c);
         check(p2.backDone(), "settled: a real 6 cm stroke counts");
     }
@@ -540,9 +540,9 @@ int main() {
         PumpInput in;
         in.fireClip = true;
         in.clipNew = true;
-        in.held = in.spanOk = true;
+        in.held = in.alongOk = true;
         const float h = 40.0f; // the controllers 40 cm apart
-        in.spanCm = h;
+        in.alongCm = h;
         in.clipT = 0.3f;
         PumpOutput o = pump.update(in, c);
         in.clipNew = false;
@@ -555,24 +555,24 @@ int main() {
         o = pump.update(in, c);
         in.triggerRise = false;
         check(o.deny && o.hold, "the trigger while it waits: a click, nothing fires");
-        in.spanCm = h + 3.0f; // forward first: the ratchet's reference follows it
+        in.alongCm = h + 3.0f; // forward first: the ratchet's reference follows it
         o = pump.update(in, c);
-        in.spanCm = h - 2.0f; // 5 cm back from there
+        in.alongCm = h - 2.0f; // 5 cm back from there
         o = pump.update(in, c);
         check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f && !pump.backDone(),
               "measured from the farthest forward: 5 cm, not yet", o.strokeCm, 5.0);
         check(std::fabs(o.t - (0.75f + 0.1f * 5.0f / 9.0f)) < 0.005f, "the clip follows the hands", o.t, 0.806);
-        in.spanCm = h - 3.2f;
+        in.alongCm = h - 3.2f;
         o = pump.update(in, c);
         check(pump.backDone() && std::fabs(o.t - 0.85f) < 0.01f, "6 cm: caught, the clip finishes the stroke", o.t, 0.85);
-        const float back = in.spanCm;
-        in.spanCm = back - 2.0f; // further back first
+        const float back = in.alongCm;
+        in.alongCm = back - 2.0f; // further back first
         o = pump.update(in, c);
         check(std::fabs(o.t - 0.85f) < 0.01f, "held at the rear stop", o.t, 0.85);
-        in.spanCm = back + 3.0f; // 5 cm forward of the farthest back
+        in.alongCm = back + 3.0f; // 5 cm forward of the farthest back
         o = pump.update(in, c);
         check(o.hold && std::fabs(o.strokeCm - 5.0f) < 0.01f, "forward from the farthest back: 5 cm", o.strokeCm, 5.0);
-        in.spanCm = back + 4.1f;
+        in.alongCm = back + 4.1f;
         o = pump.update(in, c);
         check(o.run && !o.jump && !pump.working(), "6 cm forward: pumped, the clip plays out");
         o = pump.update(in, c);
@@ -589,12 +589,12 @@ int main() {
 
         Pump e; // a quick hand: the stroke begins during the recoil
         in = PumpInput{};
-        in.fireClip = in.clipNew = in.held = in.spanOk = true;
-        in.spanCm = h;
+        in.fireClip = in.clipNew = in.held = in.alongOk = true;
+        in.alongCm = h;
         in.clipT = 0.1f;
         e.update(in, c);
         in.clipNew = false;
-        in.spanCm = h - 3.0f;
+        in.alongCm = h - 3.0f;
         o = e.update(in, c);
         check(e.working() && o.hold && o.t >= 0.75f, "3 cm closer during the recoil: the pump begins", o.t, 0.75);
 
@@ -605,11 +605,11 @@ int main() {
         o = q.update(in, c);
         check(!o.hold, "one-handed: never held");
         Pump r; // let go mid-pump: it runs on
-        in.held = in.spanOk = true;
-        in.spanCm = 40.0f;
+        in.held = in.alongOk = true;
+        in.alongCm = 40.0f;
         in.clipT = 0.76f;
         r.update(in, c);
-        in.spanCm = 36.0f; // a stroke begun
+        in.alongCm = 36.0f; // a stroke begun
         r.update(in, c);
         in.held = false;
         o = r.update(in, c);
@@ -620,8 +620,8 @@ int main() {
         sc.waitForHands = true;
         Pump w;
         in = PumpInput{};
-        in.fireClip = in.clipNew = in.spanOk = true;
-        in.spanCm = 40.0f;
+        in.fireClip = in.clipNew = in.alongOk = true;
+        in.alongCm = 40.0f;
         in.clipT = 0.3f;
         o = w.update(in, sc);
         in.clipNew = false;
@@ -633,9 +633,37 @@ int main() {
         check(o.hold && !o.run, "and never pumps itself");
         in.held = true;
         o = w.update(in, sc);
-        in.spanCm = 36.0f;
+        in.alongCm = 36.0f;
         o = w.update(in, sc);
         check(o.chase && o.t > 0.75f, "a stroke begun: played on from the wait through the pump (its sound with it)", o.t, 0.79);
+    }
+    // ---- the stroke along the barrel (2026-10-21, step 5) ----
+    {
+        const float dir[3] = {0, 0, -1}; // the gun controller's aim forward (XR: -Z)
+        const float gun[3] = {0.1f, 1.2f, -0.3f};
+        float fr[3] = {0.1f, 1.2f, -0.7f}; // 40 cm ahead along the barrel
+        check(std::fabs(along_barrel_cm(fr, gun, dir) - 40.0f) < 1e-4f, "40 cm ahead along the barrel", along_barrel_cm(fr, gun, dir), 40);
+        fr[0] += 0.15f; // sideways 15 cm: no change along
+        check(std::fabs(along_barrel_cm(fr, gun, dir) - 40.0f) < 1e-4f, "sideways motion is no stroke", along_barrel_cm(fr, gun, dir), 40);
+        fr[1] -= 0.1f; // down 10 cm: no change along
+        check(std::fabs(along_barrel_cm(fr, gun, dir) - 40.0f) < 1e-4f, "up or down is no stroke", along_barrel_cm(fr, gun, dir), 40);
+        const float gun2[3] = {0.1f, 1.2f, -0.5f}; // the gun hand moved 20 cm forward with the gun...
+        const float fr2[3] = {0.25f, 1.1f, -0.9f};  // ...and the front hand with it: still 40 along
+        check(std::fabs(along_barrel_cm(fr2, gun2, dir) - 40.0f) < 1e-4f, "the gun hand moving with the gun is no stroke", along_barrel_cm(fr2, gun2, dir), 40);
+        const float back[3] = {0.25f, 1.1f, -0.64f};
+        check(std::fabs(along_barrel_cm(back, gun, dir) - 34.0f) < 1e-4f, "6 cm back along the barrel: the stroke", along_barrel_cm(back, gun, dir), 34);
+        // And through the ratchet: a back stroke by along, not by span.
+        Pump p;
+        const PumpConfig c;
+        PumpInput in;
+        in.fireClip = in.clipNew = in.held = in.alongOk = true;
+        in.clipT = 0.76f;
+        in.alongCm = 40.0f;
+        p.update(in, c);
+        in.clipNew = false;
+        in.alongCm = 33.9f;
+        PumpOutput o = p.update(in, c);
+        check(p.backDone() && std::fabs(o.t - 0.85f) < 0.01f, "6.1 cm back along the barrel: the back stroke", o.t, 0.85);
     }
     // ---- scale ----
     {
