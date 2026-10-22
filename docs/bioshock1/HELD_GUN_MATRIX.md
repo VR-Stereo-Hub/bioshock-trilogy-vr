@@ -174,13 +174,13 @@ state and ownership need no change.
 
 | # | Gap | Proposal | Step |
 |---|---|---|---|
-| G1 | During the 0.7 s drop and while a part is being seated by the clip, the machine claims every squeeze; a two-handed grab or a hand-over then is swallowed | the owner table: `Dropping` and `Seating` allow FORE and HANDS (the reload holds nothing of the free hand) | ③ |
-| G2 | The shotgun's reload cannot be ended early by the player (the trigger is refused throughout; the game would fire) | a pump stroke while the loop waits at the pouch ends the loop and cocks | ③ ⑤ |
-| G3 | The pistol's reload waiting at the pouch has no abort (no X there, no spare prop) | X at the pouch cancels: the gun stays open and empty until the weapon is switched; or let a weapon switch be the abort (as now) | decide |
+| G1 | During the 0.7 s drop and while a part is being seated by the clip, the machine claims every squeeze; a two-handed grab or a hand-over then is swallowed | the owner table: `Dropping` and `Seating` allow FORE and HANDS (the reload holds nothing of the free hand) | **done 3a** |
+| G2 | The shotgun's reload cannot be ended early by the player (the trigger is refused throughout; the game would fire) | a pump stroke while the loop waits at the pouch ends the loop and cocks | **done 3c, unverified** (ENGINE_NOTES "Ending a reload early"); F10 "End a reload early" |
+| G3 | The pistol's reload waiting at the pouch has no abort (no X there, no spare prop) | X at the pouch cancels through the game's interrupt: the gun comes back closed with the rounds it had ("open and empty" is not available: the game refills only at a clip's end) | **done 3c, unverified** |
 | G4 | A spare drum rides the LEFT wrist bone; a hand-over while holding it cannot happen (the grip is down), but a plasmid switch destroys it | keep: the spare is destroyed on any switch (one line of log) | none |
 | G5 | A spare taken of one type, the type switched before it goes in | re-set the prop's mesh when `switching` flips | ⑥ or later |
 | G6 | A shotgun hold "held but not drawn" while a shell is carried (audit item 6) | the owner table refuses the GRAB; a hold already on is drawn until the grip comes up | ④ |
-| G7 | The Tommy's reload claims the squeeze absolutely inside the drum's 12 cm (bug 1) | a distance like every other owner; FORE wins a tie within 3 cm on a two-handed gun | ③ |
+| G7 | The Tommy's reload claims the squeeze absolutely inside the drum's 12 cm (bug 1) | a distance like every other owner; FORE wins a tie within 3 cm on a two-handed gun | **done 3a** |
 | G8 | An empty idle pistol or Tommy with no spare rounds: the game's own click, but the magazine-out Tommy asks the game to reload three times then shows the drum | fine as is; the record now logs it | none |
 
 ## 9. What the table buys

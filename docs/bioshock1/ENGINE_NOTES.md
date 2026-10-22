@@ -7418,3 +7418,24 @@ win on a dry Tommy Gun (the audit's bug 1), and the 0.7 s drop and the seating, 
 the hand, swallowed every squeeze (G1). The spare's pouch zone (0.25) is its own offer (`Output::spareReach`)
 instead of overwriting the reload's. Nothing changes for a squeeze the reload already holds: `claim` still
 withholds the bumper until the grip comes up.
+
+## 2026-10-21 - Ending a reload early through the hands' own interrupt (UNVERIFIED)
+
+Step 3c (HELD_GUN_MATRIX.md G2, G3). From the UnrealScript corpus, not a run: the Hands actor runs its
+weapon actions as a state-transition SEQUENCE (`ExecuteStateTransition('ReloadWeapon')`, a native map of
+state names walked by `TransitionToNextStateInSequence`), and its `WeaponReloading` state calls the weapon's
+latent `PlayReloadingAnimations` from state code (the shotgun's loop-per-shell lives inside it). The one
+script lever that ends a sequence is `Hands.InterruptStateTransitionExecution()`: it clears the sequence index
+and goes to `HandsOffscreen`, which ends the latent code - what a weapon switch does. No script caller of
+`Weapon.OnReloadInterrupted` exists; it is called natively on an interruption and, for the three-part
+shotgun, restores `CurrentAmmoSelection` (none through the loops) and removes the ammo contexts.
+
+`manual_reload::abort_reload` calls, by name, `OnReloadInterrupted` on the weapon, then
+`InterruptStateTransitionExecution` and `EquipWeapon` (`ExecuteStateTransition('EquipWeapon')`) on the hands,
+logging each result, and resets the machine. Used by: the shotgun, a pump stroke on the two-handed hold while
+the reload waits for a shell (the same `Pump` as the dry cock; the gun is cocked by it), and the pistol, X
+while the reload waits for a cylinder (the gun comes back closed with the rounds it had - the game refills
+only at a clip's end, so "open and empty" is not available). F10 Controls > Manual reload > "End a reload
+early" (`Reload.Abort`, default on). Open until a run: whether `EquipWeapon` is honoured from `HandsOffscreen`
+(if not, the hands stay down until the weapon wheel re-equips), and whether the loops' shells are counted
+(`RoundsRemaining` is set per loop by the game; the log's state line shows the count after).

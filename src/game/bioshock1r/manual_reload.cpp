@@ -44,6 +44,10 @@ bool read_n(const void* src, void* dst, size_t n) {
 }
 
 std::atomic<bool> g_on{true};
+// 2026-10-21 (HELD_GUN_MATRIX.md G2, G3): a reload may be ended early - the shotgun's by a pump stroke while it waits
+// for a shell, the pistol's by the reload button while it waits for a cylinder - through the game's own interrupt
+// (abort_reload below). F10 "End a reload early"; off if the hands ever stay down after one.
+std::atomic<bool> g_abortOn{true};
 rr::Machine g_machine;
 rr::Config g_cfg;
 rr::Pump g_pump;          // the shotgun's pump by hand
@@ -914,6 +918,24 @@ void tommy_sound(void* hands, int phaseWas, int phase, bool ejected) {
     if (phaseWas == 4 && phase == 5) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 2225, 2700);
 }
 
+// End the game's reload early, the way a weapon switch does (Hands.uc, from the UnrealScript corpus): the hands'
+// transition sequence is interrupted (`InterruptStateTransitionExecution`: the sequence index cleared, the hands to
+// HandsOffscreen, which ends the latent reload code), the weapon told its reload was interrupted
+// (`OnReloadInterrupted`: the three-part shotgun's current ammunition restored - it is none through the loops - and
+// its ammo contexts removed), and the hands asked to equip the weapon again (`EquipWeapon`). The script calls are
+// by name (script_call.h); each one's result is logged. NOT verified in a run (2026-10-21): if the hands stay down
+// after one, the weapon wheel brings them back, and F10 "End a reload early" turns this off.
+bool abort_reload(void* weapon, void* hands, const char* why) {
+    struct { int32_t pad[4]; } none{};
+    const bool a = script::call(weapon, "OnReloadInterrupted", &none);
+    const bool b = hands && script::call(hands, "InterruptStateTransitionExecution", &none);
+    const bool c = hands && script::call(hands, "EquipWeapon", &none);
+    BVR_LOG("[reload] %S: the reload is ended early (%s): OnReloadInterrupted %s, InterruptStateTransitionExecution %s, "
+            "EquipWeapon %s",
+            g_cls, why, a ? "called" : "FAILED", b ? "called" : "FAILED", c ? "called" : "FAILED");
+    return a && b && c;
+}
+
 // A manual reload is being dropped (the weapon changed, or put away, or the game ended its reload): with the drum
 // out, the gun has none until one goes in; otherwise a magazine it ejected is shown again.
 void reload_left(void* weapon, bool magOut) {
@@ -1126,6 +1148,18 @@ void tick(const Frame& f) {
     const bool xPressed = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable;
     in.eject = xPressed && !g_machine.active();
     in.ejectNow = xPressed && g_machine.active(); // a reload waiting at its first pull drops the magazine
+    // G3: the pistol waiting for a new cylinder (at the pouch, nothing in the hand) - X cancels the reload instead:
+    // the gun is put away and comes back closed with the rounds it had (the game refills only at a clip's end).
+    if (xPressed && g_abortOn.load(std::memory_order_relaxed) && !_wcsicmp(g_cls, L"Pistol") && g_machine.active() &&
+        g_machine.hand_free() && g_machine.program() && g_machine.phase() < g_machine.program()->n &&
+        g_machine.program()->phases[g_machine.phase()].kind == rr::Kind::Fetch) {
+        in.ejectNow = false;
+        abort_reload(f.weapon, f.hands, "the reload button at the pouch");
+        let_go(f.weapon, f.hands);
+        g_machine.reset();
+        g_showAmmoFor = f.weapon;
+        g_ejectedThis = false;
+    }
     // 21:11 run: a dry Tommy Gun's reload waited at the drum and the tester switched ammunition - the game
     // took the switch (PendingAmmoSelection) but the reload went on waiting: "completely blocked". A switch
     // while it waits drops the drum as X does; the game loads the new ammunition when the clip ends.
@@ -1416,8 +1450,16 @@ void tick(const Frame& f) {
         BVR_LOG("[reload] Shotgun: reloading from empty - uncocked until its last pump is worked by hand");
     }
     static bool s_dryWas = false;
-    const bool dry = shotgun && g_uncockedGun == f.weapon && !g_machine.active() && st != hands_state::State::Reloading &&
-                     st != hands_state::State::Firing;
+    // G2: the shotgun's reload waiting for a shell (at the pouch, nothing in the hand) with two hands on the gun - a
+    // pump stroke ends the reload with the shells already in and cocks it (the same Pump as the dry cock, the pump
+    // bone drawn with the strokes).
+    const rr::Program* lp = g_machine.program();
+    const bool loopPump = shotgun && g_abortOn.load(std::memory_order_relaxed) && g_machine.active() && lp &&
+                          g_machine.phase() < lp->n && lp->phases[g_machine.phase()].kind == rr::Kind::Fetch &&
+                          g_machine.hand_free() && two_hand::held();
+    const bool dry = shotgun && ((g_uncockedGun == f.weapon && !g_machine.active() && st != hands_state::State::Reloading &&
+                                  st != hands_state::State::Firing) ||
+                                 loopPump);
     if (dry) {
         rr::PumpInput pi;
         pi.fireClip = true;
@@ -1450,7 +1492,13 @@ void tick(const Frame& f) {
             const float dw[3] = {-kPumpTravel * back, 0.0f, 0.0f};
             bones::set_weapon_part_offset(pump, dw);
         }
-        if (po.run) {
+        if (po.run && loopPump) {
+            abort_reload(f.weapon, f.hands, "a pump stroke while it waited for a shell");
+            let_go(f.weapon, f.hands);
+            g_machine.reset();
+            g_uncockedGun = nullptr;
+            BVR_LOG("[reload] Shotgun: pumped while loading - the reload ends with the shells in, cocked");
+        } else if (po.run) {
             g_uncockedGun = nullptr;
             BVR_LOG("[reload] Shotgun: cocked dry by hand - it fires again");
         }
@@ -1578,6 +1626,7 @@ void tick(const Frame& f) {
 float menu_read(menu::Setting id) {
     switch (id) {
         case S::ManualReload: return g_on.load() ? 1.0f : 0.0f;
+        case S::ReloadAbort: return g_abortOn.load() ? 1.0f : 0.0f;
         default: return std::numeric_limits<float>::quiet_NaN();
     }
 }
@@ -1587,6 +1636,10 @@ bool menu_write(menu::Setting id, float value) {
         case S::ManualReload:
             if (g_on.exchange(value != 0) != (value != 0))
                 BVR_LOG("[reload] manual reload %s", value != 0 ? "ON" : "off");
+            return true;
+        case S::ReloadAbort:
+            if (g_abortOn.exchange(value != 0) != (value != 0))
+                BVR_LOG("[reload] ending a reload early (a pump stroke / the reload button at the pouch) %s", value != 0 ? "ON" : "off");
             return true;
         default: return false;
     }

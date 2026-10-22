@@ -28,6 +28,14 @@ clean, INSTALLED. NOT run in the simulator or the headset.
   fore-grip over the reload on a tie; the reload's reach is a distance in every stage, never an absolute
   claim. Host-tested (`grip-owner` 20, `reload-rig` 130). `HELD_GUN_MATRIX.md` is the specification;
   its section 10 enumerates the hand POSE sources per state and designs the hand pose engine (step 3b).
+- **Step 3c is in, UNVERIFIED** (ENGINE_NOTES "Ending a reload early"): a pump stroke while the shotgun
+  waits for a shell ends its reload with the shells in and cocks it; X while the pistol waits for a
+  cylinder cancels its reload. Both through the hands' own interrupt sequence and a re-equip (script
+  calls by name, each logged). F10 Controls > Manual reload > "End a reload early" turns it off if the
+  hands ever stay down after one (the weapon wheel brings them back).
+- **Headset check for step 3c:** shotgun with two shells in of four, two hands on it, pump: the reload
+  ends, the gun fires (watch `[reload] Shotgun: the reload is ended early (...)` for three "called" and the
+  state line's rounds). Pistol: X while the hand is waiting for a cylinder: the gun dips and comes back.
 - **Headset check for step 3a:** on a dry Tommy waiting at its drum, a squeeze with the hand under the
   fore-grip takes the two-handed grip, at the drum well pulls the drum; while a drum drops or seats, a
   squeeze at the fore-grip takes the grip (not swallowed); the log's `[grab] the free grip goes to`
@@ -56,8 +64,8 @@ clean, INSTALLED. NOT run in the simulator or the headset.
 
 ### Next steps
 
-- Headset: the step-1, 2 and 3a checks above. Then 3b (the hand pose engine, HELD_GUN_MATRIX.md 10) and
-  3c (the aborts G2/G3, engine state work).
+- Headset: the step-1, 2, 3a and 3c checks above. Then 3b (the hand pose engine, HELD_GUN_MATRIX.md 10),
+  then step 4 (the suppression record), 5 (one pump on the barrel axis), 6 (the sound table).
 - Still latched, by choice: the shotgun's gun-in-hand rest (per gun per hand, settled), the AmmoModel
   offset (`g_amRel`; derive from the ammunition socket record), the start-clip hold. Step 4 takes them.
 
