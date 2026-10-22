@@ -9,9 +9,8 @@
 //              no reload runs, at the reload's last pump, while the reload waits for a free hand, or when
 //              the hold is already on
 //   cocked   - only the shotgun, only a reload begun empty, leaves the gun uncocked
-//   pump     - a shot's pump with shells left, the reload's last pump and the dry cock are needed; a pump while the
-//              reload waits is offered only once a shell is in, and then deliberate; a shot that ran the gun empty
-//              offers none
+//   pump     - a shot's pump, the reload's last pump and the dry cock are needed (the quick stroke); a pump while
+//              the reload waits for a shell is optional (the deliberate one)
 //   kind     - the three guns by class; anything else is Other
 #include "game/bioshock1r/gun_state.h"
 
@@ -116,15 +115,11 @@ int main() {
     }
     // ---- pump need (2026-10-22) ----
     {
-        check(pump_need(PumpUse::Shot, 3, 0) == PumpNeed::Required, "a shot with shells left: the pump is needed");
-        check(pump_need(PumpUse::Shot, -1, 0) == PumpNeed::Required, "a shot with the count unknown: needed (never free a gun on a guess)");
-        check(pump_need(PumpUse::Shot, 0, 0) == PumpNeed::None, "a shot that ran the gun empty: nothing to chamber - not offered");
-        check(pump_need(PumpUse::ReloadEnd, 0, 4) == PumpNeed::Required, "the reload's last pump: needed");
-        check(pump_need(PumpUse::Dry, 2, 0) == PumpNeed::Required, "the dry cock: needed");
-        check(pump_need(PumpUse::Loop, 0, 0) == PumpNeed::None, "a pump while the reload waits, no shell in: not offered (it would only restart)");
-        check(pump_need(PumpUse::Loop, 0, 1) == PumpNeed::Optional, "with a shell in: offered, deliberate");
-        check(pump_need(PumpUse::Loop, 0, 3) == PumpNeed::Optional, "with three in: offered, deliberate");
-        check(pump_need(PumpUse::None, 3, 3) == PumpNeed::None, "no use: nothing");
+        check(pump_need(PumpUse::Shot) == PumpNeed::Required, "a shot's pump: needed, every shot (the gun never pumps itself)");
+        check(pump_need(PumpUse::ReloadEnd) == PumpNeed::Required, "the reload's last pump: needed");
+        check(pump_need(PumpUse::Dry) == PumpNeed::Required, "the dry cock: needed");
+        check(pump_need(PumpUse::Loop) == PumpNeed::Optional, "a pump while the reload waits for a shell: offered, deliberate");
+        check(pump_need(PumpUse::None) == PumpNeed::None, "no use: nothing");
     }
     // ---- kind ----
     {

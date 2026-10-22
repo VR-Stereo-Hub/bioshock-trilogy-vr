@@ -8073,7 +8073,11 @@ void m4_compose(bool late) {
                 ik::Vec fp = cp;
                 if (rest && wGun > 0.001f) {
                     const ik::Quat rq = ik::normalized(ik::mul(gq0, ik::normalized(ik::quat(rest->wristQ))));
-                    const ik::Vec rp = gp0 + ik::rotate(gq0, ik::vec(rest->wristP));
+                    // 2026-10-22: the wrist rides the pump as it is worked (the fist's measured travel to the rear
+                    // stop, gun_geometry::Gun::pumpBack): 223bbe5 moved the grab point and left the drawn hand here.
+                    ik::Vec wristRel = ik::vec(rest->wristP);
+                    if (const gun_geometry::Gun* row = gun_row(curGun)) wristRel = wristRel + row->pumpBack * manual_reload::pump_back();
+                    const ik::Vec rp = gp0 + ik::rotate(gq0, wristRel);
                     fq = blend_q(cq, rq, wGun);
                     fp = cp + (rp - cp) * wGun;
                 }

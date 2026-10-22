@@ -7591,3 +7591,33 @@ it at once (`[sound] another take of ...`). So the ionic buck's pump sounds whol
 the forward - the game's own way - and the Tommy's ammunition variants would do the same for its reload. The polish
 would be a timeline per take, keyed by that length (`tools/fsb-probe.ps1` on each exported variant); the lengths
 are in the log.
+
+## 2026-10-22 - The 10:14 run: what the first cut of the above got wrong, and the electric buck's two responses
+
+The 10:14 headset run, on 223bbe5, was worse than 09:31. Each cause, from its log:
+
+- **"The shotgun cocks by itself."** 10:18:06.681: `event PumpShotgun on the hands` UNMUTED - the shot that ran the
+  gun empty, which the first cut let pump itself (its `PumpNeed::None`). The tester's rule from 10-21 stands: the
+  gun never pumps itself, every shot's clip waits for the hands. `pump_need` takes the use alone now; a shot's pump
+  is always Required; the by-hand mute list is gone (PumpShotgun is muted whenever the manual reload is on, as
+  before).
+- **"It does not let me cock whenever I want."** The loop-ending pump was refused until a shell was in. Removed: it
+  is offered at every wait, deliberate. The shells-in count is gone with it.
+- **"The hand still does not follow the slide."** 223bbe5 moved the two-handed GRAB POINT (`grip_point`), which the
+  grab distance and the aim turn use - but the hand pose engine draws the on-gun wrist from the rest pose's own
+  `wristP`, a constant of its own (bones.cpp, the builder). That wrist now rides `pumpBack * pump_back()` too.
+- **"The sound is the same."** The package lists two electric responses to the reload end:
+  `HandsShotgunReloadEnd_ammoElectric` and `HandsShotgunReloadEnd_ammoElectricDefault`. With the ionic buck
+  selected, the mod's event starts the electric layer INSIDE the call (one of six takes, 757-1175 ms - what the
+  09:31 entry above took for "another take of the action") and the base 3552 ms take a moment LATER, outside the
+  call, where no cut reached it: it played whole, both strokes, on each stroke, under the layer. Now a part that
+  meets the layer inside the call keeps a 150 ms watch for a sound of its take's length and cuts that one to the
+  part (`[sound] the take started late: ...`); the layer itself plays whole with the first part and is stopped on
+  the later ones, as before. Unverified: the 150 ms, and whether the Default response starts the base on the same
+  thread (the hook sees every thread; the watch is under the engine's mutex).
+- **The Tommy Gun: "grab the mag and switch to plasmids at the same time."** 10:17:15.228: the squeeze at the pouch
+  with the drum still in went to the spare (`the free grip goes to the spare`) and the same frame opened the
+  plasmid wheel (`open: PLASMID wheel`, closed 15 ms later on the hand swap, `SelectedAbility`). The spare is a prop
+  outside the machine, so nothing claimed the press and its first frame reached the game as a bumper tap. Older
+  than 223bbe5 (207956d's arbiter): a squeeze the arbiter gives the reload or the spare is now withheld from its
+  first frame until it comes up, claimed or not.

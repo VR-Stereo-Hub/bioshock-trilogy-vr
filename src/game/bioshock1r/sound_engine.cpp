@@ -103,6 +103,24 @@ void cut(void* ch, const Want& w, const char* nm) {
     BVR_LOG("[sound] part of %s: %u-%u ms%s", nm, w.fromMs, w.toMs, r ? " - setPosition FAILED" : "");
 }
 
+// 2026-10-22: the sound the mod's event answers with is not always the take the parts are cut from. The shotgun's
+// electric buck answers ShotgunReloadEnd with TWO responses (the map package: HandsShotgunReloadEnd_ammoElectric and
+// _ammoElectricDefault): an electric layer - one of six takes, 757-1175 ms - starts inside the call, and the base
+// take (3552 ms) a moment later, outside it, where no cut reached it: it played whole, both strokes, on each stroke
+// (the 09:31 and 10:14 runs, "both directions and doubled"). So a part that met another sound inside the call waits
+// this long for a sound of its take's length and cuts that one.
+struct Pending {
+    Want want;
+    uint64_t untilMs = 0;
+};
+Pending g_pending; // under g_mx
+constexpr uint64_t kLateMs = 150;
+
+bool other_take(unsigned want, unsigned len) {
+    const unsigned d = len > want ? len - want : want - len;
+    return want && len && d * 50 > want;
+}
+
 int __stdcall play_detour(void* system, int channelIndex, void* sound, int paused, void** channel) {
     const int r = g_playOrig(system, channelIndex, sound, paused, channel);
     if (r || !channel || !*channel) return r;
@@ -110,21 +128,19 @@ int __stdcall play_detour(void* system, int channelIndex, void* sound, int pause
     if (t_want) { // inside play_part's event: the part's sound is cut (the first; an event plays one sound)
         unsigned len = 0;
         if (t_caught <= 0 && name_is(sound, t_want->sound, nm, sizeof nm, &len)) {
-            // 2026-10-22: another length is another take of the action (an ammunition variant's), whose
-            // timeline the part's times do not fit (the 09:31 run: the ionic buck's forward part began past
-            // its take's end and played it whole - both strokes - after the back part). It plays whole once,
-            // on the action's first part; a later part stops it at once.
-            const unsigned want = t_want->lengthMs;
-            const unsigned d = len > want ? len - want : want - len;
-            if (want && len && d * 50 > want) {
+            if (other_take(t_want->lengthMs, len)) {
+                // The variant's own layer: whole once, with the action's first part; a later part stops it.
                 if (t_want->first) {
-                    BVR_LOG("[sound] another take of %s: %u ms long (the parts are cut from the %u ms one) - played whole",
-                            t_want->sound, len, want);
+                    BVR_LOG("[sound] %s's variant layer: %u ms long (the parts are cut from the %u ms take) - played whole",
+                            t_want->sound, len, t_want->lengthMs);
                 } else {
                     ch_stop(*channel);
-                    BVR_LOG("[sound] another take of %s: %u ms long - stopped (it played whole with the first part)",
+                    BVR_LOG("[sound] %s's variant layer: %u ms long - stopped (it played whole with the first part)",
                             t_want->sound, len);
                 }
+                std::lock_guard<std::mutex> lk(g_mx);
+                g_pending.want = *t_want;
+                g_pending.untilMs = GetTickCount64() + kLateMs;
                 t_caught = 1;
                 return r;
             }
@@ -141,6 +157,31 @@ int __stdcall play_detour(void* system, int channelIndex, void* sound, int pause
         unsigned len = 0;
         name_is(sound, nullptr, nm, sizeof nm, &len);
         BVR_LOG("[sound] %ls plays %s (%u ms)", t_event, nm, len);
+    }
+    // The base take starting late, after a part met the variant's layer: cut to that part.
+    {
+        Want late;
+        bool pending = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            if (g_pending.untilMs && GetTickCount64() <= g_pending.untilMs) {
+                late = g_pending.want;
+                pending = true;
+            } else {
+                g_pending.untilMs = 0;
+            }
+        }
+        if (pending) {
+            unsigned len = 0;
+            if (name_is(sound, late.sound, nm, sizeof nm, &len) && !other_take(late.lengthMs, len)) {
+                {
+                    std::lock_guard<std::mutex> lk(g_mx);
+                    g_pending.untilMs = 0;
+                }
+                BVR_LOG("[sound] the take started late: %s, %u ms long (wanted %s)", nm, len, late.sound);
+                cut(*channel, late, nm);
+            }
+        }
     }
     return r;
 }
@@ -183,20 +224,13 @@ std::atomic<bool> g_muteOn{false};
 // The action events the gun's manual reload fires itself - muted when its clips fire them. The list is the gun's
 // suppression record's (gun_suppress.h), handed over with the context (2026-10-21; it was a table here).
 std::atomic<const wchar_t* const*> g_muted{nullptr};
-// 2026-10-22: muted only while the hands work the pump (the shot's pump cue): a shot not held two-handed pumps
-// itself and its cue plays as the game's.
-std::atomic<const wchar_t* const*> g_mutedByHand{nullptr};
-std::atomic<bool> g_byHand{false};
 thread_local bool t_playing = false; // play() is firing its own: let it through
 
-bool in_list(const wchar_t* const* list, const wchar_t* event) {
+bool muted(const wchar_t* event) {
+    const wchar_t* const* list = g_muted.load(std::memory_order_relaxed);
     for (const wchar_t* const* e = list; e && *e; ++e)
         if (!_wcsicmp(*e, event)) return true;
     return false;
-}
-bool muted(const wchar_t* event) {
-    if (in_list(g_muted.load(std::memory_order_relaxed), event)) return true;
-    return g_byHand.load(std::memory_order_relaxed) && in_list(g_mutedByHand.load(std::memory_order_relaxed), event);
 }
 
 int __fastcall detour(void* self, void* /*edx*/, int32_t n0, int32_t n1, void* other, void* mat, void* loc, void* rot,
@@ -268,13 +302,10 @@ bool install(void* anyActor) {
     return true;
 }
 
-void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, const wchar_t* const* mutedByHand,
-                 bool pumpByHand, bool manualReloadOn) {
+void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, bool manualReloadOn) {
     g_hands.store(hands, std::memory_order_relaxed);
     g_weapon.store(weapon, std::memory_order_relaxed);
     g_muted.store(mutedEvents, std::memory_order_relaxed);
-    g_mutedByHand.store(mutedByHand, std::memory_order_relaxed);
-    g_byHand.store(pumpByHand, std::memory_order_relaxed);
     g_muteOn.store(manualReloadOn, std::memory_order_relaxed);
 }
 

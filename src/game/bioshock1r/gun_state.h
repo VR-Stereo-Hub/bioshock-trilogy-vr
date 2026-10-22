@@ -72,20 +72,20 @@ inline bool reload_begins_uncocked(Kind k, int rounds) { return k == Kind::Shotg
 // at it), the reload's last pump, the dry cock of a gun left uncocked, a pump while the reload waits for a shell.
 enum class PumpUse : uint8_t { None, Shot, ReloadEnd, Dry, Loop };
 // 2026-10-22 (the 09:31 headset run: an empty gun's reload, started by the game, ended three times in four seconds
-// by the aim's own drift read as a pump - and nothing was cocked): what a stroke IS to the gun decides how much of
-// one it takes. Required: the gun cannot fire until it is worked - a shot's pump with shells left (or the count
-// unknown), the reload's last pump, the dry cock; it stays the quick stroke. Optional: it does something but nothing
-// needs it - a pump while the reload waits for a shell with one or more in already (it ends the reload, cocked);
-// a deliberate stroke. None: it would do nothing, so it is not offered - a shot's pump with the gun run empty (the
-// clip pumps itself, the game's reload follows), a pump while the reload waits with no shell in yet (it would only
-// restart the reload).
+// by the aim's own drift read as a pump): what a stroke IS to the gun decides how much of one it takes. Required:
+// the gun cannot fire until it is worked - a shot's pump (every shot, the last one too: the gun never pumps itself,
+// the tester's rule), the reload's last pump, the dry cock; it stays the quick stroke. Optional: it does something
+// but nothing needs it - a pump while the reload waits for a shell (it ends the reload, cocked); a deliberate
+// stroke. (A first cut of this, 223bbe5, let an empty gun's shot pump itself and offered no stroke before the first
+// shell was in: the 10:14 run read the one as the gun cocking by itself and the other as being refused a cock.
+// Every pump is the player's; only its size changes.)
 enum class PumpNeed : uint8_t { None, Required, Optional };
-inline PumpNeed pump_need(PumpUse use, int rounds, int shellsIn) {
+inline PumpNeed pump_need(PumpUse use) {
     switch (use) {
-        case PumpUse::Shot: return rounds == 0 ? PumpNeed::None : PumpNeed::Required;
+        case PumpUse::Shot:
         case PumpUse::ReloadEnd:
         case PumpUse::Dry: return PumpNeed::Required;
-        case PumpUse::Loop: return shellsIn > 0 ? PumpNeed::Optional : PumpNeed::None;
+        case PumpUse::Loop: return PumpNeed::Optional;
         default: return PumpNeed::None;
     }
 }

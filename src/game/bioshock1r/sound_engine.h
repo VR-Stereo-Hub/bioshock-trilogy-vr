@@ -13,19 +13,19 @@ namespace bvr::b1r::sound_engine {
 // Game thread: hook the effect-event native through this actor's vtable (once; fail-soft, logged).
 bool install(void* anyActor);
 // Game thread, each tick: the actors whose events are this gun's (the Hands actor, the weapon), the events the mod
-// fires itself for this gun (its suppression record's null-terminated lists, gun_suppress.h; muted when a clip fires
-// them - the second list only while `pumpByHand`, the shot's pump being the hands' to work; a shot with the gun run
-// empty pumps itself and its cue plays), and whether its manual reload is on (the mute applies only then).
-void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, const wchar_t* const* mutedByHand,
-                 bool pumpByHand, bool manualReloadOn);
+// fires itself for this gun (its suppression record's null-terminated list, gun_suppress.h; muted when a clip fires
+// them), and whether its manual reload is on (the mute applies only then).
+void set_context(void* hands, void* weapon, const wchar_t* const* mutedEvents, bool manualReloadOn);
 // Game thread: fire `event` (an effect event name, e.g. "PumpShotgun") on `actor` as the game would - passes the mute.
 bool play(void* actor, const char* event, const char* referenceTag = nullptr);
 // Game thread: fire `event` on `actor`, but of its sound named `sound` (FMOD's name, e.g. weapons_shotgun_reloadEndwav)
 // play only fromMs..toMs - one file is a whole action (both strokes of a pump), and each part goes with its own motion.
 // The times are read off the sound with tools/fsb-probe.ps1. `lengthMs` is the take the times belong to (FMOD's
-// length of it; 0 any): an event answering with another take (an ammunition variant's) plays it whole when `first`
-// (the action's first part) and stops it otherwise (gun_sounds.h Row). False: no FMOD hook, or the event plays
-// another sound (logged) - the caller falls back.
+// length of it; 0 any): an event answering with another sound (an ammunition variant's own layer - the shotgun's
+// electric buck answers ShotgunReloadEnd with an electric take inside the call and its base sound a moment LATER,
+// through its second response) plays that one whole when `first` (the action's first part) and stops it otherwise
+// (gun_sounds.h Row), and a sound of the take's length starting within 150 ms after is the base, cut to the part.
+// False: no FMOD hook, or the event plays another sound (logged) - the caller falls back.
 bool play_part(void* actor, const char* event, const char* sound, unsigned fromMs, unsigned toMs, unsigned lengthMs = 0,
                bool first = true);
 // Game thread, each tick: stop each part at its end.

@@ -73,13 +73,6 @@ rr::PumpConfig g_pumpCfg = shot_pump_cfg();
 gun_state::State g_state;
 void* g_uncockedGun = nullptr;
 bool g_pumpHolding = false;    // the shot pump holds the Fire clip for the hands this tick (a stroke or its wait)
-// 2026-10-22 (the 09:31 run; gun_state::pump_need): what the pump is for decides its stroke - and whether it is
-// offered at all. The shells seated this reload (the loop's Play phase ending, each) say whether a pump while the
-// reload waits would cock anything; the rounds read fresh as a shot's clip begins say whether its pump chambers
-// anything (none: the clip pumps itself and its cue plays - g_pumpByHand off - and the game's reload follows).
-int g_shellsIn = 0;
-int g_shotRounds = -1;
-bool g_pumpByHand = true;      // the shot's pump cue is the hands' (muted; the strokes sound it)
 std::atomic<float> g_pumpBack{0.0f}; // game thread -> bones: the pump's position, 0 forward .. 1 at the rear stop
 int g_rounds = -1, g_magSize = -1, g_spareRounds = -1; // the game's counts, as last read (can_reload, 4 Hz)
 int g_roundsAtStart = -1;      // the rounds the gun had as its reload's clip began (read fresh then)
@@ -807,7 +800,11 @@ bool pad(bvr::input::PadOverride* pad, bool* changed, bool locked) {
                        GetTickCount64() - g_claimMs.load(std::memory_order_relaxed) < 250;
     // A squeeze the reload took stays the reload's until it lets go (a bumper appearing mid-squeeze
     // would raise the plasmid wheel).
-    if (claim && grip) g_suppressUntilUp = true;
+    // 2026-10-22 (the 10:14 run, 10:17:15: a squeeze at the pouch with the drum still in took the spare AND opened
+    // the plasmid wheel - the spare is a prop outside the machine, so nothing claimed the press): a squeeze the
+    // arbiter gave the reload (`locked` false: grip_owner::Owner::Reload or Spare) is the reload's from its first
+    // frame, claimed or not - the machine's claim comes a frame after the press it counts here.
+    if (grip) g_suppressUntilUp = true;
     if (!grip) g_suppressUntilUp = false;
     if ((claim || g_suppressUntilUp) && grip) {
         pad->buttons = static_cast<uint16_t>(pad->buttons & ~kLB);
@@ -977,8 +974,7 @@ void tick(const Frame& f) {
     {
         const wchar_t* wc = f.weapon ? patterns::object_class_name(f.weapon) : nullptr;
         const gun_suppress::Record& sr = gun_suppress::record(gun_state::kind_of(wc));
-        sound_engine::set_context(f.hands, f.weapon, sr.mutedEvents, sr.mutedByHand, g_pumpByHand,
-                                  f.weapon && g_on.load(std::memory_order_relaxed));
+        sound_engine::set_context(f.hands, f.weapon, sr.mutedEvents, f.weapon && g_on.load(std::memory_order_relaxed));
     }
     if (g_spare.actor && (!f.weapon || !g_on.load(std::memory_order_relaxed))) {
         if (f.weapon && dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
@@ -995,8 +991,6 @@ void tick(const Frame& f) {
         g_gunKeep = 1.0f;
         g_state = gun_state::State{};
         g_pumpHolding = false;
-        g_pumpByHand = true;
-        g_shellsIn = 0;
         g_pumpBack.store(0.0f, std::memory_order_relaxed);
         g_fireAllowed.store(true, std::memory_order_relaxed);
         g_active.store(false, std::memory_order_relaxed);
@@ -1179,13 +1173,6 @@ void tick(const Frame& f) {
     const int phaseWas = g_machine.active() ? g_machine.phase() : -1;
     const bool magOutWas = g_machine.mag_out();
     const rr::Output o = g_machine.update(in, g_cfg);
-    // The shells seated this reload: the shotgun loop's Play phase (the hand leaving the port) ending, each time.
-    if (!progWas && g_machine.program()) g_shellsIn = 0;
-    if (progWas && phaseWas >= 0 && phaseWas < progWas->n && progWas->phases[phaseWas].kind == rr::Kind::Play &&
-        !_wcsicmp(progWas->clip, L"Reload_Loop") && (!g_machine.active() || g_machine.phase() != phaseWas)) {
-        ++g_shellsIn;
-        BVR_LOG("[reload] %S: %d shell%s in this reload", g_cls, g_shellsIn, g_shellsIn == 1 ? "" : "s");
-    }
     if (!_wcsicmp(g_cls, L"MachineGun"))
         {
             gun_sounds::Action acts[2];
@@ -1376,35 +1363,27 @@ void tick(const Frame& f) {
     // distance between the controllers, which the gun hand's own motion and sideways motion fed as strokes.
     // The use picks the clip and the config; a change of use starts the ratchet afresh.
     // 2026-10-22 (gun_state::pump_need; the 09:31 run: the aim's drift ended an empty gun's reload three times in
-    // four seconds, cocking nothing): a pump the gun NEEDS keeps its quick stroke; one it does not takes a deliberate
-    // one (reload_rig.h kDeliberateStrokeCm); one that would do nothing is not offered - a shot with the gun run empty
-    // pumps itself (its cue plays, the game's reload follows) and a pump before the first shell is in is no pump.
+    // four seconds): a pump the gun NEEDS keeps its quick stroke; the one it does not - a pump while the reload waits
+    // for a shell, which ends the reload - takes a deliberate one (reload_rig.h kDeliberateStrokeCm). Every pump is
+    // the player's: a shot's clip waits for the hands whatever the gun has left, and a reload may be pumped out at
+    // any shell (223bbe5 let an empty gun pump itself and refused the stroke before the first shell: the 10:14 run).
     using PumpUse = gun_state::PumpUse;
     using PumpNeed = gun_state::PumpNeed;
     static PumpUse s_useWas = PumpUse::None;
     static const rr::PumpConfig s_endCfg = end_pump_cfg();
-    static int32_t s_fireHandle = 0;
     PumpUse use = PumpUse::None;
-    PumpNeed need = PumpNeed::None;
     int32_t pw = 0, ph = 0;
     float clipT = 0.0f;
-    g_pumpByHand = true;
     if (shotgun) {
         const rr::Program* lp = g_machine.program();
         const bool atFetch = g_machine.active() && lp && g_machine.phase() < lp->n &&
                              lp->phases[g_machine.phase()].kind == rr::Kind::Fetch && g_machine.hand_free();
-        // The rounds left as a shot's clip begins, read fresh then (the 4 Hz count may be the shot stale).
-        if (fireClipNow && fireHandle != s_fireHandle) {
-            struct { int32_t ret; int32_t pad[3]; } r{};
-            g_shotRounds = script::call(f.weapon, "GetRoundsRemaining", &r) ? r.ret : -1;
-        }
         if (o.pumpWait && in.clipLive) {
             use = PumpUse::ReloadEnd;
             pw = hw;
             ph = hh;
             script::anim_time(f.weapon, hw, &clipT);
-        } else if (g_abortOn.load(std::memory_order_relaxed) && atFetch && two_hand::held() &&
-                   gun_state::pump_need(PumpUse::Loop, -1, g_shellsIn) != PumpNeed::None) {
+        } else if (g_abortOn.load(std::memory_order_relaxed) && atFetch && two_hand::held()) {
             use = PumpUse::Loop;
             clipT = 2.0f; // past the wait: no clip, only the hands
         } else if (g_uncockedGun == f.weapon && !g_machine.active() && st != hands_state::State::Reloading &&
@@ -1416,19 +1395,14 @@ void tick(const Frame& f) {
             pw = fireHandle;
             ph = fireHandsHandle;
             clipT = fireT;
-            if (gun_state::pump_need(use, g_shotRounds, g_shellsIn) == PumpNeed::None) {
-                // Nothing to chamber: the clip pumps itself, cue and all, and the hand rides its pump (below).
-                use = PumpUse::None;
-                g_pumpByHand = false;
-                g_pumpBack.store(rr::pump_position(g_pumpCfg, fireT), std::memory_order_relaxed);
-            }
         }
-        need = gun_state::pump_need(use, g_shotRounds, g_shellsIn);
     }
+    const PumpNeed need = gun_state::pump_need(use);
     if (use != PumpUse::None) {
         static const char* const kUseName[] = {"-", "pump", "reload's last pump", "dry cock", "pump while loading"};
         rr::PumpInput pi;
         pi.fireClip = use == PumpUse::Shot ? fireClipNow : true;
+        static int32_t s_fireHandle = 0;
         pi.clipNew = use != s_useWas || (use == PumpUse::Shot && pw != s_fireHandle);
         s_fireHandle = use == PumpUse::Shot ? pw : 0;
         pi.clipT = clipT;
@@ -1536,14 +1510,13 @@ void tick(const Frame& f) {
         }
         g_pumping.store(false, std::memory_order_relaxed);
         g_pumpHolding = false;
-        if (!(shotgun && fireClipNow)) g_pumpBack.store(0.0f, std::memory_order_relaxed);
-        s_fireHandle = shotgun && fireClipNow ? fireHandle : 0;
+        g_pumpBack.store(0.0f, std::memory_order_relaxed);
     }
     if (use != s_useWas && use != PumpUse::None)
-        BVR_LOG("[reload] Shotgun %s: %s stroke (%.0f cm), %d shell%s in, %d round%s", use == PumpUse::Shot ? "pump" :
-                use == PumpUse::ReloadEnd ? "reload's last pump" : use == PumpUse::Dry ? "dry cock" : "pump while loading",
-                need == PumpNeed::Optional ? "a deliberate" : "the quick", need == PumpNeed::Optional ? rr::kDeliberateStrokeCm : g_pumpCfg.strokeCm,
-                g_shellsIn, g_shellsIn == 1 ? "" : "s", g_shotRounds, g_shotRounds == 1 ? "" : "s");
+        BVR_LOG("[reload] Shotgun %s: %s stroke (%.0f cm)",
+                use == PumpUse::Shot ? "pump" : use == PumpUse::ReloadEnd ? "reload's last pump" : use == PumpUse::Dry ? "dry cock" : "pump while loading",
+                need == PumpNeed::Optional ? "a deliberate" : "the quick",
+                need == PumpNeed::Optional ? rr::kDeliberateStrokeCm : use == PumpUse::ReloadEnd ? s_endCfg.strokeCm : g_pumpCfg.strokeCm);
     s_useWas = use;
     // ---- THE GUN'S STATE, assembled once (gun_state.h) ---------------------------------------------------------
     {

@@ -522,9 +522,9 @@ survives a frame with no measure, a hold survives a reload start, a hand-over wh
   the config chosen from `GunState::stage`, and a stroke in progress is never reset by the use changing.
 - The clip follows the stroke 1:1 over the pump's travel; the catch plays the rest.
 - 2026-10-22: what the stroke IS to the gun (`gun_state::pump_need`) chooses its size: needed (a shot with
-  shells left, the reload's last pump, the dry cock) keeps the quick 6 cm; optional (ending a loop with a
-  shell in) takes a deliberate 12 cm; pointless (an empty gun's shot, a loop with no shell in) is not
-  offered. The anchor rides the slide (`gun_geometry::grip_point`, the fist's measured 18-unit travel).
+  shells left or not, the reload's last pump, the dry cock) keeps the quick 6 cm; optional (ending a loop at any
+  shell) takes a deliberate 12 cm. Every pump is the player's: the gun never pumps itself, and no stroke is
+  refused. The anchor and the drawn wrist ride the slide (`gun_geometry::grip_point`, the fist's 18-unit travel).
 
 Tests (host, pure): a fast pump (both strokes in 60 ms, each at least 6 cm); a half pump (4 cm back, let
 go, 4 cm back again: no stroke; then 6 cm: back done); a hand that wanders sideways 15 cm (no stroke); the

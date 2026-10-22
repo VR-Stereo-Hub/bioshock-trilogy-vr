@@ -32,23 +32,19 @@ struct Record {
     bool otherClipsMotion;   // the gun hand follows clips other than a shot's (idle fidgets, reloads)
     ClipMotion fire;         // a shot's clip
     const wchar_t* const* mutedEvents; // effect events the mod fires itself (sound_engine), null-terminated
-    // 2026-10-22: effect events the mod fires itself ONLY while the hands work the pump (the shot's pump cue,
-    // 0.42 s into the Fire clip): a shot not held two-handed pumps itself, and its cue plays as the game's.
-    const wchar_t* const* mutedByHand;
 };
 
-inline constexpr const wchar_t* kShotgunMuted[] = {L"ShotgunReloadEnd", nullptr};
-inline constexpr const wchar_t* kShotgunMutedByHand[] = {L"PumpShotgun", nullptr};
+inline constexpr const wchar_t* kShotgunMuted[] = {L"PumpShotgun", L"ShotgunReloadEnd", nullptr};
 inline constexpr const wchar_t* kTommyMuted[] = {L"ReloadTommy", nullptr};
 inline constexpr const wchar_t* kNoneMuted[] = {nullptr};
 
 inline constexpr Record kRecords[] = {
-    // kind,                 X,    eject, adopt, freeHand, ammoVis, otherClips, fire{kick, fade0, fade1, onlyWithRounds}, muted, by hand
-    {gun_state::Kind::Pistol,  true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kNoneMuted, kNoneMuted},
-    {gun_state::Kind::Tommy,   true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kTommyMuted, kNoneMuted},
-    {gun_state::Kind::Shotgun, true, false, true, true, true, false, {0.5f, 0.30f, 0.45f, false}, kShotgunMuted, kShotgunMutedByHand},
+    // kind,                 X,    eject, adopt, freeHand, ammoVis, otherClips, fire{kick, fade0, fade1, onlyWithRounds}, muted
+    {gun_state::Kind::Pistol,  true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kNoneMuted},
+    {gun_state::Kind::Tommy,   true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kTommyMuted},
+    {gun_state::Kind::Shotgun, true, false, true, true, true, false, {0.5f, 0.30f, 0.45f, false}, kShotgunMuted},
     // Other: a gun with no program - the game keeps everything.
-    {gun_state::Kind::Other,   false, false, false, false, false, true, {1.0f, 1e9f, 1e9f, false}, kNoneMuted, kNoneMuted},
+    {gun_state::Kind::Other,   false, false, false, false, false, true, {1.0f, 1e9f, 1e9f, false}, kNoneMuted},
 };
 
 inline const Record& record(gun_state::Kind k) {
@@ -67,8 +63,7 @@ inline float clip_motion_keep(const Record& r, bool fireClip, float clipT, bool 
     return r.fire.kick * (1.0f - u * u * (3.0f - 2.0f * u));
 }
 
-// The event is muted: always, or - `byHand` - while the hands work the pump.
-inline bool muted(const Record& r, const wchar_t* event, bool byHand = true) {
+inline bool muted(const Record& r, const wchar_t* event) {
     auto same = [](const wchar_t* a, const wchar_t* b) {
         if (!a || !b) return false;
         while (*a && *b && *a == *b) ++a, ++b;
@@ -76,9 +71,6 @@ inline bool muted(const Record& r, const wchar_t* event, bool byHand = true) {
     };
     for (const wchar_t* const* e = r.mutedEvents; e && *e; ++e)
         if (same(*e, event)) return true;
-    if (byHand)
-        for (const wchar_t* const* e = r.mutedByHand; e && *e; ++e)
-            if (same(*e, event)) return true;
     return false;
 }
 

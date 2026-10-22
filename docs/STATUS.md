@@ -12,7 +12,10 @@ want the headset. Five fixes came out of the run and are in the installed build.
 need, the hand on the slide, the ionic buck's takes"): a pump the gun needs keeps its quick stroke, one it
 does not (ending a loop) takes a deliberate 12 cm and is offered only with a shell in, an empty gun's shot
 pumps itself; the drawn hand rides the slide; an ammunition variant's reload-end take plays whole once
-instead of doubled. Installed 10:13; the 10:14 headset run is the first with it.
+instead of doubled. **The 10:14 run on that cut was worse** - the empty gun pumped itself, the loop pump was
+refused before the first shell, the drawn wrist never moved, and the ionic buck's base take starts late outside
+the mod's call - all four corrected (ENGINE_NOTES "The 10:14 run"), plus the Tommy's pouch squeeze opening the
+plasmid wheel. Installed; not yet in the headset.
 
 ### Current state
 
