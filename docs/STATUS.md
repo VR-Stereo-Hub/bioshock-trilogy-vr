@@ -2,6 +2,17 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-22 (evening) - BS1: manual reloading merged to staging; the plan for the other three guns
+
+**Merged into local `staging` as 7c7562f** (the tester's yes; not pushed - the repo is local-only). New branch
+**`claude/bs1-manual-reload-2`** off it. `docs/bioshock1/MANUAL_RELOAD_PLAN.md` is the plan: the grenade
+launcher, crossbow and chemical thrower exported from `ShockGame.U` with their clips and measured (the
+launcher's reload detaches its ammo box and slides the breech open - the "splitting" the tester saw is the
+game's own clip with no hand on the parts; the crossbow's takes its bolt box off and works the lever; the
+chem thrower's turns the valve wrench), the crossbow reticle (no `muzzle` socket, so no barrel origin:
+parallax), the chem spray (its emitter is attached to a socket 34 cm off and 27 deg from the ray), and
+eight ordered steps. No code this session.
+
 ## Session 2026-10-21 (evening) - BS1: the held-gun audit, then step 1 - gun geometry as constants
 
 **Branch `claude/bs1-manual-reload`**, local commits only. Built (Release), host-tested (20 suites), lint

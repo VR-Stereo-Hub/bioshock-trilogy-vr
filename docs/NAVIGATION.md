@@ -83,6 +83,7 @@ grep -n "^## M7" docs/ROADMAP.md        # then sed that range
 | BS1 DLSS/DLAA and the alternate frame warp: design, offline numbers, headset questions | `bioshock1/TEMPORAL.md` | ~120 lines, read whole |
 | BS1's held-gun mechanics (manual reload, two-handed grip, pump, hand-over): every piece of state and latch, every game override, the open bugs, and the redesign | `bioshock1/HELD_GUN_AUDIT.md` | ~590 lines; 1.6 is the bug list, Part 2 the design |
 | What every combination does: gun x hold x rounds x type x hand x magazine/shell x stage x input, per gun, with what is done and what step 3-6 changes | `bioshock1/HELD_GUN_MATRIX.md` | ~200 lines; section 1 is the six rules, 8 the gaps |
+| The plan for the three guns still reloading the game's way (launcher, crossbow, chem thrower) and the crossbow reticle, chem spray and launcher-splitting faults: what each reload physically is, the causes, the steps | `bioshock1/MANUAL_RELOAD_PLAN.md` | ~130 lines; section 1 the clip facts, 2 the faults, 4 the steps |
 | The Unofficial BioShock SDK, compiling new classes, CodeRed for Infinite | `MODDING_SDKS.md` | ~190 lines; the open-questions table is last |
 
 ---
