@@ -577,7 +577,8 @@ times are the `pcm` timeline ones already in `manual_reload.cpp` (ENGINE_NOTES 2
    Removed `g_blockFire`, `g_needCock` (now per weapon, surviving a switch), `g_chambered` (a fresh read at
    the clip's start), `g_dryClick`, `tommyDry`/`noDrum`. Headset check: a click on every refused pull,
    every gun, every stage; the shotgun stays uncocked across a weapon switch.
-3. The ownership table and the arbiter on it. Fixes bug 1. Headset check: the empty Tommy's fore-grip.
+3. The ownership table and the arbiter on it, as `HELD_GUN_MATRIX.md` specifies it (every state per gun,
+   the zone priority, the gaps G1-G7). Fixes bug 1. Headset check: the empty Tommy's fore-grip.
 4. `Suppress` per gun, replacing the scattered flags and the free-hand rules. Fixes item 6 and 12.
 5. One `Pump` on the barrel axis. Fixes bug 4 and 5's second half (a hold that measures right can cock).
 6. The sound table. No behaviour change intended; a regression check by log (`[sound] played ...`).
