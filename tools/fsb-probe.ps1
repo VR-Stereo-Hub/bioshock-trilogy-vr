@@ -3,11 +3,14 @@
 #
 #   .\tools\fsb-probe.ps1 -Filter pump                  # every subsound named *pump* in every bank
 #   .\tools\fsb-probe.ps1 -Bank streams_0_audio -Name <sound> [-StepMs 10]   # its envelope
+#   .\tools\fsb-probe.ps1 -File <x.unk> [-StepMs 10]   # a Sound object's own data (an MP3, exported outside the
+#       repo: umodel -export -game=bio -sounds -out=<dir> 1-Welcome <sound>) - its loudness, whole
+#   .\tools\fsb-probe.ps1 -Seek <x.unk> -StepMs <ms>    # how a channel seeked to <ms> maps onto the decoded audio
 #
 # BS1 only (the bank folder and fmodex.dll are the Remastered layout). Nothing decoded
 # is written anywhere: the output is names, lengths and loudness numbers.
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
-param([string]$Filter = "", [string]$Bank = "", [string]$Name = "", [string]$File = "", [int]$StepMs = 10)
+param([string]$Filter = "", [string]$Bank = "", [string]$Name = "", [string]$File = "", [string]$Seek = "", [int]$StepMs = 10)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "lib\resolve-game-path.ps1")
@@ -32,7 +35,10 @@ if (-not (Test-Path $probe) -or (Get-Item $src).LastWriteTime -gt (Get-Item $pro
     }
 }
 if ($File) {
-    & $probe $dll env (Resolve-Path -LiteralPath $File).Path - $StepMs
+    # `pcm`: the whole decoded sample (readData on an open-only MP3 came back 400 ms short at the start).
+    & $probe $dll pcm (Resolve-Path -LiteralPath $File).Path $StepMs
+} elseif ($Seek) {
+    & $probe $dll seek (Resolve-Path -LiteralPath $Seek).Path $StepMs
 } elseif ($Name) {
     $f = Get-ChildItem -LiteralPath $banks -Filter "$Bank*.fsb" | Select-Object -First 1
     if (-not $f) { throw "no bank $Bank under $banks" }

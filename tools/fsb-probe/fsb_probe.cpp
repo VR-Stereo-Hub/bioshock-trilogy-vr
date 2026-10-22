@@ -90,6 +90,105 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "fsb_probe: FMOD system: error %d\n", r);
         return 1;
     }
+    // `seek <sound> <ms>`: how a CHANNEL's millisecond position maps onto the audio, for each way a sound can be
+    // made - a channel seeked to <ms> reports its position in ms and in samples, against the decoded audio's own
+    // samples (ms * 44.1). An MP3 without an exact length is seeked by an estimate; the mod's cut points are in
+    // decoded time, so this says what to ask for.
+    if (!std::strcmp(argv[2], "seek") && argc > 4) {
+        using PlayFn = Result(__stdcall*)(void* sys, int idx, void* snd, int paused, void** ch);
+        using SetPosFn = Result(__stdcall*)(void* ch, unsigned pos, unsigned unit);
+        using GetPosFn = Result(__stdcall*)(void* ch, unsigned* pos, unsigned unit);
+        auto play = get<PlayFn>(m, "FMOD_System_PlaySound");
+        auto setPos = get<SetPosFn>(m, "FMOD_Channel_SetPosition");
+        auto getPos = get<GetPosFn>(m, "FMOD_Channel_GetPosition");
+        const unsigned want = static_cast<unsigned>(std::atoi(argv[4]));
+        constexpr unsigned kCompressed = 0x200, kAccurate = 0x4000;
+        const struct { const char* name; unsigned mode; } modes[] = {
+            {"sample (decompressed)", k2D | kSoftware},
+            {"compressed sample", k2D | kSoftware | kCompressed},
+            {"stream", k2D | kSoftware | kCreateStream},
+            {"sample, ACCURATETIME", k2D | kSoftware | kAccurate},
+            {"compressed, ACCURATETIME", k2D | kSoftware | kCompressed | kAccurate},
+        };
+        for (const auto& md : modes) {
+            void* snd = nullptr;
+            if (createSound(sys, argv[3], md.mode, nullptr, &snd)) {
+                std::printf("%-26s cannot be made\n", md.name);
+                continue;
+            }
+            unsigned lenMs = 0, lenPcm = 0;
+            length(snd, &lenMs, kMs);
+            length(snd, &lenPcm, kPcm);
+            void* ch = nullptr;
+            unsigned posMs = 0, posPcm = 0;
+            const Result pr = play(sys, -1, snd, 1, &ch); // FMOD_CHANNEL_FREE, paused
+            const Result sr = pr ? pr : setPos(ch, want, kMs);
+            if (!pr) {
+                getPos(ch, &posMs, kMs);
+                getPos(ch, &posPcm, kPcm);
+            }
+            std::printf("%-26s length %u ms = %u samples (%.0f ms at 44.1k) | seek %u ms -> reads %u ms, sample %u (%.1f ms "
+                        "of decoded audio)%s\n",
+                        md.name, lenMs, lenPcm, lenPcm / 44.1, want, posMs, posPcm, posPcm / 44.1, sr ? " - FAILED" : "");
+            release(snd);
+        }
+        return 0;
+    }
+    // `pcm <sound> [ms]`: a single sound's loudness from its WHOLE decoded audio - made a decompressed sample with
+    // FMOD's exact length (ACCURATETIME) and read with Sound::lock. 2026-10-21: the `env` mode's readData on an
+    // open-only stream came back ~392 ms short on both MP3s measured (3109 of 3500 ms, 2403 of 2795) and every part
+    // placed from it was off by that much; this is the timeline a channel's position uses.
+    if (!std::strcmp(argv[2], "pcm")) {
+        using LockFn = Result(__stdcall*)(void* snd, unsigned off, unsigned len, void** p1, void** p2, unsigned* l1,
+                                          unsigned* l2);
+        using UnlockFn = Result(__stdcall*)(void* snd, void* p1, void* p2, unsigned l1, unsigned l2);
+        auto lock = get<LockFn>(m, "FMOD_Sound_Lock");
+        auto unlock = get<UnlockFn>(m, "FMOD_Sound_Unlock");
+        constexpr unsigned kAccurate = 0x4000, kPcmBytes = 4;
+        void* snd = nullptr;
+        if (createSound(sys, argv[3], k2D | kSoftware | kAccurate, nullptr, &snd)) {
+            std::fprintf(stderr, "fsb_probe: %s cannot be made a sample\n", argv[3]);
+            return 1;
+        }
+        int type = 0, fmt = 0, ch = 0, bits = 0;
+        float freq = 0, vol = 0, pan = 0;
+        int prio = 0;
+        format(snd, &type, &fmt, &ch, &bits);
+        defaults(snd, &freq, &vol, &pan, &prio);
+        unsigned bytes = 0, ms = 0;
+        length(snd, &bytes, kPcmBytes);
+        length(snd, &ms, kMs);
+        void *p1 = nullptr, *p2 = nullptr;
+        unsigned l1 = 0, l2 = 0;
+        if (bits != 16 || ch < 1 || freq <= 0 || lock(snd, 0, bytes, &p1, &p2, &l1, &l2) || !p1) {
+            std::fprintf(stderr, "fsb_probe: cannot lock %s (%d bits, %d ch)\n", argv[3], bits, ch);
+            return 1;
+        }
+        const short* pcm = static_cast<const short*>(p1);
+        const unsigned total = l1 / (sizeof(short) * ch);
+        const int stepMs = argc > 4 ? std::atoi(argv[4]) : 10;
+        const unsigned frames = static_cast<unsigned>(freq * stepMs / 1000.0f);
+        std::printf("# %s: %u ms, %u samples locked = %.0f ms, %d ch, %.0f Hz\n", argv[3], ms, total, total * 1000.0 / freq,
+                    ch, freq);
+        std::vector<double> rms;
+        double peak = 0;
+        for (unsigned at = 0; frames && at + frames <= total; at += frames) {
+            double acc = 0;
+            for (unsigned k = at * ch; k < (at + frames) * ch; ++k) acc += double(pcm[k]) * pcm[k];
+            const double v = std::sqrt(acc / (frames * ch)) / 32768.0;
+            rms.push_back(v);
+            if (v > peak) peak = v;
+        }
+        for (size_t k = 0; k < rms.size(); ++k) {
+            const double db = rms[k] > 1e-6 ? 20.0 * std::log10(rms[k]) : -120.0;
+            const int bar = peak > 0 ? static_cast<int>(50.0 * rms[k] / peak + 0.5) : 0;
+            std::printf("%6u  %6.1f  %.*s\n", static_cast<unsigned>(k * stepMs), db, bar,
+                        "##################################################");
+        }
+        unlock(snd, p1, p2, l1, l2);
+        release(snd);
+        return 0;
+    }
     void* bank = nullptr;
     r = createSound(sys, argv[3], kModeDefault | k2D | kSoftware | kCreateStream | kOpenOnly, nullptr, &bank);
     if (r) {
@@ -130,21 +229,29 @@ int main(int argc, char** argv) {
             std::printf("# not 16-bit PCM once decoded - no envelope\n");
             continue;
         }
+        // Timed by the samples decoded, never by the reads: a read may return fewer than asked (an MP3 frame at a
+        // time), and counting each read as a step stretched the timeline (2026-10-21: parts placed 25% late).
         const unsigned frames = static_cast<unsigned>(freq * stepMs / 1000.0f);
-        std::vector<short> buf(frames * ch);
-        double peak = 0;
-        std::vector<double> rms;
+        std::vector<short> all;
+        std::vector<short> buf(4096 * ch);
+        unsigned decoded = 0;
         for (;;) {
             unsigned got = 0;
             const Result rr = readData(s, buf.data(), static_cast<unsigned>(buf.size() * sizeof(short)), &got);
             const unsigned f = got / (sizeof(short) * ch);
-            if (!f) break;
+            all.insert(all.end(), buf.begin(), buf.begin() + f * ch);
+            decoded += f;
+            if (!f || rr) break;
+        }
+        std::printf("# decoded %u samples = %.0f ms\n", decoded, decoded * 1000.0 / freq);
+        double peak = 0;
+        std::vector<double> rms;
+        for (size_t at = 0; at + frames <= decoded; at += frames) {
             double acc = 0;
-            for (unsigned k = 0; k < f * ch; ++k) acc += double(buf[k]) * buf[k];
-            const double v = std::sqrt(acc / (f * ch)) / 32768.0;
+            for (size_t k = at * ch; k < (at + frames) * ch; ++k) acc += double(all[k]) * all[k];
+            const double v = std::sqrt(acc / (frames * ch)) / 32768.0;
             rms.push_back(v);
             if (v > peak) peak = v;
-            if (rr) break;
         }
         // ms, dBFS, a bar against the loudest step
         for (size_t k = 0; k < rms.size(); ++k) {

@@ -8036,10 +8036,12 @@ void m4_compose(bool late) {
             static ik::Vec s_palmLocal;
             void* curGun = nullptr;
             hands::current_holdable(&curGun);
-            if (curGun != s_fingerGun) {
+            static bool s_restMirror = false;
+            if (curGun != s_fingerGun || g_m4.mirror != s_restMirror) {
                 s_fingerGun = curGun;
+                s_restMirror = g_m4.mirror;
                 s_fingerRelValid = false;
-                s_freeRelValid = false; // the rest on the gun is per gun too
+                s_freeRelValid = false; // the rest on the gun is per gun, and per hand (mirrored: the other's)
             }
             const int fw = m4_wrist(fh);
             ik::Quat fq = ik::normalized(ik::quat(A[fw].q));
@@ -8170,16 +8172,22 @@ void m4_compose(bool late) {
     // split second"): the shotgun stays in the gun hand exactly as it rests there - its grip and tip sockets (43,
     // 44, which carry the drawn gun) against the gun hand's wrist as at idle - through every clip but a shot's: the
     // empty gun's idle, the lowering of an ammunition switch and the reloads can no longer turn it in the hand.
+    // 2026-10-21 (the 20:36 recording, frame 448: the shotgun handed to the left hand mid-reload rolled 180 deg,
+    // its up axis from +0.80 to -0.99): the rest is ONE PER HAND. Mirrored, the gun hand is the left wrist of the
+    // mirrored pose, and the right hand's rest put on it is that hold turned over, not mirrored.
     if (manual_reload::sticky_grip() && patterns::kBoneWeaponAttach < n && 44 < n) {
-        static Qts s_gunRel[2];
-        static bool s_gunRelOk = false;
+        static Qts s_gunRelBy[2][2];
+        static bool s_gunRelOkBy[2] = {false, false};
         static void* s_gunRelGun = nullptr;
         void* g = nullptr;
         hands::current_holdable(&g);
         if (g != s_gunRelGun) {
             s_gunRelGun = g;
-            s_gunRelOk = false;
+            s_gunRelOkBy[0] = s_gunRelOkBy[1] = false;
         }
+        const int mi = g_m4.mirror ? 1 : 0;
+        Qts* s_gunRel = s_gunRelBy[mi];
+        bool& s_gunRelOk = s_gunRelOkBy[mi];
         const int gw = m4_wrist(gunHand);
         const ik::Quat wq = ik::normalized(ik::quat(A[gw].q));
         const ik::Vec wp = ik::vec(A[gw].p);
@@ -8200,7 +8208,7 @@ void m4_compose(bool late) {
             dev = 2.0f * std::acos(std::fmin(1.0f, std::fabs(d))) * 57.29578f;
         }
         if (hs == hands_state::State::Idling && (!s_gunRelOk || dev < 3.0f)) {
-            memcpy(s_gunRel, now, sizeof s_gunRel);
+            memcpy(s_gunRel, now, sizeof(Qts) * 2);
             s_gunRelOk = true;
         } else if (s_gunRelOk && hs != hands_state::State::Firing) {
             static Qts s_gsub[kMaxBones];
@@ -8422,15 +8430,20 @@ void m4_compose(bool late) {
                     // pump measured ~3.5 grab radii off): the empty shotgun's idle clip (EmptyFidgetShotgun) holds
                     // the free hand away from the pump, and the grab's target followed it. For the shotgun the
                     // target is where that hand is on the gun when it holds it, against the gun.
+                    // 2026-10-21 (the 20:35 run): every gun's, not only the shotgun's - the empty Tommy Gun's reload
+                    // waits at the pouch with the clip's free hand down there, and its grab measured 1.4-1.5 radii off
+                    // the fore-grip the hand was on. One latch per hand (mirrored, the pose is the other hand's).
                     ik::Vec anc = anchor_of(1 - h);
-                    if (manual_reload::sticky_grip() && patterns::kBoneWeaponAttach < n) {
-                        static ik::Vec s_ancRel;
-                        static bool s_ancOk = false;
+                    if (patterns::kBoneWeaponAttach < n) {
+                        static ik::Vec s_ancRelBy[2];
+                        static bool s_ancOkBy[2] = {false, false};
                         static void* s_ancGun = nullptr;
                         if (twoGun != s_ancGun) {
                             s_ancGun = twoGun;
-                            s_ancOk = false;
+                            s_ancOkBy[0] = s_ancOkBy[1] = false;
                         }
+                        ik::Vec& s_ancRel = s_ancRelBy[g_m4.mirror ? 1 : 0];
+                        bool& s_ancOk = s_ancOkBy[g_m4.mirror ? 1 : 0];
                         const ik::Quat aq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
                         const ik::Vec ap = ik::vec(A[patterns::kBoneWeaponAttach].p);
                         // 2026-10-21 (the 19:12 recording, frames 2831-2835: "it still tried to lift for a split second

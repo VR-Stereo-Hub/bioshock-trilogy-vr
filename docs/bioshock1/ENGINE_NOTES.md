@@ -7272,3 +7272,25 @@ at rest (the hands idling) in either hand; a frame not at rest only decides it p
 end. It now stays without one (`HideAmmoModel` while in hand, fire refused with the dry click), and its reload is
 begun again at rest; the machine adopts it at the pouch (`Input::magOut`) instead of dropping another drum.
 
+**Correction, the 20:35 run: the timelines were 400 ms off.** `fsb-probe env` reads with `Sound::readData` on an
+open-only stream, and on both MP3s it returned ~392 ms less audio than the sound holds (3109 of 3500 ms, 2403 of
+2795), missing the START: every cut point placed from it was 400 ms early. `fsb-probe pcm` makes the sound a
+decompressed sample with FMOD's exact length (`FMOD_ACCURATETIME`) and reads it whole with `Sound::lock`;
+`fsb-probe seek` shows a channel's ms position maps 1:1 onto that decoded audio in every creation mode (sample,
+compressed sample, stream). The game's sounds report the Xing-header length (3552 ms, 2847 ms), not the exact one.
+
+| Sound | Corrected parts (ms, `pcm` timeline) |
+|---|---|
+| `weapons_shotgun_reloadEndwav` | click 280-300; shell 480; BACK 540-680 (clack 600-660); dip 700-720; FORWARD 740-900 (slam 840-860) |
+| `weapons_tommy_reload_01` | drum release and pull 50-500; drum in 1275-1925; bolt 2225-2700 (back ~2350, home ~2450) |
+
+**The upside-down shotgun, found** (the 20:36 recording, frame 448). The mirror's axis was right (Y, read at
+rest); the gun's up axis still went from +0.80 to -0.99 at the hand-over. The shotgun's gun-in-hand rest (sockets
+43/44 against the gun hand's wrist, re-applied through every clip but a shot) was latched from the RIGHT hand at
+idle and applied, mirrored, to the left wrist: that hold turned over, not mirrored. It, the two-handed grip's
+anchor and the free hand's rest on the gun are now latched one per hand.
+
+**The empty Tommy Gun's grip.** Waiting at the pouch, the reload clip holds its free hand down there, and the
+two-handed grip's target followed it: every squeeze measured 1.4-1.5 grab radii off and went to the game (a
+plasmid). The anchor latched at rest on the gun, the shotgun's since the morning, is now every gun's.
+

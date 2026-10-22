@@ -863,31 +863,33 @@ static float held_seconds(uint64_t now) {
 }
 
 // 2026-10-21 (one cock sound played both strokes at once; each stroke should have its own half): the shotgun's cock,
-// a stroke at a time. The game's PumpShotgun
-// sound (weapons_shotgun_pump_01, 0.4 s) has both strokes 35 ms apart - a rack between shots, too quick to part - so the
-// strokes play the reload end's (weapons_shotgun_reloadEndwav), whose strokes stand apart: the pump back 130-310 ms,
-// forward 310 ms to its end (tools/fsb-probe.ps1 on the Sound object UModel exports, 10 ms steps: a gap at -27 dB
-// between them). Without FMOD's channel, the back stroke plays the whole PumpShotgun as before.
-// Each part plays as its stroke ENDS - the pump hitting home at the back, then at the front (the 20:18 run began
-// the back stroke 34 ms before the forward one: begun-stroke timing played the two on top of each other).
+// a stroke at a time. The game's PumpShotgun sound (weapons_shotgun_pump_01) has both strokes 35 ms apart - a rack
+// between shots, too quick to part - so the strokes play the reload end's (weapons_shotgun_reloadEndwav), whose
+// strokes stand apart. Its timeline (tools/fsb-probe.ps1 `pcm`, the whole decoded sample, 20 ms steps - the same
+// timeline a channel's position uses, `seek` measured 1:1): a click at 280-300, the shell at 480, the pump BACK
+// 540-680 (its clack 600-660), a dip at 700-720, FORWARD 740-900 (the slam 840-860). Each part plays as its stroke
+// ENDS - the pump hitting home at the back, then at the front - so each starts near its clack, not its slide.
+// Without FMOD's channel, the back stroke plays the whole PumpShotgun as before.
+// (The first cut points, 130/310/900, came from the `env` mode's readData, which came back 400 ms short at the
+// start: both strokes fell in the second part.)
 constexpr const char* kSgStrokeSound = "weapons_shotgun_reloadEndwav";
-void stroke_sound(void* hands, const rr::Pump& p, bool wasWorking, bool wasFwd) {
+void stroke_sound(void* hands, const rr::Pump& p, bool /*wasWorking*/, bool wasFwd) {
     if (!wasFwd && p.backDone()) {
-        if (!sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 130, 310))
+        if (!sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 580, 710))
             sound_engine::play(hands, "PumpShotgun");
     }
-    if (wasFwd && p.done()) sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 310, 900);
+    if (wasFwd && p.done()) sound_engine::play_part(hands, "ShotgunReloadEnd", kSgStrokeSound, 780, 1060);
 }
 
-// The Tommy Gun's reload is one sound too (HandsReloadTommy: weapons_tommy_reload_01, 2.35 s), and its clip is
-// never played from its start, so its cue never fires: each part plays as the hands do it. Its loud parts
-// (fsb-probe, 25 ms steps): the drum out 0-520 ms, the drum in 880-1540 (seated at ~1050-1100), the bolt 1850-2330
-// (back at ~1900, home at ~2050).
+// The Tommy Gun's reload is one sound too (HandsReloadTommy: weapons_tommy_reload_01, 2795 ms), and its clip is
+// never played from its start, so its cue never fires: each part plays as the hands do it. Its timeline (fsb-probe
+// `pcm`, 25 ms steps): the drum's release and pull 50-500 ms, the drum in 1275-1925, the bolt 2225-2700 (back at
+// ~2350, home at ~2450). The first cut points (bolt 1850-2330) were 400 ms early and caught only the bolt's start.
 constexpr const char* kTgReloadSound = "weapons_tommy_reload_01";
 void tommy_sound(void* hands, int phaseWas, int phase, bool ejected) {
-    if (ejected || (phaseWas == 0 && phase == 1)) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 0, 520);
-    if (phaseWas == 3 && phase > 3) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1000, 1540);
-    if (phaseWas == 4 && phase == 5) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1850, 2330);
+    if (ejected || (phaseWas == 0 && phase == 1)) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 0, 560);
+    if (phaseWas == 3 && phase > 3) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 1275, 1925);
+    if (phaseWas == 4 && phase == 5) sound_engine::play_part(hands, "ReloadTommy", kTgReloadSound, 2225, 2700);
 }
 
 // A manual reload is being dropped (the weapon changed, or put away, or the game ended its reload): with the drum
@@ -1158,8 +1160,10 @@ void tick(const Frame& f) {
         if (dropped_part::alive(g_spare, f.weapon)) dropped_part::destroy(g_spare);
         g_spare = dropped_part::Prop{};
     }
+    // Never with no drum in (the 20:35 run: measured off the hidden model, the seat moved under the gun and only
+    // the clip's own path start would take a drum).
     if (spareGun && !g_machine.active() && st != hands_state::State::Reloading && f.now - g_amRelMs >= 500 &&
-        f.gunDegPerSec < 20.0f)
+        f.gunDegPerSec < 20.0f && g_magOut != f.weapon)
         measure_ammo_model(f.weapon, f.now);
     in.spareOk = spareGun && g_spareAmmo;
     in.spareInHand = g_spare.actor != nullptr;
@@ -1249,13 +1253,17 @@ void tick(const Frame& f) {
     if (wasActive && !g_machine.active()) reload_left(f.weapon, magOutWas);
     // A new drum in the hand (or seated): the gun has one again.
     if (g_magOut == f.weapon && g_machine.active() && !g_machine.mag_out()) g_magOut = nullptr;
-    if (g_magOut == f.weapon && !g_machine.active()) {
+    if (g_magOut == f.weapon) {
         struct { int32_t pad[4]; } none{};
-        // Hidden again and again: the gun's equip shows its magazine.
+        // Hidden again and again until a new one is in the hand: the gun's equip shows its magazine, and the reload
+        // adopted at the pouch never plays the clip's own hide (the 20:35 run: empty only half the time).
         if (f.now - g_magOutHideMs >= 300) {
             g_magOutHideMs = f.now;
             script::call(f.weapon, "HideAmmoModel", &none);
         }
+    }
+    if (g_magOut == f.weapon && !g_machine.active()) {
+        struct { int32_t pad[4]; } none{};
         // Its reload begun again, at rest: the machine adopts it at the pouch (Input::magOut).
         if (st == hands_state::State::Idling && f.now - g_magOutAskMs >= 1500) {
             g_magOutAskMs = f.now;
@@ -1421,14 +1429,16 @@ void tick(const Frame& f) {
         const uint32_t pulls = g_triggerPulls.load(std::memory_order_relaxed);
         const bool rose = pulls != s_dryPulls;
         s_dryPulls = pulls;
-        if ((shotgun || (g_magOut && g_magOut == f.weapon)) &&
-            (g_dryClick || (rose && g_blockFire.load(std::memory_order_relaxed)))) {
+        const bool tommyDry = (g_magOut && g_magOut == f.weapon) ||
+                              (!_wcsicmp(g_cls, L"MachineGun") && g_machine.mag_out());
+        if ((shotgun || tommyDry) && (g_dryClick || (rose && (g_blockFire.load(std::memory_order_relaxed) || tommyDry)))) {
             char tag[64];
             sound_engine::play(f.weapon, "DryFiring", sound_engine::ammo_tag(f.weapon, tag, sizeof tag) ? tag : nullptr);
         }
         g_dryClick = false;
     }
-    const bool noDrum = g_magOut && g_magOut == f.weapon;
+    // No drum: none left in after a reload, or the reload's drum out of the gun (the click as the trigger is pulled).
+    const bool noDrum = (g_magOut && g_magOut == f.weapon) || (!_wcsicmp(g_cls, L"MachineGun") && g_machine.mag_out());
     g_blockFire.store((shotgun && (g_machine.active() || g_needCock)) || noDrum, std::memory_order_relaxed);
     haptic(o.haptic, f);
     if (o.buzz && f.now - g_lastBuzzMs >= kBuzzEveryMs) {
