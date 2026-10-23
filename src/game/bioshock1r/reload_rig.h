@@ -125,6 +125,25 @@ inline constexpr Phase kTommy[] = {
     {Kind::Play, 2.20f, 2.80f, nullptr, 0, nullptr, "the bolt runs home", false, false, 1.0f, -1.0f, 0.0f, -1.0f, true},
     {Kind::Finish, 3.20f, 3.33f, nullptr, 0, nullptr, "done"}};
 
+// Grenade launcher ('Reload', 4.00 s) - 2026-10-22 (MANUAL_RELOAD_PLAN.md step 3, the tester's design): the gun
+// stays together - its clip (the chamber's 70-deg turn, the breech sliding apart, the box off the gun) is never
+// played; it is HELD at 0 while the grenade pack (the ammo model on AmmoDummy, the gun's AmmunitionModelSocket;
+// the frag type's Ammo_Pickup_Frag) is pulled off the top of the box, a new one taken from the pouch and seated,
+// and then jumped to its last frames so the game completes the reload and refills. The pack sits at (22.4 13.5
+// 22.0) against the grip (tools\blender: reload_pose.py / the grip-frame measure of 2026-10-22) and comes off along
+// the box's own axis, up and a little back ((-0.41 0.02 0.91) - AmmoDummy against AmmoBoxBone). The palm's path
+// is that line, from four units outside the pack to 34; the clip time is 0 all along.
+inline constexpr Pt kLauncherPackOut[] = {
+    {0.0f, {20.8f, 13.6f, 25.6f}}, {0.0f, {16.7f, 13.8f, 34.7f}}, {0.0f, {12.6f, 14.0f, 43.8f}}, {0.0f, {8.5f, 14.2f, 52.9f}}};
+inline constexpr Pt kLauncherPackIn[] = {
+    {0.0f, {8.5f, 14.2f, 52.9f}}, {0.0f, {12.6f, 14.0f, 43.8f}}, {0.0f, {16.7f, 13.8f, 34.7f}}, {0.0f, {21.6f, 13.5f, 23.8f}}};
+inline constexpr Phase kLauncher[] = {
+    {Kind::Pull, 0.0f, 0.0f, kLauncherPackOut, 4, "AmmoDummy", "pull the pack off", true},
+    {Kind::Carry, 0.0f, 0.0f, nullptr, 0, "AmmoDummy", "drop the spent pack", true},
+    {Kind::Fetch, 0.0f, 0.0f, nullptr, 0, "AmmoDummy", "take a pack from the pouch", true},
+    {Kind::Insert, 0.0f, 0.0f, kLauncherPackIn, 4, "AmmoDummy", "seat the pack", true},
+    {Kind::Finish, 3.90f, 3.95f, nullptr, 0, nullptr, "done"}};
+
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a
 // new cylinder in, flick it shut.
 inline constexpr Pt kPistolOpen[] = {
@@ -183,6 +202,9 @@ inline constexpr Program kPrograms[] = {
     {L"Shotgun", L"SingleFrame", 0.033f, kShotgunStart, 1, true},
     {L"Shotgun", L"Reload_Loop", 0.49f, kShotgunLoop, 4, true},
     {L"Shotgun", L"Reload", 0.95f, kShotgunEnd, 2, true},
+    // 2026-10-22: the launcher's pack sits in the closed gun at 0 (the clip is never played past it until the
+    // finish). Last: tests index this table.
+    {L"GrenadeLauncher", L"Reload", 4.00f, kLauncher, 5, false, 0.0f, "AmmoDummy", true},
 };
 
 inline bool same(const wchar_t* a, const wchar_t* b) {

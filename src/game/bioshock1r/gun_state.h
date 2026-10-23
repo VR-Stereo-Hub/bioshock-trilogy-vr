@@ -13,7 +13,9 @@
 
 namespace bvr::b1r::gun_state {
 
-enum class Kind : uint8_t { Other, Pistol, Tommy, Shotgun };
+// Launcher (2026-10-22 evening, MANUAL_RELOAD_PLAN.md step 3): the grenade launcher, reloaded as the Tommy Gun -
+// its grenade pack is the magazine, off the gun, a new one from the pouch and slapped on; the gun stays together.
+enum class Kind : uint8_t { Other, Pistol, Tommy, Shotgun, Launcher };
 // Where the gun's magazine is. In: in the gun (rounds or not). Out: dropped, or the gun was left without one.
 // InHand: a new one rides the free hand on its way in.
 enum class Magazine : uint8_t { In, Out, InHand };
@@ -99,6 +101,7 @@ inline Kind kind_of(const wchar_t* cls) {
     if (same(cls, L"Pistol")) return Kind::Pistol;
     if (same(cls, L"MachineGun")) return Kind::Tommy;
     if (same(cls, L"Shotgun")) return Kind::Shotgun;
+    if (same(cls, L"GrenadeLauncher")) return Kind::Launcher;
     return Kind::Other;
 }
 

@@ -119,10 +119,19 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
         // hand on the controller and the free hand carried at the gun those parts move with no hand on them):
         // the grenade launcher's reload is the game's for BOTH hands, in view, until it has a program of its own
         // (MANUAL_RELOAD_PLAN.md).
+        int freeInView = 0;
         if (p == Place::AtGun && handsActor) {
             void* w = nullptr;
             const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
             if (cls && !_wcsicmp(cls, L"GrenadeLauncher")) p = Place::View;
+            // 2026-10-22 evening (the tester: the crossbow "doesn't animate" with the manual reload off): its reload
+            // clip is the free hand's - the lever, the bolt box off and on - so that hand is the game's in view;
+            // the gun hand stays on the controller.
+            if (cls && !_wcsicmp(cls, L"Crossbow")) freeInView = 1 << (1 - wh);
+        }
+        if (freeInView) {
+            mask |= freeInView;
+            g_reason = "reload (the free hand in view, the gun hand on the controller)";
         }
         if (p == Place::View) {
             mask |= 3;

@@ -7684,3 +7684,32 @@ step 2.
   the gun hand on the controller and the free hand carried at the gun. handback: the launcher's reload is the
   game's for both hands in view (the `View` place) until it has a program; the tester's design for that program
   is in MANUAL_RELOAD_PLAN.md step 3 (the box as the Tommy's drum, the gun stays together).
+
+## 2026-10-22 (late) - The crossbow's mirrored hand, the spray one-handed, the launcher's first program
+
+- **The crossbow in the left hand: the right hand's grip "far off to the left" after the evening fix, the drawn
+  second hand off the stock before it.** The evening's `mirrorAtGrip` moved the mirror PLANE, and the plane is
+  where the whole mirrored gun sits (2 x its offset along u: the gun moved 20 units - half a foot). Reverted. The
+  real fault: the gun in the left hand is the socket's reflection with its sideways axis flipped back (a rigid mesh
+  cannot be reflected), so a point of the gun off its centre plane lands on the OTHER side of where the pair mirror
+  alone puts a point of the hand. The two-handed ANCHOR has reflected about the gun's plane since 10-21
+  (`grip_point` through `mirror_point`), the hand pose engine's REST WRIST had not - 4 units for the shotgun's
+  pump (unseen), 10 for the crossbow (half a hand off the stock). The wrist is now reflected the same way before
+  the pair mirror (bones.cpp, the builder). Every gun's left-hand hold moves by that amount: check the shotgun's.
+- **The crossbow's reload with the manual reload off: "doesn't animate".** Its clip is the free hand's (the lever,
+  the box off and on); the free hand was carried at the gun. handback: the free hand is the game's in view for
+  the crossbow's reload, the gun hand stays on the controller.
+- **The spray on the reticle two-handed, off left and down one-handed.** `aim_spray` ran inside the barrel-origin
+  block, which stands down while a hand-back owns the gun hand - and one-handed the recoil's hand-back owns it for
+  the whole spray. The spray is aimed before that gate now, whatever the hands are doing.
+- **The launcher's manual reload, first cut** (`reload_rig.h kLauncher`, MANUAL_RELOAD_PLAN.md step 3, the
+  tester's design): the gun stays together - its Reload clip is HELD at 0 throughout (never the chamber turn, the
+  breech slide or the box off the gun) - and the grenade pack (the ammo model on `AmmoDummy`, the frag type's
+  `Ammo_Pickup_Frag`) is the magazine, as the Tommy's drum: pulled off the top of the box along the box's own
+  axis (the pack at (22.4 13.5 22.0) against the grip, off along (-0.41 0.02 0.91), 34 units), dropped as a Havok
+  copy, a new one from the pouch (the spare prop, catchable), seated along the same line, then the clip jumped to
+  3.90 s so the game completes the reload and refills. `Kind::Launcher`, a suppression record as the Tommy's; the
+  Tommy-only branches (the drop, the magazine-out memory, the seat latch, the dry gun waiting for the hand) take
+  the launcher too. No designed carry grip yet (the pack is carried at the palm). Host-tested (`reload-rig`, the
+  launcher sequence). Unverified in a run: the pack's grab point and the pouch, the drop's mesh (capture() by
+  the ammo model, as the Tommy's), and whether the clip at 0 holds the gun closed.

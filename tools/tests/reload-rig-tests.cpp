@@ -134,6 +134,46 @@ int main() {
         o = s.step(Vec{40, 7, 2}, false);
         check(!s.m.active(), "the reload ended: idle");
     }
+    // ---- the launcher (2026-10-22): the pack off the top of the box, a new one from the pouch, seated, the finish ----
+    {
+        Sim s;
+        s.cls = L"GrenadeLauncher";
+        const Program* lp = entry(L"GrenadeLauncher");
+        check(lp && lp->spare && lp->ejectPart && std::fabs(lp->ejectT) < 1e-6f && lp->n == 5, "the launcher's program: a spare pack, ejected at 0");
+        Output o = s.step(Vec{51, 21, 15}, false); // the fore-grip
+        o = s.step(Vec{51, 21, 15}, true);
+        check(o.act == Act::None && !s.m.active(), "a grip at the fore-grip starts nothing");
+        o = s.step(Vec{51, 21, 15}, false);
+        o = s.step(kLauncherPackOut[0].p + Vec{1, 0, 0}, false);
+        check(o.buzz && o.claim, "at the pack: buzz, the grip is the reload's");
+        o = s.step(kLauncherPackOut[0].p + Vec{1, 0, 0}, true);
+        check(o.act == Act::StartReload && s.m.active(), "a grip at the pack asks the game to reload");
+        s.clip(L"Reload", 4.00f);
+        o = s.step(kLauncherPackOut[0].p, false);
+        o = s.step(kLauncherPackOut[0].p, true);
+        check(o.hold && o.t < 0.001f, "held at 0: the gun stays together", o.t, 0.0);
+        o = s.step(kLauncherPackOut[2].p, true);
+        check(o.hold && o.t < 0.001f, "pulled half way: still 0", o.t, 0.0);
+        o = s.step(kLauncherPackOut[3].p + Vec{0, 0, 5}, true);
+        check(s.m.phase() == 1, "past the end: the pack rides the hand", s.m.phase(), 1);
+        o = s.step(Vec{10, 0, -90}, true);
+        check(o.carry == 1 && o.part && o.atPalm, "carried at the palm", o.carry, 1);
+        o = s.step(Vec{10, 0, -90}, false);
+        check(o.carry == 2 && s.m.phase() == 2, "let go: dropped, fetch next", s.m.phase(), 2);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(s.m.phase() == 3, "a grip at the pouch takes a pack", s.m.phase(), 3);
+        o = s.step(Vec{10, 0, -90}, true);
+        check(o.carry == 1, "the new pack rides the hand", o.carry, 1);
+        o = s.step(kLauncherPackIn[0].p, true);
+        o = s.step(kLauncherPackIn[2].p, true);
+        o = s.step(kLauncherPackIn[3].p, true);
+        check(s.m.phase() == 4, "seated: the finish", s.m.phase(), 4);
+        for (int i = 0; i < 40; ++i) o = s.step(Vec{51, 21, 15}, false);
+        check(o.run || o.jump || o.t >= 3.89f, "the clip jumped to its last frames and runs", o.t, 3.90);
+        s.in.clipLive = false;
+        o = s.step(Vec{51, 21, 15}, false);
+        check(!s.m.active(), "the reload ended: idle");
+    }
     // ---- the new drum let go short of its seat (2026-10-20: it fell out, the gun still fired) ----
     {
         Sim s;

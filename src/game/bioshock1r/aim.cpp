@@ -1963,6 +1963,18 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
         return;
     }
     void* weapon = nullptr;
+    // 2026-10-22 evening (the tester: the spray on the reticle two-handed, off left and down one-handed): the
+    // block below stands down while a hand-back owns the gun hand - and one-handed, the recoil's hand-back owns it
+    // for the whole spray, so the spray was never aimed. The thrower's emitter is aimed here, whatever the hands
+    // are doing, from the drawn socket as it is.
+    if (b.valid && b.hand == hand && hands::active() && hands::current_holdable(&weapon) && weapon) {
+        const wchar_t* cls = patterns::object_class_name(weapon);
+        if (cls && !_wcsicmp(cls, L"ChemicalThrower")) {
+            float mm[3], sa[3][3], ba[3][3];
+            if (muzzle::locate(weapon, mm, sa, ba)) aim_spray(weapon, mm, sa, b, ctx.worldScale, now);
+        }
+    }
+    weapon = nullptr;
     bool ok = (g_barrelOrigin.load(std::memory_order_relaxed) || g_barrelAim.load(std::memory_order_relaxed)) &&
               g_gameplayView && b.valid && b.hand == hand && hands::active() &&
               !(twoHanded ? handback::clip_owns(hand, now) : handback::active(hand, now)) &&
@@ -2004,7 +2016,6 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
                 BVR_LOG("[aim] barrel origin: %s hand, muzzle at fwd %+.1f right %+.1f up %+.1f cm from the ray",
                         hand ? "RIGHT" : "LEFT", rc[0], rc[1], rc[2]);
             update_barrel_direction(b, socketAxes, boneAxes, a);
-            aim_spray(weapon, m, socketAxes, b, ctx.worldScale, now);
             g_barrel.valid = true;
             g_barrel.held = true;
             g_barrel.hand = hand;

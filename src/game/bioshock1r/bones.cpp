@@ -7322,11 +7322,6 @@ const Qts* m4_pose(const Qts* A, int n) {
             planeFrom = "the rigid mesh's own centre (its render bounds)";
         }
     }
-    // 2026-10-22: a gun both hands grip at the same spot (the crossbow's stock) mirrors about that spot.
-    if (row && row->mirrorAtGrip) {
-        plane = gun_geometry::mirror_plane(*row, u, plane);
-        planeFrom = "the fore-grip itself (both hands take the same spot)";
-    }
     const float ovr = g_mirrorPinOverride.load(std::memory_order_relaxed);
     if (ovr == ovr) { plane = ovr; planeFrom = "OVERRIDE (vrbones mirrorpin)"; }
     // u is the socket's axis as the record signs it, so the skeleton's coordinate along it is the
@@ -8094,6 +8089,14 @@ void m4_compose(bool late) {
                     // stop, gun_geometry::Gun::pumpBack): 223bbe5 moved the grab point and left the drawn hand here.
                     ik::Vec wristRel = ik::vec(rest->wristP);
                     if (const gun_geometry::Gun* row = gun_row(curGun)) wristRel = wristRel + row->pumpBack * manual_reload::pump_back();
+                    // 2026-10-22 (the crossbow in the left hand: the drawn free hand 20 units off the stock, the anchor
+                    // on it): the gun in the left hand is the socket's reflection with its sideways axis flipped back
+                    // (a rigid mesh cannot be reflected), so a point of the gun off its centre plane lands on the
+                    // OTHER side of where the pair mirror alone puts a point of the hand. The anchor has reflected
+                    // about the gun's plane since 10-21 (grip_point above); the rest wrist did not - for a gun held
+                    // near its centre line (the shotgun's pump, 4 units) too little to see, for the crossbow (10) half
+                    // a hand. The wrist is reflected the same way, so the pair mirror brings it onto the gun's spot.
+                    if (g_m4.mirror) wristRel = gun_geometry::mirror_point(wristRel, ik::vec(g_mirU), g_mirPlane);
                     const ik::Vec rp = gp0 + ik::rotate(gq0, wristRel);
                     fq = blend_q(cq, rq, wGun);
                     fp = cp + (rp - cp) * wGun;

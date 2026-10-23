@@ -23,9 +23,17 @@ parts with no hand on them (fixed: both hands are the game's in view for it). Th
 launcher (the ammo box as the Tommy's drum, the gun stays together) and the crossbow (the lever as the
 shotgun's pump; reload = lever up, box from the waist, box in, lever down) are in the plan.
 
+The 19:xx run: the evening's crossbow mirror fix moved the mirrored GUN half a foot (the plane is where the gun
+sits) - reverted; the real fault was the rest wrist not reflected like the anchor, fixed for every gun (check
+the shotgun's left-hand hold). The crossbow's reload gives the free hand to the game; the spray is aimed outside
+the hand-back gate (it was skipped one-handed). **The launcher's manual reload is in as a first cut** (plan step
+3: the pack as the Tommy's drum, the clip held at 0), host-tested, not run.
+
 ### Next steps
 
-- A run with the new build: the crossbow (does the reticle sit on the bolt now; the log's `[muzzle]` and
+- A run with the new build: the launcher reloaded by hand (pull the pack off the top of the box, drop it, take
+  one from the pouch, seat it; X ejects it), its log lines `[reload] GrenadeLauncher ...`; the crossbow in the left
+  hand; the shotgun's left-hand hold for a regression; the chem spray one-handed; the crossbow (does the reticle sit on the bolt now; the log's `[muzzle]` and
   `[aim] barrel origin` lines on its equip), the chem thrower (does the spray reach the reticle; `[aim] chem
   spray:` says the angle it took), the launcher reloaded once (its `GrenadeLauncher.bvrpose` in
   `dumps\poserec-...`), and the three guns from before for regressions.

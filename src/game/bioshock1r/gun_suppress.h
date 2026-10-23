@@ -42,6 +42,8 @@ inline constexpr Record kRecords[] = {
     // kind,                 X,    eject, adopt, freeHand, ammoVis, otherClips, fire{kick, fade0, fade1, onlyWithRounds}, muted
     {gun_state::Kind::Pistol,  true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kNoneMuted},
     {gun_state::Kind::Tommy,   true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kTommyMuted},
+    // 2026-10-22: the launcher as the Tommy (its pack the magazine); no sound of its own is cut yet.
+    {gun_state::Kind::Launcher, true, true, true, true, true, false, {1.0f, 0.30f, 0.45f, true}, kNoneMuted},
     {gun_state::Kind::Shotgun, true, false, true, true, true, false, {0.5f, 0.30f, 0.45f, false}, kShotgunMuted},
     // Other: a gun with no program - the game keeps everything.
     {gun_state::Kind::Other,   false, false, false, false, false, true, {1.0f, 1e9f, 1e9f, false}, kNoneMuted},
@@ -50,7 +52,7 @@ inline constexpr Record kRecords[] = {
 inline const Record& record(gun_state::Kind k) {
     for (const Record& r : kRecords)
         if (r.kind == k) return r;
-    return kRecords[3];
+    return kRecords[4];
 }
 
 // The gun hand's clip motion to layer this frame, 0..1: a fire clip's by the record's curve (smootherstep

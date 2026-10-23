@@ -956,7 +956,7 @@ bool abort_reload(void* weapon, void* hands, const char* why) {
 // A manual reload is being dropped (the weapon changed, or put away, or the game ended its reload): with the drum
 // out, the gun has none until one goes in; otherwise a magazine it ejected is shown again.
 void reload_left(void* weapon, bool magOut) {
-    if (magOut && weapon && !_wcsicmp(g_cls, L"MachineGun")) {
+    if (magOut && weapon && (!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"GrenadeLauncher"))) {
         g_magOut = weapon;
         g_magOutAsks = 0;
         g_magOutAskMs = 0;
@@ -1156,7 +1156,8 @@ void tick(const Frame& f) {
     // Tommy Gun still showed 1 round in the cache and dropped its drum instead of waiting for the hand.
     // 2026-10-22 (the 10:31 run, the tester: the pistol opened by itself as it ran dry): the pistol's dry reload
     // waits for the hand to pull the cylinder too, as the Tommy's waits for the drum.
-    if ((!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"Pistol")) && !(g_roundsAtStart > 0) && !switching && !afterSwitch)
+    if ((!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"Pistol") || !_wcsicmp(g_cls, L"GrenadeLauncher")) &&
+        !(g_roundsAtStart > 0) && !switching && !afterSwitch)
         in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new
     // one quickly", and "throw one up in the air and slap the gun into it").
@@ -1232,10 +1233,12 @@ void tick(const Frame& f) {
     // The latch: where the spent part sits in the OPEN gun (the clip held at the eject time a few frames;
     // the pistol's cylinder seats with the barrel folded, not where it sat closed). The pose read is
     // the clip's own, without the fall's offset.
-    const bool tommy = !_wcsicmp(g_cls, L"MachineGun");
+    // 2026-10-22: the launcher's pack the same way (its seat is the pack's rest on the closed gun).
+    const rr::Program* seatProg = rr::entry(g_cls);
+    const bool tommy = seatProg && seatProg->spare && seatProg->ejectPart && !_wcsicmp(g_cls, L"Pistol") == 0;
     if (tommy && g_machine.active() && !g_seatValid) {
         int bone = -1;
-        for_parts("TG_AmmoClip", [&](int i) { if (bone < 0) bone = i; });
+        for_parts(seatProg->ejectPart, [&](int i) { if (bone < 0) bone = i; });
         float q[4];
         if (bone >= 0 && bones::weapon_rest_bone_pose(bone, g_seatP, q)) {
             g_seatBone = bone;
@@ -1303,7 +1306,7 @@ void tick(const Frame& f) {
     // leaves the hand as a Havok copy moving as the hand moved it - thrown (Half-Life: Alyx's release:
     // the velocity next to the fastest of the last ten frames). The Tommy Gun's drum only: its copy IS the
     // part; the pistol's cylinder has no mesh of its own and simply goes (carry 2).
-    if (o.dropped && !_wcsicmp(g_cls, L"MachineGun")) {
+    if (o.dropped && (!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"GrenadeLauncher"))) {
         float peak = 0.0f;
         // Alyx's vr_throw_velocity_scale is 1.6; at 1.6 here "a little too powerful" (19:57 run): 1:1.
         constexpr float kThrowScale = 1.0f;

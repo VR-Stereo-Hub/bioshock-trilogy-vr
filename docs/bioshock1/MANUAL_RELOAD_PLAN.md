@@ -108,7 +108,7 @@ Each step is one commit with its host tests, built and installed; the simulator 
    relative rotation is ignored by the attachment: rotate the muzzle socket's bone write in the
    weapon lane for this gun only. Check in the simulator with a capture: the spray's first
    particles leave along the laser.
-3. **The launcher's manual reload** - THE TESTER'S DESIGN (2026-10-22 evening): the gun stays together
+3. **The launcher's manual reload** - FIRST CUT IN (2026-10-22 late, `kLauncher`; unverified in a run) - THE TESTER'S DESIGN (2026-10-22 evening): the gun stays together
    (no breech slide, no chamber turn by hand); the ammo box on the right side is the magazine and works as
    the Tommy's drum - it drops (X, or the hand pulls it off), a new one is taken from the pouch (a spare
    prop, catchable) and slapped onto the gun. `Kind::Launcher`; the program: Pull the box
