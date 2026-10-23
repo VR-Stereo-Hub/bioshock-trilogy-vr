@@ -9,6 +9,7 @@
 #include "core/gfx/desktop_present.h"
 
 #include "core/gfx/blit.h"
+#include "core/gfx/cube_snapshot.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
 #include "core/ui/overlay_geometry.h"
@@ -213,6 +214,26 @@ std::atomic<float> g_hudDistM{1.30f};
 std::atomic<float> g_hudWidthM{1.25f};
 std::atomic<float> g_hudUpM{-0.10f};
 std::atomic<uint32_t> g_hudFramesSubmitted{0};
+
+// Room snapshot (2026-10-22): the room around the flat screen. While the
+// projection layer is live, one eye image every kCubeSplatMs is splatted into a
+// cubemap (core/gfx/cube_snapshot) with the pose and fov the layer claims for
+// it; whenever the flat screen quad is the frame (a loading screen, a menu, a
+// cinematic), that cube goes under it as an XR_KHR_composition_layer_cube layer
+// in LOCAL space, so the player stands in the last room they saw instead of in
+// the dark. DEFAULT OFF IN CORE, on per game: BS1's adapter arms it, and the
+// runtime must offer the extension (the Meta runtime, VDXR and the simulator
+// do; without it nothing changes at all).
+std::atomic<bool> g_roomSnap{false};
+bool g_cubeExtEnabled = false; // the instance was created with the cube extension
+XrSwapchain g_cubeSwapchain = XR_NULL_HANDLE;
+std::vector<XrSwapchainImageD3D11KHR> g_cubeImages;
+bool g_cubeSwapchainFailed = false; // creation refused once: do not retry every frame
+uint64_t g_cubeLastSplatMs = 0;
+constexpr uint64_t kCubeSplatMs = 100;
+std::atomic<uint32_t> g_cubeLayersSubmitted{0};
+std::atomic<bool> g_cubeResetRequested{false};
+std::atomic<bool> g_loggedFirstCubeLayer{false};
 std::atomic<bool> g_loggedFirstHudQuad{false};
 // s52: the HUD quad's texture provider (Infinite's GFx lane). Null = BS1's
 // bvr::hud::texture() path, byte-identical for games that never set it.
@@ -746,6 +767,8 @@ struct FeedSnap {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    bool hasCube = false; // the room snapshot went under the quad
+    XrCompositionLayerCubeKHR cube{XR_TYPE_COMPOSITION_LAYER_CUBE_KHR};
 };
 FeedSnap g_feedSnap; // guarded by g_feedSnapMutex; proj.views is fixed up at use
 
@@ -1079,6 +1102,9 @@ XrResult feed_submit_cycle(XrSession s, const XrFrameState& fs) {
     }
     XrCompositionLayerProjection proj{};
     XrCompositionLayerQuad quad{};
+    XrCompositionLayerCubeKHR cube{};
+    const XrCompositionLayerBaseHeader* layers[2] = {};
+    uint32_t count = 0;
     const XrCompositionLayerBaseHeader* layer = nullptr;
     if (snap.valid) {
         if (snap.isProj) {
@@ -1086,16 +1112,21 @@ XrResult feed_submit_cycle(XrSession s, const XrFrameState& fs) {
             proj.views = snap.views; // the banked copy, never the dead stack pointer
             layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
         } else {
+            if (snap.hasCube) {
+                cube = snap.cube; // the room snapshot stays under the screen
+                layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cube);
+            }
             quad = snap.quad;
             layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
         }
+        layers[count++] = layer;
     }
 
     XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
     fei.displayTime = fs.predictedDisplayTime;
     fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    fei.layerCount = layer ? 1 : 0;
-    fei.layers = layer ? &layer : nullptr;
+    fei.layerCount = count;
+    fei.layers = count ? layers : nullptr;
     r = xrEndFrame(s, &fei);
     if (XR_SUCCEEDED(r)) {
         if (g_feedCycles.fetch_add(1, std::memory_order_relaxed) == 0)
@@ -1959,6 +1990,108 @@ void destroy_laser() {
     }
 }
 
+void destroy_cube_swapchain() {
+    if (g_cubeSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(g_cubeSwapchain);
+        g_cubeSwapchain = XR_NULL_HANDLE;
+    }
+    g_cubeImages.clear();
+}
+
+// The cube swapchain: six kFaceSize faces in the eye swapchains' format, so
+// the accumulated cube copies in whole. Lazy, once; a refusal is final for the
+// session (logged once) and the quad simply stands alone.
+bool ensure_cube_swapchain() {
+    if (g_cubeSwapchain != XR_NULL_HANDLE) return true;
+    if (g_cubeSwapchainFailed || !g_swapFormat || g_session == XR_NULL_HANDLE) return false;
+    XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.format = g_swapFormat;
+    sci.sampleCount = 1;
+    sci.width = sci.height = bvr::cube_snapshot::kFaceSize;
+    sci.faceCount = 6;
+    sci.arraySize = 1;
+    sci.mipCount = 1;
+    XrResult r = xrCreateSwapchain(g_session, &sci, &g_cubeSwapchain);
+    if (XR_FAILED(r)) {
+        BVR_LOG("xr: room snapshot: cube swapchain refused (%s) - the flat screen stands alone", res_str(r));
+        g_cubeSwapchain = XR_NULL_HANDLE;
+        g_cubeSwapchainFailed = true;
+        return false;
+    }
+    uint32_t count = 0;
+    xrEnumerateSwapchainImages(g_cubeSwapchain, 0, &count, nullptr);
+    g_cubeImages.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+    if (XR_FAILED(xrEnumerateSwapchainImages(g_cubeSwapchain, count, &count,
+                                             reinterpret_cast<XrSwapchainImageBaseHeader*>(g_cubeImages.data())))) {
+        BVR_LOG("xr: room snapshot: cube swapchain image enumeration failed");
+        destroy_cube_swapchain();
+        g_cubeSwapchainFailed = true;
+        return false;
+    }
+    BVR_LOG("xr: room snapshot: cube swapchain ready (6 x %ux%u, %u images)", sci.width, sci.height, count);
+    return true;
+}
+
+// Splat the eye image just captured into the room cube, at most one every
+// kCubeSplatMs. `q` is the orientation the projection layer will claim for this
+// image, the tangents its fov. Render thread, before the image is released.
+void room_snapshot_splat(ID3D11Texture2D* eyeImage, const XrQuaternionf& q, float tanH, float tanV) {
+    if (!g_roomSnap.load(std::memory_order_relaxed) || !g_cubeExtEnabled) return;
+    if (g_cubeResetRequested.exchange(false, std::memory_order_relaxed)) bvr::cube_snapshot::reset();
+    const uint64_t now = GetTickCount64();
+    if (now - g_cubeLastSplatMs < kCubeSplatMs) return;
+    g_cubeLastSplatMs = now;
+    const float qf[4] = {q.x, q.y, q.z, q.w};
+    bvr::cube_snapshot::splat(g_context, eyeImage, qf, -tanH, tanH, tanV, -tanV,
+                              static_cast<DXGI_FORMAT>(g_swapFormat));
+}
+
+// Will the room go under the flat screen this frame? Decided before the capture
+// so the screen's image can be keyed in the same pass.
+bool room_snapshot_showing() {
+    return g_roomSnap.load(std::memory_order_relaxed) && g_cubeExtEnabled && !g_cubeSwapchainFailed &&
+           bvr::cube_snapshot::valid() && g_space != XR_NULL_HANDLE;
+}
+
+// Fill the cube layer that goes UNDER the flat screen quad: the accumulated cube
+// copied into the cube swapchain, identity orientation in LOCAL space. False when
+// there is nothing to show (lever off, no extension, no splat yet, no swapchain).
+bool room_snapshot_layer(XrCompositionLayerCubeKHR* out) {
+    if (!g_roomSnap.load(std::memory_order_relaxed) || !g_cubeExtEnabled) return false;
+    if (g_cubeResetRequested.exchange(false, std::memory_order_relaxed)) bvr::cube_snapshot::reset();
+    if (!bvr::cube_snapshot::valid() || g_space == XR_NULL_HANDLE) return false;
+    if (!ensure_cube_swapchain()) return false;
+    uint32_t idx = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(xrAcquireSwapchainImage(g_cubeSwapchain, &ai, &idx))) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    const bool ready = XR_SUCCEEDED(xrWaitSwapchainImage(g_cubeSwapchain, &wi)) && idx < g_cubeImages.size();
+    if (ready) {
+        // Face by face: the two are six-slice arrays of the same size and format,
+        // whatever else the runtime put on its image.
+        for (UINT f = 0; f < 6; ++f)
+            g_context->CopySubresourceRegion(g_cubeImages[idx].texture, f, 0, 0, 0,
+                                             bvr::cube_snapshot::texture(), f, nullptr);
+    }
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    const bool released = XR_SUCCEEDED(xrReleaseSwapchainImage(g_cubeSwapchain, &ri));
+    if (!ready || !released) return false;
+    *out = XrCompositionLayerCubeKHR{XR_TYPE_COMPOSITION_LAYER_CUBE_KHR};
+    out->layerFlags = 0;
+    out->space = g_space;
+    out->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    out->swapchain = g_cubeSwapchain;
+    out->imageArrayIndex = 0;
+    out->orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    g_cubeLayersSubmitted.fetch_add(1, std::memory_order_relaxed);
+    if (!g_loggedFirstCubeLayer.exchange(true))
+        BVR_LOG("xr: room snapshot live under the flat screen (%u splats so far)",
+                bvr::cube_snapshot::splats());
+    return true;
+}
+
 void destroy_hud_swapchain() {
     if (g_hudSwapchain != XR_NULL_HANDLE) {
         xrDestroySwapchain(g_hudSwapchain);
@@ -2017,6 +2150,9 @@ void destroy_swapchains() {
     destroy_laser();
     destroy_hud_swapchain();
     destroy_overlay_swapchain();
+    destroy_cube_swapchain(); // the accumulated cube itself lives on the device and survives
+    bvr::cube_snapshot::forget_images(); // the eye images the screen pass had views on
+    g_cubeSwapchainFailed = false;
     g_swapW = g_swapH = 0;
     g_bbW = g_bbH = 0;
     g_backbufferFmt = 0;
@@ -2139,6 +2275,8 @@ void teardown_session(const char* why) {
     if (g_viewSpace != XR_NULL_HANDLE) { xrDestroySpace(g_viewSpace); g_viewSpace = XR_NULL_HANDLE; }
     if (g_space != XR_NULL_HANDLE) { xrDestroySpace(g_space); g_space = XR_NULL_HANDLE; }
     if (g_session != XR_NULL_HANDLE) { xrDestroySession(g_session); g_session = XR_NULL_HANDLE; }
+    bvr::cube_snapshot::release(); // device objects; the next splat rebuilds them
+    g_cubeLastSplatMs = 0;
     if (g_context) { g_context->Release(); g_context = nullptr; }
     if (g_device) { g_device->Release(); g_device = nullptr; }
     g_sessionBegun = false;
@@ -2668,22 +2806,32 @@ XrResult try_create_instance(const char* label, bool quietExplainer) {
     std::vector<XrExtensionProperties> exts(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
     xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, exts.data());
     bool hasD3D11 = false;
-    for (const auto& e : exts)
+    bool hasCube = false;
+    for (const auto& e : exts) {
         if (strcmp(e.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) hasD3D11 = true;
+        if (strcmp(e.extensionName, XR_KHR_COMPOSITION_LAYER_CUBE_EXTENSION_NAME) == 0) hasCube = true;
+    }
     if (!hasD3D11) {
         BVR_LOG("xr: [%s] runtime lacks XR_KHR_D3D11_enable", label);
         return XR_ERROR_EXTENSION_NOT_PRESENT;
     }
 
-    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    // The cube layer (the room snapshot) is optional: enabled when offered, and
+    // the feature simply stays off on a runtime without it.
+    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME,
+                             XR_KHR_COMPOSITION_LAYER_CUBE_EXTENSION_NAME};
     XrInstanceCreateInfo ici{XR_TYPE_INSTANCE_CREATE_INFO};
     strcpy_s(ici.applicationInfo.applicationName, "bioshock-vr");
     ici.applicationInfo.applicationVersion = 1;
     strcpy_s(ici.applicationInfo.engineName, "bioshock-vr");
     ici.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    ici.enabledExtensionCount = 1;
+    ici.enabledExtensionCount = hasCube ? 2 : 1;
     ici.enabledExtensionNames = enabled;
     r = xrCreateInstance(&ici, &g_instance);
+    g_cubeExtEnabled = XR_SUCCEEDED(r) && hasCube;
+    if (XR_SUCCEEDED(r) && !hasCube)
+        BVR_LOG("xr: [%s] runtime lacks XR_KHR_composition_layer_cube - no room snapshot "
+                "behind the flat screen", label);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: [%s] xrCreateInstance failed: %s", label, res_str(r));
         // XR_ERROR_RUNTIME_UNAVAILABLE from a 32-bit process is very rarely a
@@ -3814,6 +3962,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
     g_frameOpen = false; // the pair-hold path below re-arms both
 
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerCubeKHR cube{XR_TYPE_COMPOSITION_LAYER_CUBE_KHR}; // the room snapshot under the quad
+    bool cubeUnderQuad = false;
+    bool screenKeyed = false; // the quad's image had its black keyed to transparent
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerProjectionView projViews[2] = {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
@@ -3830,7 +3981,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // must accept). The HUD elements (a registered provider only) are capped at
     // submission so the total never passes 16.
     XrCompositionLayerQuad hudElementQuads[kMaxHudElementQuads] = {};
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 4 + kMaxHudElementQuads] = {};
+    const XrCompositionLayerBaseHeader* layers[2 + kMaxLaserDots + 4 + kMaxHudElementQuads] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -3859,6 +4010,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // on projectionMode/srFrame, and reset_aer clears the held eye images
     // once srFrame drops. "vrcine mode stereo" instead keeps the projection
     // through fov-mismatch scenes and claims the MEASURED fov.
+    // Room snapshot: only a frame the verdict calls clean gameplay is splatted -
+    // the hysteresis frames on the way into a cinematic or a load already carry
+    // the board, and a board in the cube would sit in the room for good.
+    bool snapFrame = projectionMode;
     if (g_cineEnabled.load(std::memory_order_relaxed) && projectionMode) {
         uint64_t pv = g_gameplayView.load(std::memory_order_relaxed);
         uint64_t stampMs = pv >> 1;
@@ -3870,6 +4025,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
         bool uiPaused = g_uiPaused.load(std::memory_order_relaxed);
         bool wantCine =
             stale || !strict || screenOnly || uiPaused || (fovMm && !stereoCine);
+        snapFrame = !wantCine;
         bool active = g_cineActive.load(std::memory_order_relaxed);
         if (wantCine != active) {
             if (++g_cineStreak >= kCineHysteresis) {
@@ -4146,6 +4302,25 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     }
                     if (!processed) capture_frame(g_images[target][index].texture, backbuffer);
                     phase_record(kPhCapture, tCap);
+                    // Room snapshot: a world image (the projection layer is what shows it)
+                    // goes into the room cube with the orientation the layer will claim
+                    // for it - the attribution below, orientation only (the eye offset is
+                    // nothing to a picture at infinity).
+                    // The flat screen over the room: its black keyed out, so the
+                    // board floats in the room instead of on the frame's black.
+                    if (!projectionMode && room_snapshot_showing())
+                        screenKeyed = bvr::cube_snapshot::key_black(g_context, g_images[target][index].texture);
+                    if (snapFrame) {
+                        const XrView* gen = g_viewsContent;
+                        if (srFrame) {
+                            const int lag = g_poseLag.load(std::memory_order_relaxed);
+                            if (lag == 0 && g_viewsValid) gen = g_views;
+                            else if (lag == 2 && g_viewsPrev2Valid) gen = g_viewsPrev2;
+                        }
+                        room_snapshot_splat(g_images[target][index].texture,
+                                            gen[srFrame ? srEye : target].pose.orientation,
+                                            seamTanH, seamTanV);
+                    }
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_swapchains[target], &ri);
@@ -4492,10 +4667,19 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     quad.subImage = sub;
                     quad.size = {width, width * static_cast<float>(g_swapH) /
                                             static_cast<float>(g_swapW)};
-                    layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+                    // The room snapshot goes UNDER the screen: the cube first, the
+                    // opaque quad over it, so the room shows all around the board.
+                    if (room_snapshot_layer(&cube)) {
+                        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cube);
+                        cubeUnderQuad = true;
+                        // Keyed (premultiplied) only with the room under it: alone,
+                        // the quad stays opaque and the keyed alpha is ignored.
+                        if (screenKeyed) quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                    }
+                    layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
                     g_lastLayer = 1;
                 }
-                layerCount = 1;
+                if (!layerCount) layerCount = 1;
             }
             backbuffer->Release();
         }
@@ -4701,6 +4885,8 @@ void on_present_end(IDXGISwapChain* swapchain) {
             g_feedSnap.views[1] = projViews[1];
         } else {
             g_feedSnap.quad = quad;
+            g_feedSnap.hasCube = cubeUnderQuad;
+            if (cubeUnderQuad) g_feedSnap.cube = cube;
         }
     }
 
@@ -5588,6 +5774,26 @@ void set_screen_distance_m(float meters) {
 bool cinematic_stereo() { return g_cineStereo.load(std::memory_order_relaxed); }
 void set_cinematic_stereo(bool on) { g_cineStereo.store(on,std::memory_order_relaxed); }
 
+bool room_snapshot() { return g_roomSnap.load(std::memory_order_relaxed); }
+void set_room_snapshot(bool on) {
+    if (g_roomSnap.exchange(on, std::memory_order_relaxed) == on) return;
+    BVR_LOG("xr: room snapshot %s%s", on ? "ON" : "off",
+            on && g_instance != XR_NULL_HANDLE && !g_cubeExtEnabled
+                ? " (the runtime offers no cube layer: nothing will show)" : "");
+}
+void reset_room_snapshot() { g_cubeResetRequested.store(true, std::memory_order_relaxed); }
+void handle_room_snapshot_command(const char* args) {
+    if (strncmp(args, "on", 2) == 0) set_room_snapshot(true);
+    else if (strncmp(args, "off", 3) == 0) set_room_snapshot(false);
+    else if (strncmp(args, "reset", 5) == 0) reset_room_snapshot();
+    BVR_LOG("xr: room snapshot %s, cube extension %s, %u splats, %u cube layers submitted, "
+            "swapchain %s (vrsnap on|off|reset|status)",
+            g_roomSnap.load(std::memory_order_relaxed) ? "ON" : "off",
+            g_cubeExtEnabled ? "enabled" : "ABSENT", bvr::cube_snapshot::splats(),
+            g_cubeLayersSubmitted.load(std::memory_order_relaxed),
+            g_cubeSwapchain != XR_NULL_HANDLE ? "ready" : g_cubeSwapchainFailed ? "REFUSED" : "not yet");
+}
+
 void set_screen_height_m(float m) {
     if (m < -3.0f) m = -3.0f;
     if (m > 3.0f) m = 3.0f;
@@ -6055,6 +6261,10 @@ float screen_distance_m() { return 2.0f; }
 void set_screen_distance_m(float) {}
 bool cinematic_stereo() { return false; }
 void set_cinematic_stereo(bool) {}
+bool room_snapshot() { return false; }
+void set_room_snapshot(bool) {}
+void reset_room_snapshot() {}
+void handle_room_snapshot_command(const char*) {}
 void set_screen_height_m(float) {}
 bool cinematic_active() { return false; }
 CineDrive cine_drive() { return CineDrive::Authored; }

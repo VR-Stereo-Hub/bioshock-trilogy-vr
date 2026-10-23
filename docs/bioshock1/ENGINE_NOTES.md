@@ -7786,3 +7786,23 @@ step 2.
   hand-back for as long as it sprays, the barrel origin fell back to the controller after 250 ms, the reticle's ray
   with it, and the socket was aimed at that ray's point from 21 cm below. The thrower keeps its barrel origin
   through its hand-back, so both holds are the same line.
+
+## 2026-10-22 - The room around the flat screen
+
+What the loading screen is, as the mod sees it: the game presents a full black 16:9 frame with the
+board drawn in the middle; the mod's flat quad shows the whole frame, black included. The board's own
+hint text under it is drawn dim, so a luminance key (transparent below 0.012, opaque above 0.062, the
+ramp between) keeps the board and lets the room through where the frame was black, with the dim text
+half-transparent over the room. Measured on the simulator with the 11:01 save: a load from the pause
+menu composites `{cube, quad}` (the capture JSON's layer list), mean luma 34 against 14 for the
+un-keyed board on its black.
+
+The pause menu is not a flat-screen interval here: `[hudel] menu rides the HUD, in the world` - BS1
+draws PausePC.swf as a HUD piece inside the projection layer (`screens: top = PausePC.swf -> PANEL`
+while `cinematic quad off`), so the room cube never engages for it. The main menu, loading screens and
+cinematics are the flat-quad intervals, and the cube is under all of them.
+
+On the simulator the first load after the main menu already carried the cube with one splat: the
+projection layer was live for a few clean frames of the intro before the cinematic quad engaged. Harmless
+(the real room overwrites it), and the splat is gated on the frame's verdict so the board's own frames
+never enter the cube. `vrsnap status` reports the splat and layer counts; `vrsnap reset` clears the cube.

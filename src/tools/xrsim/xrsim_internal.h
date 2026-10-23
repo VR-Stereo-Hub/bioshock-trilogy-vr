@@ -34,6 +34,7 @@ struct SimSwapchain {
     uint32_t gen = 0;
     uint32_t width = 0, height = 0;
     int64_t format = 0;
+    uint32_t faces = 1; // 6 for a cube swapchain (a six-slice array with the cube flag)
     uint32_t imageCount = 0;
     ID3D11Texture2D* images[kMaxSwapchainImages] = {};
     bool acquired = false;
@@ -96,6 +97,7 @@ struct Globals {
     bool instanceAlive = false;
     uint32_t instanceGen = 0;
     bool d3d11Enabled = false;
+    bool cubeEnabled = false; // XR_KHR_composition_layer_cube was enabled on the instance
 
     // Quest 3 native per-eye panel. Cosmetic for the mod, which sizes its
     // swapchains from the game backbuffer and never enumerates these.
@@ -226,9 +228,9 @@ struct SimLayer {
     XrEyeVisibility eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     uint32_t viewCount = 0;
     XrCompositionLayerProjectionView views[2] = {};
-    XrPosef pose{};
+    XrPosef pose{};             // quad: the pose; cube: the orientation only
     XrExtent2Df size{};
-    XrSwapchainSubImage sub{};
+    XrSwapchainSubImage sub{};  // quad: the sub-image; cube: the swapchain and array index
 };
 
 struct SimSubmission {

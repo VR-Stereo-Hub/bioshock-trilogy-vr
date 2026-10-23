@@ -3110,3 +3110,19 @@ frame, measured once offline from the game's own idle clip and the weapon's rest
 against 2946 live frames, and mirrored by one function. A gun the table does not know keeps the clip's
 hand. BRVR latched its anchor because it could not read a driven cluster; the constant is the same number
 taken once, and it is the design rule from here: a point of the gun is table data, not a memory.
+
+### 2026-10-22: the room around the flat screen is a cubemap layer, accumulated from the eye images
+
+Loading screens, the main menu and cinematics are a flat quad in the dark. The tester's ask was to stand
+in the room they were just in instead. The picture is a 512² cubemap (`core/gfx/cube_snapshot`) that the
+present path splats one eye image into every 100 ms while the projection layer is live and the gameplay
+verdict is clean - each face texel's direction rotated into the eye's frame, projected onto its tangent
+plane, sampled; outside the fov the texel keeps what it had - so looking around fills it, and nothing
+clears it but a reset. It goes under the quad as `XrCompositionLayerCubeKHR` in LOCAL space with the
+identity orientation, and the quad's image has its black keyed to transparent (premultiplied) only when
+the cube is under it. Chosen over a reprojected flat frame (one view, holes everywhere but ahead) and over
+re-rendering the level (the game is not rendering during a load). Rejected: splatting during the cinematic
+hysteresis frames (a board in the cube for good) and resetting on every screen (the first pause after a
+load would be black again). The pause menu rides the HUD inside the projection in BS1, so it is not a
+flat-screen case and gets no cube. Core default off; the extension is enabled when the runtime offers it
+(the Meta runtime, VDXR, the simulator), and the quad stands alone without it.

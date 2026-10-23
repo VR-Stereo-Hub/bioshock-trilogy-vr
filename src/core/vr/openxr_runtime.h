@@ -336,6 +336,19 @@ void set_pose_audit(bool on);
 void publish_gameplay_view(bool strictGameplay);
 void handle_cine_command(const char* args);
 
+// Room snapshot (2026-10-22): while the projection layer is live the eye images
+// are splatted into a cubemap of the room (core/gfx/cube_snapshot); whenever the
+// flat screen quad is the frame (loading screens, menus, cinematics) that cube is
+// submitted UNDER it as an XR_KHR_composition_layer_cube layer, so the player
+// stands in the last room they saw instead of in black. DEFAULT OFF IN CORE, on
+// per game (BS1's adapter arms it; its F10 toggle and `vrsnap on|off` are the
+// live A/B). Needs the runtime to offer the cube extension; without it the
+// lever is inert. Reset forgets the cube (a new room fills it again).
+bool room_snapshot();
+void set_room_snapshot(bool on);
+void reset_room_snapshot();
+void handle_room_snapshot_command(const char* args); // "vrsnap on|off|reset|status"
+
 // A full-screen pause interface is up. Published by the adapter from the game's
 // own pause field, because the pause menu draws OVER a live world and so is
 // invisible to every render-side signal the verdict already has: CalcView keeps

@@ -785,6 +785,8 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
     } else if (strcmp(cmd, "vrcine") == 0) {
         bvr::vr::handle_cine_command(args); // session 22 cinematic quad fallback
+    } else if (strcmp(cmd, "vrsnap") == 0) {
+        bvr::vr::handle_room_snapshot_command(args); // the room around the flat screen (2026-10-22)
     } else if (strcmp(cmd, "vroverlay") == 0) {
         bool on = strncmp(args, "on", 2) == 0;
         bvr::overlay::set_visible(on);

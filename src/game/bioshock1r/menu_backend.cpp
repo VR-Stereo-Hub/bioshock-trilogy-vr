@@ -138,6 +138,7 @@ float raw_read(Setting id,int hand) {
         case S::ScreenHeight: return vr::screen_height_m();
         case S::ScreenWidth: return vr::screen_width_m();
         case S::ScreenDistance: return vr::screen_distance_m();
+        case S::RoomSnapshot: return vr::room_snapshot();
         case S::CutsceneDisplay: return vr::cinematic_stereo();
         case S::InputEnabled: return input::enabled();
         case S::CameraEnabled: return vr::vr_camera_mode();
@@ -246,6 +247,7 @@ bool raw_write(Setting id,int hand,float value) {
         case S::ScreenHeight: vr::set_screen_height_m(value);break;
         case S::ScreenWidth: vr::set_screen_width_m(value);break;
         case S::ScreenDistance: vr::set_screen_distance_m(value);break;
+        case S::RoomSnapshot: vr::set_room_snapshot(value!=0);break;
         case S::CutsceneDisplay: vr::set_cinematic_stereo(value!=0);break;
         case S::InputEnabled: input::set_enabled(value!=0);break;
         case S::CameraEnabled: vr::set_camera_mode(value!=0);break;

@@ -110,9 +110,11 @@ static XrResult impl_EnumerateInstanceExtensionProperties(const char* layerName,
     if (layerName && layerName[0]) return XR_ERROR_API_LAYER_NOT_PRESENT;
     if (!countOutput) return XR_ERROR_VALIDATION_FAILURE;
 
-    // One extension, which is exactly what the mod asks for. Advertising more
-    // than we implement would be a lie a test tool has no business telling.
-    static const char* kExts[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    // Exactly what the mod asks for and the sim implements: D3D11, and the cube
+    // layer (the room snapshot, 2026-10-22). Advertising more than we implement
+    // would be a lie a test tool has no business telling.
+    static const char* kExts[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME,
+                                  XR_KHR_COMPOSITION_LAYER_CUBE_EXTENSION_NAME};
     const uint32_t total = static_cast<uint32_t>(sizeof(kExts) / sizeof(kExts[0]));
 
     *countOutput = total;
@@ -143,9 +145,12 @@ static XrResult impl_CreateInstance(const XrInstanceCreateInfo* info,
     if (g.instanceAlive) return XR_ERROR_LIMIT_REACHED;
 
     bool d3d11 = false;
+    bool cube = false;
     for (uint32_t i = 0; i < info->enabledExtensionCount; ++i) {
         if (strcmp(info->enabledExtensionNames[i], XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0)
             d3d11 = true;
+        else if (strcmp(info->enabledExtensionNames[i], XR_KHR_COMPOSITION_LAYER_CUBE_EXTENSION_NAME) == 0)
+            cube = true;
         else {
             XRSIM_LOG("xrsim: app asked for unsupported extension '%s'",
                       info->enabledExtensionNames[i]);
@@ -156,6 +161,7 @@ static XrResult impl_CreateInstance(const XrInstanceCreateInfo* info,
     ++g.instanceGen;
     g.instanceAlive = true;
     g.d3d11Enabled = d3d11;
+    g.cubeEnabled = cube;
     *out = static_cast<XrInstance>(make_handle(HT_INSTANCE, 0, g.instanceGen));
 
     XRSIM_LOG("xrsim: instance created for app '%s' (engine '%s', api %u.%u) - D3D11 %s",

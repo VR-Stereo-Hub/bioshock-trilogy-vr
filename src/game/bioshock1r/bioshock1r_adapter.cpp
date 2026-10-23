@@ -96,6 +96,10 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // a headset with anchored placement at all. The F10 slider and
     // `vrscreen width` still move it, and a saved preset still overrides.
     bvr::vr::set_screen_width_m(1.9f);
+    // The room snapshot behind the flat screen (2026-10-22): a CORE behaviour,
+    // armed here and only here. The F10 toggle and `vrsnap off` turn it off; a
+    // saved preset overrides.
+    bvr::vr::set_room_snapshot(true);
     // Face buttons pass straight through by default (user directive,
     // 2026-08-22): A=use, B=med hypo, X=reload/hack/EVE, Y=jump, which is the
     // game's own pad layout and the BRVR mod's stock semantics. The session-19

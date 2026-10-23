@@ -2,6 +2,37 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-22 (night) - the room around the flat screen (loading screens and menus)
+
+**Branch `claude/bs1-load-snapshot`** off `staging`, local commits only. Built (Release), host-tested (20
+suites), lint clean, INSTALLED. **Verified on the SIMULATOR** with the 11:01 save (Medical Pavilion):
+a load from the pause menu composites `{cube, quad}`, the room (floor drain, ceiling, blood on the wall,
+the gurney) all around the loading board, the board floating with the frame's black keyed out, looking
+straight ahead and up. **Not yet in the headset.**
+
+### Current state
+
+- **The room snapshot is in** (ARCHITECTURE decision log 2026-10-22, ENGINE_NOTES "The room around the
+  flat screen"): `core/gfx/cube_snapshot` splats one eye image every 100 ms into a 512² cubemap while
+  the projection layer is live and the gameplay verdict is clean; whenever the flat screen quad is the
+  frame, the cube goes under it as an `XR_KHR_composition_layer_cube` layer in LOCAL space and the
+  screen's black is keyed to transparent. Core default OFF; BS1's adapter arms it (`RoomSnapshot` in the
+  preset, the F10 toggle "Room around the screen" under Display, `vrsnap on|off|reset|status`). The
+  simulator advertises and composites the cube layer (six-face swapchains, `PSCube`, `"type": "cube"`
+  in the capture JSON).
+- The pause menu does NOT get the room: BS1 draws it as a HUD piece inside the projection (`[hudel] menu
+  rides the HUD, in the world`), so the cinematic quad never engages there. The main menu, loading
+  screens and cinematics do.
+
+### Next steps
+
+- Headset pass: the seams between splats taken at different exposures, whether 512² reads sharp enough,
+  whether the keyed board wants a dim backing, and whether the cube should reset on a level change.
+- The pause-menu case if wanted: it would need the HUD-ride path to put the cube under the projection,
+  which is a different layer order (cube first, projection over it with the world keyed out) - not built.
+- The `claude/bs1-manual-reload-2` work (launcher, crossbow, flamethrower) is still awaiting its headset
+  run; this branch does not touch it.
+
 ## Session 2026-10-22 (evening) - BS1: manual reloading merged to staging; the plan for the other three guns
 
 **Merged into local `staging` as 7c7562f** (the tester's yes; not pushed - the repo is local-only). New branch
@@ -11954,6 +11985,14 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-10-22 (night) - the room around the flat screen
+
+The tester's idea from the headset: show the room you were in, instead of black, around loading screens
+and menus. Built as a GPU cubemap accumulated from the eye images (`core/gfx/cube_snapshot`) and submitted
+as an OpenXR cube layer under the flat screen quad, the screen's black keyed out; the simulator taught the
+extension, six-face swapchains and a cube pass. Verified on the simulator with the 11:01 save (a load from
+the pause menu shows the Medical Pavilion room around the floating board). BS1 opts in; core default off.
 
 ### 2026-10-20 (evening) - BS1 manual reload: the 15:33 run's fixes, the shotgun pump after HL2VR
 

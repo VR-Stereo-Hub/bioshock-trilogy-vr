@@ -376,6 +376,13 @@ static XrResult impl_EndFrame(XrSession session, const XrFrameEndInfo* info) noe
             dst.pose = q->pose;
             dst.size = q->size;
             dst.sub = q->subImage;
+        } else if (base->type == XR_TYPE_COMPOSITION_LAYER_CUBE_KHR && g.cubeEnabled) {
+            // The room snapshot: a cubemap at infinity, orientation only.
+            const auto* c = reinterpret_cast<const XrCompositionLayerCubeKHR*>(base);
+            dst.eyeVisibility = c->eyeVisibility;
+            dst.pose.orientation = c->orientation;
+            dst.sub.swapchain = c->swapchain;
+            dst.sub.imageArrayIndex = c->imageArrayIndex;
         } else {
             XRSIM_LOG_ONCE("xrsim: unsupported composition layer type %d - skipped",
                            static_cast<int>(base->type));
