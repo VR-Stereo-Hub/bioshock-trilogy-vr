@@ -1748,10 +1748,22 @@ static void to_ray_cm(const FRotator& rot, const float v[3], float uuPerCm, floa
 // it. Bullets leave along the ray through the fire-start seam; an emitter has no seam. So the emitter's relative
 // rotation is written through the game's own Actor.SetRelativeRotation: its forward the line from the socket to
 // the ray's point at the reticle distance (the laser reach with the reticle off) - the line a bullet takes.
-// Only when it changes by about a degree, at most 20 times a second; once per emitter it is logged (the game
-// spawns one per trigger pull). Unverified in a run: if the spray is still off by the socket's own 12.7 deg, the
-// attachment's frame is the socket's BONE and `boneAxes` is the frame to use.
+// 2026-10-22 evening (the tester: "still shooting off to the right and down a little"): the first write assumed
+// the relative rotation composes on the socket's own frame; the attachment's frame is whatever the engine makes
+// it, so the loop is CLOSED on the emitter's actual Rotation (Actor.Rotation, the engine's composed world
+// rotation): each 50 ms the emitter's real forward is read, its error to the wanted line is taken in the
+// emitter's own frame, and the relative rotation nudged by it - a gain that flips once if the first nudge made
+// the error grow (a mirrored frame). It settles within a few steps; `[aim] chem spray:` logs the residual once
+// per emitter (the game spawns one per trigger pull).
 static bool read_ptr_guarded(const void* at, void** out) {
+    __try {
+        memcpy(out, at, sizeof *out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+static bool read_rot_guarded(const void* at, FRotator* out) {
     __try {
         memcpy(out, at, sizeof *out);
         return true;
@@ -1762,9 +1774,12 @@ static bool read_ptr_guarded(const void* at, void** out) {
 static void aim_spray(void* weapon, const float m[3], const float socketAxes[3][3], const RayBase& b, float worldScale,
                       uint64_t now) {
     static void* s_emitter = nullptr;
-    static FRotator s_last{};
+    static FRotator s_rel{};
     static uint64_t s_ms = 0;
     static uint64_t s_failMs = 0;
+    static int s_steps = 0;
+    static float s_gain = 1.0f, s_errWas = 0.0f;
+    static bool s_logged = false;
     const wchar_t* cls = patterns::object_class_name(weapon);
     if (!cls || _wcsicmp(cls, L"ChemicalThrower") != 0 || !script::properties_ready(weapon)) return;
     const int32_t off = script::property_offset(weapon, L"CurrentDamageEmitter");
@@ -1775,6 +1790,7 @@ static void aim_spray(void* weapon, const float m[3], const float socketAxes[3][
     }
     const bool fresh = em != s_emitter;
     if (!fresh && now - s_ms < 50) return;
+    // The wanted line: from the socket to the ray's point at the reticle distance.
     float dir[3];
     ue_rot_to_dir(b.rayRot, dir);
     const float reachM = g_dot.load(std::memory_order_relaxed) ? g_dotDistM.load(std::memory_order_relaxed)
@@ -1785,25 +1801,50 @@ static void aim_spray(void* weapon, const float m[3], const float socketAxes[3][
     const float len = sqrtf(want[0] * want[0] + want[1] * want[1] + want[2] * want[2]);
     if (!(len > 1.0f)) return;
     for (float& v : want) v /= len;
-    // In the socket's frame (its axes are world unit vectors): forward X, right Y, up Z.
-    float l[3];
-    for (int k = 0; k < 3; ++k) l[k] = want[0] * socketAxes[k][0] + want[1] * socketAxes[k][1] + want[2] * socketAxes[k][2];
-    const float lz = l[2] > 1.0f ? 1.0f : l[2] < -1.0f ? -1.0f : l[2];
-    FRotator r{};
-    r.pitch = static_cast<int32_t>(asinf(lz) * kRotUnitsPerRadian);
-    r.yaw = static_cast<int32_t>(atan2f(l[1], l[0]) * kRotUnitsPerRadian);
-    r.roll = 0;
-    auto wrap = [](int32_t d) { d = ((d % 65536) + 65536) % 65536; return d > 32767 ? d - 65536 : d; };
-    if (!fresh && abs(wrap(r.pitch - s_last.pitch)) < 180 && abs(wrap(r.yaw - s_last.yaw)) < 180) return; // ~1 deg
-    struct { int32_t pitch, yaw, roll; int32_t ret; } p{r.pitch, r.yaw, r.roll, 0};
+    const float kDeg = 57.29578f;
+    if (fresh) {
+        // The first write: the line in the socket's frame (right if the attachment composes on the socket).
+        float l[3];
+        for (int k = 0; k < 3; ++k) l[k] = want[0] * socketAxes[k][0] + want[1] * socketAxes[k][1] + want[2] * socketAxes[k][2];
+        const float lz = l[2] > 1.0f ? 1.0f : l[2] < -1.0f ? -1.0f : l[2];
+        s_rel.pitch = static_cast<int32_t>(asinf(lz) * kRotUnitsPerRadian);
+        s_rel.yaw = static_cast<int32_t>(atan2f(l[1], l[0]) * kRotUnitsPerRadian);
+        s_rel.roll = 0;
+        s_steps = 0;
+        s_gain = 1.0f;
+        s_errWas = 0.0f;
+        s_logged = false;
+    } else {
+        // The loop: the emitter's real forward against the wanted line, in the emitter's own frame.
+        const int32_t ro = script::property_offset(em, L"Rotation");
+        FRotator cur{};
+        if (ro < 0 || !read_rot_guarded(static_cast<const uint8_t*>(em) + ro, &cur)) return;
+        float f[3], r[3], u[3];
+        ue_rot_basis(cur, f, r, u);
+        const float df = want[0] * f[0] + want[1] * f[1] + want[2] * f[2];
+        const float dr = want[0] * r[0] + want[1] * r[1] + want[2] * r[2];
+        const float du = want[0] * u[0] + want[1] * u[1] + want[2] * u[2];
+        const float err = acosf(df > 1.0f ? 1.0f : df < -1.0f ? -1.0f : df) * kDeg;
+        if (err < 1.0f || s_steps >= 16) {
+            if (!s_logged) {
+                s_logged = true;
+                BVR_LOG("[aim] chem spray: emitter %p %s after %d step(s) - %.1f deg off the wanted line (relative pitch %.1f "
+                        "yaw %.1f, gain %+.0f)",
+                        em, err < 1.0f ? "on the ray" : "NOT settled", s_steps, err, s_rel.pitch / kRotUnitsPerRadian * kDeg,
+                        s_rel.yaw / kRotUnitsPerRadian * kDeg, s_gain);
+            }
+            s_ms = now;
+            return;
+        }
+        if (s_steps > 0 && err > s_errWas + 0.5f) s_gain = -s_gain; // the nudge went the wrong way: a mirrored frame
+        s_errWas = err;
+        s_rel.yaw += static_cast<int32_t>(s_gain * atan2f(dr, df) * kRotUnitsPerRadian);
+        s_rel.pitch += static_cast<int32_t>(s_gain * asinf(du > 1.0f ? 1.0f : du < -1.0f ? -1.0f : du) * kRotUnitsPerRadian);
+        ++s_steps;
+    }
+    struct { int32_t pitch, yaw, roll; int32_t ret; } p{s_rel.pitch, s_rel.yaw, s_rel.roll, 0};
     if (script::call(em, "SetRelativeRotation", &p)) {
-        if (fresh)
-            BVR_LOG("[aim] chem spray: emitter %p aimed along the ray - pitch %.1f yaw %.1f deg in the socket's frame "
-                    "(%.1f deg off the socket's X)",
-                    em, r.pitch / kRotUnitsPerRadian * 57.29578f, r.yaw / kRotUnitsPerRadian * 57.29578f,
-                    acosf(l[0] > 1.0f ? 1.0f : l[0] < -1.0f ? -1.0f : l[0]) * 57.29578f);
         s_emitter = em;
-        s_last = r;
         s_ms = now;
     } else if (now - s_failMs > 5000) {
         s_failMs = now;

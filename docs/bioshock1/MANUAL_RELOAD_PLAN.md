@@ -108,24 +108,27 @@ Each step is one commit with its host tests, built and installed; the simulator 
    relative rotation is ignored by the attachment: rotate the muzzle socket's bone write in the
    weapon lane for this gun only. Check in the simulator with a capture: the spray's first
    particles leave along the laser.
-3. **The launcher's manual reload** - the first new program, the one the tester sees broken.
-   `Kind::Launcher`; the program (`reload_rig.h`): Pull the breech open (the hand on the handle
-   section, `Dummy02`'s 29-unit slide as a `Slide` phase along the gun), Pull the ammo box off
-   (`AmmoBoxDummy`, a carried part as the Tommy's drum, with its designed grip from
-   `grip_solve.py`), Fetch grenades at the pouch and Insert them into the box or the chamber (the
-   clip's `AmmoDummy` 90-deg turn is the seat), Insert the box back, Slide the breech shut. The
-   clip times from `reload_pose.py` on the two glbs (`--part AmmoBoxDummy`). The chamber's
-   75-deg turn per shot stays the game's (the Fire clip). Geometry: the handle and box fist
-   centres into `gun_geometry`. Suppression record: X, the adopted dry reload, the free hand,
-   the ammo model. Sounds: `GrenadeLauncherEquip` is the only weapon event seen so far; a run
+3. **The launcher's manual reload** - THE TESTER'S DESIGN (2026-10-22 evening): the gun stays together
+   (no breech slide, no chamber turn by hand); the ammo box on the right side is the magazine and works as
+   the Tommy's drum - it drops (X, or the hand pulls it off), a new one is taken from the pouch (a spare
+   prop, catchable) and slapped onto the gun. `Kind::Launcher`; the program: Pull the box
+   (`AmmoBoxDummy`'s path off the gun, or the eject on X), Fetch at the pouch, Insert it back on its
+   mount; no Slide. The dropped and the carried box are the launcher's `VisualAmmoModel`
+   (`ShockGame.WP_GrenadeLauncher.Ammo_Pickup_Frag`, the frag ammo's static mesh; the other types their
+   own) on `AmmoDummySocket`, as the Tommy's `TG_AmmoModel`. Until the program is in, the launcher's reload
+   is the game's for BOTH hands in view (handback, 2026-10-22). Geometry: the box's fist centre into
+   `gun_geometry`; a designed grip from `grip_solve.py`. Suppression record: X, the adopted dry reload, the
+   free hand, the ammo model. Sounds: `GrenadeLauncherEquip` is the only weapon event seen so far; a run
    with the reload logs the rest.
-4. **The crossbow's manual reload.** `Kind::Crossbow`. Two mechanics: the lever (a `Slide` of
-   `X_Lever` 75 deg - the free hand pulls it back and lets it return; the same stroke the Fire
-   clip plays itself after each shot, which the matrix's shotgun rule suggests making the
-   player's: the crossbow waits uncocked after a shot until the lever is worked, a deliberate
-   stroke) and the bolt box (Pull it off, Fetch bolts at the pouch, Insert them, Insert the box
-   back; the box is the carried part, 169 deg and 120 units in the clip, so it is drawn on the
-   hand, never from the clip). The zoom clips stay the game's. Rest pose and fore-grip exist.
+4. **The crossbow's manual reload** - THE TESTER'S DESIGN (2026-10-22 evening): the lever is the
+   shotgun's pump. Between shots the crossbow waits uncocked until the lever is worked up and down by hand
+   (the Fire clip's own `X_Lever` 75-deg stroke, 0.3-0.9 s of the reload clip, driven by the free hand's
+   travel - `reload_rig::Pump` over the Fire clip as the shotgun's, the ratchet on the hand's arc rather
+   than along the barrel). The reload: lever UP (the first stroke; the clip held there), take the bolt box
+   from the waist as the others' magazines (Fetch at the pouch), put it in (Insert along `X_AmmoBox`'s
+   seat; the box is the carried part, drawn on the hand, never from the clip's 120-unit swing), lever DOWN
+   (the second stroke; the clip plays out). `Kind::Crossbow`; the zoom clips stay the game's. Rest pose
+   and fore-grip exist; the mirror is at the grip (2026-10-22).
 5. **The chem thrower's manual reload.** `Kind::Chem`. Fetch a tank (the `ChemicalThrower_*`
    ammunition is the tank; the ammo model socket is to be found - the class names no
    `AmmunitionModelSocket`), Insert it at the tank mount, then the wrench: a `Slide` of
@@ -151,11 +154,10 @@ Each step is one commit with its host tests, built and installed; the simulator 
 The crossbow's zoom (its own clips and FOV), the launcher's chamber rotation per shot, the chem
 thrower's pilot light and spurts, the research camera, the wrench. Plasmids are untouched.
 
-## 6. Open questions for the tester
+## 6. Decided (2026-10-22 evening, the tester)
 
-- The launcher: should the box come off the gun by hand (the game's way, step 3) or stay on with
-  a lid, grenades dropped straight into the chamber? The game's clip detaches it.
-- The crossbow after a shot: the game re-cocks it itself in the Fire clip. Make the lever the
-  player's, like the shotgun's pump (the gun waits uncocked), or leave it?
-- The chem thrower's reload today takes 4.5 s of valve work; a manual one is as long as the hand
-  takes. Fine?
+- The launcher stays together; its ammo box is the magazine, dropped and replaced as the Tommy's drum.
+- The crossbow's lever is worked by hand between shots like the shotgun's pump; its reload is lever up,
+  box from the waist, box in, lever down.
+- Open: the chem thrower's reload today takes 4.5 s of valve work; a manual one is as long as the hand
+  takes.

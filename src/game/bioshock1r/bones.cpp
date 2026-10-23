@@ -7322,6 +7322,11 @@ const Qts* m4_pose(const Qts* A, int n) {
             planeFrom = "the rigid mesh's own centre (its render bounds)";
         }
     }
+    // 2026-10-22: a gun both hands grip at the same spot (the crossbow's stock) mirrors about that spot.
+    if (row && row->mirrorAtGrip) {
+        plane = gun_geometry::mirror_plane(*row, u, plane);
+        planeFrom = "the fore-grip itself (both hands take the same spot)";
+    }
     const float ovr = g_mirrorPinOverride.load(std::memory_order_relaxed);
     if (ovr == ovr) { plane = ovr; planeFrom = "OVERRIDE (vrbones mirrorpin)"; }
     // u is the socket's axis as the record signs it, so the skeleton's coordinate along it is the

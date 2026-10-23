@@ -50,6 +50,17 @@ int main() {
         check(gg::find(L"ResearchCamera") == nullptr, "an unknown class: no row");
         check(gg::find(nullptr) == nullptr, "no class: no row");
     }
+    // ---- the mirror plane (2026-10-22) ----
+    {
+        const gg::Gun* xb = gg::find(L"Crossbow");
+        const gg::Gun* sg = gg::find(L"Shotgun");
+        const Vec u{0.0f, 1.0f, 0.0f};
+        check(xb && xb->mirrorAtGrip && !sg->mirrorAtGrip, "the crossbow mirrors at its grip, the shotgun about its centre");
+        check(std::fabs(gg::mirror_plane(*xb, u, -1.65f) - xb->foreGrip.y) < 1e-5f, "the crossbow's plane is its fore-grip's position along u");
+        check(gg::mirror_plane(*sg, u, -3.63f) == -3.63f, "the shotgun keeps the measured centre line");
+        const Vec m = gg::mirror_point(xb->foreGrip, u, gg::mirror_plane(*xb, u, -1.65f));
+        check(dist(m, xb->foreGrip) < 1e-4f, "mirrored at the grip, the other hand lands on the same spot");
+    }
     // ---- the pump (2026-10-22) ----
     {
         const gg::Gun* s = gg::find(L"Shotgun");

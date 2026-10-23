@@ -6,8 +6,10 @@
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/hand_compose.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/hands_state.h"
 #include "game/bioshock1r/manual_reload.h"
+#include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
 
@@ -111,7 +113,17 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
     if (st == State::Reloading && (manual_reload::active() || manual_reload::handles_reloads())) {
         g_reason = "manual reload (the hands stay on the controllers)";
     } else if (st == State::Reloading) {
-        const Place p = static_cast<Place>(g_reload.load());
+        Place p = static_cast<Place>(g_reload.load());
+        // 2026-10-22 (the tester, the launcher with the manual reload off: the reload "doesn't work correctly" -
+        // its clip turns the chamber, slides the breech open and takes the ammo box off the gun, and with the gun
+        // hand on the controller and the free hand carried at the gun those parts move with no hand on them):
+        // the grenade launcher's reload is the game's for BOTH hands, in view, until it has a program of its own
+        // (MANUAL_RELOAD_PLAN.md).
+        if (p == Place::AtGun && handsActor) {
+            void* w = nullptr;
+            const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
+            if (cls && !_wcsicmp(cls, L"GrenadeLauncher")) p = Place::View;
+        }
         if (p == Place::View) {
             mask |= 3;
             g_reason = "reload (in view)";

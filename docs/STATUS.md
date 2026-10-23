@@ -16,6 +16,13 @@ eight ordered steps. **Steps 1, 2 and 7 are in** (12b8836 the crossbow's barrel 
 installed, none run. The launcher's reload is timed (plan section 3b); its program waits on one recording with
 the launcher in hand (which section the game's hand holds while the breech slides).
 
+The 18:3x run on that: the crossbow's reticle and bolt agree; its left-hand hold mirrored off the weapon
+(fixed: the crossbow mirrors at its grip); the chem spray still off right and down (fixed: the emitter aim
+is a closed loop on the emitter's real rotation); the launcher's reload with the manual reload off moved
+parts with no hand on them (fixed: both hands are the game's in view for it). The tester's designs for the
+launcher (the ammo box as the Tommy's drum, the gun stays together) and the crossbow (the lever as the
+shotgun's pump; reload = lever up, box from the waist, box in, lever down) are in the plan.
+
 ### Next steps
 
 - A run with the new build: the crossbow (does the reticle sit on the bolt now; the log's `[muzzle]` and

@@ -7664,3 +7664,23 @@ point at the reticle distance (the laser reach with the reticle off), through th
 expected). Unverified in a run: if the spray is still off by the socket's own 12.7 deg, the attachment composes
 on the socket's bone rather than the socket, and the bone's axes are the frame to use. MANUAL_RELOAD_PLAN.md
 step 2.
+
+## 2026-10-22 (evening) - The 18:3x run: the crossbow's mirror, the spray loop, the launcher's hands
+
+- **Crossbow, gun in the left hand: the right hand's grip off to the left of the weapon.** The mirror reflects
+  the fore-grip about the gun's centre plane (the median of the skeleton's bones along the socket's Y, -1.65 for
+  the crossbow); its fore-grip sits 9.9 units to one side of that plane (26.9 8.7 -3.4 along u ~ 8.2), so the
+  reflection put the other hand 20 units across. The crossbow's stock is one spot both hands take from above:
+  `gun_geometry::Gun::mirrorAtGrip` mirrors about the plane through the fore-grip itself (`mirror_plane`), so the
+  other hand lands where the first one was. The shotgun's pump, gripped from either side, keeps the centre plane.
+- **Chem spray still off right and down.** The first write (above) composed the wanted line in the socket's frame
+  and trusted the attachment to use it; it did not, by a residual the tester saw. `aim_spray` is a closed loop
+  now: the emitter's composed world `Rotation` is read each 50 ms, the error to the wanted line taken in the
+  emitter's own frame, and the relative rotation nudged by it (the gain flips once if the first nudge made the
+  error grow); it stops under 1 deg or after 16 steps, logging `[aim] chem spray: emitter ... on the ray after N
+  step(s) - X deg off`. If the log says NOT settled, the emitter's Rotation is not the composed one and the next
+  move is `GetBoneCoords` on the emitter's own mesh.
+- **Launcher, manual reload off: the reload wrong.** Its clip moves the chamber, the breech and the ammo box with
+  the gun hand on the controller and the free hand carried at the gun. handback: the launcher's reload is the
+  game's for both hands in view (the `View` place) until it has a program; the tester's design for that program
+  is in MANUAL_RELOAD_PLAN.md step 3 (the box as the Tommy's drum, the gun stays together).
