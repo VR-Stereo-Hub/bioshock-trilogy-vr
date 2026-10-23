@@ -3126,3 +3126,19 @@ hysteresis frames (a board in the cube for good) and resetting on every screen (
 load would be black again). The pause menu rides the HUD inside the projection in BS1, so it is not a
 flat-screen case and gets no cube. Core default off; the extension is enabled when the runtime offers it
 (the Meta runtime, VDXR, the simulator), and the quad stands alone without it.
+
+### 2026-10-23: the room cube is world-yaw aligned, one room per level on disk, the sweep drives the camera
+
+The first cut kept the cube in the headset's frame, which a recenter or a stick turn between the splat and
+the screen would have rotated, and which no file could carry across runs. The cube is now aligned to the
+game world's yaw: the adapter publishes, every camera frame, the pawn's yaw less the recenter yaw (the yaw
+that carries a headset direction into the world); a splat rotates its eye orientation by it and the layer
+counter-rotates by it. A room on disk (`rooms\<map>.cube`, the six RGBA8 faces) is therefore in its own
+level's frame and comes back right in a later run. One room per level, by the map's package name, taken by
+an explicit capture (the F10 toggle "Capture this room now"): hands and gun hidden, the camera driven
+through 38 directions by the live head lane with the located head replaced, each held by the clock, the
+headset showing the live cube filling in. A level's room on disk is shown from the moment its name resolves
+(which is during the load), and a level without one keeps the previous room up until its own gameplay
+starts. Rejected: showing nothing for a level without a room (black again on every transition), keying the
+sweep to CalcView calls (three per frame in the simulator), and a passive-only cube (gaps wherever the
+player never looked). The loading board is cut to a circle (a slider; the frame's black is keyed out).

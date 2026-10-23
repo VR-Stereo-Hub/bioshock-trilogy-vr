@@ -36,6 +36,11 @@ using GatherFn = int(__thiscall*)(void* self, void* inst, int lod, void* out, in
 GatherFn g_orig = nullptr;
 bool g_installed = false;
 std::atomic<bool> g_enabled{true};
+std::atomic<bool> g_hideAll{false}; // the room capture sweep: hands and weapon collapsed away
+std::atomic<void*> g_hideActor{nullptr}; // the held weapon actor the hands module names, while hidden
+std::atomic<float> g_hideCam[3] = {0.0f, 0.0f, 0.0f}; // the camera, for the by-reach rule
+constexpr float kHideReachUu = 120.0f;
+constexpr float kHideAllAt[3] = {0.0f, 0.0f, -100000.0f};
 
 std::mutex g_mutex; // the drive publishes on the game thread; the gather may run on the render thread
 struct Published {
@@ -443,6 +448,24 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
     if (owner && readable(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset, 4))
         census_note(owner, *reinterpret_cast<int*>(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset));
 
+    // ---- hidden outright (the room capture sweep): every matrix of the hands' and the held
+    // weapon's palettes collapsed far below the world, so nothing of either is drawn.
+    if (g_hideAll.load(std::memory_order_relaxed) && owner && inst &&
+        (owner == p.instance || owner == g_hideActor.load(std::memory_order_relaxed) ||
+         (p.weapon.valid && owner == p.weapon.actor))) {
+        uint8_t* b = static_cast<uint8_t*>(inst);
+        if (readable(b + patterns::kMeshInstPaletteOffset, 8)) {
+            float** hslot = reinterpret_cast<float**>(b + patterns::kMeshInstPaletteOffset);
+            float* hengine = *hslot;
+            const int hn = *reinterpret_cast<int*>(b + patterns::kMeshInstPaletteCountOffset);
+            if (hengine && hn > 0 && hn <= 256 && readable(hengine, static_cast<size_t>(hn) * 64)) {
+                memcpy(g_copy, hengine, static_cast<size_t>(hn) * 64);
+                for (int i = 0; i < hn; ++i) collapse(kHideAllAt, g_copy + i * 16);
+                return call_with_copy(self, inst, lod, out, a5, hslot, hengine);
+            }
+        }
+    }
+
     // ---- the held weapon (Dishonored 1.5): the hand's world correction, in the weapon's space
     if (g_enabled.load(std::memory_order_relaxed) && owner && p.weapon.valid && owner == p.weapon.actor &&
         GetTickCount64() - p.ms <= 250) {
@@ -597,6 +620,46 @@ int __fastcall mesh_draw_detour(void* mesh, void* /*edx*/, void* rec, void* rend
         std::lock_guard<std::mutex> lock(g_mutex);
         p = g_pub;
     }
+    // Hidden outright (the room capture sweep): the held weapon's record, whichever
+    // actor the hands module names, drawn far below the world - the weapon lane
+    // above need not be live for it (it is idle for the wrench).
+    const bool hideAll = g_hideAll.load(std::memory_order_relaxed);
+    void* hideActor = hideAll ? g_hideActor.load(std::memory_order_relaxed) : nullptr;
+    if (hideAll && rec && readable(rec, 0x120)) {
+        uint8_t* hb = static_cast<uint8_t*>(rec);
+        int hoff = g_recOwnerOffset.load(std::memory_order_relaxed);
+        if (hoff < 0 && hideActor) {
+            for (int o = 0; o < 0x120; o += 4)
+                if (*reinterpret_cast<void**>(hb + o) == hideActor) {
+                    hoff = o;
+                    g_recOwnerOffset.store(o, std::memory_order_relaxed);
+                    BVR_LOG("[palette] weapon: the static-mesh draw record holds its owner actor at +0x%X (hide)", o);
+                    break;
+                }
+        }
+        const bool byActor = hideActor && hoff >= 0 && *reinterpret_cast<void**>(hb + hoff) == hideActor;
+        // By REACH when the actor is unknown (the wrench is never resolved): a static
+        // mesh drawn within arm's reach of the camera is the viewmodel, nothing else is.
+        bool byReach = false;
+        if (!byActor) {
+            const float* t = reinterpret_cast<const float*>(hb + patterns::kDrawRecLocalToWorldOffset) + 12;
+            const float dx = t[0] - g_hideCam[0].load(std::memory_order_relaxed);
+            const float dy = t[1] - g_hideCam[1].load(std::memory_order_relaxed);
+            const float dz = t[2] - g_hideCam[2].load(std::memory_order_relaxed);
+            byReach = dx * dx + dy * dy + dz * dz < kHideReachUu * kHideReachUu;
+        }
+        if (byActor || byReach) {
+            float* hl2w = reinterpret_cast<float*>(hb + patterns::kDrawRecLocalToWorldOffset);
+            float* hw2l = reinterpret_cast<float*>(hb + patterns::kDrawRecWorldToLocalOffset);
+            float hnl[16], hnw[16];
+            memcpy(hnl, hl2w, 64);
+            memcpy(hnw, hw2l, 64);
+            hnl[12] = kHideAllAt[0];
+            hnl[13] = kHideAllAt[1];
+            hnl[14] = kHideAllAt[2];
+            return call_mesh_draw(mesh, rec, renderer, a4, hl2w, hw2l, hnl, hnw);
+        }
+    }
     if (!g_enabled.load(std::memory_order_relaxed) || !p.weapon.valid || !p.weapon.actor || !rec ||
         GetTickCount64() - p.ms > 250 || !readable(rec, 0x120))
         return g_meshDrawOrig(mesh, rec, renderer, a4);
@@ -621,6 +684,12 @@ int __fastcall mesh_draw_detour(void* mesh, void* /*edx*/, void* rec, void* rend
     float nl[16], nw[16], dinv[16];
     memcpy(nl, l2w, 64);
     apply_sim(p.weapon.dWorld, nl);
+    if (g_hideAll.load(std::memory_order_relaxed)) {
+        // Hidden outright: the weapon's record drawn far below the world.
+        nl[12] = kHideAllAt[0];
+        nl[13] = kHideAllAt[1];
+        nl[14] = kHideAllAt[2];
+    }
     sim_rows(sim_inv(p.weapon.dWorld), dinv);
     mat_mul(dinv, w2l, nw);
     const uint64_t now = GetTickCount64();
@@ -692,6 +761,13 @@ void set_enabled(bool on) {
                                : "OFF - the hands go back to the bone drive");
 }
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
+void set_hide_all(bool on, void* weaponActor, const float camLoc[3]) {
+    g_hideActor.store(on ? weaponActor : nullptr, std::memory_order_relaxed);
+    if (camLoc)
+        for (int i = 0; i < 3; ++i) g_hideCam[i].store(camLoc[i], std::memory_order_relaxed);
+    g_hideAll.store(on, std::memory_order_relaxed);
+}
+bool hide_all() { return g_hideAll.load(std::memory_order_relaxed); }
 bool active() { return g_installed && enabled(); }
 
 void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored) {

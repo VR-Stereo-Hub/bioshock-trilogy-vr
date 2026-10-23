@@ -89,7 +89,7 @@ enum class Setting {
     // The manual reload (manual_reload.cpp).
     ManualReload, ReloadAbort,
     // The room around the flat screen (core/gfx/cube_snapshot).
-    RoomSnapshot,
+    RoomSnapshot, RoomCapture, RoomCircle,
     Count
 };
 struct Spec {

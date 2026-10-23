@@ -36,6 +36,11 @@ void on_calcview(void* pc, void* viewActor);
 // chain has not resolved. Never null.
 const char* top_movie();
 
+// The map's package name, e.g. "2-MedicalPavilion" (2026-10-23: LevelInfo's
+// XLevel, its Outer package, its name). Empty until the first level resolves;
+// kept across a level change until the next one resolves. Never null.
+const wchar_t* map_name();
+
 // The top movie is one that should be shown as a stationary panel rather than
 // drawn over a live world: the pause menu, the map, the manual, the machine
 // flows. False whenever the chain has not resolved, so an unresolved chain

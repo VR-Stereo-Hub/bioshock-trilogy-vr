@@ -29,6 +29,7 @@
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/room_capture.h"
 #include "game/bioshock1r/scripted.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
@@ -787,6 +788,8 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_cine_command(args); // session 22 cinematic quad fallback
     } else if (strcmp(cmd, "vrsnap") == 0) {
         bvr::vr::handle_room_snapshot_command(args); // the room around the flat screen (2026-10-22)
+    } else if (strcmp(cmd, "vrroom") == 0) {
+        room_capture::handle_command(args); // per-level rooms and the capture sweep (2026-10-23)
     } else if (strcmp(cmd, "vroverlay") == 0) {
         bool on = strncmp(args, "on", 2) == 0;
         bvr::overlay::set_visible(on);
@@ -1566,6 +1569,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // AER: one head sample per eye pair (BRVR's latch) - no-op for every other method.
         alt_eye::latch_head(&hp, altSign);
     }
+    // The room capture sweep drives the camera itself through the live lane.
+    if (driveHead && liveHead) room_capture::override_head(&hp);
     if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
         // RAW, not recenter-relative. Subtracting recenter_yaw_rad() here is
@@ -1624,6 +1629,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         int32_t gameYawUnits = rot->yaw;
         int32_t headYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
         residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
+        // The room cube's world frame: headset yaw + this = the rendered yaw.
+        {
+            const float camLoc[3] = {loc->x, loc->y, loc->z};
+            room_capture::publish_world_yaw(wrap_rot(gameYawUnits - g_recenterYawUnits), camLoc);
+        }
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
         // Session 30: publish how far the ENGINE's own pitch is from the head's
         // BEFORE we overwrite it, so the pitch servo can steer it through the
@@ -2277,6 +2287,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // flows draw over a live world, so no render-side signal can see them; the
     // engine's own movie stack names them exactly.
     screens::on_calcview(self, viewActor ? *viewActor : nullptr);
+    room_capture::on_calcview(strictGameplay); // the per-level room and the capture sweep
 
     // s64 part 2: PausePC.swf IS ON THE STACK DURING BATHYSPHERE RIDES AND EVERY
     // SCRIPTED SCENE, not just at the pause menu. Measured 2026-08-22:

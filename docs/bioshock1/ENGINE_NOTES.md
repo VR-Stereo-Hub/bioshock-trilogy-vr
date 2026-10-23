@@ -7806,3 +7806,37 @@ On the simulator the first load after the main menu already carried the cube wit
 projection layer was live for a few clean frames of the intro before the cinematic quad engaged. Harmless
 (the real room overwrites it), and the splat is gated on the frame's verdict so the board's own frames
 never enter the cube. `vrsnap status` reports the splat and layer counts; `vrsnap reset` clears the cube.
+
+## 2026-10-23 - The map by name, one room per level, the capture sweep
+
+**UObject::Outer is +0x1C on this build.** Derived live, not by eye: LevelInfo+0xFC is the ULevel (the
+first step of the GetFlashGUIController walk above; `object_class_name` reads 'Level'), and a ULevel's
+Outer is the map package. The slots below Name (+0x28) were scanned for the one whose target is an
+object of class 'Package' with a null outer of its own at the same slot - a top-level package - and
++0x1C is the only one that passes (the hash-chain and linker slots never do). The package's name is the
+map: `Entry` under the main menu, then `1-Medical`, `1-Welcome`, `0-Lighthouse` as loaded. `screens::map_name()`.
+
+**The Entry level's LevelInfo persists under every map.** The screens module latches LevelInfo from the
+controller's Level pointer and re-proves it by self-reference every frame; that pointer never broke
+across three loads, because the LevelInfo it found under the main menu is Entry's, the engine's
+fallback level, which stays alive for the whole run. (The note under "The Flash movie stack" that a
+level change frees LevelInfo is wrong for Entry's.) The map name is therefore read from the CONTROLLER's
+own Level pointer on every call, never the latched one - the latched one named Entry for the whole game.
+
+**The map name changes while the level still loads**: the controller's Level pointer moves before
+gameplay resumes (`screens: map = 0-Lighthouse` 5 s into the load, `view state: GAMEPLAY` 6 s later),
+so a level with a room on disk shows it around the loading board on the way in.
+
+**The wrench is a static mesh with no actor resolved.** The palette gather's census lists every skinned
+instance (splicers, doors, dead bodies, the 47-bone hands) and the wrench is not among them; it is drawn
+through the static-mesh draw (RVA 0x3DBCF0) and `hands::weapon_actor()` stays null for it, so a hide by
+actor never sees it. The capture sweep hides it by REACH: while the sweep runs, any static-mesh draw
+record whose LocalToWorld translation is within 120 uu of the camera is the viewmodel and is drawn far
+below the world. The hands go by the palette (every matrix collapsed), the legacy rig by the bone collapse.
+
+**The sweep's timing is by the clock, not by CalcView calls**: in the simulator CalcView runs about three
+times per presented frame (38 directions held 8 calls each finished in 1.1 s - too fast for the frames
+to have been rendered), so a direction is held 200 ms, then splatted on request, then waited for up to
+500 ms; 38 directions take 8 s. Measured on the 11:01 save: the loading screen at head yaw 0, 90, 270
+and pitch -60, +60 reproduces the gameplay view at the same poses (the drain, the gurney, the lamps,
+the wheel), with no hands, no wrench and no gaps in the ceiling.

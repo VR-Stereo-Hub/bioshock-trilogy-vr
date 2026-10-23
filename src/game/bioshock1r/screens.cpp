@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "core/util/log.h"
+#include "game/bioshock1r/patterns.h"
 
 namespace bvr::b1r::screens {
 namespace {
@@ -349,7 +350,78 @@ void pauser_on_panel_down() {
     g_pauserCandidateN = 0;
 }
 
+// ---- The map, by name (2026-10-23) ------------------------------------------
+// LevelInfo+0xFC is XLevel, the ULevel (the first step of the GetFlashGUIController
+// walk below). A ULevel's Outer is the map package, and the package's name IS the
+// map's ("2-MedicalPavilion"). UObject::Outer is not in the derived layout (Name
+// +0x28, Class +0x30), so it is found once by scan: the dword slot below Name whose
+// target is an object of class 'Package' with no outer of its own (a top-level
+// package; the hash-chain and linker slots never pass both). Fail-soft throughout,
+// and the map name is kept until the next level's resolves.
+constexpr uint32_t kLevelInfoXLevelOffset = 0xFC;
+static wchar_t g_map[64] = L"";
+static size_t g_outerOff = 0;
+static uint32_t g_mapMisses = 0;
+
+// From the CONTROLLER's own Level pointer every call, never the latched g_level:
+// the Entry level's LevelInfo persists under every map (it is the engine's
+// fallback level), so the latched pointer still self-references after a load
+// and would name Entry for the whole game.
+static void update_map(const void* pc) {
+    void* level = nullptr;
+    if (!read_ptr_at(pc, g_levelOff, &level) || !looks_like_object(level)) return;
+    void* xlevel = nullptr;
+    if (!read_ptr_at(level, kLevelInfoXLevelOffset, &xlevel) || !looks_like_object(xlevel)) return;
+    const wchar_t* lvlCls = patterns::object_class_name(xlevel);
+    if (!lvlCls || wcscmp(lvlCls, L"Level") != 0) {
+        if (++g_mapMisses == 1)
+            BVR_LOG("[b1r] screens: LevelInfo+0x%X is not a Level (class %ls) - no map name",
+                    kLevelInfoXLevelOffset, lvlCls ? lvlCls : L"?");
+        return;
+    }
+    void* pkg = nullptr;
+    if (g_outerOff) {
+        if (!read_ptr_at(xlevel, g_outerOff, &pkg)) return;
+    } else {
+        for (size_t off = 4; off < patterns::kUObjectNameIndexOffset; off += 4) {
+            void* cand = nullptr;
+            if (!read_ptr_at(xlevel, off, &cand) || !looks_like_object(cand)) continue;
+            const wchar_t* c = patterns::object_class_name(cand);
+            if (!c || wcscmp(c, L"Package") != 0) continue;
+            void* candOuter = reinterpret_cast<void*>(1);
+            if (!read_ptr_at(cand, off, &candOuter) || candOuter) continue;
+            g_outerOff = off;
+            pkg = cand;
+            BVR_LOG("[b1r] screens: UObject::Outer = +0x%X (the Level's outer is a top-level Package)",
+                    static_cast<unsigned>(off));
+            break;
+        }
+        if (!g_outerOff) {
+            if (++g_mapMisses == 1) BVR_LOG("[b1r] screens: no Package outer below the Level's name - no map name");
+            return;
+        }
+    }
+    if (!looks_like_object(pkg)) return;
+    int32_t idx = 0;
+    if (!read_i32_at(pkg, patterns::kUObjectNameIndexOffset, &idx)) return;
+    const wchar_t* name = patterns::fname_text(idx);
+    if (!name || !name[0]) return;
+    if (wcscmp(name, g_map) != 0) {
+        wcscpy_s(g_map, name);
+        BVR_LOG("[b1r] screens: map = %ls", g_map);
+    }
+}
+
+const wchar_t* map_name() { return g_map; }
+
+static void on_calcview_impl(void* pc, void* viewActor);
+
 void on_calcview(void* pc, void* viewActor) {
+    on_calcview_impl(pc, viewActor);
+    if (g_level && pc) update_map(pc);
+}
+
+static void on_calcview_impl(void* pc, void* viewActor) {
     if (!pc || !viewActor) return;
 
     if (!g_level) {

@@ -2,15 +2,25 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Session 2026-10-22 (night) - the room around the flat screen (loading screens and menus)
+## Session 2026-10-22/23 (night) - the room around the flat screen, one per level, the capture sweep
 
 **Branch `claude/bs1-load-snapshot`** off `staging`, local commits only. Built (Release), host-tested (20
 suites), lint clean, INSTALLED. **Verified on the SIMULATOR** with the 11:01 save (Medical Pavilion):
-a load from the pause menu composites `{cube, quad}`, the room (floor drain, ceiling, blood on the wall,
-the gurney) all around the loading board, the board floating with the frame's black keyed out, looking
-straight ahead and up. **Not yet in the headset.**
+after `vrroom capture`, a load from the pause menu composites `{cube, quad}` and at head yaw 0, 90, 270 and
+pitch -60/+60 the loading screen reproduces the gameplay capture at the same pose - the drain, the gurney,
+the lamps, the wheel - with no hands, no wrench, no gaps, the board a circle; the room file loaded back in a
+fresh run. **Not yet in the headset.**
 
 ### Current state
+
+- **Per level, world-aligned, captured by a sweep (2026-10-23)**: the cube is aligned to the game world's yaw
+  (ARCHITECTURE decision log 2026-10-23); `rooms\<map>.cube` in the data dir, one per level by the map's
+  package name (ENGINE_NOTES "The map by name": UObject::Outer +0x1C, read from the controller's own Level
+  pointer because Entry's LevelInfo persists); the F10 toggle "Capture this room now" (`vrroom capture`)
+  hides hands and gun, drives the camera through 38 directions in 8 s while the headset shows the cube fill
+  in, saves the level's room and shows it from then on; a level with a room shows it during the load in, one
+  without keeps the old room until its gameplay starts; "Loading board circle" (`RoomCircle`, default 0.16).
+  `src/game/bioshock1r/room_capture.cpp` is BS1's side; the runtime owns the GPU and the files.
 
 - **The room snapshot is in** (ARCHITECTURE decision log 2026-10-22, ENGINE_NOTES "The room around the
   flat screen"): `core/gfx/cube_snapshot` splats one eye image every 100 ms into a 512² cubemap while
@@ -26,8 +36,10 @@ straight ahead and up. **Not yet in the headset.**
 
 ### Next steps
 
-- Headset pass: the seams between splats taken at different exposures, whether 512² reads sharp enough,
-  whether the keyed board wants a dim backing, and whether the cube should reset on a level change.
+- Headset pass: the sweep (hands and gun hidden, the cube filling in while you stand still), whether 512²
+  reads sharp enough, the circle's size, the seams between directions, and the passive cube's exposure.
+- A room for every level wants one sweep per level from a good spot; the Lighthouse's intro is not strict
+  gameplay, so the sweep refuses there until the walk begins.
 - The pause-menu case if wanted: it would need the HUD-ride path to put the cube under the projection,
   which is a different layer order (cube first, projection over it with the world keyed out) - not built.
 - The `claude/bs1-manual-reload-2` work (launcher, crossbow, flamethrower) is still awaiting its headset
@@ -11986,13 +11998,16 @@ and it resumes.
 
 ## Session log (newest first)
 
-### 2026-10-22 (night) - the room around the flat screen
+### 2026-10-22/23 (night) - the room around the flat screen, then one per level by a sweep
 
 The tester's idea from the headset: show the room you were in, instead of black, around loading screens
 and menus. Built as a GPU cubemap accumulated from the eye images (`core/gfx/cube_snapshot`) and submitted
 as an OpenXR cube layer under the flat screen quad, the screen's black keyed out; the simulator taught the
-extension, six-face swapchains and a cube pass. Verified on the simulator with the 11:01 save (a load from
-the pause menu shows the Medical Pavilion room around the floating board). BS1 opts in; core default off.
+extension, six-face swapchains and a cube pass. Then, on the second ask: the cube world-yaw aligned, one
+room file per level (the map's name via UObject::Outer, derived live), an F10 capture sweep that hides the
+hands and gun and drives the camera round the sphere, and the loading board cut to a circle. Verified on the
+simulator with the 11:01 save: the loading screen reproduces the gameplay captures at five head poses, no
+hands, no wrench, the room file reloading in a fresh run. BS1 opts in; core default off.
 
 ### 2026-10-20 (evening) - BS1 manual reload: the 15:33 run's fixes, the shotgun pump after HL2VR
 

@@ -36,6 +36,7 @@
 #include "game/bioshock1r/menu_backend.h"
 #include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/room_capture.h"
 #include "game/bioshock1r/scripted.h"
 
 #include <windows.h>
@@ -1559,7 +1560,7 @@ void on_calcview(const FrameContext& ctx) {
 
         bones::eval_probe_tick(rig); // s82 P1, a no-op unless `vrbones evalprobe on`
         if (rig) {
-            const bool hide = scripted::want_rig_hidden();
+            const bool hide = scripted::want_rig_hidden() || room_capture::hide_rig();
             if (hide) {
                 bones::collapse_rig(rig);
             } else if (g_rigWasCollapsed) {

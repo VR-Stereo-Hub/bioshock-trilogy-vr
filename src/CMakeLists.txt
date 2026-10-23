@@ -79,6 +79,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/menu_view.cpp
     game/bioshock1r/menu_backend.cpp
     game/bioshock1r/screens.cpp
+    game/bioshock1r/room_capture.cpp
+    game/bioshock1r/room_capture.h
     game/bioshock1r/probe_bob.cpp
     game/bioshock1r/body.h
     game/bioshock1r/bones.cpp

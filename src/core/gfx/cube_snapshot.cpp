@@ -5,6 +5,7 @@
 #include <d3dcompiler.h>
 
 #include <cstring>
+#include <vector>
 
 namespace bvr::cube_snapshot {
 namespace {
@@ -15,7 +16,7 @@ SamplerState samp0 : register(s0);
 cbuffer SplatCB : register(b0) {
     float4 qInv;   // world -> eye rotation (x y z w)
     float4 tans;   // eye fov tangents: left, right, up, down
-    float4 params; // x = face index, y = inset (fraction of the fov kept)
+    float4 params; // x = face index, y = inset (fraction of the fov kept); key: z = circle radius, w = aspect
 };
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 VSOut vs_main(uint id : SV_VertexID) {
@@ -49,11 +50,16 @@ float4 ps_main(VSOut i) : SV_Target {
     float2 uv = float2((t.x - tans.x) / (tans.y - tans.x), (tans.z - t.y) / (tans.z - tans.w));
     return float4(eyeTex.Sample(samp0, uv).rgb, 1);
 }
-// The screen over the room: black keyed out, premultiplied.
+// The screen over the room: black keyed out, premultiplied, and when asked a
+// circle (radius in fractions of the frame's height, centred) with a soft rim.
 float4 ps_key(VSOut i) : SV_Target {
     float3 c = eyeTex.Sample(samp0, i.uv).rgb;
     float lum = dot(c, float3(0.299, 0.587, 0.114));
     float a = saturate((lum - 0.012) / 0.05);
+    if (params.z > 0) {
+        float2 d = (i.uv - 0.5) * float2(params.w, 1);
+        a *= 1 - smoothstep(params.z - 0.006, params.z + 0.006, length(d));
+    }
     return float4(c * a, a);
 }
 )";
@@ -78,6 +84,8 @@ ID3D11DepthStencilState* g_depth = nullptr;
 ID3D11Texture2D* g_cube = nullptr;
 ID3D11RenderTargetView* g_faceRtv[6] = {};
 DXGI_FORMAT g_cubeFmt = DXGI_FORMAT_UNKNOWN;
+ID3D11Texture2D* g_saved = nullptr; // a room loaded from disk, shown in place of the live cube
+float g_circle = 0.16f; // the loading board's picture, from the sim capture of 2026-10-23
 ID3D11Texture2D* g_src = nullptr; // a sampleable copy of the eye image
 ID3D11ShaderResourceView* g_srcSrv = nullptr;
 uint32_t g_srcW = 0, g_srcH = 0;
@@ -373,10 +381,94 @@ bool key_black(ID3D11DeviceContext* ctx, ID3D11Texture2D* image) {
     if (!rtv) return false;
     SavedState saved(ctx);
     bind_pass(ctx, g_psKey, static_cast<float>(g_srcW), static_cast<float>(g_srcH));
+    SplatCB cb{};
+    cb.params[2] = g_circle;
+    cb.params[3] = g_srcH ? static_cast<float>(g_srcW) / static_cast<float>(g_srcH) : 1.0f;
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (FAILED(ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
+    memcpy(m.pData, &cb, sizeof(cb));
+    ctx->Unmap(g_cb, 0);
     ctx->OMSetRenderTargets(1, &rtv, nullptr);
     ctx->Draw(3, 0);
     return true;
 }
+
+void set_screen_circle(float radiusFrac) { g_circle = radiusFrac < 0.0f ? 0.0f : radiusFrac; }
+float screen_circle() { return g_circle; }
+
+bool download(std::vector<uint8_t>& out) {
+    out.clear();
+    if (!g_cube) return false;
+    ID3D11Device* dev = nullptr;
+    g_cube->GetDevice(&dev);
+    if (!dev) return false;
+    ID3D11DeviceContext* ctx = nullptr;
+    dev->GetImmediateContext(&ctx);
+    D3D11_TEXTURE2D_DESC td{};
+    g_cube->GetDesc(&td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.MiscFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* st = nullptr;
+    bool ok = ctx && SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &st)) && st;
+    if (ok) {
+        ctx->CopyResource(st, g_cube);
+        out.resize(static_cast<size_t>(6) * kFaceSize * kFaceSize * 4);
+        for (UINT f = 0; f < 6 && ok; ++f) {
+            D3D11_MAPPED_SUBRESOURCE m{};
+            ok = SUCCEEDED(ctx->Map(st, f, D3D11_MAP_READ, 0, &m));
+            if (!ok) break;
+            uint8_t* dst = out.data() + static_cast<size_t>(f) * kFaceSize * kFaceSize * 4;
+            for (UINT y = 0; y < kFaceSize; ++y)
+                memcpy(dst + static_cast<size_t>(y) * kFaceSize * 4,
+                       static_cast<const uint8_t*>(m.pData) + static_cast<size_t>(y) * m.RowPitch, kFaceSize * 4);
+            ctx->Unmap(st, f);
+        }
+    }
+    if (st) st->Release();
+    if (ctx) ctx->Release();
+    dev->Release();
+    if (!ok) out.clear();
+    return ok;
+}
+
+bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, DXGI_FORMAT fmt) {
+    clear_saved();
+    if (!ctx || !rgba || bytes != static_cast<size_t>(6) * kFaceSize * kFaceSize * 4) return false;
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return false;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = td.Height = kFaceSize;
+    td.MipLevels = 1;
+    td.ArraySize = 6;
+    td.Format = fmt;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    td.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+    D3D11_SUBRESOURCE_DATA init[6] = {};
+    for (UINT f = 0; f < 6; ++f) {
+        init[f].pSysMem = rgba + static_cast<size_t>(f) * kFaceSize * kFaceSize * 4;
+        init[f].SysMemPitch = kFaceSize * 4;
+    }
+    const HRESULT hr = dev->CreateTexture2D(&td, init, &g_saved);
+    dev->Release();
+    if (FAILED(hr)) {
+        BVR_LOG("[cube] saved room upload failed (%08lx)", static_cast<unsigned long>(hr));
+        g_saved = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void clear_saved() {
+    if (g_saved) g_saved->Release();
+    g_saved = nullptr;
+}
+bool has_saved() { return g_saved != nullptr; }
+ID3D11Texture2D* shown() { return g_saved ? g_saved : (valid() ? g_cube : nullptr); }
 
 void forget_images() {
     for (int i = 0; i < g_imageRtvCount; ++i) {
@@ -411,6 +503,7 @@ void release() {
     release_cube();
     release_src();
     forget_images();
+    clear_saved();
     if (g_cb) g_cb->Release();
     if (g_blend) g_blend->Release();
     if (g_sampler) g_sampler->Release();

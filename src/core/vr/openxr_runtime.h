@@ -348,6 +348,24 @@ bool room_snapshot();
 void set_room_snapshot(bool on);
 void reset_room_snapshot();
 void handle_room_snapshot_command(const char* args); // "vrsnap on|off|reset|status"
+// 2026-10-23: the cube is world-yaw aligned. The adapter publishes, every camera
+// frame, the yaw (XR radians about +Y) that carries a headset-frame direction
+// into the game world's yaw frame; splats rotate by it, the layer counter-rotates.
+void set_room_world_yaw(float yawRad);
+// The capture sweep: while on, the runtime splats only on request, with this
+// headset-frame orientation (x y z w) in place of the located head - the adapter
+// is driving the camera itself. The display lever shows the live cube in place of
+// the projection while the sweep runs.
+void set_room_head_override(bool on, const float q[4]);
+void request_room_splat();
+uint32_t room_splats();
+void set_room_sweep_display(bool on);
+// Rooms on disk, one file per level: 1 = save the live cube to `path`, 2 = load
+// `path` as the room shown in place of the live cube, 3 = drop the loaded room.
+// Carried out on the present thread; result 1 ok, -1 failed, 0 pending.
+void request_room_file(int op, const wchar_t* path);
+int room_file_result();
+bool room_saved_loaded();
 
 // A full-screen pause interface is up. Published by the adapter from the game's
 // own pause field, because the pause menu draws OVER a live world and so is

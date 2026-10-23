@@ -24,6 +24,7 @@
 #include <d3d11.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace bvr::cube_snapshot {
 
@@ -45,6 +46,24 @@ bool key_black(ID3D11DeviceContext* ctx, ID3D11Texture2D* image);
 
 // Drop the render-target views cached on swapchain images (the images died).
 void forget_images();
+
+// The circle the keyed screen is cut to: radius in fractions of the frame's
+// height, centred; 0 = the whole frame.
+void set_screen_circle(float radiusFrac);
+float screen_circle();
+
+// A room kept on disk (2026-10-23, one per level): the live cube's six faces as
+// RGBA8 rows (6 * kFaceSize * kFaceSize * 4 bytes, face order +X -X +Y -Y +Z
+// -Z), and the same bytes back into a second cube that is shown in place of
+// the live one while it is set. Download reads the live cube back through a
+// staging copy (a stall, once per save).
+bool download(std::vector<uint8_t>& out);
+bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, DXGI_FORMAT fmt);
+void clear_saved();
+bool has_saved();
+// The cube to show: the saved room if one is loaded, else the live cube once it
+// has a splat, else nullptr.
+ID3D11Texture2D* shown();
 
 // The cube: a 6-slice kFaceSize square array with the TEXTURECUBE flag, or
 // nullptr before the first splat. Valid means at least one splat since the last

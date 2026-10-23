@@ -61,6 +61,13 @@ bool install(const void* imageBase);
 // The drive's switch. Default ON (s87: the tester's choice of route).
 void set_enabled(bool on);
 bool enabled();
+// Hidden outright (2026-10-23, the room capture sweep): every matrix of the hands' and the
+// held weapon's palettes, and the weapon's static-mesh draw, put far below the world. Works
+// whether or not the drive is enabled; the hook is what hides.
+// `weaponActor` names the held weapon when the hands module has it; `camLoc` (UE units) is
+// the camera, for the fallback that hides any static mesh drawn within arm's reach of it.
+void set_hide_all(bool on, void* weaponActor, const float camLoc[3]);
+bool hide_all();
 // True once the hook is installed AND enabled: the drive then publishes instead of writing bones.
 bool active();
 
