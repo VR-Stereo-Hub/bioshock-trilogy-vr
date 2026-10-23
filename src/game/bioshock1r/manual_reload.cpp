@@ -956,7 +956,7 @@ bool abort_reload(void* weapon, void* hands, const char* why) {
 // A manual reload is being dropped (the weapon changed, or put away, or the game ended its reload): with the drum
 // out, the gun has none until one goes in; otherwise a magazine it ejected is shown again.
 void reload_left(void* weapon, bool magOut) {
-    if (magOut && weapon && (!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"GrenadeLauncher"))) {
+    if (magOut && weapon && !_wcsicmp(g_cls, L"MachineGun")) {
         g_magOut = weapon;
         g_magOutAsks = 0;
         g_magOutAskMs = 0;
@@ -1306,7 +1306,7 @@ void tick(const Frame& f) {
     // leaves the hand as a Havok copy moving as the hand moved it - thrown (Half-Life: Alyx's release:
     // the velocity next to the fastest of the last ten frames). The Tommy Gun's drum only: its copy IS the
     // part; the pistol's cylinder has no mesh of its own and simply goes (carry 2).
-    if (o.dropped && (!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"GrenadeLauncher"))) {
+    if (o.dropped && !_wcsicmp(g_cls, L"MachineGun")) {
         float peak = 0.0f;
         // Alyx's vr_throw_velocity_scale is 1.6; at 1.6 here "a little too powerful" (19:57 run): 1:1.
         constexpr float kThrowScale = 1.0f;

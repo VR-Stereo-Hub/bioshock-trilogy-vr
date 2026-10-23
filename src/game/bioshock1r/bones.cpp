@@ -6966,6 +6966,8 @@ bool hands_clip_is(const wchar_t* prefix) {
 }
 
 float g_dbgAimTw = 0.0f, g_dbgAimTurnDeg = 0.0f, g_dbgAimDistCm = -1.0f, g_dbgGunMotion = 0.0f;
+arm_ik::Vec g_dbgAnchor{}; // the two-handed anchor as last placed (component space), for the mirrored-hold measure
+bool g_dbgAnchorValid = false;
 // The hand pose engine's "on the part" weight this compose (hand_pose.h): how much the free hand is placed where
 // the clip's own hand grips the part it works (the Tommy Gun's bolt). Game thread.
 float g_handOnPartW = 0.0f;
@@ -8089,15 +8091,27 @@ void m4_compose(bool late) {
                     // stop, gun_geometry::Gun::pumpBack): 223bbe5 moved the grab point and left the drawn hand here.
                     ik::Vec wristRel = ik::vec(rest->wristP);
                     if (const gun_geometry::Gun* row = gun_row(curGun)) wristRel = wristRel + row->pumpBack * manual_reload::pump_back();
-                    // 2026-10-22 (the crossbow in the left hand: the drawn free hand 20 units off the stock, the anchor
-                    // on it): the gun in the left hand is the socket's reflection with its sideways axis flipped back
-                    // (a rigid mesh cannot be reflected), so a point of the gun off its centre plane lands on the
-                    // OTHER side of where the pair mirror alone puts a point of the hand. The anchor has reflected
-                    // about the gun's plane since 10-21 (grip_point above); the rest wrist did not - for a gun held
-                    // near its centre line (the shotgun's pump, 4 units) too little to see, for the crossbow (10) half
-                    // a hand. The wrist is reflected the same way, so the pair mirror brings it onto the gun's spot.
-                    if (g_m4.mirror) wristRel = gun_geometry::mirror_point(wristRel, ik::vec(g_mirU), g_mirPlane);
+                    // (2026-10-22, late: reflecting this wrist about the gun's plane like the anchor was tried and
+                    // put EVERY gun's mirrored free hand off to the left - the pair mirror already lands the rest
+                    // wrist on the mirrored gun. Reverted. The crossbow's own offset in the left hand is measured
+                    // below instead.)
                     const ik::Vec rp = gp0 + ik::rotate(gq0, wristRel);
+                    // 2026-10-22: the drawn wrist against the two-handed anchor in the mirrored hold, twice a second
+                    // while held - the crossbow's second hand sat off its stock in the left hand and nothing said by
+                    // how much or along which axis (the anchor is where the grab measures, this is where the hand is
+                    // drawn; on the right-hand hold they agree by construction).
+                    if (g_m4.mirror && two_hand::held() && g_dbgAnchorValid && !late) {
+                        static uint64_t s_ms = 0;
+                        if (now - s_ms >= 500) {
+                            s_ms = now;
+                            const ik::Vec d = ik::rotate(ik::conj(gq0), rp - g_dbgAnchor);
+                            BVR_LOG("[hands] mirrored hold: the drawn rest wrist is %.1f units from the anchor (in the attach frame "
+                                    "%+.1f %+.1f %+.1f; the rest wrist sits %+.1f %+.1f %+.1f from the fore-grip on the right-hand hold)",
+                                    ik::length(rp - g_dbgAnchor), d.x, d.y, d.z, wristRel.x - (gun_row(curGun) ? gun_row(curGun)->foreGrip.x : 0.0f),
+                                    wristRel.y - (gun_row(curGun) ? gun_row(curGun)->foreGrip.y : 0.0f),
+                                    wristRel.z - (gun_row(curGun) ? gun_row(curGun)->foreGrip.z : 0.0f));
+                        }
+                    }
                     fq = blend_q(cq, rq, wGun);
                     fp = cp + (rp - cp) * wGun;
                 }
@@ -8392,6 +8406,8 @@ void m4_compose(bool late) {
                         if (g_m4.mirror) rel = gun_geometry::mirror_point(rel, ik::vec(g_mirU), g_mirPlane);
                         anc = ap + ik::rotate(aq, rel);
                     }
+                    g_dbgAnchor = anc;
+                    g_dbgAnchorValid = true;
                     const ik::Vec authored = hc::place(pinned, palmComp, on_gun(anc));
                     // A shot's recoil is not a pause: the kick plays on this hand and the front
                     // hand rides it (handback::clip_owns, 2026-10-20).

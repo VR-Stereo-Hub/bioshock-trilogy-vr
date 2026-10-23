@@ -7713,3 +7713,28 @@ step 2.
   the launcher too. No designed carry grip yet (the pack is carried at the palm). Host-tested (`reload-rig`, the
   launcher sequence). Unverified in a run: the pack's grab point and the pouch, the drop's mesh (capture() by
   the ammo model, as the Tommy's), and whether the clip at 0 holds the gun closed.
+
+## 2026-10-22 (night) - The spray is the socket, the launcher's box, the mirrored wrist reverted
+
+- **The chemical thrower's spray, third time.** The 20:52 run's loop CONVERGED on the emitter's Rotation (0.5 deg
+  off) and the spray did not move: attached actors are drawn from the attach matrix - the bone's coords composed
+  with the socket's own FCoords offset in the mesh instance's socket table (+0x100, 48 bytes a socket; patterns.h
+  "the renderer draws attached actors from the attach matrix, ignoring their own Location/Rotation") - so the
+  actor's Rotation is cosmetic. `muzzle::aim_socket` now turns the SOCKET: its offset's X to the wanted line in the
+  bone's frame (the composition convention decided once by predicting the socket's current world X from the
+  offset and the bone and matching the engine's), Y squared up, Z with the original handedness; restored when the
+  thrower leaves the hand. `[aim] chem spray: the muzzle socket turned to the ray - X deg off before, Y after`
+  every 2 s; Y near 0 says the write composes as expected, anything else says the convention. Why two-handed
+  already worked: the two-handed aim turns the gun's body onto the line between the hands, the socket with it.
+- **The launcher's box, not the pack.** The first cut carried the ammo model (the grenade pack) as the Tommy's
+  drum; the tester wants the ammo box that holds it. The part is the gun's own `AmmoBoxBone+AmmoDummy` now, as
+  the pistol's cylinder is its own bones: pulled off the top, gone when let go (carry 2, no mesh of its own, no
+  Havok copy, no spare prop), a new one from the pouch, seated. Paths from the box's top (24.4 12.5 19.0) up and
+  back 34 units.
+- **The mirrored rest wrist, reverted.** Reflecting it about the gun's plane put every gun's mirrored free hand off
+  to the left: the pair mirror already lands it on the mirrored gun. The crossbow's own offset in the left hand is
+  measured instead (`[hands] mirrored hold: the drawn rest wrist is N units from the anchor ...`, twice a second
+  while held) - the next left-hand crossbow run says how far and along which axis.
+- **The crossbow with the manual reload off.** Both hands in view for its reload (the free hand alone in view put
+  the arm too far forward: its clip pose is against the hands actor while the gun hand sat on the controller); the
+  free hand carried at the gun through its Fire clip, where the lever cocks itself (it had no hand on it).

@@ -127,21 +127,23 @@ inline constexpr Phase kTommy[] = {
 
 // Grenade launcher ('Reload', 4.00 s) - 2026-10-22 (MANUAL_RELOAD_PLAN.md step 3, the tester's design): the gun
 // stays together - its clip (the chamber's 70-deg turn, the breech sliding apart, the box off the gun) is never
-// played; it is HELD at 0 while the grenade pack (the ammo model on AmmoDummy, the gun's AmmunitionModelSocket;
-// the frag type's Ammo_Pickup_Frag) is pulled off the top of the box, a new one taken from the pouch and seated,
-// and then jumped to its last frames so the game completes the reload and refills. The pack sits at (22.4 13.5
-// 22.0) against the grip (tools\blender: reload_pose.py / the grip-frame measure of 2026-10-22) and comes off along
-// the box's own axis, up and a little back ((-0.41 0.02 0.91) - AmmoDummy against AmmoBoxBone). The palm's path
-// is that line, from four units outside the pack to 34; the clip time is 0 all along.
-inline constexpr Pt kLauncherPackOut[] = {
-    {0.0f, {20.8f, 13.6f, 25.6f}}, {0.0f, {16.7f, 13.8f, 34.7f}}, {0.0f, {12.6f, 14.0f, 43.8f}}, {0.0f, {8.5f, 14.2f, 52.9f}}};
-inline constexpr Pt kLauncherPackIn[] = {
-    {0.0f, {8.5f, 14.2f, 52.9f}}, {0.0f, {12.6f, 14.0f, 43.8f}}, {0.0f, {16.7f, 13.8f, 34.7f}}, {0.0f, {21.6f, 13.5f, 23.8f}}};
+// played; it is HELD at 0 while the AMMO BOX (the gun's own AmmoBoxBone, with the grenade pack on AmmoDummy inside
+// it - the pistol's cylinder is the gun's own bones the same way) is pulled off the top of the gun, a new one taken
+// from the pouch and seated, and then jumped to its last frames so the game completes the reload and refills.
+// (The first cut, 20:50 run, took the pack alone off the box - "it gives me the ammo and drops the ammo rather than
+// the whole ammo box": the box is the magazine.) The box sits at (26.0 12.4 14.8) against the grip (the grip-frame
+// measure of 2026-10-22) and comes off along its own axis, up and a little back ((-0.41 0.02 0.91) - AmmoDummy
+// against AmmoBoxBone). The palm's path is that line, from the box's top to 34 units out; the clip time is 0 all
+// along. No mesh of its own: the spent box goes as the pistol's cylinder does (carry 2), no Havok copy.
+inline constexpr Pt kLauncherBoxOut[] = {
+    {0.0f, {24.4f, 12.5f, 19.0f}}, {0.0f, {20.3f, 12.7f, 28.1f}}, {0.0f, {16.2f, 12.9f, 37.2f}}, {0.0f, {12.1f, 13.1f, 46.3f}}};
+inline constexpr Pt kLauncherBoxIn[] = {
+    {0.0f, {12.1f, 13.1f, 46.3f}}, {0.0f, {16.2f, 12.9f, 37.2f}}, {0.0f, {20.3f, 12.7f, 28.1f}}, {0.0f, {25.2f, 12.5f, 17.2f}}};
 inline constexpr Phase kLauncher[] = {
-    {Kind::Pull, 0.0f, 0.0f, kLauncherPackOut, 4, "AmmoDummy", "pull the pack off", true},
-    {Kind::Carry, 0.0f, 0.0f, nullptr, 0, "AmmoDummy", "drop the spent pack", true},
-    {Kind::Fetch, 0.0f, 0.0f, nullptr, 0, "AmmoDummy", "take a pack from the pouch", true},
-    {Kind::Insert, 0.0f, 0.0f, kLauncherPackIn, 4, "AmmoDummy", "seat the pack", true},
+    {Kind::Pull, 0.0f, 0.0f, kLauncherBoxOut, 4, "AmmoBoxBone+AmmoDummy", "pull the box off", true},
+    {Kind::Carry, 0.0f, 0.0f, nullptr, 0, "AmmoBoxBone+AmmoDummy", "drop the spent box", true},
+    {Kind::Fetch, 0.0f, 0.0f, nullptr, 0, "AmmoBoxBone+AmmoDummy", "take a box from the pouch", true},
+    {Kind::Insert, 0.0f, 0.0f, kLauncherBoxIn, 4, "AmmoBoxBone+AmmoDummy", "seat the box", true},
     {Kind::Finish, 3.90f, 3.95f, nullptr, 0, nullptr, "done"}};
 
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a
@@ -202,9 +204,9 @@ inline constexpr Program kPrograms[] = {
     {L"Shotgun", L"SingleFrame", 0.033f, kShotgunStart, 1, true},
     {L"Shotgun", L"Reload_Loop", 0.49f, kShotgunLoop, 4, true},
     {L"Shotgun", L"Reload", 0.95f, kShotgunEnd, 2, true},
-    // 2026-10-22: the launcher's pack sits in the closed gun at 0 (the clip is never played past it until the
-    // finish). Last: tests index this table.
-    {L"GrenadeLauncher", L"Reload", 4.00f, kLauncher, 5, false, 0.0f, "AmmoDummy", true},
+    // 2026-10-22: the launcher's box sits on the closed gun at 0 (the clip is never played past it until the
+    // finish); the box is the gun's own bones, no spare prop. Last: tests index this table.
+    {L"GrenadeLauncher", L"Reload", 4.00f, kLauncher, 5, false, 0.0f, "AmmoBoxBone+AmmoDummy"},
 };
 
 inline bool same(const wchar_t* a, const wchar_t* b) {

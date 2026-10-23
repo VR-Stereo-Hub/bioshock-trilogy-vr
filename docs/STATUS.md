@@ -29,9 +29,15 @@ the shotgun's left-hand hold). The crossbow's reload gives the free hand to the 
 the hand-back gate (it was skipped one-handed). **The launcher's manual reload is in as a first cut** (plan step
 3: the pack as the Tommy's drum, the clip held at 0), host-tested, not run.
 
+The 20:46 run: the mirrored-wrist reflection put every gun's free hand off (reverted; a measure logs the
+crossbow's offset now); the crossbow's clips get both hands in view (reload) and the free hand at the gun (fire);
+the launcher's part is the ammo box (the gun's own bones), not the pack; the spray's emitter rotation converged
+and moved nothing - the attach matrix is the socket's, so the muzzle SOCKET is turned now (`muzzle::aim_socket`).
+
 ### Next steps
 
-- A run with the new build: the launcher reloaded by hand (pull the pack off the top of the box, drop it, take
+- A run with the new build: the thrower one-handed (`[aim] chem spray: ... X deg off before, Y after`), the
+  crossbow in the left hand (`[hands] mirrored hold:` lines), the launcher reloaded by hand (pull the pack off the top of the box, drop it, take
   one from the pouch, seat it; X ejects it), its log lines `[reload] GrenadeLauncher ...`; the crossbow in the left
   hand; the shotgun's left-hand hold for a regression; the chem spray one-handed; the crossbow (does the reticle sit on the bolt now; the log's `[muzzle]` and
   `[aim] barrel origin` lines on its equip), the chem thrower (does the spray reach the reticle; `[aim] chem

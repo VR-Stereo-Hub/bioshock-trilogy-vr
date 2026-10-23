@@ -104,6 +104,17 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
     int kick = gunFire && !(mask & (1 << wh)) && g_recoil.load(std::memory_order_relaxed) > 0.0f ? 1 << wh : 0;
     if (kick && strcmp(g_reason, "none") == 0) g_reason = "recoil";
     int atGun = 0;
+    // 2026-10-22 late (the tester: the crossbow's lever cock after a shot "doesn't animate the left hand at all"):
+    // the crossbow re-cocks itself in its Fire clip (the lever, the string); the free hand is carried where that
+    // clip has it, at the gun, for the clip's 2 s - until the lever is the player's (MANUAL_RELOAD_PLAN.md step 4).
+    if (is_attack(st) && !melee && handsActor && !manual_reload::handles_reloads()) {
+        void* w = nullptr;
+        const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
+        if (cls && !_wcsicmp(cls, L"Crossbow")) {
+            atGun |= 1 << (1 - wh);
+            if (strcmp(g_reason, "none") == 0 || strcmp(g_reason, "fire") == 0) g_reason = "fire (the crossbow's free hand on the lever, at the gun)";
+        }
+    }
     // 2026-10-20: a MANUAL reload (manual_reload.h) drives the clip from the player's hands, so the
     // hands stay on their controllers - the clip only shapes the fingers.
     // 2026-10-21 (00:45 run: the shotgun emptied, "the left wrist ends up near my left waist"): a reload of a gun
@@ -119,19 +130,15 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
         // hand on the controller and the free hand carried at the gun those parts move with no hand on them):
         // the grenade launcher's reload is the game's for BOTH hands, in view, until it has a program of its own
         // (MANUAL_RELOAD_PLAN.md).
-        int freeInView = 0;
         if (p == Place::AtGun && handsActor) {
             void* w = nullptr;
             const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
             if (cls && !_wcsicmp(cls, L"GrenadeLauncher")) p = Place::View;
             // 2026-10-22 evening (the tester: the crossbow "doesn't animate" with the manual reload off): its reload
-            // clip is the free hand's - the lever, the bolt box off and on - so that hand is the game's in view;
-            // the gun hand stays on the controller.
-            if (cls && !_wcsicmp(cls, L"Crossbow")) freeInView = 1 << (1 - wh);
-        }
-        if (freeInView) {
-            mask |= freeInView;
-            g_reason = "reload (the free hand in view, the gun hand on the controller)";
+            // clip is the free hand's - the lever, the bolt box off and on. The free hand alone in view put the arm
+            // too far forward (its clip pose is against the hands actor, the gun hand on the controller): both hands
+            // in view, as the launcher's, until it has a program of its own.
+            if (cls && !_wcsicmp(cls, L"Crossbow")) p = Place::View;
         }
         if (p == Place::View) {
             mask |= 3;
