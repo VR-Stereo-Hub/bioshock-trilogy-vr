@@ -6902,6 +6902,10 @@ std::atomic<float> g_mirrorPinOverride{std::numeric_limits<float>::quiet_NaN()};
 // unmirror_grip_point. Game thread.
 float g_mirU[3] = {0, 1, 0};
 float g_mirPlane = 0.0f;
+// 2026-10-23: the drawn gun's correction as published this frame, written into a pose recording (the
+// left-handed crossbow's offset could not be measured from a recording without it: the replay does not
+// rebuild the mirror, and the gun's drawn place was nowhere in the file).
+palette::WeaponXform g_recWx;
 Qts g_evMirror[kMaxBones];
 
 bool mirror_wanted() {
@@ -7070,6 +7074,15 @@ void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float q
     fprintf(f, "clusters L %d %d R %d %d weaponbone %d held %d\n", patterns::kBoneLClusterFirst,
             patterns::kBoneLClusterLast, patterns::kBoneRClusterFirst, patterns::kBoneRClusterLast,
             patterns::kBoneWeaponAttach, g_m4.held);
+    // The drawn gun's correction (world, row form: p' = t + q p s) and the frame it was built in, and the mirror.
+    {
+        const palette::Sim& d = g_recWx.dWorld;
+        const palette::Sim& l = g_recWx.lWeapon;
+        fprintf(f, "weaponfix %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g  lweapon %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g\n",
+                g_recWx.valid ? 1 : 0, d.q[0], d.q[1], d.q[2], d.q[3], d.t[0], d.t[1], d.t[2], d.s, l.q[0], l.q[1], l.q[2],
+                l.q[3], l.t[0], l.t[1], l.t[2], l.s);
+        fprintf(f, "mirrorplane %.6g %.6g %.6g  %.6g\n", g_mirU[0], g_mirU[1], g_mirU[2], g_mirPlane);
+    }
     for (int h = 0; h < 2; ++h) {
         const palette::HandXform& X = palX[h];
         fprintf(f, "handfix %d %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g %.6g %.6g  %.6g\n", h, X.valid ? 1 : 0, X.q[0],
@@ -8870,6 +8883,7 @@ void m4_compose(bool late) {
             }
         }
         if (late) {
+            g_recWx = wx; // the drawn gun's own correction, for the recording (write_pose)
             pose_capture_write(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
             pose_record(A, n, aLoc, qa, k, palX, mir, weaponOnSocket, now);
         }

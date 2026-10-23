@@ -1065,7 +1065,21 @@ void tick(const Frame& f) {
         // with a program of its own (the crossbow's lever, kCrossbowCock) is that program's clip. The clip was only
         // ever read while the hands were Reloading, and the lever plays while they are Firing, so the program was
         // never found and the game worked the lever itself (the log: no Crossbow Fire phase line in a whole run).
-        if (!clipName && fireClipNow && rr::find(g_cls, cn)) {
+        // 2026-10-23 (the tester: the bolts "make the sound and disappear" but hit nothing): adopted the moment the clip
+        // began, the program refused the trigger in the very tick the shot was being made - the log: the Fired events,
+        // then "rounds 5/5 ... FIRE REFUSED" and a dry click - so no bolt ever left. The clip plays on its own up to
+        // just short of the program's first phase (the lever), the shot long made, and is adopted there.
+        const rr::Program* fp = (!clipName && fireClipNow) ? rr::find(g_cls, cn) : nullptr;
+        static int32_t s_fireName = -1;
+        static float s_fireLen = 0.0f;
+        if (fp && nm != s_fireName) {
+            s_fireName = nm;
+            s_fireLen = 0.0f;
+            script::anim_length(f.weapon, nm, &s_fireLen);
+        }
+        const float fireScale = fp && s_fireLen > 0 && fp->clipLen > 0 ? s_fireLen / fp->clipLen : 1.0f;
+        const float adoptAt = fp && fp->n > 0 ? fp->phases[0].t0 * fireScale - 0.05f : 0.0f;
+        if (fp && fireT >= adoptAt) {
             clipName = cn;
             hw = fireHandle;
             hh = fireHandsHandle;
@@ -1179,7 +1193,8 @@ void tick(const Frame& f) {
     // Tommy Gun still showed 1 round in the cache and dropped its drum instead of waiting for the hand.
     // 2026-10-22 (the 10:31 run, the tester: the pistol opened by itself as it ran dry): the pistol's dry reload
     // waits for the hand to pull the cylinder too, as the Tommy's waits for the drum.
-    if ((!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"Pistol") || !_wcsicmp(g_cls, L"GrenadeLauncher")) &&
+    if ((!_wcsicmp(g_cls, L"MachineGun") || !_wcsicmp(g_cls, L"Pistol") || !_wcsicmp(g_cls, L"GrenadeLauncher") ||
+         !_wcsicmp(g_cls, L"Crossbow")) &&
         !(g_roundsAtStart > 0) && !switching && !afterSwitch)
         in.ejectAdopted = false;
     // 2026-10-20 THE SPARE DRUM (the tester: "pre pull a mag, drop the current one, then slide in the new

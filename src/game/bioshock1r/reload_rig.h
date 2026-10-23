@@ -251,7 +251,9 @@ inline constexpr Program kPrograms[] = {
     // finish); the box is the gun's own bones, no spare prop. Last: tests index this table.
     {L"GrenadeLauncher", L"Reload", 4.00f, kLauncher, 5, false, 0.0f, "AmmoBoxBone+AmmoDummy"},
     // 2026-10-22 late: the crossbow (no eject on X: the box comes off by hand after the lever).
-    {L"Crossbow", L"Reload", 3.00f, kCrossbow, 7, false},
+    // 2026-10-23 (the tester: X should drop the empty box "like the tommy mag"): ejects at 1.95 s, the lever up and the
+    // box on in the clip - the box falls, the reload waits at the pouch.
+    {L"Crossbow", L"Reload", 3.00f, kCrossbow, 7, false, 1.95f, "X_AmmoBox"},
     // The crossbow's Fire clip is a program too (the lever between shots); after the Reload, which is the entry.
     {L"Crossbow", L"Fire", 2.00f, kCrossbowCock, 3, false},
 };
@@ -758,7 +760,10 @@ private:
                 const Projection pr = project_phase(p, in.hand);
                 // 20:35 run: a dry Tommy Gun's reload waited here for the hand to pull the drum, and the
                 // reload button did nothing ("locked up"). The button drops the magazine, as its eject.
-                if (sub_ == Sub::Wait && phase_ == 0 && in.ejectNow && start_drop(in, o)) {
+                // 2026-10-23: and while it waits at the pull of the ejected part itself (the crossbow's box, after
+                // its lever is up) - the same drop.
+                const bool atEjectPart = p.part && prog_->ejectPart && !strcmp(p.part, prog_->ejectPart);
+                if (sub_ == Sub::Wait && (phase_ == 0 || atEjectPart) && in.ejectNow && start_drop(in, o)) {
                     o.event = "the reload button: the magazine drops - take a new one from the pouch";
                     o.claim = true;
                     o.hold = true;

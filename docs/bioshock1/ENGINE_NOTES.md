@@ -7871,3 +7871,20 @@ tester's request).
   linear depth the temporal guides already make - so with DLSS or AFW on), saved in the room file; the
   projection backdrop finds, per eye, the point its ray meets at that distance from the eye's own offset, so
   each eye has its own parallax. A room saved before this has no distances and stays mono until recaptured.
+
+## 2026-10-23 - The 07:58 run: the bolt refused in its own shot, X at the bolt box, what the recording held
+
+- **No bolt left the crossbow**: the Fire-clip program (the lever between bolts) was adopted on the clip's
+  first tick, which is the shot's tick - the log has the Fired events, then "rounds 5/5 ... FIRE REFUSED"
+  and the game's DryFiring: the trigger was zeroed before the round was spent, so the sound played and no
+  bolt flew. The clip now plays on its own to 0.05 s short of the lever (0.85 s, scaled by the clip's
+  length) and is adopted there.
+- **X at the bolt box**: the crossbow's Reload ejects at 1.95 s (the lever up, the box on), the box
+  (X_AmmoBox) the part, as the Tommy's drum; X also drops it while the reload waits at the box itself
+  after the lever. A dry crossbow's own reload waits for the hand, as the Tommy's.
+- **The lever in the 07:58 recording**: the drawn hand follows the clip's own path exactly (the palm
+  10-14 units off the lever's tip all along the stroke), with the fingers opening flat over it (index and
+  middle curl 119 -> 15 deg) - the clip's own pose, the same in the game's reload. Not changed.
+- **The left-handed crossbow** could not be measured from it: a pose recording does not rebuild the
+  mirror, and the gun's drawn place was not in the file. Recordings now carry `weaponfix` (the drawn
+  gun's correction and its frame) and `mirrorplane` (axis and plane) every frame.

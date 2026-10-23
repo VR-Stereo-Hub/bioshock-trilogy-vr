@@ -139,7 +139,10 @@ int main() {
         Sim s;
         s.cls = L"Crossbow";
         const Program* xp = entry(L"Crossbow");
-        check(xp && !xp->spare && xp->ejectT < 0 && xp->n == 7, "the crossbow's program: no spare prop, no eject on X, seven phases");
+        // 2026-10-23: X drops the box as the Tommy's drum - it ejects at 1.95 s (the lever up, the box on), the box the part.
+        check(xp && !xp->spare && std::fabs(xp->ejectT - 1.95f) < 1e-4f && xp->ejectPart && !strcmp(xp->ejectPart, "X_AmmoBox") &&
+                  xp->n == 7 && first_fetch(xp) == 3,
+              "the crossbow's program: no spare prop, ejects its box on X at 1.95 s, seven phases, the pouch at phase 3");
         Output o = s.step(Vec{27, 9, -3}, false); // the fore-grip
         o = s.step(Vec{27, 9, -3}, true);
         check(o.act == Act::None && !s.m.active(), "a grip at the fore-grip starts nothing");
@@ -305,6 +308,28 @@ int main() {
         check(!o.dropped && o.carry == 0, "slapped in: let go guided, it is seated, not dropped");
         for (int i = 0; i < 30 && s.m.phase() == 3; ++i) o = s.step(Vec{10, 0, -60}, false);
         check(s.m.phase() == 4, "the clip plays it home: the bolt next", s.m.phase(), 4);
+    }
+    // ---- 2026-10-23 the crossbow: the lever up, then X at the box drops it (the Tommy's drum), the pouch next ----
+    {
+        Sim s;
+        s.cls = L"Crossbow";
+        Output o = s.step(kCrossbowLeverUp[0].p, false);
+        o = s.step(kCrossbowLeverUp[0].p, true);
+        s.clip(L"Reload", 3.00f);
+        o = s.step(kCrossbowLeverUp[0].p, false);
+        o = s.step(kCrossbowLeverUp[0].p, true);
+        o = s.step(kCrossbowLeverUp[1].p, true);
+        o = s.step(kCrossbowLeverUp[2].p + Vec{0, 0, 3}, true);
+        o = s.step(kCrossbowLeverUp[2].p, false);
+        check(s.m.phase() == 1, "the lever up: waiting at the box", s.m.phase(), 1);
+        s.in.ejectNow = true;
+        o = s.step(Vec{40, 7, 2}, false);
+        s.in.ejectNow = false;
+        check(o.ejected && o.part && !strcmp(o.part, "X_AmmoBox"), "X at the box: the box drops");
+        for (int i = 0; i < 80; ++i) o = s.step(Vec{10, 0, -90}, false);
+        check(s.m.phase() == 3, "then the pouch", s.m.phase(), 3);
+        // A control: the pistol's cylinder pull (phase 1) names no part, so X there is not an eject.
+        check(entry(L"Pistol")->phases[1].part == nullptr, "the pistol's cylinder pull names no part (control)");
     }
     // ---- a dry Tommy Gun waits for the hand to pull the drum; X drops it instead (20:35: "locked up") ----
     {
