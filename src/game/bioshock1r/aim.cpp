@@ -1905,7 +1905,16 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
         if (thrower) {
             float mm[3], sa[3][3], ba[3][3];
             if (muzzle::locate(w, mm, sa, ba)) {
-                aim_spray(w, mm, b, ctx.worldScale, now);
+                // 2026-10-22 late (the tester: the spray "slightly above the reticle" one-handed): the reticle sits
+                // on the FIRE ray - its origin at the muzzle while the barrel origin holds (g_ray), the controller
+                // otherwise - so the wanted line ends where that ray's point is, not the bare controller ray's.
+                RayBase rb = b;
+                const Ray& fr = g_ray[hand];
+                if (fr.valid && !fr.synthetic) {
+                    rb.rayOrigin = fr.origin;
+                    rb.rayRot = fr.rot;
+                }
+                aim_spray(w, mm, rb, ctx.worldScale, now);
                 s_sprayWeapon = w;
             }
         }

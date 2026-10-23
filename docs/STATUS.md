@@ -34,9 +34,17 @@ crossbow's offset now); the crossbow's clips get both hands in view (reload) and
 the launcher's part is the ammo box (the gun's own bones), not the pack; the spray's emitter rotation converged
 and moved nothing - the attach matrix is the socket's, so the muzzle SOCKET is turned now (`muzzle::aim_socket`).
 
+The 21:14 run: the crossbow's left-hand offset measured from its recording (the free palm mirrored onto the
+stock's other side) and fixed as a one-spot grip (`gripSameSpot`); the launcher's drop makes no Havok copy (the
+box and its pack fall as one); the spray aims at the fire ray's point; **the crossbow's manual reload is in as a
+first cut** (plan step 4: the lever by hand up and down, the box off and on). CLAUDE.md: captures are deleted
+once analysed (2.6 GB of them were).
+
 ### Next steps
 
-- A run with the new build: the thrower one-handed (`[aim] chem spray: ... X deg off before, Y after`), the
+- A run with the new build: the crossbow reloaded by hand (grab the lever behind the stock and pull it up, pull
+  the box off the top, take one from the waist, seat it, pull the lever down; after a shot, the lever up and
+  down before the next), its left-hand hold, the launcher's drop; the thrower one-handed (`[aim] chem spray: ... X deg off before, Y after`), the
   crossbow in the left hand (`[hands] mirrored hold:` lines), the launcher reloaded by hand (pull the pack off the top of the box, drop it, take
   one from the pouch, seat it; X ejects it), its log lines `[reload] GrenadeLauncher ...`; the crossbow in the left
   hand; the shotgun's left-hand hold for a regression; the chem spray one-handed; the crossbow (does the reticle sit on the bolt now; the log's `[muzzle]` and

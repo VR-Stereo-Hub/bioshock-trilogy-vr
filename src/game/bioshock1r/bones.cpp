@@ -8093,25 +8093,25 @@ void m4_compose(bool late) {
                     if (const gun_geometry::Gun* row = gun_row(curGun)) wristRel = wristRel + row->pumpBack * manual_reload::pump_back();
                     // (2026-10-22, late: reflecting this wrist about the gun's plane like the anchor was tried and
                     // put EVERY gun's mirrored free hand off to the left - the pair mirror already lands the rest
-                    // wrist on the mirrored gun. Reverted. The crossbow's own offset in the left hand is measured
-                    // below instead.)
-                    const ik::Vec rp = gp0 + ik::rotate(gq0, wristRel);
-                    // 2026-10-22: the drawn wrist against the two-handed anchor in the mirrored hold, twice a second
-                    // while held - the crossbow's second hand sat off its stock in the left hand and nothing said by
-                    // how much or along which axis (the anchor is where the grab measures, this is where the hand is
-                    // drawn; on the right-hand hold they agree by construction).
-                    if (g_m4.mirror && two_hand::held() && g_dbgAnchorValid && !late) {
-                        static uint64_t s_ms = 0;
-                        if (now - s_ms >= 500) {
-                            s_ms = now;
-                            const ik::Vec d = ik::rotate(ik::conj(gq0), rp - g_dbgAnchor);
-                            BVR_LOG("[hands] mirrored hold: the drawn rest wrist is %.1f units from the anchor (in the attach frame "
-                                    "%+.1f %+.1f %+.1f; the rest wrist sits %+.1f %+.1f %+.1f from the fore-grip on the right-hand hold)",
-                                    ik::length(rp - g_dbgAnchor), d.x, d.y, d.z, wristRel.x - (gun_row(curGun) ? gun_row(curGun)->foreGrip.x : 0.0f),
-                                    wristRel.y - (gun_row(curGun) ? gun_row(curGun)->foreGrip.y : 0.0f),
-                                    wristRel.z - (gun_row(curGun) ? gun_row(curGun)->foreGrip.z : 0.0f));
+                    // wrist on the mirrored gun's other side, which is right for a fore-end gripped from either
+                    // side. Reverted.)
+                    // 2026-10-22 late, the crossbow (gun_geometry::gripSameSpot; the 21:15 recording: the free palm
+                    // at y -12 in the gun's frame against +3.5 right-handed): both hands take ONE spot on its stock.
+                    // The pair mirror reflects the built hand about the rig's own plane, so the wrist is built at the
+                    // reflection of where it should end up - against the MIRRORED attach frame (A[ga], the gun's) -
+                    // and the mirror brings it there. The orientation keeps the mirrored hand's shape.
+                    if (g_m4.mirror) {
+                        const gun_geometry::Gun* row = gun_row(curGun);
+                        const mirror::Basis* mbp = palette::mirror_basis();
+                        if (row && row->gripSameSpot && mbp && ga < n) {
+                            const ik::Quat mq = ik::normalized(ik::quat(A[ga].q));
+                            const ik::Vec mp = ik::vec(A[ga].p);
+                            const ik::Vec target = mp + ik::rotate(mq, wristRel);
+                            const ik::Vec built = mirror::apply(mbp->mx, target);
+                            wristRel = ik::rotate(ik::conj(gq0), built - gp0);
                         }
                     }
+                    const ik::Vec rp = gp0 + ik::rotate(gq0, wristRel);
                     fq = blend_q(cq, rq, wGun);
                     fp = cp + (rp - cp) * wGun;
                 }
@@ -8403,7 +8403,8 @@ void m4_compose(bool late) {
                         const ik::Vec ap = ik::vec(A[patterns::kBoneWeaponAttach].p);
                         // 2026-10-22: on the pump as it is worked (the fist's measured travel to the rear stop).
                         ik::Vec rel = gun_geometry::grip_point(*row, manual_reload::pump_back());
-                        if (g_m4.mirror) rel = gun_geometry::mirror_point(rel, ik::vec(g_mirU), g_mirPlane);
+                        // (A gun both hands grip at one spot - the crossbow's stock - keeps that spot, 2026-10-22.)
+                        if (g_m4.mirror && !row->gripSameSpot) rel = gun_geometry::mirror_point(rel, ik::vec(g_mirU), g_mirPlane);
                         anc = ap + ik::rotate(aq, rel);
                     }
                     g_dbgAnchor = anc;

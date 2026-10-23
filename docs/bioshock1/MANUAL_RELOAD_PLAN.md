@@ -120,7 +120,7 @@ Each step is one commit with its host tests, built and installed; the simulator 
    `gun_geometry`; a designed grip from `grip_solve.py`. Suppression record: X, the adopted dry reload, the
    free hand, the ammo model. Sounds: `GrenadeLauncherEquip` is the only weapon event seen so far; a run
    with the reload logs the rest.
-4. **The crossbow's manual reload** - THE TESTER'S DESIGN (2026-10-22 evening): the lever is the
+4. **The crossbow's manual reload** - FIRST CUT IN (2026-10-22 late, `kCrossbow`; unverified in a run) - THE TESTER'S DESIGN (2026-10-22 evening): the lever is the
    shotgun's pump. Between shots the crossbow waits uncocked until the lever is worked up and down by hand
    (the Fire clip's own `X_Lever` 75-deg stroke, 0.3-0.9 s of the reload clip, driven by the free hand's
    travel - `reload_rig::Pump` over the Fire clip as the shotgun's, the ratchet on the hand's arc rather

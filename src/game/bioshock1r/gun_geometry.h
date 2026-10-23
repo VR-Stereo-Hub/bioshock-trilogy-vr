@@ -39,6 +39,18 @@ struct Gun {
     // the pump's rear stop, bone-43 frame (the shotgun's Fire clip, 0.75 -> 0.85 s: 17.97 units, SG_Pump's 18).
     // The anchor rides it by the pump's position (manual_reload::pump_back), so the hand follows the slide.
     Vec pumpBack;
+    // 2026-10-22 late: the pump's stroke axis in the gun controller's aim frame (XR: X right, Y up, Z back), the
+    // free hand's travel along it NEGATIVE being the first stroke (reload_rig::Pump's "back"). The shotgun's pump
+    // comes back along the barrel (-Z forward, so the first stroke is +Z: the axis is -Z); the crossbow's lever
+    // swings up and forward, (-0.11 0.63 -0.77) in the grip frame measured from its reload clip, so its axis is
+    // the negative of that.
+    Vec strokeDir;
+    // 2026-10-22 late (the crossbow in the left hand, the 21:15 recording: the free palm at y -12 in the gun's
+    // frame against +3.5 on the right-hand hold - mirrored about the stock, onto its other side): a gun whose
+    // fore-grip is ONE spot both hands take (the crossbow's stock) keeps the free hand on that spot in the
+    // mirrored hold - the anchor is not reflected, and the drawn wrist is pre-reflected so the pair mirror lands
+    // it there. A gun gripped from either side of a centred fore-end (the shotgun's pump) is reflected as before.
+    bool gripSameSpot;
 };
 
 // Measured 2026-10-21 (the fist centre, left hand, against R_grip; clip times 0..3 s):
@@ -50,13 +62,13 @@ struct Gun {
 // The shotgun's pump travel (2026-10-22, the same fist in Shotgun__FireShotgun): 54.05 14.75 14.32 at 0.75 s,
 // 38.54 8.38 7.85 at 0.85 s, back at 1.15 s.
 inline constexpr Gun kGuns[] = {
-    {L"MachineGun", true, {45.0f, 5.5f, 3.0f}, 1, {0.0f, 0.0f, 0.0f}},
-    {L"Shotgun", true, {54.05f, 14.7f, 14.3f}, 1, {-15.51f, -6.37f, -6.47f}},
-    {L"GrenadeLauncher", true, {51.4f, 20.6f, 15.2f}, 1, {0.0f, 0.0f, 0.0f}},
-    {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1, {0.0f, 0.0f, 0.0f}},
-    {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1, {0.0f, 0.0f, 0.0f}},
-    {L"Pistol", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}},
-    {L"Wrench", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}},
+    {L"MachineGun", true, {45.0f, 5.5f, 3.0f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
+    {L"Shotgun", true, {54.05f, 14.7f, 14.3f}, 1, {-15.51f, -6.37f, -6.47f}, {0.0f, 0.0f, -1.0f}, false},
+    {L"GrenadeLauncher", true, {51.4f, 20.6f, 15.2f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
+    {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
+    {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1, {0.0f, 0.0f, 0.0f}, {0.11f, -0.63f, 0.77f}, true},
+    {L"Pistol", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
+    {L"Wrench", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
 };
 
 // The two-handed anchor with the pump this far back (0 forward, 1 at the rear stop).

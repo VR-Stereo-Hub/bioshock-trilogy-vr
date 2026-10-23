@@ -126,6 +126,7 @@ int main() {
         check(kind_of(L"Pistol") == Kind::Pistol && kind_of(L"MachineGun") == Kind::Tommy && kind_of(L"Shotgun") == Kind::Shotgun,
               "the three guns by class");
         check(kind_of(L"GrenadeLauncher") == Kind::Launcher, "the launcher by class (2026-10-22)");
+        check(kind_of(L"Crossbow") == Kind::Crossbow, "the crossbow by class (2026-10-22)");
         check(kind_of(L"Wrench") == Kind::Other && kind_of(nullptr) == Kind::Other && kind_of(L"Pistol2") == Kind::Other,
               "anything else is Other");
     }

@@ -134,6 +134,61 @@ int main() {
         o = s.step(Vec{40, 7, 2}, false);
         check(!s.m.active(), "the reload ended: idle");
     }
+    // ---- the crossbow (2026-10-22 late): the lever up, the box off, a new one from the pouch, in, the lever down ----
+    {
+        Sim s;
+        s.cls = L"Crossbow";
+        const Program* xp = entry(L"Crossbow");
+        check(xp && !xp->spare && xp->ejectT < 0 && xp->n == 7, "the crossbow's program: no spare prop, no eject on X, seven phases");
+        Output o = s.step(Vec{27, 9, -3}, false); // the fore-grip
+        o = s.step(Vec{27, 9, -3}, true);
+        check(o.act == Act::None && !s.m.active(), "a grip at the fore-grip starts nothing");
+        o = s.step(Vec{27, 9, -3}, false);
+        o = s.step(kCrossbowLeverUp[0].p + Vec{1, 0, 0}, false);
+        check(o.buzz && o.claim, "at the lever: buzz, the grip is the reload's");
+        o = s.step(kCrossbowLeverUp[0].p + Vec{1, 0, 0}, true);
+        check(o.act == Act::StartReload && s.m.active(), "a grip at the lever asks the game to reload");
+        s.clip(L"Reload", 3.00f);
+        o = s.step(kCrossbowLeverUp[0].p, false);
+        o = s.step(kCrossbowLeverUp[0].p, true);
+        check(o.hold && std::fabs(o.t - 0.45f) < 0.01f, "held at the lever's start", o.t, 0.45);
+        o = s.step(kCrossbowLeverUp[1].p, true);
+        check(o.hold && o.t > 0.6f && o.t < 0.7f, "the clip follows the lever up", o.t, 0.65);
+        o = s.step(kCrossbowLeverUp[2].p + Vec{0, 0, 3}, true);
+        check(s.m.phase() == 1, "cocked up: the box next", s.m.phase(), 1);
+        o = s.step(kCrossbowLeverUp[2].p, false);
+        o = s.step(kCrossbowBoxOut[0].p, false);
+        check(o.buzz && std::fabs(o.t - 1.95f) < 0.01f, "the clip waits at the box, lever up", o.t, 1.95);
+        o = s.step(kCrossbowBoxOut[0].p, true);
+        o = s.step(kCrossbowBoxOut[1].p, true);
+        o = s.step(kCrossbowBoxOut[2].p + Vec{0, 0, 3}, true);
+        check(s.m.phase() == 2, "the box off: it rides the hand", s.m.phase(), 2);
+        o = s.step(Vec{10, 0, -90}, true);
+        check(o.carry == 1 && o.part && o.atPalm, "carried at the palm", o.carry, 1);
+        o = s.step(Vec{10, 0, -90}, false);
+        check(o.carry == 2 && s.m.phase() == 3, "let go: gone, fetch next", s.m.phase(), 3);
+        o = s.step(Vec{10, 0, -90}, true, true);
+        check(s.m.phase() == 4, "a grip at the pouch takes a box", s.m.phase(), 4);
+        o = s.step(Vec{10, 0, -90}, true);
+        check(o.carry == 1, "the new box rides the hand", o.carry, 1);
+        o = s.step(kCrossbowBoxIn[0].p, true);
+        o = s.step(kCrossbowBoxIn[1].p, true);
+        o = s.step(kCrossbowBoxIn[2].p, true);
+        check(s.m.phase() == 5, "seated: the lever down next", s.m.phase(), 5);
+        o = s.step(kCrossbowBoxIn[2].p, false);
+        o = s.step(kCrossbowLeverDown[0].p, false);
+        check(o.buzz && std::fabs(o.t - 2.25f) < 0.01f, "the clip waits at the lever, up", o.t, 2.25);
+        o = s.step(kCrossbowLeverDown[0].p, true);
+        o = s.step(kCrossbowLeverDown[2].p, true);
+        check(o.hold && o.t > 2.4f && o.t < 2.5f, "the clip follows the lever down", o.t, 2.45);
+        o = s.step(kCrossbowLeverDown[3].p + Vec{0, 0, -3}, true);
+        check(s.m.phase() == 6, "cocked down: the finish", s.m.phase(), 6);
+        for (int i = 0; i < 40; ++i) o = s.step(Vec{27, 9, -3}, false);
+        check(o.run || o.t >= 2.89f, "the clip runs to its end", o.t, 2.9);
+        s.in.clipLive = false;
+        o = s.step(Vec{27, 9, -3}, false);
+        check(!s.m.active(), "the reload ended: idle");
+    }
     // ---- the launcher (2026-10-22): the pack off the top of the box, a new one from the pouch, seated, the finish ----
     {
         Sim s;

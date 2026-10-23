@@ -146,6 +146,29 @@ inline constexpr Phase kLauncher[] = {
     {Kind::Insert, 0.0f, 0.0f, kLauncherBoxIn, 4, "AmmoBoxBone+AmmoDummy", "seat the box", true},
     {Kind::Finish, 3.90f, 3.95f, nullptr, 0, nullptr, "done"}};
 
+// Crossbow ('Reload', 3.00 s) - 2026-10-22 late (MANUAL_RELOAD_PLAN.md step 4, the tester's design): the lever
+// up, the bolt box from the waist, in, the lever down. The lever (X_Lever, 10 -> 72 deg over 0.45-0.75 s of the
+// clip, 75 -> 0 over 2.25-2.55) is pulled along the clip's own hand path, the clip following the hand - the
+// Tommy's drum pull, on a lever; the box (X_AmmoBox, 120 units of flip in the clip, never played) is the gun's
+// own bone carried at the palm, as the launcher's, off the gun and back on with the clip held at 1.95 s (the
+// lever up, the box on in the clip). Palm paths against the grip from reload_pose.py (2026-10-22).
+inline constexpr Pt kCrossbowLeverUp[] = {
+    {0.45f, {-23.5f, -10.7f, 28.6f}}, {0.65f, {0.4f, -4.6f, 49.9f}}, {0.75f, {4.2f, -3.6f, 50.3f}}};
+inline constexpr Pt kCrossbowBoxOut[] = {
+    {1.95f, {4.3f, -4.7f, 30.0f}}, {1.95f, {0.0f, -5.0f, 42.0f}}, {1.95f, {-6.0f, -6.0f, 54.0f}}};
+inline constexpr Pt kCrossbowBoxIn[] = {
+    {1.95f, {-6.0f, -6.0f, 54.0f}}, {1.95f, {0.0f, -5.0f, 42.0f}}, {1.95f, {4.3f, -4.7f, 31.0f}}};
+inline constexpr Pt kCrossbowLeverDown[] = {
+    {2.25f, {18.6f, 5.5f, 48.5f}}, {2.35f, {15.6f, 4.4f, 48.0f}}, {2.45f, {-12.8f, -6.4f, 31.5f}}, {2.55f, {-10.9f, -7.7f, 27.9f}}};
+inline constexpr Phase kCrossbow[] = {
+    {Kind::Pull, 0.45f, 0.75f, kCrossbowLeverUp, 3, "X_Lever", "cock the lever up"},
+    {Kind::Pull, 1.95f, 1.95f, kCrossbowBoxOut, 3, "X_AmmoBox", "pull the bolt box off", true},
+    {Kind::Carry, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "drop the spent box", true},
+    {Kind::Fetch, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "take a box from the pouch", true},
+    {Kind::Insert, 1.95f, 1.95f, kCrossbowBoxIn, 3, "X_AmmoBox", "seat the box", true},
+    {Kind::Pull, 2.25f, 2.55f, kCrossbowLeverDown, 4, "X_Lever", "cock the lever down"},
+    {Kind::Finish, 2.90f, 3.00f, nullptr, 0, nullptr, "done"}};
+
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a
 // new cylinder in, flick it shut.
 inline constexpr Pt kPistolOpen[] = {
@@ -207,6 +230,8 @@ inline constexpr Program kPrograms[] = {
     // 2026-10-22: the launcher's box sits on the closed gun at 0 (the clip is never played past it until the
     // finish); the box is the gun's own bones, no spare prop. Last: tests index this table.
     {L"GrenadeLauncher", L"Reload", 4.00f, kLauncher, 5, false, 0.0f, "AmmoBoxBone+AmmoDummy"},
+    // 2026-10-22 late: the crossbow (no eject on X: the box comes off by hand after the lever).
+    {L"Crossbow", L"Reload", 3.00f, kCrossbow, 7, false},
 };
 
 inline bool same(const wchar_t* a, const wchar_t* b) {

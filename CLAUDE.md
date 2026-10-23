@@ -121,6 +121,10 @@ wait; finishing a feature is not permission to merge it.
   the weapon swim" - still need the headset, and still belong in the F10 overlay.
 - Non-obvious design choices get a dated entry in the decision log at the bottom of
   `docs/ARCHITECTURE.md`.
+- **Captures are deleted once analysed** (2026-10-22). An F10 capture (`%LOCALAPPDATA%\BioshockVR\dumps\afw-*`,
+  the `hud-*` frames, a `poserec-*` recording) runs to hundreds of MB; a session's worth filled gigabytes. Read
+  what a capture says (the raw frames, the pose files, the recording's table), write the finding into the
+  docs, then delete the capture folder. Nothing from a capture is committed.
 - **END**: rewrite the "Current state" and "Next steps" sections of `docs/STATUS.md`, append a
   dated session-log entry, tick `docs/ROADMAP.md` boxes, commit, push. A session that ends
   without pushing STATUS.md is a failed handoff.

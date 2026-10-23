@@ -8,6 +8,7 @@
 #include "game/bioshock1r/grip_pistol_cylinder.h"
 #include "game/bioshock1r/grip_shotgun_shell.h"
 #include "game/bioshock1r/grip_tommy_drum.h"
+#include "game/bioshock1r/gun_geometry.h"
 #include "game/bioshock1r/gun_suppress.h"
 #include "game/bioshock1r/gun_sounds.h"
 #include "game/bioshock1r/two_hand.h"
@@ -63,6 +64,21 @@ rr::PumpConfig shot_pump_cfg() {
     return c;
 }
 rr::PumpConfig g_pumpCfg = shot_pump_cfg();
+// 2026-10-22 late (MANUAL_RELOAD_PLAN.md step 4, the tester: the crossbow's lever "a lot like the shotgun logic"):
+// the crossbow re-cocks itself in its Fire clip - X_Lever 10 -> 75 deg over 0.85-1.0 s, back 1.3-1.4 (the gun's
+// clip, tools\blender). The same ratchet, over that clip, on the free hand's travel along the lever's own swing
+// (gun_geometry::strokeDir): the clip waits at 0.85 for the hands, and the two strokes are the lever up and down.
+rr::PumpConfig lever_pump_cfg() {
+    rr::PumpConfig c;
+    c.backT0 = 0.85f;
+    c.backT1 = 1.0f;
+    c.fwdT0 = 1.3f;
+    c.fwdT1 = 1.4f;
+    c.waitT = 0.85f;
+    c.waitForHands = true;
+    return c;
+}
+rr::PumpConfig g_leverCfg = lever_pump_cfg();
 // 2026-10-21 (step 5): ONE pump. The pump between shots, the reload's last pump, the dry cock (the shotgun loaded
 // from empty and not yet pumped: the trigger fires nothing until the hands pump it) and the loop-ending pump are
 // one ratchet (g_pump above) on the front hand's travel along the barrel; the use chooses the clip and config.
@@ -1021,6 +1037,10 @@ void tick(const Frame& f) {
     const gun_suppress::Record& rec = gun_suppress::record(gun_state::kind_of(g_cls));
     const gun_state::Kind kind = gun_state::kind_of(g_cls);
     const bool shotgun = kind == gun_state::Kind::Shotgun;
+    // 2026-10-22 late: the crossbow's lever is the pump between shots (g_leverCfg); its reload is Pull phases.
+    const bool crossbow = kind == gun_state::Kind::Crossbow;
+    const bool pumpGun = shotgun || crossbow;
+    const rr::PumpConfig& shotCfg = crossbow ? g_leverCfg : g_pumpCfg;
     // The game's reload clip, when it is playing one.
     const hands_state::State st = hands_state::current(f.hands);
     rr::Input in;
@@ -1212,7 +1232,11 @@ void tick(const Frame& f) {
         // A Havok copy where the magazine sits, when it has a mesh of its own (the Tommy Gun's drum);
         // otherwise the gun's own part falls (the pistol's cylinder is part of the gun's mesh).
         const float still[3] = {0.0f, 0.0f, 0.0f};
-        g_havokCopy = dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, still);
+        // 2026-10-22 late (the tester: the launcher "just drops the ammo" - the copy was the grenade pack, the
+        // gun's own box bones fell apart from it): a part of the gun's own bones with its ammo model riding a
+        // socket on them falls as one and is gone - no Havok copy.
+        const bool ownBones = kind == gun_state::Kind::Launcher || kind == gun_state::Kind::Crossbow;
+        g_havokCopy = !ownBones && dropped_part::capture(f.weapon) && dropped_part::drop(f.weapon, f.hands, still);
         g_copyRounds = g_havokCopy && dropped_part::dropped_rounds_only();
         g_seatValid = false; // the latch is read below, once the clip holds the gun open
         // The floor for the gun's own part, if it falls: the player's feet (Location minus the
@@ -1380,9 +1404,9 @@ void tick(const Frame& f) {
     PumpUse use = PumpUse::None;
     int32_t pw = 0, ph = 0;
     float clipT = 0.0f;
-    if (shotgun) {
+    if (pumpGun) {
         const rr::Program* lp = g_machine.program();
-        const bool atFetch = g_machine.active() && lp && g_machine.phase() < lp->n &&
+        const bool atFetch = shotgun && g_machine.active() && lp && g_machine.phase() < lp->n &&
                              lp->phases[g_machine.phase()].kind == rr::Kind::Fetch && g_machine.hand_free();
         if (o.pumpWait && in.clipLive) {
             use = PumpUse::ReloadEnd;
@@ -1392,7 +1416,7 @@ void tick(const Frame& f) {
         } else if (g_abortOn.load(std::memory_order_relaxed) && atFetch && two_hand::held()) {
             use = PumpUse::Loop;
             clipT = 2.0f; // past the wait: no clip, only the hands
-        } else if (g_uncockedGun == f.weapon && !g_machine.active() && st != hands_state::State::Reloading &&
+        } else if (shotgun && g_uncockedGun == f.weapon && !g_machine.active() && st != hands_state::State::Reloading &&
                    st != hands_state::State::Firing) {
             use = PumpUse::Dry;
             clipT = 2.0f;
@@ -1424,7 +1448,11 @@ void tick(const Frame& f) {
             pi.alongOk = bvr::vr::get_hand_pose(gunSlot, true, g) && bvr::vr::get_hand_pose(1 - gunSlot, true, h);
             if (pi.alongOk) {
                 const arm_ik::Quat gq = arm_ik::normalized(arm_ik::Quat{{g.qx, g.qy, g.qz, g.qw}});
-                const Vec fwd = arm_ik::rotate(gq, Vec{0.0f, 0.0f, -1.0f});
+                // The stroke axis is the gun's (gun_geometry::strokeDir): the barrel for the shotgun's pump, the
+                // lever's swing for the crossbow's.
+                const gun_geometry::Gun* grow = gun_geometry::find(g_cls);
+                const Vec axis = grow ? grow->strokeDir : Vec{0.0f, 0.0f, -1.0f};
+                const Vec fwd = arm_ik::rotate(gq, axis);
                 const float fm[3] = {h.px, h.py, h.pz}, gm[3] = {g.px, g.py, g.pz}, d[3] = {fwd.x, fwd.y, fwd.z};
                 pi.alongCm = rr::along_barrel_cm(fm, gm, d);
             }
@@ -1433,7 +1461,7 @@ void tick(const Frame& f) {
         pi.triggerRise = pulls != g_seenPulls;
         g_seenPulls = pulls;
         const rr::PumpConfig cfg =
-            need == PumpNeed::Optional ? rr::deliberate(g_pumpCfg) : use == PumpUse::ReloadEnd ? s_endCfg : g_pumpCfg;
+            need == PumpNeed::Optional ? rr::deliberate(shotCfg) : use == PumpUse::ReloadEnd ? s_endCfg : shotCfg;
         const bool fwdWas = g_pump.backDone();
         const rr::PumpOutput po = g_pump.update(pi, cfg);
         // The sound engine: each stroke's sound as the player ends it (its clip's own cue is muted).
@@ -1496,16 +1524,16 @@ void tick(const Frame& f) {
         // is the gun state's (every refused pull, below).
         if (po.deny) {
             bvr::vr::pulse_hand(f.gunPhys, 0.6f, 25);
-            BVR_LOG("[reload] Shotgun %s: the trigger while it waits - click (%s stroke %.1f cm of %.0f)",
+            BVR_LOG("[reload] %S %s: the trigger while it waits - click (%s stroke %.1f cm of %.0f)", g_cls,
                     kUseName[static_cast<int>(use)], g_pump.backDone() ? "forward" : "back", po.strokeCm, cfg.strokeCm);
         }
-        if (po.event) BVR_LOG("[reload] Shotgun %s: %s (clips %d / %d)", kUseName[static_cast<int>(use)], po.event, pw, ph);
+        if (po.event) BVR_LOG("[reload] %S %s: %s (clips %d / %d)", g_cls, kUseName[static_cast<int>(use)], po.event, pw, ph);
         // Where the stroke is, twice a second while it waits: the 15:37 run's pumps sat for seconds with nothing in
         // the log to say how far the hand had got.
         static uint64_t s_strokeMs = 0;
         if (g_pump.working() && po.strokeCm >= 0.0f && f.now - s_strokeMs >= 500) {
             s_strokeMs = f.now;
-            BVR_LOG("[reload] Shotgun %s: %s stroke %.1f cm of %.0f (along %.1f cm, clip %.3f s)%s",
+            BVR_LOG("[reload] %S %s: %s stroke %.1f cm of %.0f (along %.1f cm, clip %.3f s)%s", g_cls,
                     kUseName[static_cast<int>(use)], g_pump.backDone() ? "forward" : "back", po.strokeCm, cfg.strokeCm,
                     pi.alongCm, po.t, pi.held ? "" : " - not two-handed");
         }
@@ -1516,14 +1544,14 @@ void tick(const Frame& f) {
     } else {
         if (s_useWas != PumpUse::None) {
             rr::PumpInput off;
-            g_pump.update(off, g_pumpCfg); // the ratchet at rest for the next use
+            g_pump.update(off, shotCfg); // the ratchet at rest for the next use
         }
         g_pumping.store(false, std::memory_order_relaxed);
         g_pumpHolding = false;
         g_pumpBack.store(0.0f, std::memory_order_relaxed);
     }
     if (use != s_useWas && use != PumpUse::None)
-        BVR_LOG("[reload] Shotgun %s: %s stroke (%.0f cm)",
+        BVR_LOG("[reload] %S %s: %s stroke (%.0f cm)", g_cls,
                 use == PumpUse::Shot ? "pump" : use == PumpUse::ReloadEnd ? "reload's last pump" : use == PumpUse::Dry ? "dry cock" : "pump while loading",
                 need == PumpNeed::Optional ? "a deliberate" : "the quick",
                 need == PumpNeed::Optional ? rr::kDeliberateStrokeCm : use == PumpUse::ReloadEnd ? s_endCfg.strokeCm : g_pumpCfg.strokeCm);

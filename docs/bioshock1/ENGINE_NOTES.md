@@ -7738,3 +7738,30 @@ step 2.
 - **The crossbow with the manual reload off.** Both hands in view for its reload (the free hand alone in view put
   the arm too far forward: its clip pose is against the hands actor while the gun hand sat on the controller); the
   free hand carried at the gun through its Fire clip, where the lever cocks itself (it had no hand on it).
+
+## 2026-10-22 (late night) - The 21:14 run: the crossbow's one-spot grip, the launcher's box, the spray's ray; the crossbow's program
+
+- **The crossbow in the left hand, from the 21:15 recording** (`pose_capture.py --record --csv`, the free palm in
+  the grip's frame): on the right-hand hold the free palm sits about (25 3.5 -2) against the grip; in the
+  left-hand hold it sat at (24.6 -12.0 0.5) - mirrored about the stock's centre, onto its other side, 15 units
+  across. For a fore-end gripped from either side (the pump) that is right; the crossbow's stock is ONE spot both
+  hands take. `gun_geometry::Gun::gripSameSpot` (the crossbow): the two-handed anchor is not reflected, and the
+  hand pose engine builds the wrist at the reflection - about the rig's own mirror (`mirror::Basis::mx`), not a
+  guessed plane - of where it should end against the mirrored attach frame, so the pair mirror lands it there.
+  The earlier measure (`mirrored hold: ... from the anchor`) compared points across the two frames and is gone.
+- **The launcher's drop.** The spent part fell as a Havok copy of the AMMO MODEL (the grenade pack) while the box
+  bones fell on their own - "it just drops the ammo". A part that is the gun's own bones with the ammo model riding
+  a socket on them (the launcher's box, the crossbow's) makes no copy: the bones fall 0.12 s (apply_parts) with
+  the model attached and are gone, as the pistol's cylinder.
+- **The spray "slightly above the reticle" one-handed.** The socket was turned to the line from the socket to the
+  CONTROLLER ray's point; the reticle sits on the FIRE ray, whose origin is the muzzle while the barrel origin
+  holds (`g_ray`). The wanted line ends on the fire ray's point now.
+- **The crossbow's manual reload, first cut** (`reload_rig.h kCrossbow`, MANUAL_RELOAD_PLAN.md step 4, the tester's
+  design). The lever is a Pull along the clip's own hand path (the clip following the hand, as the Tommy's drum):
+  up over 0.45-0.75 s (X_Lever 10 -> 72 deg), down over 2.25-2.55 (75 -> 0). The bolt box (X_AmmoBox) is the
+  gun's own bone carried at the palm, pulled off, gone when let go, a new one from the pouch, seated, with the clip
+  held at 1.95 s (lever up, box on in the clip; its 120-unit flip is never played). Palm paths from
+  `reload_pose.py` on the two glbs. Between shots the lever is the shotgun's pump over the Fire clip (`g_leverCfg`:
+  the clip waits at 0.85 s, the lever up 0.85-1.0, down 1.3-1.4), the stroke measured along the lever's swing
+  (`gun_geometry::strokeDir`, (0.11 -0.63 0.77) in the aim frame: the first stroke goes up and forward). No eject
+  on X yet; no dry cock; no sound rows. Host-tested (`reload-rig`, the crossbow sequence). Unverified in a run.

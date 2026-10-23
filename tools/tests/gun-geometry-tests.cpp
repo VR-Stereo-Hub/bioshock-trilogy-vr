@@ -50,6 +50,16 @@ int main() {
         check(gg::find(L"ResearchCamera") == nullptr, "an unknown class: no row");
         check(gg::find(nullptr) == nullptr, "no class: no row");
     }
+    // ---- the stroke axis and the one-spot grip (2026-10-22 late) ----
+    {
+        const gg::Gun* sg = gg::find(L"Shotgun");
+        const gg::Gun* xb = gg::find(L"Crossbow");
+        check(sg && std::fabs(arm_ik::length(sg->strokeDir) - 1.0f) < 1e-3f && sg->strokeDir.z == -1.0f, "the shotgun's stroke axis is the barrel");
+        check(xb && std::fabs(arm_ik::length(xb->strokeDir) - 1.0f) < 0.02f && xb->strokeDir.y < 0.0f && xb->strokeDir.z > 0.0f,
+              "the crossbow's stroke axis is the lever's swing, down and back (the first stroke goes up and forward)");
+        check(xb->gripSameSpot && !sg->gripSameSpot && !gg::find(L"MachineGun")->gripSameSpot,
+              "only the crossbow's grip is one spot both hands take");
+    }
     // ---- the pump (2026-10-22) ----
     {
         const gg::Gun* s = gg::find(L"Shotgun");
