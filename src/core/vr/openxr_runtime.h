@@ -13,6 +13,7 @@
 struct IDXGISwapChain;
 struct ID3D11DeviceContext;
 struct ID3D11Texture2D;
+struct ID3D11ShaderResourceView;
 
 namespace bvr::vr {
 
@@ -360,6 +361,11 @@ void set_room_head_override(bool on, const float q[4]);
 void request_room_splat();
 uint32_t room_splats();
 void set_room_sweep_display(bool on);
+// The eye processor's seam (2026-10-23, "mono painted around you"): the linear depth
+// (R32F, uu along the view axis, the image's size) of the eye image being captured,
+// handed over from inside the processor call; the room's splat of that image keeps its
+// distances too, and the backdrop draws each eye with its own parallax. Render thread.
+void provide_room_depth(ID3D11ShaderResourceView* linearZ, float uuPerM);
 // Rooms on disk, one file per level: 1 = save the live cube to `path`, 2 = load
 // `path` as the room shown in place of the live cube, 3 = drop the loaded room.
 // Carried out on the present thread; result 1 ok, -1 failed, 0 pending.

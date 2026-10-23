@@ -34,8 +34,12 @@ constexpr uint32_t kFaceSize = 512;
 // world), the four tangents the eye's fov (left and down negative). `fmt` is the
 // cube's format, fixed at the first splat: the eye swapchain's own format, so the
 // cube copies straight into a cube swapchain of the same format.
+// With `linearZ` (the eye image's linear depth, uu along the view axis, the image's
+// size; null = none) and `uuPerM` the room's distances are splatted too (metres, a
+// second R32F cube), and the backdrop gets each eye its own parallax (2026-10-23).
 bool splat(ID3D11DeviceContext* ctx, ID3D11Texture2D* eyeImage, const float q[4], float tanL,
-           float tanR, float tanU, float tanD, DXGI_FORMAT fmt);
+           float tanR, float tanU, float tanD, DXGI_FORMAT fmt, ID3D11ShaderResourceView* linearZ = nullptr,
+           float uuPerM = 0.0f);
 
 // The flat screen over the room: write `image` back over itself with its alpha
 // keyed off luminance - black transparent, anything lit opaque, premultiplied -
@@ -53,9 +57,11 @@ void set_view_format(DXGI_FORMAT fmt);
 
 // The room drawn into `dst` (a projection-layer swapchain image) as seen by an eye
 // with orientation `q` (x y z w, eye frame to the cube's world frame) and these fov
-// tangents - for runtimes without XR_KHR_composition_layer_cube (2026-10-23).
-bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* room, const float q[4],
-                   float tanL, float tanR, float tanU, float tanD);
+// tangents - for runtimes without XR_KHR_composition_layer_cube (2026-10-23). With
+// `roomDepth` the eye stands `eyeOffsetM` (metres, the cube's frame) off its centre
+// and sees the room with its own parallax: stereo.
+bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* room, ID3D11Texture2D* roomDepth,
+                   const float q[4], float tanL, float tanR, float tanU, float tanD, const float eyeOffsetM[3]);
 
 // The circle the keyed screen is cut to: radius in fractions of the frame's
 // height, centred; 0 = the whole frame.
@@ -68,12 +74,19 @@ float screen_circle();
 // the live one while it is set. Download reads the live cube back through a
 // staging copy (a stall, once per save).
 bool download(std::vector<uint8_t>& out);
-bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, DXGI_FORMAT fmt);
+// The distances, the same layout (R32F, 4 bytes a texel); false when the live cube has none.
+bool download_depth(std::vector<uint8_t>& out);
+// `depth` (or null): the distance faces, the colour's byte count.
+bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, DXGI_FORMAT fmt,
+                  const uint8_t* depth = nullptr);
 void clear_saved();
 bool has_saved();
 // The cube to show: the saved room if one is loaded, else the live cube once it
 // has a splat, else nullptr.
 ID3D11Texture2D* shown();
+// Its distances (the live cube's when `liveOnly`), or null: the room is mono.
+ID3D11Texture2D* shown_depth(bool liveOnly);
+bool has_depth();
 
 // The cube: a 6-slice kFaceSize square array with the TEXTURECUBE flag, or
 // nullptr before the first splat. Valid means at least one splat since the last

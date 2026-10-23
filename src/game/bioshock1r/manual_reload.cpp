@@ -1061,6 +1061,20 @@ void tick(const Frame& f) {
         const wchar_t* cn = nullptr;
         if (fireHandle > 0 && script::anim_name(f.weapon, fireHandle, &nm) && nm >= 0) cn = patterns::fname_text(nm);
         fireClipNow = cn && wcsstr(cn, L"Fire") && script::anim_time(f.weapon, fireHandle, &fireT);
+        // 2026-10-23 (the tester: the crossbow "still automatically doing the lever in between bolts"): a Fire clip
+        // with a program of its own (the crossbow's lever, kCrossbowCock) is that program's clip. The clip was only
+        // ever read while the hands were Reloading, and the lever plays while they are Firing, so the program was
+        // never found and the game worked the lever itself (the log: no Crossbow Fire phase line in a whole run).
+        if (!clipName && fireClipNow && rr::find(g_cls, cn)) {
+            clipName = cn;
+            hw = fireHandle;
+            hh = fireHandsHandle;
+            if (nm != g_lenName) {
+                g_lenName = nm;
+                g_len = 0;
+                script::anim_length(f.weapon, nm, &g_len);
+            }
+        }
     }
     g_gunKeep = gun_suppress::clip_motion_keep(rec, fireClipNow, fireT, g_rounds > 0);
     in.clipLive = clipName != nullptr;
@@ -1279,7 +1293,12 @@ void tick(const Frame& f) {
     const rr::Program* prog = g_machine.program();
     const bool ejects = prog && prog->ejectT >= 0;
     // The shotgun's shell too (20:35 run: "the other bullets turned invisible while I put them in").
-    if (rec.ammoModelVisible && (o.fetched || (o.seating && ejects))) {
+    // 2026-10-23 (the tester: a new bolt box "causes a bolt to instantly appear in the chamber before the bolt box is
+    // put in"): the crossbow's AmmoModel is not the box (the box is the gun's own bone, X_AmmoBox, carried at the
+    // palm) but the bolt in the chamber, so it is shown when the reload ends, not when a box leaves the pouch.
+    const bool boltNotBox = !_wcsicmp(g_cls, L"Crossbow");
+    if (boltNotBox && wasActive && !g_machine.active()) g_showAmmoFor = f.weapon;
+    if (rec.ammoModelVisible && !boltNotBox && (o.fetched || (o.seating && ejects))) {
         struct { int32_t pad[4]; } none{};
         const bool ok = script::call(f.weapon, "ShowAmmoModel", &none);
         BVR_LOG("[reload] %S: %s %s - its magazine shown (%s)", g_cls, o.fetched ? "a new one from the pouch:" : "seating:",

@@ -7851,3 +7851,23 @@ frame), submitted under the board. Views of swapchain images now use the swapcha
 since VDXR may hand out typeless textures. `vrsnap backdrop on|off` forces the fallback on a runtime
 that has the cube layer. Built and installed; not yet run (the simulator test was stopped at the
 tester's request).
+
+## 2026-10-23 - The 07:25 run: the thrower's one-shot aim, the crossbow's lever never adopted, the room in stereo
+
+- **The thrower one-handed**: the spray's per-frame socket aim sat below the barrel-origin hold's early
+  return, and one-handed the recoil's hand-back holds it for the whole spray - so the socket was turned on
+  the spray's first frame only (one "socket turned ... 53.4 deg off before" line per spray, none after) and
+  that offset rode the gun: above the reticle, always in the same spot. Two-handed the hold stands down,
+  which is why it was right. The spray is now aimed before the hold.
+- **The crossbow's lever between bolts was never the hands'**: the Fire-clip program (kCrossbowCock) is
+  looked up from the clip name, and the clip was read only while the hands were Reloading - the lever plays
+  while they are Firing. No "Crossbow Fire phase" line in the whole run. A Fire clip with a program of its
+  own is now that program's clip.
+- **The bolt in the chamber before the box**: the crossbow's AmmoModel is the chambered bolt, not the box
+  (the box is the gun's own bone, X_AmmoBox); ShowAmmoModel at the pouch showed it. Shown when the reload
+  ends instead.
+- **The lever hard to grab**: lever grabs logged reach 0.72-0.99 of the 12 cm radius; 21 cm now, either side.
+- **The room in stereo**: the cube keeps each texel's distance (metres, an R32F cube, from the eye image's
+  linear depth the temporal guides already make - so with DLSS or AFW on), saved in the room file; the
+  projection backdrop finds, per eye, the point its ray meets at that distance from the eye's own offset, so
+  each eye has its own parallax. A room saved before this has no distances and stays mono until recaptured.

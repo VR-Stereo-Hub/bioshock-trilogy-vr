@@ -833,6 +833,13 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
             if (!logged) { logged = true; BVR_LOG("[temporal] guides failed: %s", why); }
         }
     }
+    // 2026-10-23: this image's linear depth to the room snapshot, so the room keeps its distances
+    // and the loading screen's backdrop is stereo (openxr_runtime.h provide_room_depth).
+    if (guidesOk) {
+        float ws = 0.0f;
+        camera::get_recenter_state(nullptr, nullptr, &ws);
+        bvr::vr::provide_room_depth(g_guides.linear_z_srv(), ws > 1.0f ? ws : 100.0f);
+    }
 
     // The hands mask is worth binding when something is in it: a foreground pass, or the
     // viewmodel's squeezed depth range (BS1's case - the guides mark it from the raw depth).

@@ -2045,9 +2045,17 @@ void destroy_cube_swapchain() {
 }
 
 // The cube layer when the runtime has it (and the test lever does not say otherwise).
+// A room with distances goes as the projection layer even where the cube layer exists: a
+// cube layer is one picture at infinity for both eyes (mono), the backdrop is stereo.
 bool room_use_cube_layer() {
-    return g_cubeExtEnabled && !g_roomForceBackdrop.load(std::memory_order_relaxed);
+    return g_cubeExtEnabled && !g_roomForceBackdrop.load(std::memory_order_relaxed) &&
+           !bvr::cube_snapshot::has_depth();
 }
+
+// The eye image's linear depth, handed over by the adapter's eye processor for the
+// image being captured this present (null: none, the splat is mono).
+ID3D11ShaderResourceView* g_roomDepthSrv = nullptr;
+float g_roomDepthUuPerM = 0.0f;
 
 bool ensure_backdrop_swapchains() {
     if (g_backdropSwapchains[0] != XR_NULL_HANDLE && g_backdropSwapchains[1] != XR_NULL_HANDLE) return true;
@@ -2152,7 +2160,7 @@ void room_snapshot_splat(ID3D11Texture2D* eyeImage, const XrQuaternionf& q, floa
     room_yaw_quat(1.0f, ry);
     bvr::xrmath::quat_mul(ry, qh, qw);
     bvr::cube_snapshot::splat(g_context, eyeImage, qw, -tanH, tanH, tanV, -tanV,
-                              static_cast<DXGI_FORMAT>(g_swapFormat));
+                              static_cast<DXGI_FORMAT>(g_swapFormat), g_roomDepthSrv, g_roomDepthUuPerM);
 }
 
 // Will the room go under the flat screen this frame? Decided before the capture
@@ -2180,26 +2188,31 @@ void room_file_service() {
         bvr::cube_snapshot::clear_saved();
         ok = true;
     } else if (op == 1) {
-        std::vector<uint8_t> faces;
+        std::vector<uint8_t> faces, depth;
         ok = bvr::cube_snapshot::download(faces);
+        const bool withDepth = ok && bvr::cube_snapshot::download_depth(depth) && depth.size() == faces.size();
         if (ok) {
             RoomFileHeader h{};
             memcpy(h.magic, kRoomMagic, sizeof(h.magic));
             h.face = bvr::cube_snapshot::kFaceSize;
             h.format = static_cast<uint32_t>(g_swapFormat);
             h.splats = bvr::cube_snapshot::splats();
+            h.reserved = withDepth ? 1u : 0u; // 1: the distance faces follow the colour
             FILE* f = nullptr;
             ok = _wfopen_s(&f, path.c_str(), L"wb") == 0 && f;
             if (ok) {
-                ok = fwrite(&h, sizeof(h), 1, f) == 1 && fwrite(faces.data(), 1, faces.size(), f) == faces.size();
+                ok = fwrite(&h, sizeof(h), 1, f) == 1 && fwrite(faces.data(), 1, faces.size(), f) == faces.size() &&
+                     (!withDepth || fwrite(depth.data(), 1, depth.size(), f) == depth.size());
                 fclose(f);
             }
         }
-        BVR_LOG("xr: room snapshot: save %s (%ls)", ok ? "OK" : "FAILED", path.c_str());
+        BVR_LOG("xr: room snapshot: save %s (%ls, %s)", ok ? "OK" : "FAILED", path.c_str(),
+                withDepth ? "colour and distances: stereo" : "colour only: mono");
     } else if (op == 2) {
         FILE* f = nullptr;
         RoomFileHeader h{};
-        std::vector<uint8_t> faces;
+        std::vector<uint8_t> faces, depth;
+        bool withDepth = false;
         ok = _wfopen_s(&f, path.c_str(), L"rb") == 0 && f;
         if (ok) {
             ok = fread(&h, sizeof(h), 1, f) == 1 && memcmp(h.magic, kRoomMagic, sizeof(h.magic)) == 0 &&
@@ -2208,15 +2221,20 @@ void room_file_service() {
                 faces.resize(static_cast<size_t>(6) * h.face * h.face * 4);
                 ok = fread(faces.data(), 1, faces.size(), f) == faces.size();
             }
+            if (ok && h.reserved == 1u) {
+                depth.resize(faces.size());
+                withDepth = fread(depth.data(), 1, depth.size(), f) == depth.size();
+            }
             fclose(f);
         }
         // The bytes are 8-bit either way; the saved cube takes the live format so
         // the copy into the cube swapchain stays a plain copy.
         if (ok && g_context)
             ok = bvr::cube_snapshot::upload_saved(g_context, faces.data(), faces.size(),
-                                                  static_cast<DXGI_FORMAT>(g_swapFormat));
+                                                  static_cast<DXGI_FORMAT>(g_swapFormat),
+                                                  withDepth ? depth.data() : nullptr);
         BVR_LOG("xr: room snapshot: load %s (%ls%s)", ok ? "OK" : "FAILED", path.c_str(),
-                ok ? "" : " - the live cube shows instead");
+                !ok ? " - the live cube shows instead" : withDepth ? ", stereo" : ", mono (no distances in it)");
     }
     g_roomFileResult.store(ok ? 1 : -1, std::memory_order_relaxed);
 }
@@ -2279,7 +2297,16 @@ bool room_backdrop_layer(XrCompositionLayerProjection* out, XrCompositionLayerPr
     if (!ensure_backdrop_swapchains()) return false;
     float ry[4];
     room_yaw_quat(1.0f, ry);
+    ID3D11Texture2D* depth = bvr::cube_snapshot::shown_depth(liveOnly);
+    // Each eye's offset from the midpoint of the two, in the cube's frame (metres).
+    const XrVector3f& pl = v[0].pose.position;
+    const XrVector3f& pr = v[1].pose.position;
+    const float mid[3] = {(pl.x + pr.x) * 0.5f, (pl.y + pr.y) * 0.5f, (pl.z + pr.z) * 0.5f};
     for (int e = 0; e < 2; ++e) {
+        const XrVector3f& pe = v[e].pose.position;
+        const float rel[3] = {pe.x - mid[0], pe.y - mid[1], pe.z - mid[2]};
+        float off[3];
+        bvr::xrmath::quat_rotate(ry[0], ry[1], ry[2], ry[3], rel, off);
         uint32_t idx = 0;
         XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         if (XR_FAILED(xrAcquireSwapchainImage(g_backdropSwapchains[e], &ai, &idx))) return false;
@@ -2291,9 +2318,9 @@ bool room_backdrop_layer(XrCompositionLayerProjection* out, XrCompositionLayerPr
             const float qe[4] = {o.x, o.y, o.z, o.w};
             float qw[4];
             bvr::xrmath::quat_mul(ry, qe, qw); // world = rotY(yaw) * headset
-            drawn = bvr::cube_snapshot::draw_backdrop(g_context, g_backdropImages[e][idx].texture, src, qw,
+            drawn = bvr::cube_snapshot::draw_backdrop(g_context, g_backdropImages[e][idx].texture, src, depth, qw,
                                                       tanf(v[e].fov.angleLeft), tanf(v[e].fov.angleRight),
-                                                      tanf(v[e].fov.angleUp), tanf(v[e].fov.angleDown));
+                                                      tanf(v[e].fov.angleUp), tanf(v[e].fov.angleDown), off);
         }
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         const bool released = XR_SUCCEEDED(xrReleaseSwapchainImage(g_backdropSwapchains[e], &ri));
@@ -4526,6 +4553,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     bool processed = false;
                     const bool stereoEye = srFrame || (aerActive && target == g_currentEye &&
                                                        imageSign == currentEyeSign);
+                    g_roomDepthSrv = nullptr; // the processor below hands this image's depth over, if it has it
                     EyeProcessorFn proc = g_eyeProcessor.load(std::memory_order_relaxed);
                     if (proc && projectionMode && stereoEye) {
                         EyeFrame ef;
@@ -6055,6 +6083,10 @@ void set_room_head_override(bool on, const float q[4]) {
 void request_room_splat() { g_roomSplatRequested.store(true, std::memory_order_relaxed); }
 uint32_t room_splats() { return bvr::cube_snapshot::splats(); }
 void set_room_sweep_display(bool on) { g_roomSweepDisplay.store(on, std::memory_order_relaxed); }
+void provide_room_depth(ID3D11ShaderResourceView* linearZ, float uuPerM) {
+    g_roomDepthSrv = linearZ;
+    g_roomDepthUuPerM = uuPerM;
+}
 void request_room_file(int op, const wchar_t* path) {
     std::lock_guard<std::mutex> lk(g_roomFileMutex);
     g_roomFileOp = op;
@@ -6540,6 +6572,7 @@ void set_room_head_override(bool, const float*) {}
 void request_room_splat() {}
 uint32_t room_splats() { return 0; }
 void set_room_sweep_display(bool) {}
+void provide_room_depth(ID3D11ShaderResourceView*, float) {}
 void request_room_file(int, const wchar_t*) {}
 int room_file_result() { return -1; }
 bool room_saved_loaded() { return false; }

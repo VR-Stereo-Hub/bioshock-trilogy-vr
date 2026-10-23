@@ -164,13 +164,15 @@ inline constexpr Pt kCrossbowBoxIn[] = {
     {1.95f, {-6.0f, -6.0f, 54.0f}}, {1.95f, {0.0f, -5.0f, 42.0f}}, {1.95f, {4.3f, -4.7f, 31.0f}}};
 inline constexpr Pt kCrossbowLeverDown[] = {
     {2.25f, {18.6f, 5.5f, 48.5f}}, {2.35f, {15.6f, 4.4f, 48.0f}}, {2.45f, {-12.8f, -6.4f, 31.5f}}, {2.55f, {-10.9f, -7.7f, 27.9f}}};
+// 2026-10-23 (the tester: the lever's "spot is hard to grab"; the 07:27 run logged lever grabs at reach 0.72-0.99, a
+// hair inside the 12 cm radius): every lever pull is grabbed from 21 cm (grabScale 1.75), from either side of the stock.
 inline constexpr Phase kCrossbow[] = {
-    {Kind::Pull, 0.45f, 0.75f, kCrossbowLeverUp, 3, "X_Lever", "cock the lever up", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
+    {Kind::Pull, 0.45f, 0.75f, kCrossbowLeverUp, 3, "X_Lever", "cock the lever up", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Pull, 1.95f, 1.95f, kCrossbowBoxOut, 3, "X_AmmoBox", "pull the bolt box off", true},
     {Kind::Carry, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "drop the spent box", true},
     {Kind::Fetch, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "take a box from the pouch", true},
     {Kind::Insert, 1.95f, 1.95f, kCrossbowBoxIn, 3, "X_AmmoBox", "seat the box", true},
-    {Kind::Pull, 2.25f, 2.55f, kCrossbowLeverDown, 4, "X_Lever", "cock the lever down", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
+    {Kind::Pull, 2.25f, 2.55f, kCrossbowLeverDown, 4, "X_Lever", "cock the lever down", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Finish, 2.90f, 3.00f, nullptr, 0, nullptr, "done"}};
 // The crossbow's cock between shots ('Fire', 2.00 s; 2026-10-22 late night - the tester: "just supposed to be lever
 // up then lever down in between shots", and a grip at the lever started a whole reload): the Fire clip re-cocks the
@@ -183,8 +185,8 @@ inline constexpr Pt kCrossbowCockUp[] = {
 inline constexpr Pt kCrossbowCockDown[] = {
     {1.30f, {12.8f, 3.0f, 47.3f}}, {1.35f, {-6.7f, -3.1f, 39.1f}}, {1.40f, {-14.0f, -7.4f, 28.6f}}};
 inline constexpr Phase kCrossbowCock[] = {
-    {Kind::Pull, 0.85f, 1.00f, kCrossbowCockUp, 4, "X_Lever", "cock the lever up", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
-    {Kind::Pull, 1.30f, 1.40f, kCrossbowCockDown, 3, "X_Lever", "cock the lever down", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
+    {Kind::Pull, 0.85f, 1.00f, kCrossbowCockUp, 4, "X_Lever", "cock the lever up", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
+    {Kind::Pull, 1.30f, 1.40f, kCrossbowCockDown, 3, "X_Lever", "cock the lever down", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Finish, 1.45f, 2.00f, nullptr, 0, nullptr, "cocked"}};
 
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a

@@ -1882,11 +1882,6 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
     const RayBase& b = g_prevBase;
     const int hand = hands::active_hand() == 0 ? 0 : 1;
     const bool twoHanded = two_hand::held();
-    if (!twoHanded && g_barrel.valid && g_barrel.hand == hand && handback::gun_motion(hand, now) > 0.0f &&
-        handback::weight(hand, now) >= 1.0f && handback::carry(hand, now) <= 0.0f) {
-        g_barrel.stampMs = now;
-        return;
-    }
     void* weapon = nullptr;
     // 2026-10-22 evening (the tester: the spray on the reticle two-handed, off left and down one-handed): the
     // block below stands down while a hand-back owns the gun hand - and one-handed, the recoil's hand-back owns it
@@ -1919,6 +1914,16 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
                 s_sprayWeapon = w;
             }
         }
+    }
+    // 2026-10-23 (the tester: one-handed, the spray still lands above the reticle "in the same spot"): this hold
+    // used to sit ABOVE the spray's aim, and one-handed the recoil's hand-back holds it for the whole spray - so the
+    // socket was turned once, on the spray's first frame, and that offset rode the gun for the rest of it (the log:
+    // one "socket turned" line per spray, none after). Two-handed the hold stands down, which is why it was right.
+    // The spray is aimed first, every frame; only the barrel origin is held.
+    if (!twoHanded && g_barrel.valid && g_barrel.hand == hand && handback::gun_motion(hand, now) > 0.0f &&
+        handback::weight(hand, now) >= 1.0f && handback::carry(hand, now) <= 0.0f) {
+        g_barrel.stampMs = now;
+        return;
     }
     weapon = nullptr;
     bool ok = (g_barrelOrigin.load(std::memory_order_relaxed) || g_barrelAim.load(std::memory_order_relaxed)) &&

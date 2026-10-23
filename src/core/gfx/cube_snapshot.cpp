@@ -40,15 +40,34 @@ float3 face_dir(int f, float s, float t) {
     if (f == 4) return float3( s, -t,  1);
     return float3(-s, -t, -1);
 }
-float4 ps_main(VSOut i) : SV_Target {
-    float3 d = normalize(face_dir((int)params.x, i.uv.x * 2 - 1, i.uv.y * 2 - 1));
+// The eye-image texel a cube texel sees (discarding outside the eye's fov), and its
+// direction's tangent-plane position.
+void splat_at(float2 cubeUv, out float2 uv, out float2 t) {
+    float3 d = normalize(face_dir((int)params.x, cubeUv.x * 2 - 1, cubeUv.y * 2 - 1));
     float3 e = rotate_by(qInv, d);           // the direction in the eye's frame
     if (e.z >= -1e-4) discard;               // behind the eye
-    float2 t = e.xy / -e.z;                  // on the eye's tangent plane
+    t = e.xy / -e.z;                         // on the eye's tangent plane
     float k = params.y;
     if (t.x < tans.x * k || t.x > tans.y * k || t.y > tans.z * k || t.y < tans.w * k) discard;
-    float2 uv = float2((t.x - tans.x) / (tans.y - tans.x), (tans.z - t.y) / (tans.z - tans.w));
+    uv = float2((t.x - tans.x) / (tans.y - tans.x), (tans.z - t.y) / (tans.z - tans.w));
+}
+float4 ps_main(VSOut i) : SV_Target {
+    float2 uv, t;
+    splat_at(i.uv, uv, t);
     return float4(eyeTex.Sample(samp0, uv).rgb, 1);
+}
+// 2026-10-23 (the tester: "mono painted around you"): with the eye image's linear depth
+// (uu along the view axis) the cube keeps each texel's DISTANCE too, in metres (params.z
+// is uu per metre), so the backdrop can give each eye its own parallax.
+Texture2D depthTex : register(t2);
+struct SplatOut { float4 c : SV_Target0; float d : SV_Target1; };
+SplatOut ps_splat_depth(VSOut i) {
+    float2 uv, t;
+    splat_at(i.uv, uv, t);
+    SplatOut o;
+    o.c = float4(eyeTex.Sample(samp0, uv).rgb, 1);
+    o.d = depthTex.SampleLevel(samp0, uv, 0).r * sqrt(1 + dot(t, t)) / params.z;
+    return o;
 }
 // The screen over the room: black keyed out, premultiplied, and when asked a
 // circle (radius in fractions of the frame's height, centred) with a soft rim.
@@ -65,12 +84,34 @@ float4 ps_key(VSOut i) : SV_Target {
 // The room as a projection-layer image (runtimes without the cube layer): each
 // pixel's eye ray, from the eye's fov tangents, rotated into the world by `qInv`
 // (here the eye-to-world rotation), looks the cube up.
+// With the room's distances (params.x > 0), the eye stands params.yzw metres off the
+// cube's centre: the point its ray meets is found where |o + d t| equals the distance
+// the cube holds in that point's direction (a fixed point, a few steps from the centre's
+// own distance - the eyes are centimetres off and the room metres away), and the colour
+// is looked up in that point's direction. A texel with no distance is at infinity.
 TextureCube roomTex : register(t1);
+TextureCube roomDepth : register(t3);
 float4 ps_backdrop(VSOut i) : SV_Target {
     float tx = lerp(tans.x, tans.y, i.uv.x);
     float ty = lerp(tans.z, tans.w, i.uv.y);
     float3 d = rotate_by(qInv, normalize(float3(tx, ty, -1)));
-    return float4(roomTex.Sample(samp0, d).rgb, 1);
+    float3 look = d;
+    if (params.x > 0.5) {
+        float3 o = params.yzw;
+        float r = roomDepth.SampleLevel(samp0, d, 0).r;
+        if (r > 0.01) {
+            float od = dot(o, d), oo = dot(o, o);
+            float t = r;
+            [unroll] for (int k = 0; k < 4; ++k) {
+                float3 p = o + d * t;
+                float rp = roomDepth.SampleLevel(samp0, normalize(p), 0).r;
+                if (rp <= 0.01) break;
+                t = -od + sqrt(max(od * od - oo + rp * rp, 0));
+            }
+            look = normalize(o + d * t);
+        }
+    }
+    return float4(roomTex.Sample(samp0, look).rgb, 1);
 }
 )";
 
@@ -84,6 +125,11 @@ ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
 ID3D11PixelShader* g_psKey = nullptr;
 ID3D11PixelShader* g_psBackdrop = nullptr;
+ID3D11PixelShader* g_psSplatDepth = nullptr;
+ID3D11Texture2D* g_cubeDepth = nullptr;      // the room's distances (R32F, metres; 0 = none)
+ID3D11RenderTargetView* g_depthRtv[6] = {};
+uint32_t g_depthSplats = 0;
+ID3D11Texture2D* g_savedDepth = nullptr;     // a saved room's distances
 DXGI_FORMAT g_viewFmt = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; // the typed view of a typeless swapchain image
 struct ImageRtv { ID3D11Texture2D* tex; ID3D11RenderTargetView* rtv; };
 ImageRtv g_imageRtvs[16] = {}; // the swapchain images the passes wrote (eye and backdrop images)
@@ -97,7 +143,7 @@ ID3D11Texture2D* g_cube = nullptr;
 ID3D11RenderTargetView* g_faceRtv[6] = {};
 DXGI_FORMAT g_cubeFmt = DXGI_FORMAT_UNKNOWN;
 ID3D11Texture2D* g_saved = nullptr; // a room loaded from disk, shown in place of the live cube
-float g_circle = 0.16f; // the loading board's picture, from the sim capture of 2026-10-23
+float g_circle = 0.42f; // 2026-10-23: 0.16 was "way too small" in the headset; 0.5 touches the frame's top and bottom
 ID3D11Texture2D* g_src = nullptr; // a sampleable copy of the eye image
 ID3D11ShaderResourceView* g_srcSrv = nullptr;
 uint32_t g_srcW = 0, g_srcH = 0;
@@ -107,10 +153,14 @@ bool g_failed = false;
 
 void release_cube() {
     for (auto& r : g_faceRtv) { if (r) r->Release(); r = nullptr; }
+    for (auto& r : g_depthRtv) { if (r) r->Release(); r = nullptr; }
     if (g_cube) g_cube->Release();
+    if (g_cubeDepth) g_cubeDepth->Release();
     g_cube = nullptr;
+    g_cubeDepth = nullptr;
     g_cubeFmt = DXGI_FORMAT_UNKNOWN;
     g_splats = 0;
+    g_depthSplats = 0;
 }
 
 void release_src() {
@@ -138,6 +188,12 @@ bool ensure_pipeline(ID3D11Device* dev) {
                                    "ps_4_0", 0, 0, &pkb, &err)) &&
               SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr, "ps_backdrop",
                                    "ps_4_0", 0, 0, &pbb, &err));
+    ID3DBlob* psd = nullptr;
+    if (ok)
+        ok = SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr, "ps_splat_depth", "ps_4_0", 0,
+                                  0, &psd, &err)) &&
+             SUCCEEDED(dev->CreatePixelShader(psd->GetBufferPointer(), psd->GetBufferSize(), nullptr, &g_psSplatDepth));
+    if (psd) psd->Release();
     if (ok)
         ok = SUCCEEDED(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(),
                                                nullptr, &g_vs)) &&
@@ -213,6 +269,27 @@ bool ensure_cube(ID3D11Device* dev, DXGI_FORMAT fmt) {
             release_cube();
             return false;
         }
+    }
+    // The distances, alongside. A failure leaves the room mono, never missing.
+    td.Format = DXGI_FORMAT_R32_FLOAT;
+    if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_cubeDepth))) {
+        for (UINT f = 0; f < 6; ++f) {
+            D3D11_RENDER_TARGET_VIEW_DESC rv{};
+            rv.Format = DXGI_FORMAT_R32_FLOAT;
+            rv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+            rv.Texture2DArray.FirstArraySlice = f;
+            rv.Texture2DArray.ArraySize = 1;
+            if (FAILED(dev->CreateRenderTargetView(g_cubeDepth, &rv, &g_depthRtv[f]))) {
+                for (auto& r : g_depthRtv) { if (r) r->Release(); r = nullptr; }
+                g_cubeDepth->Release();
+                g_cubeDepth = nullptr;
+                BVR_LOG("[cube] the distance cube's views failed - the room stays mono");
+                break;
+            }
+        }
+    } else {
+        g_cubeDepth = nullptr;
+        BVR_LOG("[cube] the distance cube could not be made - the room stays mono");
     }
     g_cubeFmt = fmt;
     return true;
@@ -376,12 +453,16 @@ ID3D11RenderTargetView* image_rtv(ID3D11DeviceContext* ctx, ID3D11Texture2D* ima
 } // namespace
 
 bool splat(ID3D11DeviceContext* ctx, ID3D11Texture2D* eyeImage, const float q[4], float tanL,
-           float tanR, float tanU, float tanD, DXGI_FORMAT fmt) {
+           float tanR, float tanU, float tanD, DXGI_FORMAT fmt, ID3D11ShaderResourceView* linearZ, float uuPerM) {
     if (!ctx || !eyeImage || !(tanR > tanL) || !(tanU > tanD)) return false;
     if (!prepare(ctx, eyeImage, fmt, true)) return false;
+    const bool withDepth = linearZ && uuPerM > 1.0f && g_cubeDepth && g_psSplatDepth;
 
     SavedState saved(ctx);
-    bind_pass(ctx, g_ps, static_cast<float>(kFaceSize), static_cast<float>(kFaceSize));
+    ID3D11ShaderResourceView* oldT2 = nullptr;
+    ctx->PSGetShaderResources(2, 1, &oldT2);
+    bind_pass(ctx, withDepth ? g_psSplatDepth : g_ps, static_cast<float>(kFaceSize), static_cast<float>(kFaceSize));
+    if (withDepth) ctx->PSSetShaderResources(2, 1, &linearZ);
 
     SplatCB cb{};
     // The inverse rotation: world directions into the eye's frame.
@@ -394,16 +475,25 @@ bool splat(ID3D11DeviceContext* ctx, ID3D11Texture2D* eyeImage, const float q[4]
     cb.tans[2] = tanU;
     cb.tans[3] = tanD;
     cb.params[1] = 0.96f; // keep clear of the image's outermost rim
+    cb.params[2] = uuPerM;
     for (UINT f = 0; f < 6; ++f) {
         cb.params[0] = static_cast<float>(f);
         D3D11_MAPPED_SUBRESOURCE m{};
         if (FAILED(ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) break;
         memcpy(m.pData, &cb, sizeof(cb));
         ctx->Unmap(g_cb, 0);
-        ctx->OMSetRenderTargets(1, &g_faceRtv[f], nullptr);
+        if (withDepth) {
+            ID3D11RenderTargetView* two[2] = {g_faceRtv[f], g_depthRtv[f]};
+            ctx->OMSetRenderTargets(2, two, nullptr);
+        } else {
+            ctx->OMSetRenderTargets(1, &g_faceRtv[f], nullptr);
+        }
         ctx->Draw(3, 0);
     }
+    ctx->PSSetShaderResources(2, 1, &oldT2);
+    if (oldT2) oldT2->Release();
     ++g_splats;
+    if (withDepth) ++g_depthSplats;
     return true;
 }
 
@@ -430,8 +520,8 @@ void set_view_format(DXGI_FORMAT fmt) {
     if (fmt != DXGI_FORMAT_UNKNOWN && !typeless(fmt)) g_viewFmt = fmt;
 }
 
-bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* room, const float q[4],
-                   float tanL, float tanR, float tanU, float tanD) {
+bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* room, ID3D11Texture2D* roomDepth,
+                   const float q[4], float tanL, float tanR, float tanU, float tanD, const float eyeOffsetM[3]) {
     if (!ctx || !dst || !room || !(tanR > tanL) || !(tanU > tanD)) return false;
     ID3D11Device* dev = nullptr;
     ctx->GetDevice(&dev);
@@ -462,18 +552,41 @@ bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture
     D3D11_TEXTURE2D_DESC dd{};
     dst->GetDesc(&dd);
     bool ok = false;
+    // The distances, when the room has them: each eye its own parallax.
+    ID3D11ShaderResourceView* dsrv = nullptr;
+    if (roomDepth && eyeOffsetM) {
+        ID3D11Device* d2 = nullptr;
+        ctx->GetDevice(&d2);
+        D3D11_SHADER_RESOURCE_VIEW_DESC dv{};
+        dv.Format = DXGI_FORMAT_R32_FLOAT;
+        dv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+        dv.TextureCube.MipLevels = 1;
+        if (d2) {
+            if (FAILED(d2->CreateShaderResourceView(roomDepth, &dv, &dsrv))) dsrv = nullptr;
+            d2->Release();
+        }
+    }
     {
         SavedState saved(ctx);
         ID3D11ShaderResourceView* oldT1 = nullptr;
+        ID3D11ShaderResourceView* oldT3 = nullptr;
         ctx->PSGetShaderResources(1, 1, &oldT1);
+        ctx->PSGetShaderResources(3, 1, &oldT3);
         bind_pass(ctx, g_psBackdrop, static_cast<float>(dd.Width), static_cast<float>(dd.Height));
         ctx->PSSetShaderResources(1, 1, &srv);
+        ctx->PSSetShaderResources(3, 1, &dsrv);
         SplatCB cb{};
         for (int i = 0; i < 4; ++i) cb.qInv[i] = q[i]; // eye -> world, as the shader wants
         cb.tans[0] = tanL;
         cb.tans[1] = tanR;
         cb.tans[2] = tanU;
         cb.tans[3] = tanD;
+        if (dsrv) {
+            cb.params[0] = 1.0f;
+            cb.params[1] = eyeOffsetM[0];
+            cb.params[2] = eyeOffsetM[1];
+            cb.params[3] = eyeOffsetM[2];
+        }
         D3D11_MAPPED_SUBRESOURCE m{};
         if (SUCCEEDED(ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
             memcpy(m.pData, &cb, sizeof(cb));
@@ -483,25 +596,28 @@ bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture
             ok = true;
         }
         ctx->PSSetShaderResources(1, 1, &oldT1);
+        ctx->PSSetShaderResources(3, 1, &oldT3);
         if (oldT1) oldT1->Release();
+        if (oldT3) oldT3->Release();
     }
     srv->Release();
+    if (dsrv) dsrv->Release();
     return ok;
 }
 
 void set_screen_circle(float radiusFrac) { g_circle = radiusFrac < 0.0f ? 0.0f : radiusFrac; }
 float screen_circle() { return g_circle; }
 
-bool download(std::vector<uint8_t>& out) {
+static bool download_cube(ID3D11Texture2D* cube, std::vector<uint8_t>& out) {
     out.clear();
-    if (!g_cube) return false;
+    if (!cube) return false;
     ID3D11Device* dev = nullptr;
-    g_cube->GetDevice(&dev);
+    cube->GetDevice(&dev);
     if (!dev) return false;
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
     D3D11_TEXTURE2D_DESC td{};
-    g_cube->GetDesc(&td);
+    cube->GetDesc(&td);
     td.Usage = D3D11_USAGE_STAGING;
     td.BindFlags = 0;
     td.MiscFlags = 0;
@@ -509,7 +625,7 @@ bool download(std::vector<uint8_t>& out) {
     ID3D11Texture2D* st = nullptr;
     bool ok = ctx && SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &st)) && st;
     if (ok) {
-        ctx->CopyResource(st, g_cube);
+        ctx->CopyResource(st, cube);
         out.resize(static_cast<size_t>(6) * kFaceSize * kFaceSize * 4);
         for (UINT f = 0; f < 6 && ok; ++f) {
             D3D11_MAPPED_SUBRESOURCE m{};
@@ -529,12 +645,16 @@ bool download(std::vector<uint8_t>& out) {
     return ok;
 }
 
-bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, DXGI_FORMAT fmt) {
-    clear_saved();
-    if (!ctx || !rgba || bytes != static_cast<size_t>(6) * kFaceSize * kFaceSize * 4) return false;
-    ID3D11Device* dev = nullptr;
-    ctx->GetDevice(&dev);
-    if (!dev) return false;
+bool download(std::vector<uint8_t>& out) { return download_cube(g_cube, out); }
+bool download_depth(std::vector<uint8_t>& out) {
+    if (g_depthSplats == 0) {
+        out.clear();
+        return false;
+    }
+    return download_cube(g_cubeDepth, out);
+}
+
+static bool upload_cube(ID3D11Device* dev, const uint8_t* bytes, DXGI_FORMAT fmt, ID3D11Texture2D** out) {
     D3D11_TEXTURE2D_DESC td{};
     td.Width = td.Height = kFaceSize;
     td.MipLevels = 1;
@@ -546,25 +666,43 @@ bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, D
     td.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
     D3D11_SUBRESOURCE_DATA init[6] = {};
     for (UINT f = 0; f < 6; ++f) {
-        init[f].pSysMem = rgba + static_cast<size_t>(f) * kFaceSize * kFaceSize * 4;
+        init[f].pSysMem = bytes + static_cast<size_t>(f) * kFaceSize * kFaceSize * 4;
         init[f].SysMemPitch = kFaceSize * 4;
     }
-    const HRESULT hr = dev->CreateTexture2D(&td, init, &g_saved);
-    dev->Release();
+    const HRESULT hr = dev->CreateTexture2D(&td, init, out);
     if (FAILED(hr)) {
-        BVR_LOG("[cube] saved room upload failed (%08lx)", static_cast<unsigned long>(hr));
-        g_saved = nullptr;
+        BVR_LOG("[cube] saved room upload failed (%08lx, format %d)", static_cast<unsigned long>(hr), static_cast<int>(fmt));
+        *out = nullptr;
         return false;
     }
     return true;
 }
 
+bool upload_saved(ID3D11DeviceContext* ctx, const uint8_t* rgba, size_t bytes, DXGI_FORMAT fmt, const uint8_t* depth) {
+    clear_saved();
+    if (!ctx || !rgba || bytes != static_cast<size_t>(6) * kFaceSize * kFaceSize * 4) return false;
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return false;
+    const bool ok = upload_cube(dev, rgba, fmt, &g_saved);
+    if (ok && depth) upload_cube(dev, depth, DXGI_FORMAT_R32_FLOAT, &g_savedDepth); // mono if it fails
+    dev->Release();
+    return ok;
+}
+
 void clear_saved() {
     if (g_saved) g_saved->Release();
+    if (g_savedDepth) g_savedDepth->Release();
     g_saved = nullptr;
+    g_savedDepth = nullptr;
 }
 bool has_saved() { return g_saved != nullptr; }
 ID3D11Texture2D* shown() { return g_saved ? g_saved : (valid() ? g_cube : nullptr); }
+ID3D11Texture2D* shown_depth(bool liveOnly) {
+    if (!liveOnly && g_saved) return g_savedDepth;
+    return g_depthSplats > 0 ? g_cubeDepth : nullptr;
+}
+bool has_depth() { return shown_depth(false) != nullptr; }
 
 void forget_images() {
     for (int i = 0; i < g_imageRtvCount; ++i) {
@@ -587,12 +725,16 @@ void reset() {
     dev->GetImmediateContext(&ctx);
     if (ctx) {
         const float black[4] = {0, 0, 0, 1};
+        const float none[4] = {0, 0, 0, 0};
         for (auto* r : g_faceRtv)
             if (r) ctx->ClearRenderTargetView(r, black);
+        for (auto* r : g_depthRtv)
+            if (r) ctx->ClearRenderTargetView(r, none);
         ctx->Release();
     }
     dev->Release();
     g_splats = 0;
+    g_depthSplats = 0;
 }
 
 void release() {
@@ -608,6 +750,8 @@ void release() {
     if (g_psKey) g_psKey->Release();
     if (g_psBackdrop) g_psBackdrop->Release();
     g_psBackdrop = nullptr;
+    if (g_psSplatDepth) g_psSplatDepth->Release();
+    g_psSplatDepth = nullptr;
     if (g_ps) g_ps->Release();
     if (g_vs) g_vs->Release();
     g_cb = nullptr;
