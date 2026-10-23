@@ -1892,12 +1892,13 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
     // block below stands down while a hand-back owns the gun hand - and one-handed, the recoil's hand-back owns it
     // for the whole spray, so the spray was never aimed. The thrower's emitter is aimed here, whatever the hands
     // are doing, from the drawn socket as it is.
+    bool thrower = false;
     {
         static void* s_sprayWeapon = nullptr;
         void* w = nullptr;
         const bool inHand = b.valid && b.hand == hand && hands::active() && hands::current_holdable(&w) && w;
         const wchar_t* cls = inHand ? patterns::object_class_name(w) : nullptr;
-        const bool thrower = cls && !_wcsicmp(cls, L"ChemicalThrower");
+        thrower = cls && !_wcsicmp(cls, L"ChemicalThrower");
         if (s_sprayWeapon && (!thrower || w != s_sprayWeapon)) {
             muzzle::restore_socket();
             s_sprayWeapon = nullptr;
@@ -1922,7 +1923,12 @@ static void update_barrel(const FrameContext& ctx, uint64_t now) {
     weapon = nullptr;
     bool ok = (g_barrelOrigin.load(std::memory_order_relaxed) || g_barrelAim.load(std::memory_order_relaxed)) &&
               g_gameplayView && b.valid && b.hand == hand && hands::active() &&
-              !(twoHanded ? handback::clip_owns(hand, now) : handback::active(hand, now)) &&
+              // 2026-10-22 late night (the spray "a little above the reticle" one-handed, right two-handed): the
+              // thrower's one-handed spray is its own hand-back, held for the whole spray - the barrel origin fell
+              // back to the controller and the reticle's ray with it, while the socket aimed at that ray's point
+              // from 21 cm below. The thrower keeps its barrel origin through the spray, so the reticle's ray leaves
+              // the muzzle one-handed as it does two-handed, and the spray runs parallel to it.
+              !(twoHanded ? handback::clip_owns(hand, now) : (handback::active(hand, now) && !thrower)) &&
               hands::current_holdable(&weapon) && weapon;
     if (ok && weapon != g_barrel.weapon) {
         g_barrel.valid = false; // a new weapon: no smoothing across the switch

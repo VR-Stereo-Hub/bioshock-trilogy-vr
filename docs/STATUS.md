@@ -40,9 +40,14 @@ box and its pack fall as one); the spray aims at the fire ray's point; **the cro
 first cut** (plan step 4: the lever by hand up and down, the box off and on). CLAUDE.md: captures are deleted
 once analysed (2.6 GB of them were).
 
+The 21:5x run: the crossbow's lever between shots is its own two-pull program on the Fire clip (a grip at the
+lever no longer starts a reload), the hand locks onto the lever, the launcher's box falls half a second before it
+goes, and the thrower keeps its barrel origin while spraying one-handed.
+
 ### Next steps
 
-- A run with the new build: the crossbow reloaded by hand (grab the lever behind the stock and pull it up, pull
+- A run with the new build: the crossbow's lever after each shot (up, then down; the hand on it), its reload, its
+  left-hand hold (untested yet); the launcher's box dropping; the thrower one-handed; then the crossbow reloaded by hand (grab the lever behind the stock and pull it up, pull
   the box off the top, take one from the waist, seat it, pull the lever down; after a shot, the lever up and
   down before the next), its left-hand hold, the launcher's drop; the thrower one-handed (`[aim] chem spray: ... X deg off before, Y after`), the
   crossbow in the left hand (`[hands] mirrored hold:` lines), the launcher reloaded by hand (pull the pack off the top of the box, drop it, take

@@ -78,6 +78,10 @@ struct Phase {
     // 2026-10-20: skipped when the gun still had a round in it at the reload (Input::chambered) - the
     // Tommy Gun's bolt: an open-bolt gun with a round left is not racked (the tester: "more realistic").
     bool skipLoaded = false;
+    // 2026-10-22 late night (the crossbow's lever: "the hand doesn't actually grip the lever"): a Pull of a handle
+    // the clip's own hand holds - the hand is drawn where the clip's hand is while it drags (Output::handLock, as
+    // the Tommy's bolt), riding the lever through its arc.
+    bool handOnPart = false;
 };
 inline float hold_t(const Phase& p) { return p.holdT >= 0 ? p.holdT : p.t0; }
 
@@ -161,13 +165,27 @@ inline constexpr Pt kCrossbowBoxIn[] = {
 inline constexpr Pt kCrossbowLeverDown[] = {
     {2.25f, {18.6f, 5.5f, 48.5f}}, {2.35f, {15.6f, 4.4f, 48.0f}}, {2.45f, {-12.8f, -6.4f, 31.5f}}, {2.55f, {-10.9f, -7.7f, 27.9f}}};
 inline constexpr Phase kCrossbow[] = {
-    {Kind::Pull, 0.45f, 0.75f, kCrossbowLeverUp, 3, "X_Lever", "cock the lever up"},
+    {Kind::Pull, 0.45f, 0.75f, kCrossbowLeverUp, 3, "X_Lever", "cock the lever up", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Pull, 1.95f, 1.95f, kCrossbowBoxOut, 3, "X_AmmoBox", "pull the bolt box off", true},
     {Kind::Carry, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "drop the spent box", true},
     {Kind::Fetch, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "take a box from the pouch", true},
     {Kind::Insert, 1.95f, 1.95f, kCrossbowBoxIn, 3, "X_AmmoBox", "seat the box", true},
-    {Kind::Pull, 2.25f, 2.55f, kCrossbowLeverDown, 4, "X_Lever", "cock the lever down"},
+    {Kind::Pull, 2.25f, 2.55f, kCrossbowLeverDown, 4, "X_Lever", "cock the lever down", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Finish, 2.90f, 3.00f, nullptr, 0, nullptr, "done"}};
+// The crossbow's cock between shots ('Fire', 2.00 s; 2026-10-22 late night - the tester: "just supposed to be lever
+// up then lever down in between shots", and a grip at the lever started a whole reload): the Fire clip re-cocks the
+// crossbow itself, X_Lever up over 0.85-1.0 s and down 1.3-1.4; adopted as its own two-pull program the moment
+// the clip begins, so the clip waits at 0.85 for the hand on the lever (the trigger dead until it is worked, as the
+// shotgun's pump), the lever is pulled up and down along the clip's own hand path with the hand locked on it, and
+// the clip runs out. Palm paths from reload_pose.py on Crossbow__FireCrossbow / Default__Fire.
+inline constexpr Pt kCrossbowCockUp[] = {
+    {0.85f, {-20.6f, -10.8f, 31.8f}}, {0.90f, {-4.8f, -7.3f, 48.5f}}, {0.95f, {6.0f, -2.6f, 50.9f}}, {1.00f, {7.0f, -2.4f, 51.0f}}};
+inline constexpr Pt kCrossbowCockDown[] = {
+    {1.30f, {12.8f, 3.0f, 47.3f}}, {1.35f, {-6.7f, -3.1f, 39.1f}}, {1.40f, {-14.0f, -7.4f, 28.6f}}};
+inline constexpr Phase kCrossbowCock[] = {
+    {Kind::Pull, 0.85f, 1.00f, kCrossbowCockUp, 4, "X_Lever", "cock the lever up", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
+    {Kind::Pull, 1.30f, 1.40f, kCrossbowCockDown, 3, "X_Lever", "cock the lever down", false, false, 1.0f, -1.0f, 0.0f, -1.0f, false, true},
+    {Kind::Finish, 1.45f, 2.00f, nullptr, 0, nullptr, "cocked"}};
 
 // Pistol ('FastReload', 1.80 s): a top-break revolver - fold the barrel down, the cylinder out, a
 // new cylinder in, flick it shut.
@@ -232,6 +250,8 @@ inline constexpr Program kPrograms[] = {
     {L"GrenadeLauncher", L"Reload", 4.00f, kLauncher, 5, false, 0.0f, "AmmoBoxBone+AmmoDummy"},
     // 2026-10-22 late: the crossbow (no eject on X: the box comes off by hand after the lever).
     {L"Crossbow", L"Reload", 3.00f, kCrossbow, 7, false},
+    // The crossbow's Fire clip is a program too (the lever between shots); after the Reload, which is the entry.
+    {L"Crossbow", L"Fire", 2.00f, kCrossbowCock, 3, false},
 };
 
 inline bool same(const wchar_t* a, const wchar_t* b) {
@@ -769,6 +789,7 @@ private:
                 o.hold = true;
                 o.t = T(lastT_);
                 o.chase = true; // played forward: its sounds fire
+                o.handLock = p.handOnPart; // a handle: the hand drawn on it, in the clip's own grip
                 if (prog >= 0.98f || (!in.grip && prog >= c.settleProgress)) {
                     o.haptic = Haptic::Seat;
                     o.event = p.say;

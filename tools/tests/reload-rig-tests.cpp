@@ -189,6 +189,40 @@ int main() {
         o = s.step(Vec{27, 9, -3}, false);
         check(!s.m.active(), "the reload ended: idle");
     }
+    // ---- the crossbow's cock between shots (2026-10-22 late night): the Fire clip adopted, the lever up, then down ----
+    {
+        Sim s;
+        s.cls = L"Crossbow";
+        const Program* fp = find(L"Crossbow", L"Fire");
+        check(fp && fp->n == 3 && entry(L"Crossbow")->clip != fp->clip, "the Fire clip has its own program; the Reload stays the entry");
+        s.in.adopt = true;
+        s.clip(L"Fire", 2.00f);
+        Output o = s.step(Vec{27, 9, -3}, false);
+        check(s.m.active() && o.hold && std::fabs(o.t - 0.85f) < 0.01f, "the shot's clip adopted: it waits at the lever", o.t, 0.85);
+        o = s.step(Vec{27, 9, -3}, true);
+        check(!o.handLock && s.m.phase() == 0, "a grip away from the lever does nothing");
+        o = s.step(Vec{27, 9, -3}, false);
+        o = s.step(kCrossbowCockUp[0].p, false);
+        check(o.buzz && o.claim, "at the lever: buzz, the grip is the reload's");
+        o = s.step(kCrossbowCockUp[0].p, true);
+        o = s.step(kCrossbowCockUp[2].p, true);
+        check(o.hold && o.handLock && o.t > 0.9f && o.t < 0.96f, "the hand locked on the lever, the clip following it up", o.t, 0.95);
+        o = s.step(kCrossbowCockUp[3].p + Vec{0, 0, 3}, true);
+        check(s.m.phase() == 1, "up: the lever down next", s.m.phase(), 1);
+        o = s.step(kCrossbowCockUp[3].p, false);
+        o = s.step(kCrossbowCockDown[0].p, false);
+        check(o.buzz && std::fabs(o.t - 1.30f) < 0.01f, "the clip waits at the lever, up", o.t, 1.30);
+        o = s.step(kCrossbowCockDown[0].p, true);
+        o = s.step(kCrossbowCockDown[1].p, true);
+        check(o.handLock && o.t > 1.3f && o.t < 1.4f, "the hand on the lever, the clip following it down", o.t, 1.35);
+        o = s.step(kCrossbowCockDown[2].p + Vec{0, 0, -3}, true);
+        check(s.m.phase() == 2, "down: cocked, the clip runs out", s.m.phase(), 2);
+        for (int i = 0; i < 40; ++i) o = s.step(Vec{27, 9, -3}, false);
+        check(o.run || o.t >= 1.44f, "the clip runs to its end", o.t, 1.45);
+        s.in.clipLive = false;
+        o = s.step(Vec{27, 9, -3}, false);
+        check(!s.m.active(), "idle again");
+    }
     // ---- the launcher (2026-10-22): the pack off the top of the box, a new one from the pouch, seated, the finish ----
     {
         Sim s;

@@ -64,21 +64,6 @@ rr::PumpConfig shot_pump_cfg() {
     return c;
 }
 rr::PumpConfig g_pumpCfg = shot_pump_cfg();
-// 2026-10-22 late (MANUAL_RELOAD_PLAN.md step 4, the tester: the crossbow's lever "a lot like the shotgun logic"):
-// the crossbow re-cocks itself in its Fire clip - X_Lever 10 -> 75 deg over 0.85-1.0 s, back 1.3-1.4 (the gun's
-// clip, tools\blender). The same ratchet, over that clip, on the free hand's travel along the lever's own swing
-// (gun_geometry::strokeDir): the clip waits at 0.85 for the hands, and the two strokes are the lever up and down.
-rr::PumpConfig lever_pump_cfg() {
-    rr::PumpConfig c;
-    c.backT0 = 0.85f;
-    c.backT1 = 1.0f;
-    c.fwdT0 = 1.3f;
-    c.fwdT1 = 1.4f;
-    c.waitT = 0.85f;
-    c.waitForHands = true;
-    return c;
-}
-rr::PumpConfig g_leverCfg = lever_pump_cfg();
 // 2026-10-21 (step 5): ONE pump. The pump between shots, the reload's last pump, the dry cock (the shotgun loaded
 // from empty and not yet pumped: the trigger fires nothing until the hands pump it) and the loop-ending pump are
 // one ratchet (g_pump above) on the front hand's travel along the barrel; the use chooses the clip and config.
@@ -444,7 +429,11 @@ void apply_parts(const rr::Output& o, const Frame& f) {
     // only falls out of the gun briefly, then is gone; a world prop (dropped_part) is what stays.
     // The Tommy Gun's drum IS its own world copy: gone at once. The pistol's copy is its rounds: the
     // cylinder still falls out first.
-    constexpr float kOwnFallS = 0.12f; // ~7 cm: out of the gun, never near the floor (drawn over it)
+    // 2026-10-22 late night (the tester: the launcher's box "disappeared the second it released rather than
+    // dropping"): a part that IS the gun's own bones, with no copy to take over, falls for half a second before it
+    // goes - long enough to see it drop, short of the floor it cannot lie on.
+    const gun_state::Kind k = gun_state::kind_of(g_cls);
+    const float kOwnFallS = (k == gun_state::Kind::Launcher || k == gun_state::Kind::Crossbow) ? 0.5f : 0.12f;
     const bool copyIsPart = g_havokCopy && !g_copyRounds;
     const bool falling = o.carry == 3 && !copyIsPart && o.fallS < kOwnFallS;
     if (o.carry == 3 && !falling) g_carryMode = 2;
@@ -1037,10 +1026,10 @@ void tick(const Frame& f) {
     const gun_suppress::Record& rec = gun_suppress::record(gun_state::kind_of(g_cls));
     const gun_state::Kind kind = gun_state::kind_of(g_cls);
     const bool shotgun = kind == gun_state::Kind::Shotgun;
-    // 2026-10-22 late: the crossbow's lever is the pump between shots (g_leverCfg); its reload is Pull phases.
-    const bool crossbow = kind == gun_state::Kind::Crossbow;
-    const bool pumpGun = shotgun || crossbow;
-    const rr::PumpConfig& shotCfg = crossbow ? g_leverCfg : g_pumpCfg;
+    // (2026-10-22 late night: the crossbow's lever between shots is a two-pull program on its Fire clip,
+    // reload_rig.h kCrossbowCock - the pump stays the shotgun's.)
+    const bool pumpGun = shotgun;
+    const rr::PumpConfig& shotCfg = g_pumpCfg;
     // The game's reload clip, when it is playing one.
     const hands_state::State st = hands_state::current(f.hands);
     rr::Input in;

@@ -7765,3 +7765,24 @@ step 2.
   the clip waits at 0.85 s, the lever up 0.85-1.0, down 1.3-1.4), the stroke measured along the lever's swing
   (`gun_geometry::strokeDir`, (0.11 -0.63 0.77) in the aim frame: the first stroke goes up and forward). No eject
   on X yet; no dry cock; no sound rows. Host-tested (`reload-rig`, the crossbow sequence). Unverified in a run.
+
+## 2026-10-22 (late night) - The 21:5x run: the lever between shots as its own program, the hand on it, the box's fall, the thrower's origin
+
+- **The crossbow between shots asked for a whole reload.** The lever between shots was the shotgun's pump (the
+  two-handed hold's travel along the lever's swing), while a grip AT the lever met the Reload program's first
+  phase and started a reload. The Fire clip is a program of its own now (`reload_rig.h kCrossbowCock`): adopted
+  the moment the shot's clip begins (the crossbow's record adopts the game's clips), it waits at 0.85 s for a hand
+  on the lever, the lever is pulled up (0.85-1.0) and down (1.3-1.4) along the clip's own hand path, and the clip
+  runs out; the trigger is dead until it is worked. The Reload stays the entry (a grip at the lever with no shot's
+  clip live still begins a reload). The pump machinery is the shotgun's again.
+- **"The hand doesn't actually grip the lever."** A Pull kept the hand on the controller with the clip's fingers;
+  `Phase::handOnPart` (the lever phases of both programs) draws the hand where the clip's own hand is while it
+  drags (`Output::handLock`, as the Tommy's bolt), so it rides the lever through its arc.
+- **The launcher's box "disappeared the second it released".** A gun's own part falls 0.12 s before it goes (it is
+  drawn in the hands' foreground layer and cannot lie on the floor); the launcher's and the crossbow's own-bone
+  parts fall 0.5 s.
+- **The spray a little above the reticle one-handed.** Two-handed the barrel origin holds and the reticle's ray
+  leaves the muzzle, so a spray parallel to it from the socket is on it; one-handed the thrower's spray is its own
+  hand-back for as long as it sprays, the barrel origin fell back to the controller after 250 ms, the reticle's ray
+  with it, and the socket was aimed at that ray's point from 21 cm below. The thrower keeps its barrel origin
+  through its hand-back, so both holds are the same line.
