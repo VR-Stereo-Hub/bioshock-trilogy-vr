@@ -47,6 +47,16 @@ bool key_black(ID3D11DeviceContext* ctx, ID3D11Texture2D* image);
 // Drop the render-target views cached on swapchain images (the images died).
 void forget_images();
 
+// The typed format the swapchains were created with: a runtime may hand out
+// TYPELESS textures (Virtual Desktop's does), and every view of one needs it.
+void set_view_format(DXGI_FORMAT fmt);
+
+// The room drawn into `dst` (a projection-layer swapchain image) as seen by an eye
+// with orientation `q` (x y z w, eye frame to the cube's world frame) and these fov
+// tangents - for runtimes without XR_KHR_composition_layer_cube (2026-10-23).
+bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* room, const float q[4],
+                   float tanL, float tanR, float tanU, float tanD);
+
 // The circle the keyed screen is cut to: radius in fractions of the frame's
 // height, centred; 0 = the whole frame.
 void set_screen_circle(float radiusFrac);

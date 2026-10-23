@@ -7840,3 +7840,14 @@ to have been rendered), so a direction is held 200 ms, then splatted on request,
 500 ms; 38 directions take 8 s. Measured on the 11:01 save: the loading screen at head yaw 0, 90, 270
 and pitch -60, +60 reproduces the gameplay view at the same poses (the drain, the gurney, the lamps,
 the wheel), with no hands, no wrench and no gaps in the ceiling.
+
+## 2026-10-23 - Virtual Desktop has no cube layer: the room as a projection layer
+
+The first headset run of the room snapshot showed black around the board. The log names it: VDXR
+(the native runtime) does not offer `XR_KHR_composition_layer_cube`, so the room loaded from disk but
+had no layer to go out on. The runtime now falls back to a projection layer: two 1280² swapchains, the
+room drawn into each from this frame's located eye pose and fov (rotated into the cube's world-yaw
+frame), submitted under the board. Views of swapchain images now use the swapchain's typed format,
+since VDXR may hand out typeless textures. `vrsnap backdrop on|off` forces the fallback on a runtime
+that has the cube layer. Built and installed; not yet run (the simulator test was stopped at the
+tester's request).

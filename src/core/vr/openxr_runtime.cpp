@@ -228,6 +228,17 @@ std::atomic<uint32_t> g_hudFramesSubmitted{0};
 // do; without it nothing changes at all).
 std::atomic<bool> g_roomSnap{false};
 bool g_cubeExtEnabled = false; // the instance was created with the cube extension
+// 2026-10-23: a runtime WITHOUT the cube layer (Virtual Desktop's VDXR, measured in
+// the headset: "runtime lacks XR_KHR_composition_layer_cube") gets the room as a
+// projection layer instead - one 1280² swapchain per eye that the room is drawn
+// into from the located eye pose each frame, under the board. `vrsnap backdrop
+// on` forces this path on a runtime that has the cube layer (the simulator test).
+XrSwapchain g_backdropSwapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+std::vector<XrSwapchainImageD3D11KHR> g_backdropImages[2];
+bool g_backdropFailed = false;
+constexpr uint32_t kBackdropSize = 1280;
+std::atomic<bool> g_roomForceBackdrop{false};
+std::atomic<uint32_t> g_backdropLayersSubmitted{0};
 XrSwapchain g_cubeSwapchain = XR_NULL_HANDLE;
 std::vector<XrSwapchainImageD3D11KHR> g_cubeImages;
 bool g_cubeSwapchainFailed = false; // creation refused once: do not retry every frame
@@ -2025,6 +2036,53 @@ void destroy_cube_swapchain() {
         g_cubeSwapchain = XR_NULL_HANDLE;
     }
     g_cubeImages.clear();
+    for (int e = 0; e < 2; ++e) {
+        if (g_backdropSwapchains[e] != XR_NULL_HANDLE) xrDestroySwapchain(g_backdropSwapchains[e]);
+        g_backdropSwapchains[e] = XR_NULL_HANDLE;
+        g_backdropImages[e].clear();
+    }
+    g_backdropFailed = false;
+}
+
+// The cube layer when the runtime has it (and the test lever does not say otherwise).
+bool room_use_cube_layer() {
+    return g_cubeExtEnabled && !g_roomForceBackdrop.load(std::memory_order_relaxed);
+}
+
+bool ensure_backdrop_swapchains() {
+    if (g_backdropSwapchains[0] != XR_NULL_HANDLE && g_backdropSwapchains[1] != XR_NULL_HANDLE) return true;
+    if (g_backdropFailed || !g_swapFormat || g_session == XR_NULL_HANDLE) return false;
+    XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.format = g_swapFormat;
+    sci.sampleCount = 1;
+    sci.width = sci.height = kBackdropSize;
+    sci.faceCount = 1;
+    sci.arraySize = 1;
+    sci.mipCount = 1;
+    for (int e = 0; e < 2; ++e) {
+        XrResult r = xrCreateSwapchain(g_session, &sci, &g_backdropSwapchains[e]);
+        uint32_t count = 0;
+        if (XR_SUCCEEDED(r)) {
+            xrEnumerateSwapchainImages(g_backdropSwapchains[e], 0, &count, nullptr);
+            g_backdropImages[e].assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+            r = xrEnumerateSwapchainImages(g_backdropSwapchains[e], count, &count,
+                                           reinterpret_cast<XrSwapchainImageBaseHeader*>(g_backdropImages[e].data()));
+        }
+        if (XR_FAILED(r)) {
+            BVR_LOG("xr: room snapshot: backdrop swapchain refused (%s) - the flat screen stands alone", res_str(r));
+            if (g_backdropSwapchains[e] != XR_NULL_HANDLE) xrDestroySwapchain(g_backdropSwapchains[e]);
+            g_backdropSwapchains[e] = XR_NULL_HANDLE;
+            if (e == 1 && g_backdropSwapchains[0] != XR_NULL_HANDLE) xrDestroySwapchain(g_backdropSwapchains[0]);
+            g_backdropSwapchains[0] = XR_NULL_HANDLE;
+            g_backdropFailed = true;
+            return false;
+        }
+    }
+    BVR_LOG("xr: room snapshot: no cube layer - the room goes under the screen as a projection layer "
+            "(2 x %ux%u, %u images)", kBackdropSize, kBackdropSize,
+            static_cast<unsigned>(g_backdropImages[0].size()));
+    return true;
 }
 
 // The cube swapchain: six kFaceSize faces in the eye swapchains' format, so
@@ -2075,7 +2133,7 @@ void room_yaw_quat(float sign, float out[4]) {
 }
 
 void room_snapshot_splat(ID3D11Texture2D* eyeImage, const XrQuaternionf& q, float tanH, float tanV) {
-    if (!g_roomSnap.load(std::memory_order_relaxed) || !g_cubeExtEnabled) return;
+    if (!g_roomSnap.load(std::memory_order_relaxed)) return;
     if (g_cubeResetRequested.exchange(false, std::memory_order_relaxed)) bvr::cube_snapshot::reset();
     const bool overridden = g_roomOverrideOn.load(std::memory_order_relaxed);
     const uint64_t now = GetTickCount64();
@@ -2100,7 +2158,8 @@ void room_snapshot_splat(ID3D11Texture2D* eyeImage, const XrQuaternionf& q, floa
 // Will the room go under the flat screen this frame? Decided before the capture
 // so the screen's image can be keyed in the same pass.
 bool room_snapshot_showing() {
-    return g_roomSnap.load(std::memory_order_relaxed) && g_cubeExtEnabled && !g_cubeSwapchainFailed &&
+    return g_roomSnap.load(std::memory_order_relaxed) &&
+           (room_use_cube_layer() ? !g_cubeSwapchainFailed : !g_backdropFailed) &&
            bvr::cube_snapshot::shown() != nullptr && g_space != XR_NULL_HANDLE;
 }
 
@@ -2168,7 +2227,7 @@ void room_file_service() {
 // splat yet, no swapchain). `liveOnly` shows the live cube whatever is saved (the
 // sweep, filling it in).
 bool room_snapshot_layer(XrCompositionLayerCubeKHR* out, bool liveOnly = false) {
-    if (!g_roomSnap.load(std::memory_order_relaxed) || !g_cubeExtEnabled) return false;
+    if (!g_roomSnap.load(std::memory_order_relaxed) || !room_use_cube_layer()) return false;
     if (g_cubeResetRequested.exchange(false, std::memory_order_relaxed)) bvr::cube_snapshot::reset();
     ID3D11Texture2D* src = liveOnly ? (bvr::cube_snapshot::valid() ? bvr::cube_snapshot::texture() : nullptr)
                                     : bvr::cube_snapshot::shown();
@@ -2201,9 +2260,70 @@ bool room_snapshot_layer(XrCompositionLayerCubeKHR* out, bool liveOnly = false) 
     out->orientation = {ry[0], ry[1], ry[2], ry[3]};
     g_cubeLayersSubmitted.fetch_add(1, std::memory_order_relaxed);
     if (!g_loggedFirstCubeLayer.exchange(true))
-        BVR_LOG("xr: room snapshot live under the flat screen (%u splats so far)",
+        BVR_LOG("xr: room snapshot live under the flat screen (cube layer, %u splats so far)",
                 bvr::cube_snapshot::splats());
     return true;
+}
+
+// The room as a projection layer (no cube layer on this runtime): drawn per eye from
+// the located views of this frame, rotated into the cube's world frame.
+bool room_backdrop_layer(XrCompositionLayerProjection* out, XrCompositionLayerProjectionView views[2],
+                         bool liveOnly = false) {
+    if (!g_roomSnap.load(std::memory_order_relaxed) || room_use_cube_layer()) return false;
+    if (g_cubeResetRequested.exchange(false, std::memory_order_relaxed)) bvr::cube_snapshot::reset();
+    ID3D11Texture2D* src = liveOnly ? (bvr::cube_snapshot::valid() ? bvr::cube_snapshot::texture() : nullptr)
+                                    : bvr::cube_snapshot::shown();
+    if (!src || g_space == XR_NULL_HANDLE) return false;
+    const XrView* v = g_viewsValid ? g_views : (g_viewsContentValid ? g_viewsContent : nullptr);
+    if (!v) return false;
+    if (!ensure_backdrop_swapchains()) return false;
+    float ry[4];
+    room_yaw_quat(1.0f, ry);
+    for (int e = 0; e < 2; ++e) {
+        uint32_t idx = 0;
+        XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        if (XR_FAILED(xrAcquireSwapchainImage(g_backdropSwapchains[e], &ai, &idx))) return false;
+        XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        wi.timeout = XR_INFINITE_DURATION;
+        bool drawn = false;
+        if (XR_SUCCEEDED(xrWaitSwapchainImage(g_backdropSwapchains[e], &wi)) && idx < g_backdropImages[e].size()) {
+            const XrQuaternionf& o = v[e].pose.orientation;
+            const float qe[4] = {o.x, o.y, o.z, o.w};
+            float qw[4];
+            bvr::xrmath::quat_mul(ry, qe, qw); // world = rotY(yaw) * headset
+            drawn = bvr::cube_snapshot::draw_backdrop(g_context, g_backdropImages[e][idx].texture, src, qw,
+                                                      tanf(v[e].fov.angleLeft), tanf(v[e].fov.angleRight),
+                                                      tanf(v[e].fov.angleUp), tanf(v[e].fov.angleDown));
+        }
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        const bool released = XR_SUCCEEDED(xrReleaseSwapchainImage(g_backdropSwapchains[e], &ri));
+        if (!drawn || !released) return false;
+        views[e] = XrCompositionLayerProjectionView{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+        views[e].pose = v[e].pose;
+        views[e].fov = v[e].fov;
+        views[e].subImage.swapchain = g_backdropSwapchains[e];
+        views[e].subImage.imageRect = {{0, 0}, {static_cast<int32_t>(kBackdropSize), static_cast<int32_t>(kBackdropSize)}};
+    }
+    *out = XrCompositionLayerProjection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    out->space = g_space;
+    out->viewCount = 2;
+    out->views = views;
+    g_backdropLayersSubmitted.fetch_add(1, std::memory_order_relaxed);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        BVR_LOG("xr: room snapshot live under the flat screen (projection layer, %u splats so far)",
+                bvr::cube_snapshot::splats());
+    }
+    return true;
+}
+
+// Either form, whichever this runtime takes: the header to submit, or null.
+const XrCompositionLayerBaseHeader* room_layer(XrCompositionLayerCubeKHR* cube, XrCompositionLayerProjection* proj,
+                                               XrCompositionLayerProjectionView views[2], bool liveOnly) {
+    if (room_snapshot_layer(cube, liveOnly)) return reinterpret_cast<const XrCompositionLayerBaseHeader*>(cube);
+    if (room_backdrop_layer(proj, views, liveOnly)) return reinterpret_cast<const XrCompositionLayerBaseHeader*>(proj);
+    return nullptr;
 }
 
 void destroy_hud_swapchain() {
@@ -2558,6 +2678,7 @@ bool create_swapchains(IDXGISwapChain* swapchain) {
     g_bbW = desc.BufferDesc.Width;
     g_bbH = desc.BufferDesc.Height;
     g_swapFormat = pick; // the HUD quad swapchain creates lazily with this
+    bvr::cube_snapshot::set_view_format(static_cast<DXGI_FORMAT>(pick)); // views of typeless images
     g_backbufferFmt = desc.BufferDesc.Format; // for the same-size resize guard
     BVR_LOG("xr: swapchain pair %ux%u format %lld (%u images each)", g_swapW, g_swapH,
             static_cast<long long>(pick), imageCount);
@@ -4080,6 +4201,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
     XrCompositionLayerCubeKHR cube{XR_TYPE_COMPOSITION_LAYER_CUBE_KHR}; // the room snapshot under the quad
     bool cubeUnderQuad = false;
     bool screenKeyed = false; // the quad's image had its black keyed to transparent
+    XrCompositionLayerProjection roomProj{XR_TYPE_COMPOSITION_LAYER_PROJECTION}; // the room, no cube layer
+    XrCompositionLayerProjectionView roomViews[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+                                                     {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerProjectionView projViews[2] = {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
@@ -4669,8 +4793,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // The capture sweep: the camera is being driven around the
                     // room by the adapter, so the headset shows the cube filling
                     // in rather than the spin.
-                    if (g_roomSweepDisplay.load(std::memory_order_relaxed) && room_snapshot_layer(&cube, true))
-                        layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cube);
+                    if (g_roomSweepDisplay.load(std::memory_order_relaxed))
+                        if (const XrCompositionLayerBaseHeader* room = room_layer(&cube, &roomProj, roomViews, true))
+                            layers[0] = room;
                     g_lastLayer = 2;
                     if (!g_loggedFirstProjection.exchange(true))
                         BVR_LOG("xr: first projection-layer frame (claimed hfov %.1f deg)",
@@ -4789,9 +4914,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
                                             static_cast<float>(g_swapW)};
                     // The room snapshot goes UNDER the screen: the cube first, the
                     // opaque quad over it, so the room shows all around the board.
-                    if (room_snapshot_layer(&cube)) {
-                        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cube);
-                        cubeUnderQuad = true;
+                    if (const XrCompositionLayerBaseHeader* room = room_layer(&cube, &roomProj, roomViews, false)) {
+                        layers[layerCount++] = room;
+                        // The pace feed re-submits a cube as is; a projection backdrop is
+                        // drawn from this frame's eye poses and is not banked.
+                        cubeUnderQuad = room == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cube);
                         // Keyed (premultiplied) only with the room under it: alone,
                         // the quad stays opaque and the keyed alpha is ignored.
                         if (screenKeyed) quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -5899,18 +6026,21 @@ void set_room_snapshot(bool on) {
     if (g_roomSnap.exchange(on, std::memory_order_relaxed) == on) return;
     BVR_LOG("xr: room snapshot %s%s", on ? "ON" : "off",
             on && g_instance != XR_NULL_HANDLE && !g_cubeExtEnabled
-                ? " (the runtime offers no cube layer: nothing will show)" : "");
+                ? " (no cube layer on this runtime: the room goes under the screen as a projection layer)" : "");
 }
 void reset_room_snapshot() { g_cubeResetRequested.store(true, std::memory_order_relaxed); }
 void handle_room_snapshot_command(const char* args) {
     if (strncmp(args, "on", 2) == 0) set_room_snapshot(true);
     else if (strncmp(args, "off", 3) == 0) set_room_snapshot(false);
     else if (strncmp(args, "reset", 5) == 0) reset_room_snapshot();
-    BVR_LOG("xr: room snapshot %s, cube extension %s, %u splats, %u cube layers submitted, "
-            "swapchain %s, saved room %s, world yaw %.1f deg (vrsnap on|off|reset|status)",
+    else if (strncmp(args, "backdrop on", 11) == 0) g_roomForceBackdrop.store(true, std::memory_order_relaxed);
+    else if (strncmp(args, "backdrop off", 12) == 0) g_roomForceBackdrop.store(false, std::memory_order_relaxed);
+    BVR_LOG("xr: room snapshot %s, cube extension %s, path %s, %u splats, %u cube / %u projection layers "
+            "submitted, swapchain %s, saved room %s, world yaw %.1f deg (vrsnap on|off|reset|backdrop on|off|status)",
             g_roomSnap.load(std::memory_order_relaxed) ? "ON" : "off",
-            g_cubeExtEnabled ? "enabled" : "ABSENT", bvr::cube_snapshot::splats(),
-            g_cubeLayersSubmitted.load(std::memory_order_relaxed),
+            g_cubeExtEnabled ? "enabled" : "ABSENT", room_use_cube_layer() ? "cube layer" : "projection layer",
+            bvr::cube_snapshot::splats(), g_cubeLayersSubmitted.load(std::memory_order_relaxed),
+            g_backdropLayersSubmitted.load(std::memory_order_relaxed),
             g_cubeSwapchain != XR_NULL_HANDLE ? "ready" : g_cubeSwapchainFailed ? "REFUSED" : "not yet",
             bvr::cube_snapshot::has_saved() ? "loaded" : "none",
             g_roomYaw.load(std::memory_order_relaxed) * 57.29578f);

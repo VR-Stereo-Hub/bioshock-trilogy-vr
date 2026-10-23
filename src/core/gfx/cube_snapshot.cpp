@@ -62,6 +62,16 @@ float4 ps_key(VSOut i) : SV_Target {
     }
     return float4(c * a, a);
 }
+// The room as a projection-layer image (runtimes without the cube layer): each
+// pixel's eye ray, from the eye's fov tangents, rotated into the world by `qInv`
+// (here the eye-to-world rotation), looks the cube up.
+TextureCube roomTex : register(t1);
+float4 ps_backdrop(VSOut i) : SV_Target {
+    float tx = lerp(tans.x, tans.y, i.uv.x);
+    float ty = lerp(tans.z, tans.w, i.uv.y);
+    float3 d = rotate_by(qInv, normalize(float3(tx, ty, -1)));
+    return float4(roomTex.Sample(samp0, d).rgb, 1);
+}
 )";
 
 struct SplatCB {
@@ -73,8 +83,10 @@ struct SplatCB {
 ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
 ID3D11PixelShader* g_psKey = nullptr;
+ID3D11PixelShader* g_psBackdrop = nullptr;
+DXGI_FORMAT g_viewFmt = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; // the typed view of a typeless swapchain image
 struct ImageRtv { ID3D11Texture2D* tex; ID3D11RenderTargetView* rtv; };
-ImageRtv g_imageRtvs[8] = {}; // the eye swapchain images the screen pass wrote (a handful)
+ImageRtv g_imageRtvs[16] = {}; // the swapchain images the passes wrote (eye and backdrop images)
 int g_imageRtvCount = 0;
 ID3D11Buffer* g_cb = nullptr;
 ID3D11BlendState* g_blend = nullptr;
@@ -116,23 +128,29 @@ bool ensure_pipeline(ID3D11Device* dev) {
     ID3DBlob* vsb = nullptr;
     ID3DBlob* psb = nullptr;
     ID3DBlob* pkb = nullptr;
+    ID3DBlob* pbb = nullptr;
     ID3DBlob* err = nullptr;
     bool ok = SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr, "vs_main",
                                    "vs_4_0", 0, 0, &vsb, &err)) &&
               SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr, "ps_main",
                                    "ps_4_0", 0, 0, &psb, &err)) &&
               SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr, "ps_key",
-                                   "ps_4_0", 0, 0, &pkb, &err));
+                                   "ps_4_0", 0, 0, &pkb, &err)) &&
+              SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr, "ps_backdrop",
+                                   "ps_4_0", 0, 0, &pbb, &err));
     if (ok)
         ok = SUCCEEDED(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(),
                                                nullptr, &g_vs)) &&
              SUCCEEDED(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(),
                                               nullptr, &g_ps)) &&
              SUCCEEDED(dev->CreatePixelShader(pkb->GetBufferPointer(), pkb->GetBufferSize(),
-                                              nullptr, &g_psKey));
+                                              nullptr, &g_psKey)) &&
+             SUCCEEDED(dev->CreatePixelShader(pbb->GetBufferPointer(), pbb->GetBufferSize(),
+                                              nullptr, &g_psBackdrop));
     if (vsb) vsb->Release();
     if (psb) psb->Release();
     if (pkb) pkb->Release();
+    if (pbb) pbb->Release();
     if (err) {
         BVR_LOG("[cube] shader compile: %s", static_cast<const char*>(err->GetBufferPointer()));
         err->Release();
@@ -200,15 +218,24 @@ bool ensure_cube(ID3D11Device* dev, DXGI_FORMAT fmt) {
     return true;
 }
 
+// A runtime may hand out TYPELESS swapchain textures (the app picks the view);
+// a view of one needs the typed format the swapchain was created with.
+bool typeless(DXGI_FORMAT f) {
+    return f == DXGI_FORMAT_R8G8B8A8_TYPELESS || f == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+           f == DXGI_FORMAT_R10G10B10A2_TYPELESS || f == DXGI_FORMAT_R16G16B16A16_TYPELESS;
+}
+DXGI_FORMAT typed(DXGI_FORMAT f) { return typeless(f) ? g_viewFmt : f; }
+
 bool ensure_src(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& eye) {
-    if (g_src && g_srcW == eye.Width && g_srcH == eye.Height && g_srcFmt == eye.Format) return true;
+    const DXGI_FORMAT fmt = typed(eye.Format);
+    if (g_src && g_srcW == eye.Width && g_srcH == eye.Height && g_srcFmt == fmt) return true;
     release_src();
     D3D11_TEXTURE2D_DESC td{};
     td.Width = eye.Width;
     td.Height = eye.Height;
     td.MipLevels = 1;
     td.ArraySize = 1;
-    td.Format = eye.Format;
+    td.Format = fmt;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -221,7 +248,7 @@ bool ensure_src(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& eye) {
     }
     g_srcW = eye.Width;
     g_srcH = eye.Height;
-    g_srcFmt = eye.Format;
+    g_srcFmt = fmt;
     return true;
 }
 
@@ -329,10 +356,16 @@ ID3D11RenderTargetView* image_rtv(ID3D11DeviceContext* ctx, ID3D11Texture2D* ima
     ctx->GetDevice(&dev);
     if (!dev) return nullptr;
     ID3D11RenderTargetView* rtv = nullptr;
-    const HRESULT hr = dev->CreateRenderTargetView(image, nullptr, &rtv);
+    D3D11_TEXTURE2D_DESC td{};
+    image->GetDesc(&td);
+    D3D11_RENDER_TARGET_VIEW_DESC rv{};
+    rv.Format = typed(td.Format);
+    rv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    const HRESULT hr = dev->CreateRenderTargetView(image, &rv, &rtv);
     dev->Release();
     if (FAILED(hr)) {
-        BVR_LOG("[cube] render target view on an eye image failed (%08lx)", static_cast<unsigned long>(hr));
+        BVR_LOG("[cube] render target view on a swapchain image failed (%08lx, format %d)",
+                static_cast<unsigned long>(hr), static_cast<int>(td.Format));
         return nullptr;
     }
     image->AddRef();
@@ -391,6 +424,69 @@ bool key_black(ID3D11DeviceContext* ctx, ID3D11Texture2D* image) {
     ctx->OMSetRenderTargets(1, &rtv, nullptr);
     ctx->Draw(3, 0);
     return true;
+}
+
+void set_view_format(DXGI_FORMAT fmt) {
+    if (fmt != DXGI_FORMAT_UNKNOWN && !typeless(fmt)) g_viewFmt = fmt;
+}
+
+bool draw_backdrop(ID3D11DeviceContext* ctx, ID3D11Texture2D* dst, ID3D11Texture2D* room, const float q[4],
+                   float tanL, float tanR, float tanU, float tanD) {
+    if (!ctx || !dst || !room || !(tanR > tanL) || !(tanU > tanD)) return false;
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return false;
+    const bool pipe = ensure_pipeline(dev);
+    D3D11_TEXTURE2D_DESC rd{};
+    room->GetDesc(&rd);
+    D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = typed(rd.Format);
+    sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+    sv.TextureCube.MipLevels = 1;
+    ID3D11ShaderResourceView* srv = nullptr;
+    const HRESULT hr = pipe ? dev->CreateShaderResourceView(room, &sv, &srv) : E_FAIL;
+    dev->Release();
+    if (FAILED(hr) || !srv) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            BVR_LOG("[cube] backdrop: the room's cube view failed (%08lx)", static_cast<unsigned long>(hr));
+        }
+        return false;
+    }
+    ID3D11RenderTargetView* rtv = image_rtv(ctx, dst);
+    if (!rtv) {
+        srv->Release();
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC dd{};
+    dst->GetDesc(&dd);
+    bool ok = false;
+    {
+        SavedState saved(ctx);
+        ID3D11ShaderResourceView* oldT1 = nullptr;
+        ctx->PSGetShaderResources(1, 1, &oldT1);
+        bind_pass(ctx, g_psBackdrop, static_cast<float>(dd.Width), static_cast<float>(dd.Height));
+        ctx->PSSetShaderResources(1, 1, &srv);
+        SplatCB cb{};
+        for (int i = 0; i < 4; ++i) cb.qInv[i] = q[i]; // eye -> world, as the shader wants
+        cb.tans[0] = tanL;
+        cb.tans[1] = tanR;
+        cb.tans[2] = tanU;
+        cb.tans[3] = tanD;
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (SUCCEEDED(ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            memcpy(m.pData, &cb, sizeof(cb));
+            ctx->Unmap(g_cb, 0);
+            ctx->OMSetRenderTargets(1, &rtv, nullptr);
+            ctx->Draw(3, 0);
+            ok = true;
+        }
+        ctx->PSSetShaderResources(1, 1, &oldT1);
+        if (oldT1) oldT1->Release();
+    }
+    srv->Release();
+    return ok;
 }
 
 void set_screen_circle(float radiusFrac) { g_circle = radiusFrac < 0.0f ? 0.0f : radiusFrac; }
@@ -510,6 +606,8 @@ void release() {
     if (g_raster) g_raster->Release();
     if (g_depth) g_depth->Release();
     if (g_psKey) g_psKey->Release();
+    if (g_psBackdrop) g_psBackdrop->Release();
+    g_psBackdrop = nullptr;
     if (g_ps) g_ps->Release();
     if (g_vs) g_vs->Release();
     g_cb = nullptr;
