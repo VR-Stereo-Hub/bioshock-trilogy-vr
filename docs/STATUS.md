@@ -48,7 +48,14 @@ middle, the wrapping fist, the left-handed support hand, room compression) are N
 
 ### Next steps
 
-- **2026-10-24 afternoon: the 12:21 run said the lever hand and the left-handed support hand are both still wrong.
+- **2026-10-24, later afternoon: BOTH APPROVED HOLDS ARE IN, built and INSTALLED (13:33), not yet seen in the
+  headset.** The lever: option A from `grip_crossbow_lever.h` (right-handed). The left-handed two-handed hold: the
+  aim keeps the real hand's offset from the moment it takes hold, so the gun no longer swings onto its side. The
+  support pose itself was already the target (ENGINE_NOTES 2026-10-24 later afternoon). For the headset run: work
+  the lever and check that the hand stays over the bar through the stroke. In the left hand, two-hand the crossbow
+  and check the gun stays level with the support hand under the stock. The `[twohand] left-handed hold:` line says
+  where the real hand took hold.
+- (Done, kept for the record.) **2026-10-24 afternoon: the 12:21 run said the lever hand and the left-handed support hand are both still wrong.
   The owner's direction: work both out in Blender and get the mock-ups approved before implementing again.**
   Both current grips are reproduced from the 12:21 recording. The mock-ups were sent as
   `verification\APPROVAL-crossbow-lever.png` and `APPROVAL-crossbow-left-hand.png` in the model workspace. On the

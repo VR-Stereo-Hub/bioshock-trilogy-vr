@@ -24,7 +24,7 @@
 import bpy, sys, os, argparse, math, json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mathutils import Matrix, Vector  # noqa: E402
+from mathutils import Matrix, Quaternion, Vector  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser(prog="lever_grip_mock.py")
@@ -40,6 +40,8 @@ ap.add_argument("--step", type=float, default=1.5)
 ap.add_argument("--rigid", default="", help="<prefix>.json:<frame> - carry that frame's hold rigidly on the lever")
 ap.add_argument("--no-correct", action="store_true", help="skip the fist-centre residual correction (the 13:xx frame-70 pick)")
 ap.add_argument("--carry", default="lever", choices=["lever", "gun"], help="--rigid: the hand fixed to the lever, or to the gun at the bar's centre")
+ap.add_argument("--emit", default="", help="write the hold at the (single) frame as a C++ header for the mod")
+ap.add_argument("--hand-size", type=float, default=0.9625, help="the recording's hand size (its handfix scale)")
 ap.add_argument("--sink", type=float, default=0.4, help="a finger's skin may sink this deep into the bar")
 ap.add_argument("--res", default="800x600")
 ap.add_argument("--before", action="store_true", help="also render the frame as recorded")
@@ -255,6 +257,8 @@ def design(fr):
     o = head(ha, wrist_name)
     fdir = (head(ha, chains["Middle"][0]) - o).normalized()
     finger_axis = Hd2 if Hd2.dot(fdir.cross(Po2)) >= 0 else -Hd2   # flexion: the fingers toward the palm's side
+    # Kept in the wrist's own frame for --emit (the axis the fingers were turned about, as a vector of this picture).
+    out["finger_axis_world"] = list(finger_axis.normalized())
     RATIO = (1.0, 1.25, 0.85)
     START = {b: (ha.pose.bones[b].location.copy(), ha.pose.bones[b].rotation_quaternion.copy(), ha.pose.bones[b].scale.copy())
              for chx in chains.values() for b in chx}
@@ -419,6 +423,95 @@ for fr in (int(x) for x in args.frames.split(",")):
     else:
         R["frames"][fr] = design(fr)
         render("after-" + args.hold, fr, focus)
+
+
+NL, CRLF = chr(10), chr(13) + chr(10)
+
+
+def emit_header(path, fr):
+    """The hold in the game's own frames (Unreal axes): the free wrist's turn against the drawn grip bone 43, the wrist
+    from the lever's NUB in the grip's axes (component units at --hand-size), and each finger bone against the wrist
+    (rig units, as grip_rest_poses.h has them)."""
+    from game_frames import bone_turns, game_frame
+    hands = os.path.join(ws, "exports", "bs1", "NEWPlayerHands-all.glb")
+    HC, _ = bone_turns(ha, hands)
+    Fm = Matrix.Diagonal((1.0, -1.0, 1.0))
+    ue_v = lambda v: (v.x, -v.y, v.z)
+
+    def ue_q(m3):
+        q = (Fm @ m3 @ Fm).to_quaternion().normalized()
+        return (q.x, q.y, q.z, q.w)
+
+    G = game_frame(ha, HC, "R_grip")
+    W = game_frame(ha, HC, wrist_name)
+    Gr, Wr = G.to_3x3().normalized(), W.to_3x3().normalized()
+    nub = head(ga, "X_LeverNUB")
+    wq = ue_q(Gr.transposed() @ Wr)
+    wo = ue_v(Gr.transposed() @ (W.to_translation() - nub))
+    wsc = sum(W.to_scale()) / 3.0
+    # The fingers. The replay's bone frames sit a few degrees off the engine's (its knuckles 1-4 units off the
+    # recording's own engine bones), so the rows are NOT read off the picture: they are the engine's exact rest table
+    # for the fist the design started from (grip_rest_poses.h, Crossbow__FidgetCrossbow - the --fingers JSON is that
+    # clip's frame), each finger turned by the design's own angles about the design's own axis (the picture's axis in
+    # the wrist's game frame, carried into Unreal axes), joint by joint from the base out as the design turned them.
+    import re
+    hdr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "game", "bioshock1r",
+                            "grip_rest_poses.h")).read()
+    blk = hdr[hdr.index("kCrossbowRestBones[]"):]
+    blk = blk[:blk.index("};")]
+    eng = {int(m.group(1)): (Vector([float(m.group(k)) for k in (2, 3, 4)]),
+                             Quaternion((float(m.group(8)), float(m.group(5)), float(m.group(6)), float(m.group(7)))))
+           for m in re.finditer(r"\{(\d+), \{([-\d.]+)f, ([-\d.]+)f, ([-\d.]+)f\}, \{([-\d.]+)f, ([-\d.]+)f, ([-\d.]+)f, "
+                                r"([-\d.]+)f\}\}", blk)}
+    D = R["frames"][fr]
+    a_bl = (Wr.transposed() @ Vector(D["finger_axis_world"])).normalized()   # in the wrist's GAME frame
+    RATIO = (1.0, 1.25, 0.85)
+    for fi, f in enumerate(FINGERS):
+        t = D["fingers"][f]
+        angs = [t, t, t] if f == "Thumb" else [RATIO[k] * t for k in range(3)]
+        ids = [7 + fi * 3 + k for k in range(3)]
+        for k in range(3):
+            M = (Fm @ Matrix.Rotation(math.radians(angs[k]), 3, a_bl) @ Fm)
+            h0 = eng[ids[k]][0].copy()
+            for m in ids[k:]:
+                pm, qm = eng[m]
+                eng[m] = (h0 + M @ (pm - h0), (M.to_quaternion() @ qm).normalized())
+    rows = []
+    for i, n in enumerate(["kBone_%s_%s%d" % (side, f, k) for f in FINGERS for k in (1, 2, 3)]):
+        pr, qr = eng[7 + i]
+        rows.append("    {%d, {%.4ff, %.4ff, %.4ff}, {%.6ff, %.6ff, %.6ff, %.6ff}}, // %s" %
+                    (7 + i, pr.x, pr.y, pr.z, qr.x, qr.y, qr.z, qr.w, n))
+    src = os.path.basename(bpy.data.filepath)
+    txt = """#pragma once
+// GENERATED by tools/blender/lever_grip_mock.py --emit (the tester-approved crossbow lever hold, 2026-10-24: option A,
+// the replay's frame %d of %s - the over-the-bar hold the tester picked, carried by the gun so the crossbar turns in the
+// fist). Do not edit by hand; re-run the mock. Unreal axes.
+//   kWristQ   the free (left) wrist's turn against the drawn grip bone 43 (x y z w)
+//   kWristOff the wrist from the lever's tip bone X_LeverNUB (the crossbar's middle), in the drawn grip's axes, component
+//             units at hand size kHandSize
+//   kFingers  each finger bone against the wrist (rig units), as grip_rest_poses.h has them
+#include "game/bioshock1r/gun_geometry.h"
+
+namespace bvr::b1r::grip_crossbow_lever {
+
+inline constexpr float kHandSize = %.4ff;
+inline constexpr float kWristQ[4] = {%.6ff, %.6ff, %.6ff, %.6ff};
+inline constexpr float kWristOff[3] = {%.4ff, %.4ff, %.4ff};
+inline constexpr gun_geometry::RestBone kFingers[] = {
+%s
+};
+inline constexpr gun_geometry::RestPose kRest = {L"CrossbowLever", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f},
+                                                 {9.2150f, 0.1187f, 0.3125f}, kFingers, 15};
+
+} // namespace bvr::b1r::grip_crossbow_lever
+""" % (fr, src, args.hand_size, wq[0], wq[1], wq[2], wq[3], wo[0], wo[1], wo[2], NL.join(rows))
+    with open(path, "w", newline=CRLF) as fh:
+        fh.write(txt)
+    print("BVR_LEVER emitted %s: wrist turn %s, offset %s" % (path, [round(x, 4) for x in wq], [round(x, 2) for x in wo]))
+
+
+if args.emit:
+    emit_header(args.emit, int(args.frames.split(",")[-1]))
 with open(place(args.out + ".json"), "w") as fh:
     json.dump(R, fh, indent=1)
 print("BVR_LEVER done")

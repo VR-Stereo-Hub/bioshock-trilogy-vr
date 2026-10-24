@@ -40,6 +40,7 @@
 #include "game/bioshock1r/muzzle.h"
 #include "game/bioshock1r/gun_geometry.h"
 #include "game/bioshock1r/grip_rest_poses.h"
+#include "game/bioshock1r/grip_crossbow_lever.h"
 #include "game/bioshock1r/hand_pose.h"
 #include "game/bioshock1r/cheats.h"
 #include "game/bioshock1r/script_call.h"
@@ -6923,12 +6924,23 @@ palette::WeaponXform g_recWx;
 // socket (the 00:17 recording: 0.0 cm from it in all 545 frames), so it is where the hands are drawn, not where
 // the clip has them. It is NOT a clip point: on_gun and the gun hand's placement must not be applied to it again
 // (a95f3ba did, which moved the fist 7-26 cm, growing through the stroke - the snapshots' fist on the bar's end,
-// then right of the bar). And it is the HANDLE now, not the tip: X_LeverNUB is one END of the crossbar, so the
-// bar's middle is the NUB brought to the lever pivot's (X_Lever's) sideways coordinate, in weapon space, where
-// both bones share one frame and the gun's sideways axis is the mirror record's u.
+// then right of the bar).
+// 2026-10-24 afternoon (Blender, the 12:21 replay: the lever skin runs 16 units along the bar, -8 to +8 about the
+// NUB): X_LeverNUB IS the crossbar's middle. The projections onto the gun's centre plane (a95f3ba) and onto the
+// pivot's sideways coordinate (383c1a8) moved a point that was already right; the NUB is returned as it is.
+// The approved lever hold (grip_crossbow_lever.h) is the crossbow's, designed for the gun in the right hand.
+bool lever_hold_applies(void* weapon) {
+    static void* s_of = nullptr;
+    static bool s_is = false;
+    if (weapon != s_of) {
+        s_of = weapon;
+        const wchar_t* cls = weapon ? patterns::object_class_name(weapon) : nullptr;
+        s_is = cls && gun_geometry::same(cls, L"Crossbow");
+    }
+    return s_is && !g_m4.mirror;
+}
 bool lever_handle_component(float out[3]) {
     const int tip = bones::weapon_bone_index("X_LeverNUB");
-    const int piv = bones::weapon_bone_index("X_Lever");
     if (tip < 0 || !g_wHoldable || !g_m4.actor) return false;
     float wLoc[3];
     int32_t wRot[3];
@@ -6941,12 +6953,6 @@ bool lever_handle_component(float out[3]) {
     const float ws = g_wWrittenValid ? 1.0f : g_wWrittenScale;
     const Qts& b = g_wWrittenValid ? g_wWritten[tip] : g_wAnim[tip];
     float p[3] = {b.p[0], b.p[1], b.p[2]};
-    if (piv >= 0) {
-        const Qts& v = g_wWrittenValid ? g_wWritten[piv] : g_wAnim[piv];
-        const float* u = g_mirU;
-        const float side = (p[0] - v.p[0]) * u[0] + (p[1] - v.p[1]) * u[1] + (p[2] - v.p[2]) * u[2];
-        for (int c = 0; c < 3; ++c) p[c] -= side * u[c];
-    }
     for (int c = 0; c < 3; ++c) p[c] *= ws * ds;
     float wq[4], r[3];
     ue_rot_to_quat(FRotator{wRot[0], wRot[1], wRot[2]}, wq);
@@ -8091,8 +8097,12 @@ void m4_compose(bool late) {
             hands::current_holdable(&curGun);
             // 2026-10-23 late (the snapshots: the hand on the crossbow's lever stays open): the crossbow's own rest pose
             // holds its flat stock loosely; a hand closed round the lever takes the shotgun's, which wraps a round pump.
-            const gun_geometry::RestPose* rest = manual_reload::hand_closed_on_part() ? gun_geometry::rest_pose(L"Shotgun")
-                                                                                     : gun_rest(curGun);
+            // 2026-10-24 afternoon: the crossbow in the right hand takes the tester-approved lever hold's own fingers
+            // (grip_crossbow_lever.h: the crossbow's rest fist opened onto the bar by the Blender design).
+            const gun_geometry::RestPose* rest =
+                manual_reload::hand_closed_on_part()
+                    ? (lever_hold_applies(curGun) ? &grip_crossbow_lever::kRest : gun_geometry::rest_pose(L"Shotgun"))
+                    : gun_rest(curGun);
             // The tables are the LEFT hand's on the gun in the right; they serve the free hand when that is the
             // left (unmirrored) or, with the gun in the left hand, the right drawing the left's clip mirrored.
             const bool leftFrameOk = (fh == 0 && !g_m4.mirror) ||
@@ -8499,11 +8509,41 @@ void m4_compose(bool late) {
                     const float tw = paused ? 0.0f : two_hand::hold_weight(now);
                     g_dbgAimTw = tw;
                     g_dbgAimDistCm = distCm;
+                    // 2026-10-24 afternoon, THE LEFT-HANDED HOLD (the 12:21 recording, rebuilt in Blender and checked
+                    // against its own engine bones): the support hand drawn on the gun is the game's own two-handed
+                    // pose mirrored, within 1-2 units at every joint, and the drawn gun stands on the grip bone. What
+                    // the snapshots showed - the gun swung onto its side, the hand opened beside the stock - is this
+                    // aim turning the gun 56 deg on average toward a real right hand that sits 10-19 cm off the grip
+                    // point all through the hold ("[twohand] off hand ... right -10..-19"); right-handed holds turn
+                    // 8-21 deg. Until the offset's source is found, the left-handed hold keeps the offset the real hand
+                    // had when it took hold: the gun does not swing at the grab, moving the hand still aims it, and
+                    // the hand stays on the stock where the approved mock-up has it. The right hand's holds are as
+                    // they were.
+                    static bool s_mirLatched[2] = {false, false};
+                    static ik::Vec s_mirOff[2];
+                    ik::Vec aimFront = authored;
+                    if (g_m4.mirror && tw > 0.0f) {
+                        if (!s_mirLatched[h]) {
+                            s_mirLatched[h] = true;
+                            s_mirOff[h] = ik::rotate(ik::conj(pinned.q), real - authored);
+                            if (!late && patterns::kBoneWeaponAttach < n) {
+                                const ik::Quat gq = ik::normalized(
+                                    ik::mul(pinned.q, ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q))));
+                                const ik::Vec og = ik::rotate(ik::conj(gq), real - authored) * toCmClip;
+                                BVR_LOG("[twohand] left-handed hold: the real hand took hold %.1f cm off the grip point "
+                                        "(in the gun's grip frame %.1f %.1f %.1f cm) - the aim keeps that offset",
+                                        ik::length(real - authored) * toCmClip, og.x, og.y, og.z);
+                            }
+                        }
+                        aimFront = authored + ik::rotate(pinned.q, s_mirOff[h]);
+                    } else if (tw <= 0.0f) {
+                        s_mirLatched[h] = false;
+                    }
                     if (tw > 0.0f) {
                         // The turn from the gun as held; applied to the kicked gun it keeps the kick
                         // in the gun's own frame (turn * pinned.q * (pinned.q^-1 * own.q)), and the
                         // front hand, carried by this placement, kicks with it.
-                        const ik::Quat turn = two_hand::aim_turn(pinned.at, authored, real, 5.0f / toCmClip);
+                        const ik::Quat turn = two_hand::aim_turn(pinned.at, aimFront, real, 5.0f / toCmClip);
                         g_dbgAimTurnDeg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(turn.v[3]))) * 57.29578f;
                         const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
                         own = hc::toward(own, aimed, tw);
@@ -8587,6 +8627,25 @@ void m4_compose(bool late) {
                         // used as it is: a95f3ba sent it through on_gun and the gun hand's placement as if it were a
                         // clip point, and the 00:17 recording puts that 7-26 cm off, growing as the lever rises.
                         onPart.at = ik::vec(handle);
+                        // 2026-10-24 afternoon: THE TESTER-APPROVED HOLD (grip_crossbow_lever.h, designed in Blender on
+                        // the 12:21 replay - tools\blender\lever_grip_mock.py, option A). The hand over the crossbar, its
+                        // fingers the table the hand pose engine puts on (rule 4), the wrist at a FIXED turn against the
+                        // drawn gun (the bar is a roller: it turns in the fist, the hand keeps its angle to the gun) and
+                        // at a fixed offset from the bar's middle, so it rides the bar through the stroke. The drawn grip
+                        // is the gun hand's correction on bone 43 (the weapon actor stands on it); the wrist is placed by
+                        // this hand's own correction about its pivot. Right-handed only: the gun in the left hand keeps
+                        // the fist on the handle until the mirrored hold is designed.
+                        if (lever_hold_applies(twoGun) && w < n && patterns::kBoneWeaponAttach < n) {
+                            namespace lv = grip_crossbow_lever;
+                            const ik::Quat gripQ = ik::normalized(
+                                ik::mul(ik::normalized(ik::quat(G.q)), ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q))));
+                            const float sc = G.s / lv::kHandSize;
+                            const ik::Quat wristQ = ik::normalized(ik::mul(gripQ, ik::normalized(ik::quat(lv::kWristQ))));
+                            const ik::Vec wristP = ik::vec(handle) + ik::rotate(gripQ, ik::vec(lv::kWristOff)) * sc;
+                            onPart.q = ik::normalized(ik::mul(wristQ, ik::conj(ik::normalized(ik::quat(A[w].q)))));
+                            onPart.s = G.s;
+                            onPart.at = wristP - ik::rotate(onPart.q, (ik::vec(A[w].p) - palmComp) * onPart.s);
+                        }
                         // The handle, how far the clip's own hand and the real hand are from it, twice a second while
                         // it is held: the handle has to move through the stroke, the clip's palm stays a hand's width
                         // from it, and the real hand is at it when the grab begins.
@@ -8594,10 +8653,12 @@ void m4_compose(bool late) {
                         if (!late && now - s_tipLogMs >= 500) {
                             s_tipLogMs = now;
                             const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
-                            BVR_LOG("[hands] lever handle at %.1f %.1f %.1f (component) | the fist goes there; the clip's "
-                                    "hand was %.1f cm from it, the real hand is %.1f cm from it | weight %.2f",
-                                    handle[0], handle[1], handle[2], ik::length(clipAt - onPart.at) * toCm,
-                                    ik::length(realAt - onPart.at) * toCm, g_handOnPartW);
+                            const ik::Vec hv = ik::vec(handle);
+                            BVR_LOG("[hands] lever handle at %.1f %.1f %.1f (component) | %s; the clip's hand was %.1f cm "
+                                    "from it, the real hand is %.1f cm from it | weight %.2f",
+                                    handle[0], handle[1], handle[2],
+                                    lever_hold_applies(twoGun) ? "the approved hold rides it" : "the fist goes there",
+                                    ik::length(clipAt - hv) * toCm, ik::length(realAt - hv) * toCm, g_handOnPartW);
                         }
                     }
                     own = hc::toward(own, onPart, g_handOnPartW);
