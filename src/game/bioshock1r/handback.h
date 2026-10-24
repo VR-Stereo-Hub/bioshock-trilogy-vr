@@ -50,6 +50,10 @@ float carry(int hand, uint64_t nowMs);
 // The weapon hand while an animation plays at the gun, or a gun fires: how much of the clip's
 // own motion of the hand, against its pose just before, plays on the controller (0 = pinned).
 float gun_motion(int hand, uint64_t nowMs);
+// 2026-10-24: the reload played at the gun whose clip works the gun's own parts (the launcher, the crossbow, with the
+// manual reload off): how much of that clip's motion of the gun hand is layered on, 0..1 - the part of gun_motion the
+// manual reload's keep record must not take away (it passes only a shot's recoil).
+float reload_full_motion(int hand, uint64_t nowMs);
 
 // How much of the carry applies when the clip has the free hand's palm `clipCm` from the
 // weapon hand's: 1 within the join distance, 0 beyond it plus 20 cm, smootherstep between.

@@ -197,6 +197,10 @@ float gun_motion(int hand, uint64_t now) {
     return reload > recoil ? reload : recoil;
 }
 
+float reload_full_motion(int hand, uint64_t now) {
+    return g_fullGunMotion.load(std::memory_order_relaxed) ? 1.0f - g_gun[hand ? 1 : 0].weight(now) : 0.0f;
+}
+
 float recoil_amount() { return g_recoil.load(std::memory_order_relaxed); }
 void set_recoil_amount(float v) { g_recoil.store(v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v, std::memory_order_relaxed); }
 

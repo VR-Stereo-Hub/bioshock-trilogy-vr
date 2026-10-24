@@ -7,6 +7,7 @@
 #include "game/bioshock1r/dropped_part.h"
 #include "game/bioshock1r/grip_pistol_cylinder.h"
 #include "game/bioshock1r/grip_shotgun_shell.h"
+#include "game/bioshock1r/grip_crossbow_box.h"
 #include "game/bioshock1r/grip_tommy_drum.h"
 #include "game/bioshock1r/gun_geometry.h"
 #include "game/bioshock1r/gun_suppress.h"
@@ -578,6 +579,19 @@ const GripTable* carry_grip() {
         return &kPistolCylinder;
     if (g_carryMode == 1 && g_machine.active() && g_carryPart && !_wcsicmp(g_cls, L"Shotgun") && strstr(g_carryPart, "SG_Shell"))
         return &kShotgunShell;
+    // 2026-10-24 (the tester: the new box's pose "pretty good but the position was off"; the 17:00 capture: the box 19
+    // units out along the hand, past the fingertips): the carry put the box where the clip has it against the clip's
+    // own hand - but the hands' clip is not playing while the reload holds the weapon clip at 1.70 ("hands None"), so
+    // that hand was some other pose. The clip's hold at 1.70 as a table instead (tools\blender\clip_grip_emit.py): the
+    // fingers round the box and the box 12.3 / -7.5 / -2.4 against the wrist, wherever the hands' clip is.
+    static const GripTable kCrossbowBox{grips::kCrossbowBoxGrip,
+                                        static_cast<int>(sizeof grips::kCrossbowBoxGrip / sizeof grips::kCrossbowBoxGrip[0]),
+                                        grips::kCrossbowBoxGripPart,
+                                        static_cast<int>(sizeof grips::kCrossbowBoxGripPart /
+                                                         sizeof grips::kCrossbowBoxGripPart[0])};
+    if (g_carryMode == 1 && g_machine.active() && g_carryPart && !g_carryAtPalm && !_wcsicmp(g_cls, L"Crossbow") &&
+        strstr(g_carryPart, "X_AmmoBox"))
+        return &kCrossbowBox;
     // 2026-10-21: a spare Tommy Gun drum in the hand - the reload clip's own hand on the drum at 0.30 s (where the
     // spare is placed against the wrist), not the grip pose ("an unneeded mag has the normal grip pose").
     static const GripTable kTommyDrum{grips::kTommyDrumGrip,

@@ -9,7 +9,7 @@
 # headset's view of the frame, near enough to put beside a snapshot. side/top/front: close views round the focus.
 # --mark puts a small coloured ball on each named gun bone (where the lever's pivot and tip are). Renders land in
 # the model workspace's verification folder. Never launches a game.
-import bpy, sys, os, argparse
+import bpy, sys, os, argparse, math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mathutils import Vector  # noqa: E402
@@ -23,6 +23,7 @@ ap.add_argument("--mark", default="")
 ap.add_argument("--size", type=float, default=30.0)
 ap.add_argument("--views", default="eye,side,top,front")
 ap.add_argument("--res", default="800x600")
+ap.add_argument("--hmd-fov", type=float, default=100.0)
 args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 place = lambda p: p if os.path.isabs(p) else os.path.join(ws, "verification", p)
@@ -75,6 +76,16 @@ for fr in (int(x) for x in args.frames.split(",")):
         if view == "eye":
             cam.data.lens_unit, cam.data.angle = "FOV", 1.22
             cam.location = Vector((0, 0, 0))
+        elif view == "hmd":
+            # The headset's own view: the hands actor rides the camera, so its origin looking down its +x (Unreal
+            # forward), +z up, is what the eye sees - not aimed at the focus. A wide lens like the snapshots'.
+            cam.data.lens_unit, cam.data.angle = "FOV", math.radians(args.hmd_fov)
+            cam.location = Vector((0, 0, 0))
+            cam.rotation_euler = Vector((1, 0, 0)).to_track_quat("-Z", "Y").to_euler()
+            scn.render.filepath = place("%s-f%03d-%s.png" % (args.out, fr, view))
+            bpy.ops.render.render(write_still=True)
+            print("BVR_VIEWS %s" % scn.render.filepath)
+            continue
         else:
             cam.data.lens_unit, cam.data.angle = "FOV", 0.9
             cam.location = focus + OFFS[view]

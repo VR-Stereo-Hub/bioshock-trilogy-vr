@@ -48,6 +48,11 @@ middle, the wrapping fist, the left-handed support hand, room compression) are N
 
 ### Next steps
 
+- **2026-10-24 night (installed 17:32, not seen):** "the left hand two hand" is the right-handed hold's support hand
+  (ENGINE_NOTES 2026-10-24 night). Its new pose waits on the tester's pick from
+  `verification\APPROVAL-crossbow-support.png`: the current pose, or the shotgun's, launcher's or Tommy Gun's grip on
+  the fore-stock. Built and installed: the crossbow keeps its roll right-handed too; the new box is carried in the
+  clip's grip at its measured spot in the palm; and with the manual reload off the launcher's reload moves both arms.
 - **2026-10-24 late (installed 16:25, not seen): the left-handed two-handed bug.** The tester confirmed it is the
   crossbow in the left hand, two-handed. The support hand was never wrong. The aim rolled the gun about 48 degrees
   about its barrel on taking hold, onto its side. The left-handed aim now keeps the rear hand's roll

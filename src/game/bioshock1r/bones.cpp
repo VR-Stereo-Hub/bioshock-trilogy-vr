@@ -6928,6 +6928,17 @@ palette::WeaponXform g_recWx;
 // 2026-10-24 afternoon (Blender, the 12:21 replay: the lever skin runs 16 units along the bar, -8 to +8 about the
 // NUB): X_LeverNUB IS the crossbar's middle. The projections onto the gun's centre plane (a95f3ba) and onto the
 // pivot's sideways coordinate (383c1a8) moved a point that was already right; the NUB is returned as it is.
+// The held gun is the crossbow (its class read once per weapon).
+bool lever_hold_class_is_crossbow(void* weapon) {
+    static void* s_of = nullptr;
+    static bool s_is = false;
+    if (weapon != s_of) {
+        s_of = weapon;
+        const wchar_t* cls = weapon ? patterns::object_class_name(weapon) : nullptr;
+        s_is = cls && gun_geometry::same(cls, L"Crossbow");
+    }
+    return s_is;
+}
 // The approved lever hold (grip_crossbow_lever.h) is the crossbow's, designed for the gun in the right hand.
 bool lever_hold_applies(void* weapon) {
     static void* s_of = nullptr;
@@ -8431,7 +8442,11 @@ void m4_compose(bool late) {
             if (h == gunHand) {
                 // 2026-10-20: the shotgun's Fire clip after its recoil is the one-handed pump - the gun
                 // swung up to show the pump - and in VR the pump is the player's: only the recoil plays.
-                const float g = handback::gun_motion(hb(h), now) * manual_reload::gun_motion_keep();
+                float g = handback::gun_motion(hb(h), now) * manual_reload::gun_motion_keep();
+                // 2026-10-24 (the tester: with the manual reload off the launcher's reload "only applies to the left
+                // hand"): the keep record passes a shot's recoil only, which zeroed the gun hand's whole part of a
+                // reload played at the gun. With the manual reload off that reload is all clip: both arms move.
+                if (!manual_reload::handles_reloads()) g = std::max(g, handback::reload_full_motion(hb(h), now));
                 g_dbgGunMotion = g;
                 g_dbgAimTw = 0.0f; // set below while two hands hold
                 g_dbgAimTurnDeg = 0.0f;
@@ -8554,7 +8569,10 @@ void m4_compose(bool late) {
                         // drawn grip's within a degree - and the crossbow's limbs sit 35 units along its x; bone 44
                         // is the left hand's IK target, not a muzzle). Measured on that recording, 48 of the grab's
                         // 52 deg were roll about this axis.
-                        if (g_m4.mirror && patterns::kBoneWeaponAttach < n) {
+                        // 2026-10-24 later (the 16:54 run: the tester's "left hand two hand" is the support hand with
+                        // the crossbow in the RIGHT hand - every grab there rolled it too, 16 deg): the crossbow keeps
+                        // the rear hand's roll in either hand; other guns only in the left-hand hold.
+                        if ((g_m4.mirror || lever_hold_class_is_crossbow(twoGun)) && patterns::kBoneWeaponAttach < n) {
                             const ik::Quat gq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
                             const ik::Vec barrel = ik::rotate(pinned.q, ik::rotate(gq, ik::Vec{1.0f, 0.0f, 0.0f}));
                             turn = two_hand::without_twist(turn, barrel);

@@ -8071,3 +8071,28 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
 - The 12:21 and 15:22 snapshot and replay pictures of this hold were read as the support hand being wrong, and the
   first fix (the aim keeping the grab offset) went after the hand. The pictures that settle it are from the eye, with
   the gun drawn on the hand that holds it.
+
+## 2026-10-24 night - "The left hand two hand" is the RIGHT-handed hold's support hand; the box's carry; the launcher
+
+- **Which hold:** the 16:54 run's log has the weapon role RIGHT throughout, and no left-handed-hold line at all. The
+  tester's "left hand two hand on the crossbow" is the LEFT hand supporting the crossbow held in the RIGHT hand. Every
+  fix since 2026-10-23 went to the mirrored left-handed hold the tester was not using. The roll removal measured
+  0-5 degrees there on this run, so it works, just on the wrong hold.
+- **The support hand itself:** the two-handed hold draws the crossbow's idle-clip left hand (grip_rest_poses.h,
+  Crossbow__FidgetCrossbow), with its palm against the stock's side and the fingers straight up along it. That is
+  not a grip, and it has been the support pose since the hold was built. A new pose waits on the tester's choice:
+  support_candidates.py puts the shotgun's, launcher's and Tommy Gun's own support grips on the crossbow's
+  fore-stock, at its station, raised onto the stock's underside. lever_grip_mock.py --grip-mesh/--wrap closes a hand
+  onto the stock's real skin; a cylinder fit fails on the boxy stock.
+- The crossbow keeps the rear hand's roll in the RIGHT-handed hold too: every right-handed grab rolled it about
+  16 degrees.
+- **The box carry was against the wrong hand:** the 17:00 capture had the box 19 units out along the hand. The carry
+  put the box where the clip has it against the clip's own hand at the held time, but while the reload holds the
+  weapon clip at 1.70 s the hands clip is not playing ("hands None"). So that hand was an unrelated pose. The box is
+  now a designed grip generated from the clip's hold at 1.70 (clip_grip_emit.py -> grip_crossbow_box.h): the fingers
+  round the box, the box 12.3 / -7.5 / -2.4 against the wrist.
+- **Clip times in Blender:** the glTF actions run at the scene's own rate (24). hold_reference.py and the first
+  clip_grip_emit run forced 30 and sampled the wrong moment; frame 0 is unaffected.
+- **The launcher's arms:** at the gun with full gun motion still moved only the free hand. The manual reload's keep
+  record passes only a shot's recoil, and it zeroed the gun hand's part. With the manual reload off, a reload played
+  at the gun now layers its full motion on the gun hand (handback::reload_full_motion).

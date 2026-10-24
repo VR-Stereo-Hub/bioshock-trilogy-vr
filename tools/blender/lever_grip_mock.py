@@ -35,6 +35,11 @@ ap.add_argument("--hold", default="over", choices=["over", "under"])
 ap.add_argument("--views", default="eye,side,top,back")
 ap.add_argument("--size", type=float, default=30.0)
 ap.add_argument("--hand", default="L", help="the free hand, L or R")
+ap.add_argument("--wrap", action="store_true", help="--grip-mesh: turn the hand palm-up under the stock first (a fore-end grip)")
+ap.add_argument("--wrap-deg", type=float, default=20.0)
+ap.add_argument("--grip-mesh", action="store_true", help="close the free hand on the fore-stock's real skin where it rests")
+ap.add_argument("--stock", type=float, default=None, help="design a support grip on the fore-stock at this grip-frame x")
+ap.add_argument("--stock-half", type=float, default=5.0, help="--stock: the slab of stock skin, this far either side (units)")
 ap.add_argument("--bar-radius", type=float, default=10.0, help="the crossbar's skin: X_Lever's within this of the NUB")
 ap.add_argument("--step", type=float, default=1.5)
 ap.add_argument("--rigid", default="", help="<prefix>.json:<frame> - carry that frame's hold rigidly on the lever")
@@ -98,7 +103,35 @@ for v in hmesh.data.vertices:
         seg_verts.setdefault(hidx.get(b.group), []).append(v.index)
 
 
+STOCK_VERTS = None
+
+
+def stock_cylinder():
+    """--stock X: the crossbow's fore-stock as a cylinder along the barrel (the drawn grip bone's x axis), from the gun
+    skin weighted to X_XbowParent whose grip-frame x lies within --stock-half of X (units) - the round part a support
+    hand closes on, as the shotgun's pump."""
+    global STOCK_VERTS
+    from game_frames import bone_turns, game_frame
+    HC, _ = bone_turns(ha, os.path.join(ws, "exports", "bs1", "NEWPlayerHands-all.glb"))
+    G = game_frame(ha, HC, "R_grip")
+    Gr = G.to_3x3().normalized()
+    o = G.to_translation()
+    ax = Gr.col[0].normalized()
+    if STOCK_VERTS is None:
+        STOCK_VERTS = [v.index for v in gmesh.data.vertices
+                       if (b := max(v.groups, key=lambda g: g.weight, default=None)) and gidx.get(b.group) == "X_XbowParent"
+                       and b.weight >= 0.5]
+    gp = verts(gmesh)
+    sc = sum(G.to_scale()) / 3.0
+    pts = [gp[i] for i in STOCK_VERTS if abs((gp[i] - o).dot(ax) / sc - args.stock) <= args.stock_half]
+    c0 = sum(pts, Vector()) / len(pts)
+    rad = sorted(((p - c0) - ax * (p - c0).dot(ax)).length for p in pts)
+    return c0, ax, rad[len(rad) // 2], args.stock_half * sc, len(pts)
+
+
 def bar_cylinder():
+    if args.stock is not None:
+        return stock_cylinder()
     gp = verts(gmesh)
     nub = head(ga, "X_LeverNUB")
     pts = [gp[i] for i in lever_verts if (gp[i] - nub).length <= args.bar_radius]
@@ -332,6 +365,162 @@ def design(fr):
     return out
 
 
+def hand_frame():
+    """The hand from its bone heads: the wrist, the knuckles' middle, the fingers' direction, the knuckle line, and the
+    palm's side - toward where the curled middle finger's tip is (the rest pose's fingers are curled)."""
+    W = head(ha, wrist_name)
+    kn = [head(ha, chains[f][0]) for f in ("Index", "Middle", "Ring", "Pinky")]
+    kmid = sum(kn, Vector()) / 4.0
+    fdir = (kmid - W).normalized()
+    across = kn[3] - kn[0]
+    across = (across - fdir * across.dot(fdir)).normalized()
+    pn = across.cross(fdir)
+    tip = head(ha, chains["Middle"][2])
+    if pn.dot(tip - kmid) < 0:
+        pn = -pn
+    return W, kmid, fdir, across, pn
+
+
+def design_mesh(fr):
+    """--grip-mesh: the free hand closed on the fore-stock's REAL skin (no cylinder: the crossbow's stock is boxy).
+    The wrist stays where the game's two-handed rest puts it (under the stock); the hand slides along its palm normal
+    until the palm's skin meets the stock's underside, then each finger closes - the three joints together in a
+    grasp's proportions - until its skin would go into the stock, and the thumb the same. Contact is the stock
+    triangles' BVH: a hand vertex is inside when it lies behind the nearest face (its normal points out)."""
+    from mathutils.bvhtree import BVHTree
+    global STOCK_VERTS
+    if STOCK_VERTS is None:
+        STOCK_VERTS = {v.index for v in gmesh.data.vertices
+                       if (b := max(v.groups, key=lambda g: g.weight, default=None)) and gidx.get(b.group) == "X_XbowParent"
+                       and b.weight >= 0.5}
+    deps = bpy.context.evaluated_depsgraph_get()
+    ev = gmesh.evaluated_get(deps)
+    me = ev.to_mesh()
+    gp = [ev.matrix_world @ v.co for v in me.vertices]
+    tris = [tuple(p.vertices) for p in me.polygons if all(i in STOCK_VERTS for i in p.vertices)]
+    ev.to_mesh_clear()
+    used = sorted({i for t in tris for i in t})
+    remap = {i: k for k, i in enumerate(used)}
+    bvh = BVHTree.FromPolygons([gp[i] for i in used], [[remap[i] for i in t] for t in tris])
+
+    def inside_depth(idx):
+        hp = verts(hmesh)
+        d = -1e9
+        for i in idx:
+            loc, nrm, _, dist = bvh.find_nearest(hp[i])
+            if loc is None or dist > 3.0:
+                continue
+            sd = (hp[i] - loc).dot(nrm)
+            d = max(d, -sd if sd < 0 else -dist)
+        return d
+
+    out = {}
+    W0, kmid, fdir, across, pn = hand_frame()
+    palm_idx = seg_verts.get(wrist_name, []) + [i for f in ("Index", "Middle", "Ring", "Pinky") for i in seg_verts.get(chains[f][0], [])]
+    if args.wrap:
+        # 0. A fore-end grip: the palm UP under the stock, the fingers toward the gun's far side (--wrap-deg forward
+        #    of straight across), the hand opened (the bind pose) so it closes onto the skin below; set below the
+        #    stock's middle at the --stock station, then raised onto it.
+        from game_frames import bone_turns, game_frame
+        HC, _ = bone_turns(ha, os.path.join(ws, "exports", "bs1", "NEWPlayerHands-all.glb"))
+        G = game_frame(ha, HC, "R_grip")
+        Gr = G.to_3x3().normalized()
+        barrel, up = Gr.col[0].normalized(), Gr.col[2].normalized()
+        right = barrel.cross(up).normalized()
+        far = right if side == "L" else -right
+        a = math.radians(args.wrap_deg)
+        f_t = (far * math.cos(a) + barrel * math.sin(a)).normalized()
+        p_t = (up - f_t * up.dot(f_t)).normalized()
+        M_now = Matrix((across, fdir, pn)).transposed()
+        x_t = f_t.cross(p_t)
+        M_want = Matrix((x_t, f_t, p_t)).transposed()
+        if (M_want.determinant() > 0) != (M_now.determinant() > 0):
+            M_want = Matrix((-x_t, f_t, p_t)).transposed()
+        Rm = M_want @ M_now.inverted()
+        c, _, r, _, _ = stock_cylinder()
+        palm_now = (W0 + kmid) / 2
+        target = c - up * (r + 6.0)
+        T = Matrix.Translation(target) @ Rm.to_4x4() @ Matrix.Translation(-palm_now)
+        set_wmat(ha, wrist_name, T @ wmat(ha, wrist_name))
+        upd()
+        for ch in chains.values():
+            for b in ch:
+                pb = ha.pose.bones[b]
+                pb.rotation_mode = "QUATERNION"
+                pb.rotation_quaternion = (1, 0, 0, 0)
+        upd()
+        W0, kmid, fdir, across, pn = hand_frame()
+        pn = p_t  # the open hand cannot say its palm side: it was set up toward the stock
+    # 1. the palm onto the stock: slide along the palm normal (toward the stock) until its skin touches.
+    moved = 0.0
+    for _ in range(60):
+        m = wmat(ha, wrist_name)
+        set_wmat(ha, wrist_name, Matrix.Translation(pn * 0.25) @ m)
+        upd()
+        if inside_depth(palm_idx) > args.sink:
+            set_wmat(ha, wrist_name, m)
+            upd()
+            break
+        moved += 0.25
+    # and back out if it started inside
+    for _ in range(60):
+        if inside_depth(palm_idx) <= args.sink:
+            break
+        set_wmat(ha, wrist_name, Matrix.Translation(-pn * 0.25) @ wmat(ha, wrist_name))
+        upd()
+        moved -= 0.25
+    two_bone_ik(wmat(ha, wrist_name).to_translation())
+    out["palm_moved"] = moved
+    # 2. the fingers closed onto the skin.
+    pn_keep = pn
+    W0, kmid, fdir, across, pn = hand_frame()
+    if args.wrap:
+        pn = pn_keep  # the open hand's palm side is the one it was turned to
+    finger_axis = fdir.cross(pn).normalized()
+    RATIO = (1.0, 1.25, 0.85)
+    START = {b: (ha.pose.bones[b].location.copy(), ha.pose.bones[b].rotation_quaternion.copy(), ha.pose.bones[b].scale.copy())
+             for chx in chains.values() for b in chx}
+
+    def set_rel(ch, angs, axis):
+        for b in ch:
+            pb = ha.pose.bones[b]
+            pb.rotation_mode = "QUATERNION"
+            pb.location, pb.rotation_quaternion, pb.scale = START[b]
+        upd()
+        for b, a in zip(ch, angs):
+            if abs(a) > 1e-6:
+                rotate_about(b, axis, a)
+
+    out["fingers"] = {}
+    for f in FINGERS:
+        ch = chains[f]
+        idx = [i for b in ch for i in seg_verts.get(b, [])]
+        ax = finger_axis
+        if f == "Thumb":
+            # the thumb closes across the palm: about the axis from the wrist toward the index base
+            ax = (head(ha, chains["Index"][0]) - head(ha, wrist_name)).normalized()
+        t = 0.0
+        if inside_depth(idx) > args.sink:
+            while t > -80.0:
+                t -= args.step
+                set_rel(ch, [RATIO[k] * t for k in range(3)], ax)
+                if inside_depth(idx) <= args.sink:
+                    break
+        else:
+            while t < 80.0:
+                set_rel(ch, [RATIO[k] * (t + args.step) for k in range(3)], ax)
+                if inside_depth(idx) > args.sink:
+                    set_rel(ch, [RATIO[k] * t for k in range(3)], ax)
+                    break
+                t += args.step
+        out["fingers"][f] = round(t, 1)
+        print("BVR_LEVER f%03d %-6s %+.1f deg from the rest (on the stock's skin)" % (fr, f, t))
+    print("BVR_LEVER f%03d the palm moved %.2f toward the stock" % (fr, moved))
+    out["finger_channels"] = {b: {"loc": list(ha.pose.bones[b].location), "rot": list(ha.pose.bones[b].rotation_quaternion),
+                                  "scale": list(ha.pose.bones[b].scale)} for chx in chains.values() for b in chx}
+    return out
+
+
 RIGID = None
 if args.rigid:
     path, frk = args.rigid.rsplit(":", 1)
@@ -414,12 +603,15 @@ for fr in (int(x) for x in args.frames.split(",")):
         if a.animation_data:
             a.animation_data.action = None
     upd()
-    focus = head(ga, "X_LeverNUB")
+    focus = bar_cylinder()[0] if args.stock is not None else head(ga, "X_LeverNUB")
     if args.before:
         render("before", fr, focus)
     if RIGID:
         R["frames"][fr] = design_rigid(fr)
         render("rigid-" + args.carry, fr, focus)
+    elif args.grip_mesh:
+        R["frames"][fr] = design_mesh(fr)
+        render("grip", fr, focus)
     else:
         R["frames"][fr] = design(fr)
         render("after-" + args.hold, fr, focus)
