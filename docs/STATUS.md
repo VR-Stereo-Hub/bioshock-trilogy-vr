@@ -7,10 +7,10 @@
 **Branch `claude/bs1-manual-reload-2`** (off `staging` at 7c7562f, the merged manual reload), 20 commits, local
 only (the repo is local-only by the owner's rule: nothing is pushed without an explicit go). HEAD a95f3ba. The
 room snapshot work from `claude/bs1-load-snapshot` was cherry-picked onto it (550de0b, 5a88350) so both features
-build together; that branch is superseded. **INSTALLED in BS1: built at 02:51 from a95f3ba's tree** (its log will
-read `v0.8.3-322-gd0c1118-dirty` - the commit was made a minute after the build). Host tests 21 suites green, lint
-clean, the cube shaders compiled offline with fxc. **The last four fixes (the lever's handle and fist, the
-left-handed support hand, room compression) are NOT yet seen in the headset.**
+build together; that branch is superseded. 21 commits, HEAD the lever-frame fix. **INSTALLED in BS1: built at 03:13
+(2026-10-24) from that fix's tree** (its log reads `v0.8.3-324-ge59ed9c-dirty` - the commit came after the build).
+Host tests 21 suites green, lint clean. **The last fixes (the lever's handle in the right frame and at the bar's
+middle, the wrapping fist, the left-handed support hand, room compression) are NOT yet seen in the headset.**
 
 ### Current state
 
@@ -22,7 +22,12 @@ left-handed support hand, room compression) are NOT yet seen in the headset.**
   END at the grab, then right of the bar through the stroke, the hand open. a95f3ba aims the fist at the bar's
   MIDDLE (X_LeverNUB is the bar's end; projected onto the gun's centre plane) with the shotgun's wrapping fingers.
   The handle point comes from the weapon actor plus the lane's written bone (GetBoneCoords answered the REST pose
-  all stroke - falsified, ENGINE_NOTES 2026-10-23 late). `[hands] lever handle at ...` logs it twice a second.
+  all stroke - falsified, ENGINE_NOTES 2026-10-23 late). **Found offline (03:00, the 00:17 pose recording,
+  ENGINE_NOTES 2026-10-24 later): a95f3ba sent that handle through on_gun and the gun hand's placement as if it were
+  a clip point, but the weapon actor already stands on the drawn socket (0.0 cm in 545 frames) - the second placement
+  moved the fist 7-12 cm at rest and 20-26 cm with the lever up, the exact pattern of the 02:45 snapshots.** Fixed:
+  the handle is used as read, and the bar's middle is the NUB at the pivot bone's sideways coordinate in weapon
+  space. `[hands] lever handle at ...` logs it twice a second with the clip hand's and the REAL hand's distance.
 - **Crossbow, the left-handed support hand**: the gripSameSpot rule put it on the far side of the stock (the 02:46
   snapshot); off in a95f3ba, the crossbow mirrors as every gun. The gun hand measured within 2 units of a mirror.
 - **Flamethrower** one-handed: on the reticle (headset-verified; the socket was aimed once per spray, now every
@@ -43,10 +48,11 @@ left-handed support hand, room compression) are NOT yet seen in the headset.**
 
 ### Next steps
 
-- **Get the crossbow lever hand right in the headset**: turn on the animation snapshots, work the lever, read the
-  `dumps\anim-*WeaponFiring_Crossbow` frames and the `[hands] lever handle at` lines; if the fist is still off the
-  bar's middle, the next suspects are the wrist's turn (the clip's, which pushes with an open palm) and on_gun's
-  scaling of a point already at the drawn size. Then the launcher and crossbow plan steps (MANUAL_RELOAD_PLAN.md).
+- **See the crossbow lever hand in the headset** with the 03:13 build: animation snapshots on, work the lever, read
+  the `dumps\anim-*WeaponFiring_Crossbow` frames and the `[hands] lever handle at` lines (the real hand should be
+  within a few cm of the handle at the grab; the clip's hand 6-12 cm from it all stroke). If the fist is on the bar
+  but turned wrong, the remaining suspect is the wrist's turn (the clip's, which pushes with an open palm). Then the
+  launcher and crossbow plan steps (MANUAL_RELOAD_PLAN.md).
 - Then a draft PR of this branch into `staging` - only on the owner's go (local-only rule).
 
 ## Session 2026-10-22/23 (night) - the room around the flat screen, one per level, the capture sweep
@@ -12053,7 +12059,9 @@ then: a projection backdrop for Virtual Desktop (no cube layer), stereo from dep
 sweep, softer seams, 1024 faces, compressed files. The animation snapshots were built for seeing what the tester
 sees and found every lever error since: the hand drawn where the clip's open hand pushes, a handle read at its rest
 pose, a handle tracked at the bar's end. The last fixes (bar middle, wrapping fist, the left-handed support hand
-mirrored, compressed rooms) are built and installed, not seen. Odd and not chased: the right hand looked low and
+mirrored, compressed rooms) were built and installed, not seen; then, before the next run, the a95f3ba handle was
+checked offline against a pose recording and found placed twice (the weapon actor's frame is already the drawn one) -
+fixed, built, installed at 03:13, not seen. Odd and not chased: the right hand looked low and
 turned with every setting matching the morning (re-set by the tester); a frame-rate drop the tester put down to the
 machine.
 

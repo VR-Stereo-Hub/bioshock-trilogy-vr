@@ -6919,8 +6919,16 @@ palette::WeaponXform g_recWx;
 // GetBoneCoords was not a sound frame for the lane's pose. The weapon actor's own placement is - it is how the
 // pose recordings' replay places every weapon bone (tools\blender\pose_capture.py: the actor's location, rotation
 // and DrawScale, times the bone as the lane wrote it), and the replay's lever has always sat on the drawn one.
-bool lever_tip_component(float out[3]) {
+// 2026-10-24 later: the point this returns is in the DRAWN frame - the weapon actor sits on the palette-corrected
+// socket (the 00:17 recording: 0.0 cm from it in all 545 frames), so it is where the hands are drawn, not where
+// the clip has them. It is NOT a clip point: on_gun and the gun hand's placement must not be applied to it again
+// (a95f3ba did, which moved the fist 7-26 cm, growing through the stroke - the snapshots' fist on the bar's end,
+// then right of the bar). And it is the HANDLE now, not the tip: X_LeverNUB is one END of the crossbar, so the
+// bar's middle is the NUB brought to the lever pivot's (X_Lever's) sideways coordinate, in weapon space, where
+// both bones share one frame and the gun's sideways axis is the mirror record's u.
+bool lever_handle_component(float out[3]) {
     const int tip = bones::weapon_bone_index("X_LeverNUB");
+    const int piv = bones::weapon_bone_index("X_Lever");
     if (tip < 0 || !g_wHoldable || !g_m4.actor) return false;
     float wLoc[3];
     int32_t wRot[3];
@@ -6929,9 +6937,17 @@ bool lever_tip_component(float out[3]) {
         return false;
     float ds = 1.0f;
     if (!ds_read(g_wHoldable, &ds) || !(ds > 0.01f)) ds = 1.0f;
-    const float ws = g_wWrittenValid ? 1.0f : bones::weapon_written_scale(); // written poses carry the size already
+    // Written poses carry the size already; the lane's own copy of the clip is at the authored size.
+    const float ws = g_wWrittenValid ? 1.0f : g_wWrittenScale;
     const Qts& b = g_wWrittenValid ? g_wWritten[tip] : g_wAnim[tip];
-    const float p[3] = {b.p[0] * ws * ds, b.p[1] * ws * ds, b.p[2] * ws * ds};
+    float p[3] = {b.p[0], b.p[1], b.p[2]};
+    if (piv >= 0) {
+        const Qts& v = g_wWrittenValid ? g_wWritten[piv] : g_wAnim[piv];
+        const float* u = g_mirU;
+        const float side = (p[0] - v.p[0]) * u[0] + (p[1] - v.p[1]) * u[1] + (p[2] - v.p[2]) * u[2];
+        for (int c = 0; c < 3; ++c) p[c] -= side * u[c];
+    }
+    for (int c = 0; c < 3; ++c) p[c] *= ws * ds;
     float wq[4], r[3];
     ue_rot_to_quat(FRotator{wRot[0], wRot[1], wRot[2]}, wq);
     qts_rotate(wq, p, r);
@@ -8562,32 +8578,26 @@ void m4_compose(bool late) {
                     // the lever's T-handle, never on it): a handle the hand closes round puts the FIST CENTRE on the
                     // handle - the lever's tip bone (X_LeverNUB) where the clip has it now - the fingers closed by the
                     // hand pose engine (rule 4, the grip fist), the wrist turned as the clip's.
-                    float tip[3];
-                    if (manual_reload::hand_closed_on_part() && lever_tip_component(tip)) {
-                        const hc::Placement gunP{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                    float handle[3];
+                    if (manual_reload::hand_closed_on_part() && lever_handle_component(handle)) {
                         const ik::Vec clipAt = onPart.at;
-                        // 2026-10-24 (the snapshots: the fist on the crossbar's right END, then right of it all stroke):
-                        // X_LeverNUB is the bar's end, ~12 units off the lever's pivot to one side. The bar's MIDDLE is
-                        // that point on the gun's own centre plane (the one the left-hand mirror uses, grip frame).
-                        ik::Vec tipV = ik::vec(tip);
-                        if (patterns::kBoneWeaponAttach < n) {
-                            const ik::Quat gq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
-                            const ik::Vec gp = ik::vec(A[patterns::kBoneWeaponAttach].p);
-                            ik::Vec inGrip = ik::rotate(ik::conj(gq), tipV - gp);
-                            const ik::Vec u = ik::vec(g_mirU);
-                            inGrip = inGrip - u * (ik::dot(inGrip, u) - g_mirPlane);
-                            tipV = gp + ik::rotate(gq, inGrip);
-                        }
-                        onPart.at = hc::place(gunP, ik::vec(G.pivot), on_gun(tipV));
-                        // The handle as read and where the clip's own hand was, twice a second while it is held: the
-                        // tip has to move through the stroke, and the two are what the snapshots compare against.
+                        const ik::Vec realAt = target.t; // the controller's palm, before any carry
+                        // 2026-10-24 later: the handle comes back in the DRAWN frame (the weapon actor stands on the
+                        // palette-corrected socket - lever_handle_component), which is the frame `at` is in. It is
+                        // used as it is: a95f3ba sent it through on_gun and the gun hand's placement as if it were a
+                        // clip point, and the 00:17 recording puts that 7-26 cm off, growing as the lever rises.
+                        onPart.at = ik::vec(handle);
+                        // The handle, how far the clip's own hand and the real hand are from it, twice a second while
+                        // it is held: the handle has to move through the stroke, the clip's palm stays a hand's width
+                        // from it, and the real hand is at it when the grab begins.
                         static uint64_t s_tipLogMs = 0;
                         if (!late && now - s_tipLogMs >= 500) {
                             s_tipLogMs = now;
                             const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
-                            BVR_LOG("[hands] lever handle at %.1f %.1f %.1f (component) | the fist goes there, %.1f cm from "
-                                    "where the clip's hand was | weight %.2f",
-                                    tip[0], tip[1], tip[2], ik::length(onPart.at - clipAt) * toCm, g_handOnPartW);
+                            BVR_LOG("[hands] lever handle at %.1f %.1f %.1f (component) | the fist goes there; the clip's "
+                                    "hand was %.1f cm from it, the real hand is %.1f cm from it | weight %.2f",
+                                    handle[0], handle[1], handle[2], ik::length(clipAt - onPart.at) * toCm,
+                                    ik::length(realAt - onPart.at) * toCm, g_handOnPartW);
                         }
                     }
                     own = hc::toward(own, onPart, g_handOnPartW);

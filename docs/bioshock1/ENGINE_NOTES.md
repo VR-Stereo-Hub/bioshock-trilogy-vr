@@ -7958,3 +7958,20 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   -6.5), and the support hand is the error - and the 02:46 snapshot shows it on the far side of the stock by the
   bow's limb. That is gripSameSpot, which kept the support hand on the unmirrored spot; it came from reading a
   replay that does not rebuild the mirror. Off for the crossbow; it mirrors as every other gun.
+
+## 2026-10-24 later - The weapon actor's frame IS the drawn hands' frame; the lever handle used as read
+
+- Checked offline against the 00:17 crossbow pose recording (545 frames, `tools\blender\pose_capture.py`'s
+  format): the weapon actor's placement (location, rotation, DrawScale) taken into the hands' component space lands
+  on the PALETTE-CORRECTED grip socket - handfix applied to engine bone 43 - within 0.0 cm in every frame. So a weapon
+  bone carried out through the actor is already where the hands are drawn; it is not a clip-space point and must not
+  go through on_gun or the gun hand's placement. a95f3ba did both to the lever handle: against the recording that
+  moved the fist 7-12 cm at the lever's rest and 20-26 cm with the lever up, which is the 02:45 snapshots' fist on
+  the bar's end at the grab and right of the bar through the stroke. The clip's own palm sits 6-12 cm from the raw
+  handle all stroke (the open hand on the T-handle) and 13-21 cm from the twice-placed one - the second number is
+  what the old `[hands] lever handle` line reported.
+- The bar's middle is found in weapon space, where X_Lever (the pivot, on the gun's centre line: y +1.6 against the
+  NUB's -6.1 in the written pose) and X_LeverNUB share one frame: the NUB brought to the pivot's coordinate along the
+  mirror record's sideways axis u. No centre-plane constant, no grip-frame conversion. The log line now also says how
+  far the real controller palm is from the handle - at the grab that should read a few cm, or the grab zone and the
+  handle disagree.
