@@ -30,6 +30,10 @@ using hands_state::State;
 std::atomic<bool> g_melee{true}, g_swing{false}, g_scripted{true}, g_fire{false};
 std::atomic<int> g_reload{static_cast<int>(Place::AtGun)};
 std::atomic<float> g_gunMotion{0.0f};
+// 2026-10-24: a reload played at the gun whose clip works the gun's own parts (the launcher's breech and box, the
+// crossbow's lever and box) layers ALL of the clip's motion of the gun hand, whatever g_gunMotion says. Latched while
+// the gun hand's at-gun weight is out, so the blend back to the controller is not cut short.
+std::atomic<bool> g_fullGunMotion{false};
 // The free hand joins the gun while the clip has its palm within this of the gun hand's (cm,
 // drawn size). A guess until a reload's log line ("came within") measures BS1's clips.
 std::atomic<float> g_joinCm{35.0f};
@@ -130,15 +134,15 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
         // hand on the controller and the free hand carried at the gun those parts move with no hand on them):
         // the grenade launcher's reload is the game's for BOTH hands, in view, until it has a program of its own
         // (MANUAL_RELOAD_PLAN.md).
+        // 2026-10-24 (the tester, the launcher with the manual reload off: "put both of my arms far forward"): in view,
+        // a clip's hands are placed against the camera as the flat game frames them - both arms out in front. Both
+        // hands stay AT THE GUN instead: the gun hand on its controller with the clip's own motion of it layered on
+        // in full (handback::gun_motion - the breech and the box move with the hand that works them), the free hand
+        // carried where the clip has it against the gun hand. The crossbow's reload clip the same.
         if (p == Place::AtGun && handsActor) {
             void* w = nullptr;
             const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
-            if (cls && !_wcsicmp(cls, L"GrenadeLauncher")) p = Place::View;
-            // 2026-10-22 evening (the tester: the crossbow "doesn't animate" with the manual reload off): its reload
-            // clip is the free hand's - the lever, the bolt box off and on. The free hand alone in view put the arm
-            // too far forward (its clip pose is against the hands actor, the gun hand on the controller): both hands
-            // in view, as the launcher's, until it has a program of its own.
-            if (cls && !_wcsicmp(cls, L"Crossbow")) p = Place::View;
+            if (cls && (!_wcsicmp(cls, L"GrenadeLauncher") || !_wcsicmp(cls, L"Crossbow"))) g_fullGunMotion = true;
         }
         if (p == Place::View) {
             mask |= 3;
@@ -169,6 +173,7 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
         const bool atGunHere = (atGun >> h) & 1;
         g_carry[h].update(atGunHere && h != wh, now);
         g_gun[h].update(atGunHere && h == wh, now);
+        if (h == wh && !atGunHere && g_gun[h].weight(now) >= 1.0f) g_fullGunMotion = false;
         g_kick[h].update((kick >> h) & 1, now);
         g_hand[h].update((mask >> h) & 1, now);
         const float w = g_hand[h].weight(now);
@@ -186,7 +191,8 @@ float carry(int hand, uint64_t now) { return 1.0f - g_carry[hand ? 1 : 0].weight
 
 float gun_motion(int hand, uint64_t now) {
     const int h = hand ? 1 : 0;
-    const float reload = (1.0f - g_gun[h].weight(now)) * g_gunMotion.load(std::memory_order_relaxed);
+    const float reload =
+        (1.0f - g_gun[h].weight(now)) * (g_fullGunMotion ? 1.0f : g_gunMotion.load(std::memory_order_relaxed));
     const float recoil = (1.0f - g_kick[h].weight(now)) * g_recoil.load(std::memory_order_relaxed);
     return reload > recoil ? reload : recoil;
 }
@@ -211,7 +217,8 @@ bool active(int hand, uint64_t now) {
 bool clip_owns(int hand, uint64_t now) {
     const int i = hand ? 1 : 0;
     const hc::Handoff& h = g_hand[i];
-    const float reload = (1.0f - g_gun[i].weight(now)) * g_gunMotion.load(std::memory_order_relaxed);
+    const float reload =
+        (1.0f - g_gun[i].weight(now)) * (g_fullGunMotion ? 1.0f : g_gunMotion.load(std::memory_order_relaxed));
     return h.game || h.weight(now) < 1.0f || carry(hand, now) > 0.0f || reload > 0.0f;
 }
 

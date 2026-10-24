@@ -48,7 +48,14 @@ middle, the wrapping fist, the left-handed support hand, room compression) are N
 
 ### Next steps
 
-- **2026-10-24, later afternoon: BOTH APPROVED HOLDS ARE IN, built and INSTALLED (13:33), not yet seen in the
+- **2026-10-24 evening (installed 16:01, not seen): the 15:22 run's fixes.** The lever hold was headset-approved ("lever
+  animation is good"). The lever no longer gets stuck up: a squeeze at the lever no longer begins a reload. X drops
+  the crossbow's box any time, including while the lever waits between shots. The new box is carried in the reload
+  clip's own grip at 1.70 s. With the manual reload off, the launcher's and crossbow's reload clips play at the gun
+  instead of putting both arms far forward. **Open: the left-hand grip** - the tester says it did not move; which
+  hold is meant (the support hand with the gun in the right hand, or the left-handed hold) is asked
+  (ENGINE_NOTES 2026-10-24 evening).
+- (Superseded.) **2026-10-24, later afternoon: BOTH APPROVED HOLDS ARE IN, built and INSTALLED (13:33), not yet seen in the
   headset.** The lever: option A from `grip_crossbow_lever.h` (right-handed). The left-handed two-handed hold: the
   aim keeps the real hand's offset from the moment it takes hold, so the gun no longer swings onto its side. The
   support pose itself was already the target (ENGINE_NOTES 2026-10-24 later afternoon). For the headset run: work

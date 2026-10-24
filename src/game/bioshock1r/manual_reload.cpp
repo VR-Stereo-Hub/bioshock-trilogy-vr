@@ -1132,6 +1132,26 @@ void tick(const Frame& f) {
     const bool xPressed = g_ejectReq.exchange(false, std::memory_order_relaxed) && ejectable;
     in.eject = xPressed && !g_machine.active();
     in.ejectNow = xPressed && g_machine.active(); // a reload waiting at its first pull drops the magazine
+    // 2026-10-24 (the tester: the crossbow drops its box on X "only when its empty"; the 15:2x run: every X on the
+    // crossbow fell while its Fire clip waited for the lever between shots - a program with nothing to eject): X on a
+    // gun whose program between shots does not eject (the crossbow's lever) ends that program, runs its clip out to the
+    // end (no lever animation of the game's own) and drops the box the moment the gun is idle again - the reload then
+    // works the lever up on its own clip, waits at the pouch, and the lever comes down by hand after the new box.
+    static void* s_ejectQueued = nullptr;
+    if (s_ejectQueued && s_ejectQueued != f.weapon) s_ejectQueued = nullptr;
+    if (xPressed && g_machine.active() && g_machine.program() && g_machine.program()->ejectT < 0 && in.entryProgram &&
+        in.entryProgram->ejectT >= 0 && in.clipLive && clipName && wcsstr(clipName, L"Fire")) {
+        in.ejectNow = false;
+        if (hw > 0 && g_len > 0.0f) run(f.weapon, f.hands, hw, hh, true, g_len - 0.01f);
+        let_go(f.weapon, f.hands);
+        g_machine.reset();
+        s_ejectQueued = f.weapon;
+        BVR_LOG("[reload] %S: X while the lever waits between shots - its clip runs out, then the box drops", g_cls);
+    } else if (s_ejectQueued == f.weapon && !g_machine.active() && !in.clipLive && st != hands_state::State::Firing &&
+               st != hands_state::State::PostFiring) {
+        in.eject = true;
+        s_ejectQueued = nullptr;
+    }
     // G3: the pistol waiting for a new cylinder (at the pouch, nothing in the hand) - X cancels the reload instead:
     // the gun is put away and comes back closed with the rounds it had (the game refills only at a clip's end).
     if (xPressed && g_abortOn.load(std::memory_order_relaxed) && !_wcsicmp(g_cls, L"Pistol") && g_machine.active() &&

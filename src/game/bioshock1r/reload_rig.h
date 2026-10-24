@@ -100,6 +100,10 @@ struct Program {
     // drum, a prop of its own until it goes into the gun - Input::spareInHand), and a thrown one can be
     // caught in the open well (Input::caught).
     bool spare = false;
+    // 2026-10-24: a squeeze at the first pull's part may begin this reload. False for the crossbow (the 15:23 run: a
+    // squeeze at the lever with bolts still in the box began a whole reload, and with the lever up it could only go on
+    // by pulling the box off - "stuck with the lever up"); its reload begins with X or when it runs dry.
+    bool gripStarts = true;
 };
 
 // ---- the programs ------------------------------------------------------------------------------
@@ -173,8 +177,11 @@ inline constexpr Phase kCrossbow[] = {
     {Kind::Pull, 0.45f, 0.75f, kCrossbowLeverUp, 3, "X_Lever", "cock the lever up", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Pull, 1.95f, 1.95f, kCrossbowBoxOut, 3, "X_AmmoBox", "pull the bolt box off", true},
     {Kind::Carry, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "drop the spent box", true},
-    {Kind::Fetch, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "take a box from the pouch", true},
-    {Kind::Insert, 1.95f, 1.95f, kCrossbowBoxIn, 3, "X_AmmoBox", "seat the box", true},
+    // 2026-10-24 (the tester: the clip's own last frames before the box goes on "hold the box correctly"): the new box is
+    // carried as the clip's hand holds it at 1.70 s (reload_pose.py: the hand round the box, just short of seating it at
+    // 1.80), fingers and all - no longer flat at the palm with the clip held at 1.95, where the box is already on.
+    {Kind::Fetch, 1.95f, 1.95f, nullptr, 0, "X_AmmoBox", "take a box from the pouch", false, false, 1.0f, 1.70f},
+    {Kind::Insert, 1.95f, 1.95f, kCrossbowBoxIn, 3, "X_AmmoBox", "seat the box", false, false, 1.0f, 1.70f},
     {Kind::Pull, 2.25f, 2.55f, kCrossbowLeverDown, 4, "X_Lever", "cock the lever down", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Finish, 2.90f, 3.00f, nullptr, 0, nullptr, "done"}};
 // The crossbow's cock between shots ('Fire', 2.00 s; 2026-10-22 late night - the tester: "just supposed to be lever
@@ -256,7 +263,7 @@ inline constexpr Program kPrograms[] = {
     // 2026-10-22 late: the crossbow (no eject on X: the box comes off by hand after the lever).
     // 2026-10-23 (the tester: X should drop the empty box "like the tommy mag"): ejects at 1.95 s, the lever up and the
     // box on in the clip - the box falls, the reload waits at the pouch.
-    {L"Crossbow", L"Reload", 3.00f, kCrossbow, 7, false, 1.95f, "X_AmmoBox"},
+    {L"Crossbow", L"Reload", 3.00f, kCrossbow, 7, false, 1.95f, "X_AmmoBox", false, false},
     // The crossbow's Fire clip is a program too (the lever between shots); after the Reload, which is the entry.
     {L"Crossbow", L"Fire", 2.00f, kCrossbowCock, 3, false},
 };
@@ -627,7 +634,7 @@ private:
             o.reach = in.inPouch ? 0.5f : -1.0f; // a zone, not a point: mid-reach
             go = in.inPouch && in.gripRise;
             carriedFromEntry_ = go;
-        } else if (first.kind == Kind::Pull) {
+        } else if (first.kind == Kind::Pull && e->gripStarts) {
             const bool near = within(first.path, first.n, in.hand, grabU);
             if (first.n > 0 && grabU > 0) o.reach = arm_ik::length(in.hand - first.path[0].p) / grabU;
             o.claim = near;

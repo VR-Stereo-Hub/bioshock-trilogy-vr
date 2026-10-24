@@ -8027,3 +8027,26 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   (gripSameSpot) sat 4-7 cm from the real hand. The left-handed hold now keeps the offset the real hand had when it
   took hold, and logs it in the gun's grip frame (`[twohand] left-handed hold: ...`). Why the real hand sits there
   is still open; that log line is the measurement for it.
+
+## 2026-10-24 evening - The 15:22 run: the stuck lever, X on the crossbow, the box in the clip's grip, the launcher's arms
+
+- **The lever stuck up (15:23:29):** a squeeze at the crossbow's lever while idle, with 2 bolts still in the box, began
+  the whole Reload program (lever up, box off, pouch, box in, lever down). Once the lever was up, the only way on was
+  pulling the box off. The crossbow's reload no longer begins from a grip (reload_rig.h Program::gripStarts = false):
+  it begins with X, or when the gun runs dry and the game's own reload is adopted.
+- **X on the crossbow fell silent with bolts left:** every press came while the Fire clip waited for the lever between
+  shots. That program ejects nothing, so `ejectNow` found no eject. X there now ends the program, runs the Fire clip
+  to its end and asks for the eject the moment the gun is idle. The box drops and the reload goes on from the pouch.
+- **The new box held as the clip holds it:** the Reload clip's hand holds the new box from about 1.5 s to 1.7 s, then
+  seats it at 1.80 (reload_pose.py). The take and the seat now hold the clip at 1.70 with the box in the clip's hand,
+  instead of flat at the palm with the clip at 1.95, where the box is already on the gun.
+- **The launcher's arms with the manual reload off:** its reload (and the crossbow's) was owned "in view", which places
+  both arms against the camera, far in front. Both now play at the gun, with the clip's own motion of the gun hand
+  layered in full (handback::gun_motion), so the breech and the box move with the hand that works them.
+- **Replay trap fixed:** pose_capture.py gave the gun's grip and tip bones (43, 44) the right hand's correction,
+  because they sit in its cluster range. The mod moves them with the hand that HOLDS the gun. On left-handed frames
+  that drew the gun off the hands, which made the 12:21 left-handed comparison pictures wrong.
+- **The left-handed support hand is unresolved.** Against the raw bones, its joints sit at the gun-plane mirror of the
+  right-handed support hand's, within about 2 units. Every finger bone points along its finger and the curl matches.
+  But a close render of the same frame still shows it beside the stock, not cupped under it. Not changed until the
+  tester says which hold is meant and what is wrong with it.

@@ -218,6 +218,20 @@ if gun_glb:
 
 # ---- one frame -------------------------------------------------------------------------------------
 def fixed(cap, i, p, q, s):
+    # 2026-10-24: the gun's grip and tip bones (43, 44) sit in the right cluster's range, but the mod moves the gun
+    # with the hand that HOLDS it - with the gun in the left hand that is the left hand's correction. Replayed with
+    # the right's, a left-handed frame drew the gun (and anything hung on 43) off the hand by the two corrections'
+    # difference (the 15:22 run: ~10 units with the hold's carry).
+    if i in (43, 44):
+        h = cap.get("held", 1)
+        valid, fq, ft, fp, fs = cap["handfix"].get(h, (False, None, None, None, None))
+        if valid:
+            x, y, z, w = fq
+            Q = Quaternion((w, x, y, z))
+            P = Vector(ft) + Q @ ((Vector(p) - Vector(fp)) * fs)
+            x2, y2, z2, w2 = q
+            Qi = Q @ Quaternion((w2, x2, y2, z2))
+            return list(P), [Qi.x, Qi.y, Qi.z, Qi.w], [c * fs for c in s]
     for h, (lo, hi) in ((0, cap["L"]), (1, cap["R"])):
         valid, fq, ft, fp, fs = cap["handfix"].get(h, (False, None, None, None, None))
         if valid and lo <= i <= hi:

@@ -34,6 +34,7 @@ ap.add_argument("--support", default="", help="the support hand, L or R (default
 ap.add_argument("--out", required=True)
 ap.add_argument("--size", type=float, default=40.0)
 ap.add_argument("--views", default="shooter,right,left,under")
+ap.add_argument("--close", action="store_true", help="frame the support hand, not the gun")
 args = ap.parse_args(argv)
 ws = os.environ.get("BVR_MODEL_WS", os.getcwd())
 place = lambda p: p if os.path.isabs(p) else os.path.join(ws, "verification", p)
@@ -141,7 +142,13 @@ if cam.name not in scn.collection.objects:
 scn.camera = cam
 cam.data.angle = 0.9
 S = args.size
-focus = grip + fwd * 14.0
+# --close: around the support hand itself (its palm), not the gun.
+if args.close:
+    sw = bh(ha, "Bip01_%s_Hand" % support)
+    sm = ha.matrix_world @ ha.pose.bones["kBone_%s_Middle1" % support].head
+    focus = (sw + sm) / 2
+else:
+    focus = grip + fwd * 14.0
 VIEWS = {"shooter": -fwd * S * 1.2 + up * S * 0.5, "right": right * S * 1.3 + up * S * 0.2,
          "left": -right * S * 1.3 + up * S * 0.2, "under": -up * S * 1.3 - fwd * S * 0.2, "top": up * S * 1.4 - fwd * S * 0.3}
 for v in args.views.split(","):

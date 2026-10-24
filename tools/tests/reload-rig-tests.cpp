@@ -147,11 +147,20 @@ int main() {
         o = s.step(Vec{27, 9, -3}, true);
         check(o.act == Act::None && !s.m.active(), "a grip at the fore-grip starts nothing");
         o = s.step(Vec{27, 9, -3}, false);
+        // 2026-10-24 (the 15:23 run: a squeeze at the lever with bolts left began a reload that could only go on by
+        // pulling the box off, "stuck with the lever up"): a grip at the lever starts nothing - the reload begins with X
+        // or when the gun runs dry (the game's own reload, adopted).
+        check(xp && !xp->gripStarts, "the crossbow's reload is not begun by a grip");
         o = s.step(kCrossbowLeverUp[0].p + Vec{1, 0, 0}, false);
-        check(o.buzz && o.claim, "at the lever: buzz, the grip is the reload's");
+        check(!o.buzz && !o.claim, "at the lever with no reload: no buzz, the grip is not the reload's");
         o = s.step(kCrossbowLeverUp[0].p + Vec{1, 0, 0}, true);
-        check(o.act == Act::StartReload && s.m.active(), "a grip at the lever asks the game to reload");
+        check(o.act == Act::None && !s.m.active(), "a grip at the lever starts no reload");
+        o = s.step(kCrossbowLeverUp[0].p + Vec{1, 0, 0}, false);
+        s.in.adopt = true; // the gun ran dry: the game's own reload, held for the hands
         s.clip(L"Reload", 3.00f);
+        o = s.step(kCrossbowLeverUp[0].p, false);
+        s.in.adopt = false;
+        check(s.m.active() && s.m.phase() == 0, "the dry reload adopted: it waits at the lever");
         o = s.step(kCrossbowLeverUp[0].p, false);
         o = s.step(kCrossbowLeverUp[0].p, true);
         check(o.hold && std::fabs(o.t - 0.45f) < 0.01f, "held at the lever's start", o.t, 0.45);
@@ -313,10 +322,11 @@ int main() {
     {
         Sim s;
         s.cls = L"Crossbow";
-        Output o = s.step(kCrossbowLeverUp[0].p, false);
-        o = s.step(kCrossbowLeverUp[0].p, true);
+        // The dry reload, adopted (a grip at the lever no longer begins one, 2026-10-24).
+        s.in.adopt = true;
         s.clip(L"Reload", 3.00f);
-        o = s.step(kCrossbowLeverUp[0].p, false);
+        Output o = s.step(kCrossbowLeverUp[0].p, false);
+        s.in.adopt = false;
         o = s.step(kCrossbowLeverUp[0].p, true);
         o = s.step(kCrossbowLeverUp[1].p, true);
         o = s.step(kCrossbowLeverUp[2].p + Vec{0, 0, 3}, true);
