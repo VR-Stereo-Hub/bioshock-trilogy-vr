@@ -48,7 +48,15 @@ middle, the wrapping fist, the left-handed support hand, room compression) are N
 
 ### Next steps
 
-- **See the crossbow lever hand in the headset** with the 03:13 build: animation snapshots on, work the lever, read
+- **2026-10-24 afternoon: the 12:21 run said the lever hand and the left-handed support hand are both still wrong.
+  The owner's direction: work both out in Blender and get the mock-ups approved before implementing again.**
+  Both current grips are reproduced from the 12:21 recording. The mock-ups were sent as
+  `verification\APPROVAL-crossbow-lever.png` and `APPROVAL-crossbow-left-hand.png` in the model workspace. On the
+  lever the owner picked frame 70's over-the-bar hold. Option A keeps the hand's angle to the gun and lets the bar
+  turn in the fist; option B fixes the hand to the lever. On the left hand the target is the game's own hold,
+  mirrored. Findings are in ENGINE_NOTES 2026-10-24 afternoon: the NUB is the bar's middle, and the mirrored
+  replay's gun is not where the game draws it. **Wait for approval; then implement the approved hold.**
+- (Superseded by the line above.) **See the crossbow lever hand in the headset** with the 03:13 build: animation snapshots on, work the lever, read
   the `dumps\anim-*WeaponFiring_Crossbow` frames and the `[hands] lever handle at` lines (the real hand should be
   within a few cm of the handle at the grab; the clip's hand 6-12 cm from it all stroke). If the fist is on the bar
   but turned wrong, the remaining suspect is the wrist's turn (the clip's, which pushes with an open palm). Then the

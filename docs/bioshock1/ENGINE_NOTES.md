@@ -7975,3 +7975,30 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   mirror record's sideways axis u. No centre-plane constant, no grip-frame conversion. The log line now also says how
   far the real controller palm is from the handle - at the grab that should read a few cm, or the grab zone and the
   handle disagree.
+
+## 2026-10-24 afternoon - The crossbow's crossbar measured in Blender; the left-handed replay's gun
+
+- The 12:21 headset run said the lever hand and the left-handed support hand were both still wrong, so both were
+  rebuilt in Blender from that run's pose recording (`pose_capture.py --record`) before any more game code.
+  The replay matches the animation snapshots: on the lever the hand stays open with the bar at the heel of the
+  palm, and the left-handed support hand is open, palm up, beside the stock.
+- **X_LeverNUB is the crossbar's MIDDLE, not its end.** The lever skin within 10 units of the NUB runs 16 units
+  along the lever bone's Y axis, from -8 to +8 about the NUB. The wooden roll's radius is 3.9 at the drawn size
+  and the gold end caps are fatter. The lever arm runs off along the bone's X to the pivot, 37.7 units away. So
+  the 2026-10-24 "bar's middle" corrections (a95f3ba's centre-plane projection, then the pivot projection)
+  both moved a point that was already right.
+- **On a mirrored frame the replay's gun is not where the game draws it.** pose_capture places the gun by its
+  actor, which the mirror does not move, while the game draws it on the hands' grip bone 43, which the mirror
+  does move. That bone keeps a positive determinant: the game turns the gun as a solid and does not reflect it.
+  `mirror_hold_mock.py` hangs a crossbow on bone 43 instead. In that drawn frame the support palm sits 20 forward,
+  14 to the gun's left and 4 down, with the fingers open. The game's own right-handed hold, mirrored, puts the palm
+  24.5 forward and 6.6 under the fore-stock, closed round it.
+- The lever designs are in `lever_grip_mock.py`: the crossbow's rest fist (`hold_reference.py`) put on the bar
+  along the fist's measured handle axis (hand_grip.h), turned so the forearm points at the shoulder, and the
+  fingers opened until they rest on the bar. The pose the tester picked, frame 70 of the replay, works through
+  the whole stroke if the hand keeps its angle to the GUN and the bar turns in the fist. If the hand is fixed to
+  the lever instead, it tips back onto the heel of the palm at the bottom of the stroke. Not built in the game
+  yet: the mock-ups wait on the tester's approval.
+- Replay traps found on the way: a render re-evaluates the actions, so they are taken off before a pose is edited.
+  The replayed arm carries a slightly non-uniform scale from the IK's affine, so a pose matrix set under it lands
+  off by up to 3 units until the residual is corrected.
