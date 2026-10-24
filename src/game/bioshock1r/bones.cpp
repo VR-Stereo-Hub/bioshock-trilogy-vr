@@ -37,6 +37,7 @@
 #include "game/bioshock1r/palette_math.h"
 #include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/manual_reload.h"
+#include "game/bioshock1r/muzzle.h"
 #include "game/bioshock1r/gun_geometry.h"
 #include "game/bioshock1r/grip_rest_poses.h"
 #include "game/bioshock1r/hand_pose.h"
@@ -6906,6 +6907,17 @@ float g_mirPlane = 0.0f;
 // left-handed crossbow's offset could not be measured from a recording without it: the replay does not
 // rebuild the mirror, and the gun's drawn place was nowhere in the file).
 palette::WeaponXform g_recWx;
+
+// 2026-10-23: the crossbow lever's handle (its tip bone, X_LeverNUB) in the hands' component space, where the engine
+// has it now - the point a hand closed round the lever holds. False when the held gun has no such bone.
+bool lever_tip_component(float out[3]) {
+    static int32_t s_name = -2;
+    if (s_name == -2) s_name = script::name_index("X_LeverNUB");
+    if (s_name < 0 || !g_wHoldable || !g_m4.actor || bones::weapon_bone_index("X_LeverNUB") < 0) return false;
+    float o[3], ax[3][3];
+    if (!muzzle::bone_coords(g_wHoldable, s_name, o, ax)) return false;
+    return bones::world_to_component(g_m4.actor, o, out);
+}
 Qts g_evMirror[kMaxBones];
 
 bool mirror_wanted() {
@@ -8520,7 +8532,20 @@ void m4_compose(bool late) {
                 // 2026-10-20: the manual reload's bolt held - this hand drawn ON it, where the clip's own
                 // hand grips it (fingers and all), riding it back as the bolt follows the real hand.
                 // Its weight is the hand pose engine's (hand_pose.h, Wrist::OnPart, eased 100 / 200 ms).
-                if (g_handOnPartW > 0.0f) own = hc::toward(own, carried_on_gun(), g_handOnPartW);
+                if (g_handOnPartW > 0.0f) {
+                    hc::Placement onPart = carried_on_gun();
+                    // 2026-10-23 (the tester, with the animation snapshots: the lever "is the wrong grab point and
+                    // the pose isnt wrapping around the handle at all" - the frames show the clip's open hand beside
+                    // the lever's T-handle, never on it): a handle the hand closes round puts the FIST CENTRE on the
+                    // handle - the lever's tip bone (X_LeverNUB) where the clip has it now - the fingers closed by the
+                    // hand pose engine (rule 4, the grip fist), the wrist turned as the clip's.
+                    float tip[3];
+                    if (manual_reload::hand_closed_on_part() && lever_tip_component(tip)) {
+                        const hc::Placement gunP{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                        onPart.at = hc::place(gunP, ik::vec(G.pivot), on_gun(ik::vec(tip)));
+                    }
+                    own = hc::toward(own, onPart, g_handOnPartW);
+                }
             }
             const palette_math::Blended bl = palette_math::blend_hand(own.q, own.s, palmComp, own.at, wgt);
             const ik::Quat qb = bl.q;

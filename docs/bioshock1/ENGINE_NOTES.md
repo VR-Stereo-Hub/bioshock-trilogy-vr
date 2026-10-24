@@ -7912,3 +7912,14 @@ tester's request).
   recoil) all match the morning run, where the hand was right. Which controller profile the runtime bound
   per hand is not logged (the SteamVR shim's call surface forbids the query). The animation snapshots are
   for exactly this.
+
+## 2026-10-23 - The 23:26 run, read from the animation snapshots: the lever held in the clip's open hand
+
+The first use of the animation snapshots (F10 Diagnostics): the crossbow's Fire clip, lever up and down by
+hand. Mid-stroke the drawn left hand sat flat beside the stock, then open beside the lever's T-handle with
+the fingers up - never round the handle. The lock drew the hand where the CLIP's hand is, and the clip
+pushes the lever with an open palm; the closed fingers alone (rule 4) could not put it on the handle. A
+handle the hand closes round now puts the fist centre on the lever's tip bone (X_LeverNUB, from
+GetBoneCoords, into the hands' component space, then onto the drawn gun as any clip point is), the wrist
+turned as the clip's. The right hand's fist trim the tester set in that run (up -6.3 -> +0.4 cm, forward
+1.2 -> 2.5, across 8.3 -> 7.9) is the saved value from here.
