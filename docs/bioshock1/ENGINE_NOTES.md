@@ -7923,3 +7923,13 @@ handle the hand closes round now puts the fist centre on the lever's tip bone (X
 GetBoneCoords, into the hands' component space, then onto the drawn gun as any clip point is), the wrist
 turned as the clip's. The right hand's fist trim the tester set in that run (up -6.3 -> +0.4 cm, forward
 1.2 -> 2.5, across 8.3 -> 7.9) is the saved value from here.
+
+## 2026-10-23 late - The lever's handle read from the lane, not GetBoneCoords; the room at 1024
+
+- The 23:42 snapshots: the fist closed on the lever's crossbar at the stroke's start, then stayed where the
+  crossbar had been while the lever rose and came down. GetBoneCoords on X_LeverNUB returned the lever's REST
+  place through the whole held clip, while the weapon lane's copy of the clip pose (g_wAnim, the pose recordings'
+  source) moved. The handle is now taken from the lane's pose, carried into the world by the gun's root bone
+  (GetBoneCoords on bone 0, which does not move against the gun), the written weapon size and DrawScale between.
+- The room cube's faces are 1024 (were 512) and the projection backdrop 1536 per eye (was 1280), on the tester's
+  ask for a more detailed loading screen; a room file is 48 MB, and a 512 one no longer loads (recapture).

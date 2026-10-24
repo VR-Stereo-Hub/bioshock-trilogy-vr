@@ -237,7 +237,7 @@ bool g_cubeExtEnabled = false; // the instance was created with the cube extensi
 XrSwapchain g_backdropSwapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 std::vector<XrSwapchainImageD3D11KHR> g_backdropImages[2];
 bool g_backdropFailed = false;
-constexpr uint32_t kBackdropSize = 1280;
+constexpr uint32_t kBackdropSize = 1536; // 2026-10-23: with the 1024 cube (was 1280)
 std::atomic<bool> g_roomForceBackdrop{false};
 std::atomic<uint32_t> g_backdropLayersSubmitted{0};
 XrSwapchain g_cubeSwapchain = XR_NULL_HANDLE;

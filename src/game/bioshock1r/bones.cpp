@@ -6910,13 +6910,36 @@ palette::WeaponXform g_recWx;
 
 // 2026-10-23: the crossbow lever's handle (its tip bone, X_LeverNUB) in the hands' component space, where the engine
 // has it now - the point a hand closed round the lever holds. False when the held gun has no such bone.
+// 2026-10-23 late (the snapshots again: the fist closed on the handle at the stroke's start and stayed there while
+// the lever rose): GetBoneCoords on X_LeverNUB answered the lever's REST place all stroke. The tip is taken from
+// the weapon lane's own copy of the clip's pose instead (g_wAnim, weapon space - the one the pose recordings
+// showed moving), carried into the world by the gun's root bone as the engine places it (root and tip in the same
+// weapon space, the written weapon size and the actor's DrawScale between them).
 bool lever_tip_component(float out[3]) {
-    static int32_t s_name = -2;
-    if (s_name == -2) s_name = script::name_index("X_LeverNUB");
-    if (s_name < 0 || !g_wHoldable || !g_m4.actor || bones::weapon_bone_index("X_LeverNUB") < 0) return false;
-    float o[3], ax[3][3];
-    if (!muzzle::bone_coords(g_wHoldable, s_name, o, ax)) return false;
-    return bones::world_to_component(g_m4.actor, o, out);
+    const int tip = bones::weapon_bone_index("X_LeverNUB");
+    if (tip < 0 || !g_wHoldable || !g_m4.actor || g_wBoneCount < 1) return false;
+    static int32_t s_root = -2;
+    static const void* s_for = nullptr;
+    if (s_for != g_wHoldable) {
+        s_for = g_wHoldable;
+        s_root = script::name_index(g_wName[0]);
+    }
+    if (s_root < 0) return false;
+    float o0[3], a0[3][3];
+    if (!muzzle::bone_coords(g_wHoldable, s_root, o0, a0)) return false;
+    float ds = 1.0f;
+    if (!ds_read(g_wHoldable, &ds) || !(ds > 0.01f)) ds = 1.0f;
+    const float s = ds * bones::weapon_written_scale();
+    // The tip against the root in weapon space, into the root's own frame (the inverse of its rotation), then out
+    // along the root's world axes (a0[r]: the root's axis r in the world, as manual_reload's weapon_space reads them).
+    const float d[3] = {(g_wAnim[tip].p[0] - g_wAnim[0].p[0]) * s, (g_wAnim[tip].p[1] - g_wAnim[0].p[1]) * s,
+                        (g_wAnim[tip].p[2] - g_wAnim[0].p[2]) * s};
+    float qi[4], local[3];
+    quat_conj(g_wAnim[0].q, qi);
+    qts_rotate(qi, d, local);
+    float w[3];
+    for (int c = 0; c < 3; ++c) w[c] = o0[c] + local[0] * a0[0][c] + local[1] * a0[1][c] + local[2] * a0[2][c];
+    return bones::world_to_component(g_m4.actor, w, out);
 }
 Qts g_evMirror[kMaxBones];
 

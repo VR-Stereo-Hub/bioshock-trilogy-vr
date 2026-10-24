@@ -28,7 +28,9 @@
 
 namespace bvr::cube_snapshot {
 
-constexpr uint32_t kFaceSize = 512;
+// 2026-10-23: 1024 (was 512) - the tester asked for a more detailed room; a 512 room on disk no longer loads
+// (recapture it). About 11 pixels a degree, the backdrop's own density.
+constexpr uint32_t kFaceSize = 1024;
 
 // Splat one eye image. `q` is the eye's orientation (x y z w, eye frame to
 // world), the four tangents the eye's fov (left and down negative). `fmt` is the
