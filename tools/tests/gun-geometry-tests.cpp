@@ -57,8 +57,10 @@ int main() {
         check(sg && std::fabs(arm_ik::length(sg->strokeDir) - 1.0f) < 1e-3f && sg->strokeDir.z == -1.0f, "the shotgun's stroke axis is the barrel");
         check(xb && std::fabs(arm_ik::length(xb->strokeDir) - 1.0f) < 0.02f && xb->strokeDir.y < 0.0f && xb->strokeDir.z > 0.0f,
               "the crossbow's stroke axis is the lever's swing, down and back (the first stroke goes up and forward)");
-        check(xb->gripSameSpot && !sg->gripSameSpot && !gg::find(L"MachineGun")->gripSameSpot,
-              "only the crossbow's grip is one spot both hands take");
+        // 2026-10-24: the crossbow mirrors as every gun (the snapshot of its left-handed hold); no gun uses the rule.
+        bool anySame = false;
+        for (const gg::Gun& g : gg::kGuns) anySame = anySame || g.gripSameSpot;
+        check(!anySame, "no gun keeps its free hand on the unmirrored spot");
     }
     // ---- the pump (2026-10-22) ----
     {

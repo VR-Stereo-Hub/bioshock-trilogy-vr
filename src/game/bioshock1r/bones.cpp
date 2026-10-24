@@ -8566,7 +8566,19 @@ void m4_compose(bool late) {
                     if (manual_reload::hand_closed_on_part() && lever_tip_component(tip)) {
                         const hc::Placement gunP{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
                         const ik::Vec clipAt = onPart.at;
-                        onPart.at = hc::place(gunP, ik::vec(G.pivot), on_gun(ik::vec(tip)));
+                        // 2026-10-24 (the snapshots: the fist on the crossbar's right END, then right of it all stroke):
+                        // X_LeverNUB is the bar's end, ~12 units off the lever's pivot to one side. The bar's MIDDLE is
+                        // that point on the gun's own centre plane (the one the left-hand mirror uses, grip frame).
+                        ik::Vec tipV = ik::vec(tip);
+                        if (patterns::kBoneWeaponAttach < n) {
+                            const ik::Quat gq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
+                            const ik::Vec gp = ik::vec(A[patterns::kBoneWeaponAttach].p);
+                            ik::Vec inGrip = ik::rotate(ik::conj(gq), tipV - gp);
+                            const ik::Vec u = ik::vec(g_mirU);
+                            inGrip = inGrip - u * (ik::dot(inGrip, u) - g_mirPlane);
+                            tipV = gp + ik::rotate(gq, inGrip);
+                        }
+                        onPart.at = hc::place(gunP, ik::vec(G.pivot), on_gun(tipV));
                         // The handle as read and where the clip's own hand was, twice a second while it is held: the
                         // tip has to move through the stroke, and the two are what the snapshots compare against.
                         static uint64_t s_tipLogMs = 0;

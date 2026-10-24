@@ -45,6 +45,9 @@ struct Gun {
     // swings up and forward, (-0.11 0.63 -0.77) in the grip frame measured from its reload clip, so its axis is
     // the negative of that.
     Vec strokeDir;
+    // 2026-10-24: NO GUN USES THIS NOW. It came from a pose recording read as if it showed the mirrored hold, which the
+    // replay does not rebuild; the 02:46 snapshot of the left-handed crossbow showed the rule put the hand on the wrong
+    // side. Kept, off, for a gun that is truly gripped at one spot by either hand.
     // 2026-10-22 late (the crossbow in the left hand, the 21:15 recording: the free palm at y -12 in the gun's
     // frame against +3.5 on the right-hand hold - mirrored about the stock, onto its other side): a gun whose
     // fore-grip is ONE spot both hands take (the crossbow's stock) keeps the free hand on that spot in the
@@ -66,7 +69,9 @@ inline constexpr Gun kGuns[] = {
     {L"Shotgun", true, {54.05f, 14.7f, 14.3f}, 1, {-15.51f, -6.37f, -6.47f}, {0.0f, 0.0f, -1.0f}, false},
     {L"GrenadeLauncher", true, {51.4f, 20.6f, 15.2f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
     {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
-    {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1, {0.0f, 0.0f, 0.0f}, {0.11f, -0.63f, 0.77f}, true},
+    // 2026-10-24: gripSameSpot off - the snapshot of the left-handed hold put the free hand on the far side of the
+    // stock by the bow's limb; the crossbow mirrors as every other gun.
+    {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1, {0.0f, 0.0f, 0.0f}, {0.11f, -0.63f, 0.77f}, false},
     {L"Pistol", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
     {L"Wrench", false, {0.0f, 0.0f, 0.0f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
 };

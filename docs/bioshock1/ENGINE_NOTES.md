@@ -7945,3 +7945,16 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
 - Room files are BVRROOM2: each colour face a JPEG (quality 0.92), each distance face a 16-bit PNG in millimetres
   (core/gfx/room_codec, host-tested: colour within 3 levels, distances to the millimetre). The tester's 1024 Medical
   Pavilion room measured 48.0 MB raw, 2.3 MB compressed; a raw room is rewritten compressed on its first load.
+
+## 2026-10-24 - The lever's bar is its middle, not its end; the crossbow's left-hand support mirrors
+
+- The 02:45 snapshots and the new `[hands] lever handle` lines: the handle moved through the stroke (component x
+  30 -> 59 and back), and the fist landed on the crossbar's right END at the grab, then right of the bar all stroke -
+  X_LeverNUB is the bar's end, ~12 units off the lever's pivot to one side (the 21:21 recording: NUB y -9.7 against
+  the pivot's +2.4 in the grip frame). The fist now goes to that point projected onto the gun's own centre plane
+  (g_mirU / g_mirPlane, the plane the left-hand mirror uses: -1.65 along Y for the crossbow), the bar's middle.
+- The left-handed crossbow: measured at last from a recording with the drawn placements (the fists against the
+  weapon actor, in its axes), the gun hand sits within 2 units of a mirror of the right-hand hold (y +4.9 against
+  -6.5), and the support hand is the error - and the 02:46 snapshot shows it on the far side of the stock by the
+  bow's limb. That is gripSameSpot, which kept the support hand on the unmirrored spot; it came from reading a
+  replay that does not rebuild the mirror. Off for the crossbow; it mirrors as every other gun.
