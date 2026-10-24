@@ -2,6 +2,53 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-23/24 - BS1: the crossbow's lever by hand, the room in stereo, animation snapshots
+
+**Branch `claude/bs1-manual-reload-2`** (off `staging` at 7c7562f, the merged manual reload), 20 commits, local
+only (the repo is local-only by the owner's rule: nothing is pushed without an explicit go). HEAD a95f3ba. The
+room snapshot work from `claude/bs1-load-snapshot` was cherry-picked onto it (550de0b, 5a88350) so both features
+build together; that branch is superseded. **INSTALLED in BS1: built at 02:51 from a95f3ba's tree** (its log will
+read `v0.8.3-322-gd0c1118-dirty` - the commit was made a minute after the build). Host tests 21 suites green, lint
+clean, the cube shaders compiled offline with fxc. **The last four fixes (the lever's handle and fist, the
+left-handed support hand, room compression) are NOT yet seen in the headset.**
+
+### Current state
+
+- **Crossbow, the lever by hand (the open problem).** Bolts fly again (headset-verified: the Fire-clip program
+  had refused the trigger in the shot's own tick; it now adopts the clip just short of the lever). X drops the
+  bolt box as the Tommy's drum (headset: worked). The lever between bolts is the hands' (headset: worked). The
+  lever-down no longer completes itself when a seated box is still squeezed (fixed, from the 21:25 log). **The
+  drawn hand on the lever is still wrong in the headset**: the 02:45 snapshots showed the fist on the crossbar's
+  END at the grab, then right of the bar through the stroke, the hand open. a95f3ba aims the fist at the bar's
+  MIDDLE (X_LeverNUB is the bar's end; projected onto the gun's centre plane) with the shotgun's wrapping fingers.
+  The handle point comes from the weapon actor plus the lane's written bone (GetBoneCoords answered the REST pose
+  all stroke - falsified, ENGINE_NOTES 2026-10-23 late). `[hands] lever handle at ...` logs it twice a second.
+- **Crossbow, the left-handed support hand**: the gripSameSpot rule put it on the far side of the stock (the 02:46
+  snapshot); off in a95f3ba, the crossbow mirrors as every gun. The gun hand measured within 2 units of a mirror.
+- **Flamethrower** one-handed: on the reticle (headset-verified; the socket was aimed once per spray, now every
+  frame).
+- **Room around the flat screen** (loading screens, menus, cinematics): per level (`rooms\<map>.cube`, the map from
+  UObject::Outer +0x1C), captured by the F10 sweep with hands and gun hidden; on Virtual Desktop (no cube layer) a
+  projection backdrop. Stereo from the eye images' depth (headset: "pretty good", seams seen; edge-feathered since,
+  not re-seen). Faces 1024. Files compressed (JPEG colour + 16-bit PNG millimetre depth): the tester's room 48 MB
+  -> 2.3 MB, a raw room rewritten on its first load (not yet run). The board is a circle (RoomCircle, default 0.42).
+- **Animation snapshots** (F10 Diagnostics, ON in the tester's prefs): pictures of every animation into
+  `dumps\anim-*` (640 wide, newest 20 kept). How every lever finding above was made; delete folders once read.
+- **Right hand**: the tester re-set its fist trim in F10 (up -6.3 -> +0.4 cm, forward 1.2 -> 2.5, across 8.3 ->
+  7.9); that is the saved value. The cause of the drift was not found (every setting matched the morning run).
+- **Core**: `git diff staging...HEAD -- src/core/` is NOT empty - cube_snapshot, anim_shots, room_codec are new
+  files; openxr_runtime gains the room layers, gated on `set_room_snapshot` (BS1 only) and the snapshots' switch
+  (BS1's F10). One change reaches BS2 and Infinite: the instance now enables XR_KHR_composition_layer_cube where
+  offered (nothing submits a cube layer unless the room is on). BS2 and Infinite are untouched, not verified.
+
+### Next steps
+
+- **Get the crossbow lever hand right in the headset**: turn on the animation snapshots, work the lever, read the
+  `dumps\anim-*WeaponFiring_Crossbow` frames and the `[hands] lever handle at` lines; if the fist is still off the
+  bar's middle, the next suspects are the wrist's turn (the clip's, which pushes with an open palm) and on_gun's
+  scaling of a point already at the drawn size. Then the launcher and crossbow plan steps (MANUAL_RELOAD_PLAN.md).
+- Then a draft PR of this branch into `staging` - only on the owner's go (local-only rule).
+
 ## Session 2026-10-22/23 (night) - the room around the flat screen, one per level, the capture sweep
 
 **Branch `claude/bs1-load-snapshot`** off `staging`, local commits only. Built (Release), host-tested (20
@@ -11997,6 +12044,18 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-10-23/24 - the crossbow's lever by hand, the room in stereo and per level, animation snapshots
+
+Headset rounds on `claude/bs1-manual-reload-2`: the flamethrower on the reticle, the crossbow's bolts flying, X
+dropping its bolt box, the lever between bolts the hands' - all verified. The room snapshot moved onto this branch,
+then: a projection backdrop for Virtual Desktop (no cube layer), stereo from depth, per-level files, a capture
+sweep, softer seams, 1024 faces, compressed files. The animation snapshots were built for seeing what the tester
+sees and found every lever error since: the hand drawn where the clip's open hand pushes, a handle read at its rest
+pose, a handle tracked at the bar's end. The last fixes (bar middle, wrapping fist, the left-handed support hand
+mirrored, compressed rooms) are built and installed, not seen. Odd and not chased: the right hand looked low and
+turned with every setting matching the morning (re-set by the tester); a frame-rate drop the tester put down to the
+machine.
 
 ### 2026-10-22/23 (night) - the room around the flat screen, then one per level by a sweep
 
