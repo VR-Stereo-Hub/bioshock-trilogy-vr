@@ -8363,6 +8363,27 @@ void m4_compose(bool late) {
         // and the drawn size is `size`.
         const float sPos = g_m4.scale / k, sSkin = g_m4.scale / k;
         hc::Rigid target{ik::normalized(ik::quat(cq)), ik::vec(cp)};
+        // 2026-10-24 (the tester, the launcher with the manual reload off: the right hand animates now, "but I still
+        // control the right arm, so the animation doesn't work perfectly"): a reload played at the gun whose clip
+        // works the gun's parts owns the gun hand's whole arm. The controller is held where it was as that reload
+        // began (in the hands' own frame, so the body still carries it) and the clip's motion is layered from
+        // there; the hold fades in and out with the reload's own weight, so nothing jumps at either end.
+        if (h == gunHand) {
+            static bool s_frozen[2] = {false, false};
+            static hc::Rigid s_frozenT[2];
+            const float fw = manual_reload::handles_reloads() ? 0.0f : handback::reload_full_motion(hb(h), now);
+            if (fw > 0.0f) {
+                if (!s_frozen[h]) {
+                    s_frozen[h] = true;
+                    s_frozenT[h] = target;
+                }
+                const hc::Placement live{target.q, target.t, 1.0f}, held{s_frozenT[h].q, s_frozenT[h].t, 1.0f};
+                const hc::Placement at = hc::toward(live, held, fw);
+                target = hc::Rigid{at.q, at.at};
+            } else {
+                s_frozen[h] = false;
+            }
+        }
         ik::Bone src;
         memcpy(src.p, A[w].p, 12);
         memcpy(src.q, A[w].q, 16);
@@ -9341,13 +9362,14 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
         // s86b controller-frame placement lane (`offHandView*`) is no longer applied: its
         // axes were the grip pose's, which tilt up the handle, and the rows do its job.
         (void)rf; (void)rr; (void)ru;
-        // Mirrored: the OTHER hand's offset, mirrored. The hand model mirrors across its own
-        // local up in this (trimmed) frame - the same reflection mirror_trim_deg measured from the
-        // two hands' grip calibrations - so forward and right carry over and up changes sign.
-        const int oh = g_m4.mirror ? 1 - h : h;
+        // 2026-10-24: each hand keeps its OWN offset, mirrored or not, as its own rotation trim (hands.cpp:
+        // a trim aligns a controller with that hand's drawn wrist, whatever the hand shows). It used to take
+        // the other hand's, mirrored, with the rotation trim - which sat the left-held gun 24 deg off the
+        // real left hand for this tester.
+        const int oh = h;
         const float o0 = g_offHandPosCm[oh][0].load(std::memory_order_relaxed) * uuPerCm;
         const float o1 = g_offHandPosCm[oh][1].load(std::memory_order_relaxed) * uuPerCm;
-        const float o2 = g_offHandPosCm[oh][2].load(std::memory_order_relaxed) * uuPerCm * (g_m4.mirror ? -1.0f : 1.0f);
+        const float o2 = g_offHandPosCm[oh][2].load(std::memory_order_relaxed) * uuPerCm;
         for (int i = 0; i < 3; ++i) p[i] += tf[i] * o0 + tbr[i] * o1 + tu[i] * o2;
         memcpy(H.p, p, 12);
     }

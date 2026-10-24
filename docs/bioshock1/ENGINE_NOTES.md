@@ -8096,3 +8096,23 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
 - **The launcher's arms:** at the gun with full gun motion still moved only the free hand. The manual reload's keep
   record passes only a shot's recoil, and it zeroed the gun hand's part. With the manual reload off, a reload played
   at the gun now layers its full motion on the gun hand (handback::reload_full_motion).
+
+## 2026-10-24 late night - Each hand keeps its own trim; the left-held gun was 24 degrees off the real hand
+
+- The tester: the crossbow's left-right rotation differs between the hands. The 18:23 snapshot of the left-handed
+  two-handed hold shows the crossbow turned across the view, bow out to the right. On the 18:15 recording the
+  left-handed aim turned the gun 32 degrees on average (up to 106), with the real right hand 18 cm off the grip
+  point. Right-handed it was 7 degrees and 7 cm.
+- Cause: holding a gun, the left hand took the RIGHT hand's rotation trim, mirrored (frame_context.h
+  mirror_trim_deg; the 2026-10-19 choice, when the left hand's own trim was a plasmid hand's). A trim aligns a
+  controller with that hand's drawn wrist bone, whatever the hand shows. This tester's controllers do not sit
+  mirror-symmetric in the hands: the right trim's mirror (-64.7 14.8 162.5) is 24 degrees off the left hand's own
+  tune (-46.9 35.2 133.2). At a fore-grip about 20 cm from the hand, 24 degrees is 8.4 cm, which is the 9-10 cm every
+  left-handed grab measured. Each hand now keeps its own rotation trim and its own fist offset, mirrored or not.
+- The flamethrower's handle sits on the side of the tank, so the hand holding it is drawn as if its controller were
+  rolled a quarter turn clockwise about its forward axis (-Z), and mirrored the other way. It is applied only while
+  that gun is in that hand.
+- With the manual reload off, the game's own reload owns both hands: the two-handed grip lets go as it begins and
+  takes nothing until it ends (handback::game_reload). A reload whose clip works the gun's parts (the launcher, the
+  crossbow) also holds the gun hand's controller where it was when the reload began, fading with the reload's
+  weight, so the clip moves the whole arm.

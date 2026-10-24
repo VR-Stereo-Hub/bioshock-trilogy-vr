@@ -2,6 +2,7 @@
 #include "two_hand_math.h"
 #include "hand_compose.h"
 #include "manual_reload.h"
+#include "handback.h"
 #include "patterns.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
@@ -174,6 +175,10 @@ bool pad(bvr::input::PadOverride* pad, int gunPhys, bool busy, bool* changed, bo
     const bool fresh = s.ms && now - s.ms < kStaleMs && !busy;
     GripInput in;
     in.grip = grip;
+    // 2026-10-24 (the tester: "when manual reload is off, grips should not hold through reload animations"): the game's
+    // own reload owns both hands, so the hold lets go as it begins and nothing is grabbed until it ends. (With the
+    // manual reload on, the hold still keeps through a reload - the hands work it.)
+    if (handback::game_reload()) in.grip = false;
     in.takeHeld = g_takeHeld.exchange(false, std::memory_order_relaxed);
     if (fresh && s.paused) {
         in.distCm = -1.0f; // a clip owns the hands: a hold waits it out, nothing new is grabbed

@@ -54,6 +54,8 @@ float gun_motion(int hand, uint64_t nowMs);
 // manual reload off): how much of that clip's motion of the gun hand is layered on, 0..1 - the part of gun_motion the
 // manual reload's keep record must not take away (it passes only a shot's recoil).
 float reload_full_motion(int hand, uint64_t nowMs);
+// 2026-10-24: the game is playing its own reload of the gun in hand (the manual reload off).
+bool game_reload();
 
 // How much of the carry applies when the clip has the free hand's palm `clipCm` from the
 // weapon hand's: 1 within the join distance, 0 beyond it plus 20 cm, smootherstep between.

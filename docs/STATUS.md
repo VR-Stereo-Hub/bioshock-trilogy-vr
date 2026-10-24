@@ -48,6 +48,12 @@ middle, the wrapping fist, the left-handed support hand, room compression) are N
 
 ### Next steps
 
+- **2026-10-24 late night (installed, not seen):** the left-handed crossbow's yaw. The left hand took the right hand's
+  trim, mirrored, which sat the gun 24 degrees off the real hand. Each hand now keeps its own trim (ENGINE_NOTES
+  2026-10-24 late night). Also in this build: the flamethrower rolled a quarter turn to its side handle
+  automatically; no two-handed hold through the game's own reloads; the launcher's reload owns the right arm with
+  the manual reload off. Open: the reticle drifting after some shots (not found in the logs; the crossbow's barrel
+  origin is its bolt-seat socket), and where the flamethrower's support hand should grab.
 - **2026-10-24 night (installed 17:32, not seen):** "the left hand two hand" is the right-handed hold's support hand
   (ENGINE_NOTES 2026-10-24 night). Its new pose waits on the tester's pick from
   `verification\APPROVAL-crossbow-support.png`: the current pose, or the shotgun's, launcher's or Tommy Gun's grip on

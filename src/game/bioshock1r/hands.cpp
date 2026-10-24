@@ -1809,11 +1809,37 @@ void on_calcview(const FrameContext& ctx) {
                 const float p2[3] = {hp2.px, hp2.py, hp2.pz};
                 const float q2[4] = {hp2.qx, hp2.qy, hp2.qz, hp2.qw};
                 float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
-                // Mirrored, each hand shows the OTHER hand's layout, so it takes that hand's trim,
-                // mirrored (frame_context.h mirror_trim_deg) - the left hand holding the gun sits
-                // as the tuned right hand did (headset 2026-10-19: the trims did not carry over).
-                bones::off_hand_rot_deg(mirrored ? 1 - h : h, &trimP, &trimY, &trimR);
-                if (mirrored) mirror_trim_deg(trimP, trimY, trimR, &trimP, &trimY, &trimR);
+                // 2026-10-24 (the tester: the crossbow's "left right rotation is not the same between the
+                // left and right hand"): EACH HAND KEEPS ITS OWN TRIM, mirrored or not. A trim aligns a
+                // controller with the drawn wrist bone of that hand, whatever the hand shows - and this
+                // tester's two controllers do not sit mirror-symmetric in the hands: the right trim's mirror
+                // (-64.7 14.8 162.5) is 24 deg off the left hand's own tune (-46.9 35.2 133.2). The left
+                // hand holding a gun took that mirror, so the gun sat 24 deg off the real hand: the fore-grip
+                // ~8.4 cm from where the right hand reaches, which is what every left-handed two-handed grab
+                // measured (9-10 cm, the 16:54 and 18:15 runs), and the aim turned the gun up to 106 deg to
+                // meet it. (2026-10-19 took the other hand's trim, mirrored - "the trims did not carry
+                // over" - when the left hand's own tune was a plasmid hand's.)
+                bones::off_hand_rot_deg(h, &trimP, &trimY, &trimR);
+                // 2026-10-24 (the tester: the flamethrower "is the only one where the handle starts on the side so
+                // I have to roll it 90 degrees clockwise to hold the handle properly"): its handle sits on the
+                // side of the tank (the idle clip's gun hand holds it there), so the hand holding it is drawn as
+                // if its controller were rolled a quarter turn clockwise about its own forward axis (-Z) - top
+                // to the right, seen from behind; mirrored, to the left. Only while that gun is in this hand.
+                if (h == heldMesh) {
+                    void* hw = nullptr;
+                    const wchar_t* hcls = current_holdable(&hw) && hw ? patterns::object_class_name(hw) : nullptr;
+                    if (hcls && !_wcsicmp(hcls, L"ChemicalThrower")) {
+                        float tq[4], rq[4], nq[4];
+                        bvr::xrmath::xr_local_trim_quat(trimP / kRadToDeg, trimY / kRadToDeg, trimR / kRadToDeg, tq);
+                        bvr::xrmath::quat_axis_angle(0.0f, 0.0f, -1.0f, (mirrored ? -90.0f : 90.0f) / kRadToDeg, rq);
+                        bvr::xrmath::quat_mul(rq, tq, nq); // ctrl (x) roll (x) trim
+                        float p = 0, y = 0, r = 0;
+                        xr_local_trim_angles(nq, &p, &y, &r);
+                        trimP = p * kRadToDeg;
+                        trimY = y * kRadToDeg;
+                        trimR = r * kRadToDeg;
+                    }
+                }
                 // s86f: the step rows, converted in THIS frame of this hand (frame_context.h).
                 for (const HandStep& st : steps) {
                     if (st.hand != h) continue;

@@ -34,6 +34,9 @@ std::atomic<float> g_gunMotion{0.0f};
 // crossbow's lever and box) layers ALL of the clip's motion of the gun hand, whatever g_gunMotion says. Latched while
 // the gun hand's at-gun weight is out, so the blend back to the controller is not cut short.
 std::atomic<bool> g_fullGunMotion{false};
+// 2026-10-24: the game is playing a reload of its own (the manual reload off for this gun) - the two-handed grip lets go
+// for it (two_hand.cpp).
+std::atomic<bool> g_gameReload{false};
 // The free hand joins the gun while the clip has its palm within this of the gun hand's (cm,
 // drawn size). A guess until a reload's log line ("came within") measures BS1's clips.
 std::atomic<float> g_joinCm{35.0f};
@@ -125,6 +128,8 @@ void tick(const void* handsActor, int weaponHand, uint64_t now) {
     // that reloads by hand is the hands' from its first frame. active() comes a frame late (it begins in the gun
     // hand's tick) and drops between the clips of an ammunition switch's restarted reloads - and each time the
     // free hand began to be carried "at the gun", to where the clip has it: the pouch.
+    g_gameReload.store(st == State::Reloading && !(manual_reload::active() || manual_reload::handles_reloads()),
+                       std::memory_order_relaxed);
     if (st == State::Reloading && (manual_reload::active() || manual_reload::handles_reloads())) {
         g_reason = "manual reload (the hands stay on the controllers)";
     } else if (st == State::Reloading) {
@@ -196,6 +201,8 @@ float gun_motion(int hand, uint64_t now) {
     const float recoil = (1.0f - g_kick[h].weight(now)) * g_recoil.load(std::memory_order_relaxed);
     return reload > recoil ? reload : recoil;
 }
+
+bool game_reload() { return g_gameReload.load(std::memory_order_relaxed); }
 
 float reload_full_motion(int hand, uint64_t now) {
     return g_fullGunMotion.load(std::memory_order_relaxed) ? 1.0f - g_gun[hand ? 1 : 0].weight(now) : 0.0f;
