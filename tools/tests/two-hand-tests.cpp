@@ -98,6 +98,27 @@ int main() {
         const arm_ik::Quat id = two_hand::aim_turn(rear, authored, rear + Vec{2, 0, 0}, 5.0f);
         check(std::fabs(id.v[3]) > 0.999999f, "hands together (< min span): identity", id.v[3], 1);
     }
+    // ---- 2026-10-24: the aim without the roll about the barrel ----
+    {
+        // A fore-grip under the barrel (x forward, z up): the front hand moved sideways. The shortest swing rolls the
+        // gun about x; without the twist the gun's up stays in the plane the barrel and world-up make.
+        const Vec rear{0, 0, 0}, authored{30, 0, -7}, real{28, 12, -7};
+        const arm_ik::Quat q = two_hand::aim_turn(rear, authored, real, 5.0f);
+        const Vec barrel{1, 0, 0};
+        const arm_ik::Quat s = two_hand::without_twist(q, barrel);
+        // the twist left about the barrel: the swing turns the barrel, and nothing about it
+        const Vec b2 = arm_ik::rotate(s, barrel);
+        const Vec up2 = arm_ik::rotate(s, Vec{0, 0, 1});
+        const Vec side = arm_ik::cross(b2, Vec{0, 0, 1}); // horizontal, across the turned barrel
+        const float rollAfter = std::fabs(arm_ik::dot(up2, side * (1.0f / arm_ik::length(side))));
+        const Vec upQ = arm_ik::rotate(q, Vec{0, 0, 1});
+        const float rollBefore = std::fabs(arm_ik::dot(upQ, side * (1.0f / arm_ik::length(side))));
+        check(rollBefore > 0.02f, "the shortest swing rolls a gun gripped under its barrel (control)", rollBefore, 0.02);
+        check(rollAfter < 1e-3f, "without the twist the gun keeps its roll", rollAfter, 0);
+        check(arm_ik::dot(b2, Vec{1, 0, 0}) < 0.999f, "the swing still turns the barrel toward the front hand");
+        const arm_ik::Quat idq = two_hand::without_twist(arm_ik::Quat{}, barrel);
+        check(std::fabs(idq.v[3]) > 0.999999f, "identity in, identity out", idq.v[3], 1);
+    }
     // ---- the gun as drawn ----
     {
         // The tester's set: Weapon size 0.88 following hands of 0.81 (the lane writes 0.88 * 0.81 / 0.8).

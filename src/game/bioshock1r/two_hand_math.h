@@ -99,6 +99,24 @@ inline Quat aim_turn(Vec rearPalm, Vec authoredFront, Vec realFront, float minSp
     return align(a, r);
 }
 
+// 2026-10-24: the turn above is the shortest swing taking the fore-grip's direction onto the front hand's. The
+// fore-grip lies BELOW the barrel (the crossbow's stock: 6-7 units under), so that swing also rolls the gun about its
+// barrel - the 15:22 run's left-handed hold rolled 25-35 deg in a quarter second on taking hold, onto its side, against
+// the rule above (the roll stays the rear hand's). The swing-twist split: the part of `turn` about `barrel` (unit) is
+// removed, the rest - the pitch and yaw that point the gun - kept. Identity in, identity out.
+inline Quat without_twist(Quat turn, Vec barrel) {
+    const float len = arm_ik::length(barrel);
+    if (!(len > 1e-6f)) return turn;
+    const Vec d = barrel * (1.0f / len);
+    const float p = turn.v[0] * d.x + turn.v[1] * d.y + turn.v[2] * d.z;
+    Quat twist{{d.x * p, d.y * p, d.z * p, turn.v[3]}};
+    const float tl = std::sqrt(twist.v[0] * twist.v[0] + twist.v[1] * twist.v[1] + twist.v[2] * twist.v[2] +
+                               twist.v[3] * twist.v[3]);
+    if (!(tl > 1e-6f)) return turn; // a half turn exactly across the barrel: no twist to take out
+    for (int c = 0; c < 4; ++c) twist.v[c] /= tl;
+    return arm_ik::normalized(arm_ik::mul(turn, arm_ik::conj(twist)));
+}
+
 // The gun as drawn against the hands (2026-10-20). The game's clips place a hand against the gun
 // at the gun's AUTHORED size beside the game's own hand (the rig's DrawScale). The mod draws the
 // hands at `handSize` and the gun's skeleton scaled by `drawnWeaponScale` about its grip socket

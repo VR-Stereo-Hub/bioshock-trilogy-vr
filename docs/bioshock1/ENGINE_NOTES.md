@@ -8050,3 +8050,24 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   right-handed support hand's, within about 2 units. Every finger bone points along its finger and the curl matches.
   But a close render of the same frame still shows it beside the stock, not cupped under it. Not changed until the
   tester says which hold is meant and what is wrong with it.
+
+## 2026-10-24 late - The left-handed two-handed bug is the aim's ROLL, not the support hand
+
+- The tester: crossbow in the left hand, then two-handed, gives "the exact same bug it always has". On the 15:22
+  recording the support hand is right in every frame: its engine bones are the mirror of the right-handed hold within
+  3 degrees, rolls included, and drawn through both hands' corrections it is still within 3 degrees. What changes on
+  taking hold is the gun. Rendered from the eye, the left-handed two-handed frames show the crossbow rolled onto its
+  side, and the support hand under the stock then reads as open beside it.
+- Measured about the barrel (the drawn grip bone's x axis; the crossbow's limbs sit 35 units along it), the gun's
+  turn on taking hold was 52 degrees, 48 of them roll. The two-handed aim is the shortest swing taking the fore-grip's
+  direction onto the real front hand, and the fore-grip lies under the barrel, so the swing rolls the gun - against
+  the rule in two_hand_math.h that the roll stays the rear hand's. On top of the left wrist's own tilt, about 40
+  degrees from upright against about 20 right-handed, it lands on its side. The right-handed hold rolls about 35
+  degrees too, from nearly upright.
+- two_hand::without_twist takes the part of the turn about the barrel out (a swing-twist split, host-tested). The
+  left-handed hold uses it; the right-handed hold is unchanged until the tester asks for it there too.
+- Bone 44 of the hands rig is IKbindLhandDummy, the left hand's IK target on the gun, not a muzzle; the grip bone's x
+  axis is the barrel.
+- The 12:21 and 15:22 snapshot and replay pictures of this hold were read as the support hand being wrong, and the
+  first fix (the aim keeping the grab offset) went after the hand. The pictures that settle it are from the eye, with
+  the gun drawn on the hand that holds it.

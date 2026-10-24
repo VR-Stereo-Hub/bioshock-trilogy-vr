@@ -8543,7 +8543,22 @@ void m4_compose(bool late) {
                         // The turn from the gun as held; applied to the kicked gun it keeps the kick
                         // in the gun's own frame (turn * pinned.q * (pinned.q^-1 * own.q)), and the
                         // front hand, carried by this placement, kicks with it.
-                        const ik::Quat turn = two_hand::aim_turn(pinned.at, aimFront, real, 5.0f / toCmClip);
+                        ik::Quat turn = two_hand::aim_turn(pinned.at, aimFront, real, 5.0f / toCmClip);
+                        // 2026-10-24 (the tester: the left-handed two-handed hold "produces the exact same bug it
+                        // always has"; the 15:22 recording: on taking hold the gun rolled 25-35 deg about its barrel
+                        // within a quarter second, on top of the wrist's own tilt - onto its side, the support hand
+                        // reading open beside the stock): the fore-grip lies under the barrel, so the shortest swing
+                        // rolls the gun. The left-handed hold keeps the rear hand's roll, as the rule says - only the
+                        // pitch and yaw that point the gun are applied. The barrel: the grip bone's own x axis, as
+                        // this hand holds the gun now (the weapon hangs on 43 unturned - its actor's axes are the
+                        // drawn grip's within a degree - and the crossbow's limbs sit 35 units along its x; bone 44
+                        // is the left hand's IK target, not a muzzle). Measured on that recording, 48 of the grab's
+                        // 52 deg were roll about this axis.
+                        if (g_m4.mirror && patterns::kBoneWeaponAttach < n) {
+                            const ik::Quat gq = ik::normalized(ik::quat(A[patterns::kBoneWeaponAttach].q));
+                            const ik::Vec barrel = ik::rotate(pinned.q, ik::rotate(gq, ik::Vec{1.0f, 0.0f, 0.0f}));
+                            turn = two_hand::without_twist(turn, barrel);
+                        }
                         g_dbgAimTurnDeg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(turn.v[3]))) * 57.29578f;
                         const hc::Placement aimed{ik::normalized(ik::mul(turn, own.q)), own.at, own.s};
                         own = hc::toward(own, aimed, tw);

@@ -48,6 +48,11 @@ middle, the wrapping fist, the left-handed support hand, room compression) are N
 
 ### Next steps
 
+- **2026-10-24 late (installed 16:25, not seen): the left-handed two-handed bug.** The tester confirmed it is the
+  crossbow in the left hand, two-handed. The support hand was never wrong. The aim rolled the gun about 48 degrees
+  about its barrel on taking hold, onto its side. The left-handed aim now keeps the rear hand's roll
+  (two_hand::without_twist). The right-handed aim also rolls about 35 degrees; that is left as it is, pending the
+  tester (ENGINE_NOTES 2026-10-24 late).
 - **2026-10-24 evening (installed 16:01, not seen): the 15:22 run's fixes.** The lever hold was headset-approved ("lever
   animation is good"). The lever no longer gets stuck up: a squeeze at the lever no longer begins a reload. X drops
   the crossbow's box any time, including while the lever waits between shots. The new box is carried in the reload
