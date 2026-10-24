@@ -24,6 +24,8 @@ add_library(bioshockvr SHARED
     core/gfx/anim_shots.cpp
     core/gfx/anim_shots.h
     core/gfx/cube_snapshot.cpp
+    core/gfx/room_codec.cpp
+    core/gfx/room_codec.h
     core/gfx/cube_snapshot.h
     core/gfx/dlss_client.cpp
     core/gfx/dlss_client.h

@@ -7933,3 +7933,15 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   (GetBoneCoords on bone 0, which does not move against the gun), the written weapon size and DrawScale between.
 - The room cube's faces are 1024 (were 512) and the projection backdrop 1536 per eye (was 1280), on the tester's
   ask for a more detailed loading screen; a room file is 48 MB, and a 512 one no longer loads (recapture).
+
+## 2026-10-24 - The lever's handle by the weapon actor, the shotgun's fist on it; rooms compressed
+
+- The 00:18 snapshots, with the handle read from the lane's pose through the gun's root bone: the fist sat about
+  10 cm under the risen crossbar and to its right, and the hand stayed open. The handle is now placed as the pose
+  recordings' replay places every weapon bone - the weapon actor's location, rotation and DrawScale times the bone as
+  the lane wrote it - and its place is logged twice a second while held (`[hands] lever handle at ...`). The
+  crossbow's own rest pose holds its flat stock loosely; a hand closed round the lever takes the shotgun's rest
+  fingers, which wrap a round pump.
+- Room files are BVRROOM2: each colour face a JPEG (quality 0.92), each distance face a 16-bit PNG in millimetres
+  (core/gfx/room_codec, host-tested: colour within 3 levels, distances to the millimetre). The tester's 1024 Medical
+  Pavilion room measured 48.0 MB raw, 2.3 MB compressed; a raw room is rewritten compressed on its first load.

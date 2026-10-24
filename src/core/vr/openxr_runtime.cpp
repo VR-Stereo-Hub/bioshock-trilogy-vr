@@ -11,6 +11,7 @@
 #include "core/gfx/blit.h"
 #include "core/gfx/anim_shots.h"
 #include "core/gfx/cube_snapshot.h"
+#include "core/gfx/room_codec.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
 #include "core/ui/overlay_geometry.h"
@@ -267,7 +268,8 @@ std::mutex g_roomFileMutex;
 std::wstring g_roomFilePath; // guarded
 int g_roomFileOp = 0;        // guarded: 0 none, 1 save, 2 load, 3 clear
 std::atomic<int> g_roomFileResult{0}; // 1 ok, -1 failed, 0 pending/none (the last op)
-constexpr char kRoomMagic[8] = {'B', 'V', 'R', 'R', 'O', 'O', 'M', '1'};
+constexpr char kRoomMagic[8] = {'B', 'V', 'R', 'R', 'O', 'O', 'M', '1'};  // raw faces
+constexpr char kRoomMagic2[8] = {'B', 'V', 'R', 'R', 'O', 'O', 'M', '2'}; // compressed (core/gfx/room_codec)
 struct RoomFileHeader {
     char magic[8];
     uint32_t face;
@@ -2172,8 +2174,100 @@ bool room_snapshot_showing() {
            bvr::cube_snapshot::shown() != nullptr && g_space != XR_NULL_HANDLE;
 }
 
-// The save / load / clear the adapter asked for, on the present thread. A room
-// file is the header then the six faces as RGBA8 rows.
+// A room file (2026-10-24, BVRROOM2): the header, then each of the six colour faces as a JPEG and, with distances,
+// each of the six distance faces as a 16-bit PNG (core/gfx/room_codec), every blob after its uint32 length. A
+// BVRROOM1 file (raw RGBA8 rows, then raw R32F) still reads. `faces` / `depth` are the raw layouts either way.
+bool write_room(const std::wstring& path, const std::vector<uint8_t>& faces, const std::vector<uint8_t>* depth,
+                uint32_t splats, size_t* bytesOut) {
+    const uint32_t n = bvr::cube_snapshot::kFaceSize;
+    const size_t faceBytes = static_cast<size_t>(n) * n * 4;
+    if (faces.size() != faceBytes * 6 || (depth && depth->size() != faceBytes * 6)) return false;
+    std::vector<std::vector<uint8_t>> blobs;
+    for (int f = 0; f < 6; ++f) {
+        blobs.emplace_back();
+        if (!bvr::room_codec::encode_colour(faces.data() + f * faceBytes, n, n, blobs.back())) return false;
+    }
+    if (depth)
+        for (int f = 0; f < 6; ++f) {
+            blobs.emplace_back();
+            if (!bvr::room_codec::encode_depth(reinterpret_cast<const float*>(depth->data() + f * faceBytes), n, n,
+                                               blobs.back()))
+                return false;
+        }
+    RoomFileHeader h{};
+    memcpy(h.magic, kRoomMagic2, sizeof(h.magic));
+    h.face = n;
+    h.format = static_cast<uint32_t>(g_swapFormat);
+    h.splats = splats;
+    h.reserved = depth ? 1u : 0u;
+    // Written beside and swapped in, so a failed write never leaves a broken room.
+    const std::wstring tmp = path + L".tmp";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, tmp.c_str(), L"wb") != 0 || !f) return false;
+    bool ok = fwrite(&h, sizeof(h), 1, f) == 1;
+    size_t total = sizeof(h);
+    for (const auto& b : blobs) {
+        const uint32_t len = static_cast<uint32_t>(b.size());
+        ok = ok && fwrite(&len, 4, 1, f) == 1 && fwrite(b.data(), 1, b.size(), f) == b.size();
+        total += 4 + b.size();
+    }
+    fclose(f);
+    ok = ok && MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (!ok) DeleteFileW(tmp.c_str());
+    if (bytesOut) *bytesOut = total;
+    return ok;
+}
+
+bool read_room(const std::wstring& path, std::vector<uint8_t>& faces, std::vector<uint8_t>& depth, bool* withDepth,
+               bool* raw) {
+    *withDepth = false;
+    *raw = false;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return false;
+    RoomFileHeader h{};
+    const uint32_t n = bvr::cube_snapshot::kFaceSize;
+    const size_t faceBytes = static_cast<size_t>(n) * n * 4;
+    bool ok = fread(&h, sizeof(h), 1, f) == 1 && h.face == n;
+    const bool v1 = ok && memcmp(h.magic, kRoomMagic, sizeof(h.magic)) == 0;
+    const bool v2 = ok && memcmp(h.magic, kRoomMagic2, sizeof(h.magic)) == 0;
+    ok = ok && (v1 || v2);
+    if (ok && v1) {
+        faces.resize(faceBytes * 6);
+        ok = fread(faces.data(), 1, faces.size(), f) == faces.size();
+        if (ok && h.reserved == 1u) {
+            depth.resize(faces.size());
+            *withDepth = fread(depth.data(), 1, depth.size(), f) == depth.size();
+        }
+        *raw = ok;
+    } else if (ok && v2) {
+        faces.resize(faceBytes * 6);
+        auto blob = [&](std::vector<uint8_t>& b) {
+            uint32_t len = 0;
+            if (fread(&len, 4, 1, f) != 1 || len == 0 || len > 64u * 1024 * 1024) return false;
+            b.resize(len);
+            return fread(b.data(), 1, len, f) == len;
+        };
+        std::vector<uint8_t> b, px;
+        for (int i = 0; i < 6 && ok; ++i) {
+            ok = blob(b) && bvr::room_codec::decode_colour(b.data(), b.size(), n, n, px);
+            if (ok) memcpy(faces.data() + i * faceBytes, px.data(), faceBytes);
+        }
+        if (ok && h.reserved == 1u) {
+            depth.resize(faceBytes * 6);
+            std::vector<float> m;
+            bool d = true;
+            for (int i = 0; i < 6 && d; ++i) {
+                d = blob(b) && bvr::room_codec::decode_depth(b.data(), b.size(), n, n, m);
+                if (d) memcpy(depth.data() + i * faceBytes, m.data(), faceBytes);
+            }
+            *withDepth = d;
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
+// The save / load / clear the adapter asked for, on the present thread.
 void room_file_service() {
     std::wstring path;
     int op = 0;
@@ -2192,42 +2286,14 @@ void room_file_service() {
         std::vector<uint8_t> faces, depth;
         ok = bvr::cube_snapshot::download(faces);
         const bool withDepth = ok && bvr::cube_snapshot::download_depth(depth) && depth.size() == faces.size();
-        if (ok) {
-            RoomFileHeader h{};
-            memcpy(h.magic, kRoomMagic, sizeof(h.magic));
-            h.face = bvr::cube_snapshot::kFaceSize;
-            h.format = static_cast<uint32_t>(g_swapFormat);
-            h.splats = bvr::cube_snapshot::splats();
-            h.reserved = withDepth ? 1u : 0u; // 1: the distance faces follow the colour
-            FILE* f = nullptr;
-            ok = _wfopen_s(&f, path.c_str(), L"wb") == 0 && f;
-            if (ok) {
-                ok = fwrite(&h, sizeof(h), 1, f) == 1 && fwrite(faces.data(), 1, faces.size(), f) == faces.size() &&
-                     (!withDepth || fwrite(depth.data(), 1, depth.size(), f) == depth.size());
-                fclose(f);
-            }
-        }
-        BVR_LOG("xr: room snapshot: save %s (%ls, %s)", ok ? "OK" : "FAILED", path.c_str(),
-                withDepth ? "colour and distances: stereo" : "colour only: mono");
+        size_t bytes = 0;
+        if (ok) ok = write_room(path, faces, withDepth ? &depth : nullptr, bvr::cube_snapshot::splats(), &bytes);
+        BVR_LOG("xr: room snapshot: save %s (%ls, %s, %.1f MB)", ok ? "OK" : "FAILED", path.c_str(),
+                withDepth ? "colour and distances: stereo" : "colour only: mono", bytes / 1048576.0);
     } else if (op == 2) {
-        FILE* f = nullptr;
-        RoomFileHeader h{};
         std::vector<uint8_t> faces, depth;
-        bool withDepth = false;
-        ok = _wfopen_s(&f, path.c_str(), L"rb") == 0 && f;
-        if (ok) {
-            ok = fread(&h, sizeof(h), 1, f) == 1 && memcmp(h.magic, kRoomMagic, sizeof(h.magic)) == 0 &&
-                 h.face == bvr::cube_snapshot::kFaceSize;
-            if (ok) {
-                faces.resize(static_cast<size_t>(6) * h.face * h.face * 4);
-                ok = fread(faces.data(), 1, faces.size(), f) == faces.size();
-            }
-            if (ok && h.reserved == 1u) {
-                depth.resize(faces.size());
-                withDepth = fread(depth.data(), 1, depth.size(), f) == depth.size();
-            }
-            fclose(f);
-        }
+        bool withDepth = false, raw = false;
+        ok = read_room(path, faces, depth, &withDepth, &raw);
         // The bytes are 8-bit either way; the saved cube takes the live format so
         // the copy into the cube swapchain stays a plain copy.
         if (ok && g_context)
@@ -2236,6 +2302,13 @@ void room_file_service() {
                                                   withDepth ? depth.data() : nullptr);
         BVR_LOG("xr: room snapshot: load %s (%ls%s)", ok ? "OK" : "FAILED", path.c_str(),
                 !ok ? " - the live cube shows instead" : withDepth ? ", stereo" : ", mono (no distances in it)");
+        // 2026-10-24: a room saved raw (48 MB at 1024 a face) is written again compressed, once.
+        if (ok && raw) {
+            size_t bytes = 0;
+            const bool re = write_room(path, faces, withDepth ? &depth : nullptr, 0, &bytes);
+            BVR_LOG("xr: room snapshot: %ls rewritten compressed (%s, %.1f MB)", path.c_str(), re ? "OK" : "FAILED",
+                    bytes / 1048576.0);
+        }
     }
     g_roomFileResult.store(ok ? 1 : -1, std::memory_order_relaxed);
 }

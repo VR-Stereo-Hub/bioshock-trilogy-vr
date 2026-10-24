@@ -6915,30 +6915,27 @@ palette::WeaponXform g_recWx;
 // the weapon lane's own copy of the clip's pose instead (g_wAnim, weapon space - the one the pose recordings
 // showed moving), carried into the world by the gun's root bone as the engine places it (root and tip in the same
 // weapon space, the written weapon size and the actor's DrawScale between them).
+// 2026-10-24 (the snapshots: the fist about 10 cm under the risen crossbar): the gun's root bone through
+// GetBoneCoords was not a sound frame for the lane's pose. The weapon actor's own placement is - it is how the
+// pose recordings' replay places every weapon bone (tools\blender\pose_capture.py: the actor's location, rotation
+// and DrawScale, times the bone as the lane wrote it), and the replay's lever has always sat on the drawn one.
 bool lever_tip_component(float out[3]) {
     const int tip = bones::weapon_bone_index("X_LeverNUB");
-    if (tip < 0 || !g_wHoldable || !g_m4.actor || g_wBoneCount < 1) return false;
-    static int32_t s_root = -2;
-    static const void* s_for = nullptr;
-    if (s_for != g_wHoldable) {
-        s_for = g_wHoldable;
-        s_root = script::name_index(g_wName[0]);
-    }
-    if (s_root < 0) return false;
-    float o0[3], a0[3][3];
-    if (!muzzle::bone_coords(g_wHoldable, s_root, o0, a0)) return false;
+    if (tip < 0 || !g_wHoldable || !g_m4.actor) return false;
+    float wLoc[3];
+    int32_t wRot[3];
+    if (!read_n(static_cast<uint8_t*>(g_wHoldable) + patterns::kActorLocOffset, wLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(g_wHoldable) + patterns::kActorViewDirOffset, wRot, 12))
+        return false;
     float ds = 1.0f;
     if (!ds_read(g_wHoldable, &ds) || !(ds > 0.01f)) ds = 1.0f;
-    const float s = ds * bones::weapon_written_scale();
-    // The tip against the root in weapon space, into the root's own frame (the inverse of its rotation), then out
-    // along the root's world axes (a0[r]: the root's axis r in the world, as manual_reload's weapon_space reads them).
-    const float d[3] = {(g_wAnim[tip].p[0] - g_wAnim[0].p[0]) * s, (g_wAnim[tip].p[1] - g_wAnim[0].p[1]) * s,
-                        (g_wAnim[tip].p[2] - g_wAnim[0].p[2]) * s};
-    float qi[4], local[3];
-    quat_conj(g_wAnim[0].q, qi);
-    qts_rotate(qi, d, local);
-    float w[3];
-    for (int c = 0; c < 3; ++c) w[c] = o0[c] + local[0] * a0[0][c] + local[1] * a0[1][c] + local[2] * a0[2][c];
+    const float ws = g_wWrittenValid ? 1.0f : bones::weapon_written_scale(); // written poses carry the size already
+    const Qts& b = g_wWrittenValid ? g_wWritten[tip] : g_wAnim[tip];
+    const float p[3] = {b.p[0] * ws * ds, b.p[1] * ws * ds, b.p[2] * ws * ds};
+    float wq[4], r[3];
+    ue_rot_to_quat(FRotator{wRot[0], wRot[1], wRot[2]}, wq);
+    qts_rotate(wq, p, r);
+    const float w[3] = {wLoc[0] + r[0], wLoc[1] + r[1], wLoc[2] + r[2]};
     return bones::world_to_component(g_m4.actor, w, out);
 }
 Qts g_evMirror[kMaxBones];
@@ -8076,7 +8073,10 @@ void m4_compose(bool late) {
         if (n > hi && n <= kMaxBones && gw < n && patterns::kBoneWeaponAttach < n) {
             void* curGun = nullptr;
             hands::current_holdable(&curGun);
-            const gun_geometry::RestPose* rest = gun_rest(curGun);
+            // 2026-10-23 late (the snapshots: the hand on the crossbow's lever stays open): the crossbow's own rest pose
+            // holds its flat stock loosely; a hand closed round the lever takes the shotgun's, which wraps a round pump.
+            const gun_geometry::RestPose* rest = manual_reload::hand_closed_on_part() ? gun_geometry::rest_pose(L"Shotgun")
+                                                                                     : gun_rest(curGun);
             // The tables are the LEFT hand's on the gun in the right; they serve the free hand when that is the
             // left (unmirrored) or, with the gun in the left hand, the right drawing the left's clip mirrored.
             const bool leftFrameOk = (fh == 0 && !g_m4.mirror) ||
@@ -8565,7 +8565,18 @@ void m4_compose(bool late) {
                     float tip[3];
                     if (manual_reload::hand_closed_on_part() && lever_tip_component(tip)) {
                         const hc::Placement gunP{ik::normalized(ik::quat(G.q)), ik::vec(G.t), G.s};
+                        const ik::Vec clipAt = onPart.at;
                         onPart.at = hc::place(gunP, ik::vec(G.pivot), on_gun(ik::vec(tip)));
+                        // The handle as read and where the clip's own hand was, twice a second while it is held: the
+                        // tip has to move through the stroke, and the two are what the snapshots compare against.
+                        static uint64_t s_tipLogMs = 0;
+                        if (!late && now - s_tipLogMs >= 500) {
+                            s_tipLogMs = now;
+                            const float toCm = g_m4.uuPerCm > 1e-4f ? k / g_m4.uuPerCm : 0.0f;
+                            BVR_LOG("[hands] lever handle at %.1f %.1f %.1f (component) | the fist goes there, %.1f cm from "
+                                    "where the clip's hand was | weight %.2f",
+                                    tip[0], tip[1], tip[2], ik::length(onPart.at - clipAt) * toCm, g_handOnPartW);
+                        }
                     }
                     own = hc::toward(own, onPart, g_handOnPartW);
                 }
