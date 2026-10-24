@@ -94,6 +94,7 @@ uint64_t g_requestedMs = 0;
 uint64_t g_startMs = 0;
 float g_q[4] = {0, 0, 0, 1};
 float g_cam[3] = {0, 0, 0}; // the camera this frame (UE units), for the by-reach hide
+uint64_t g_lastGameplayMs = 0; // the last CalcView in strict gameplay
 
 void build_dirs() {
     g_dirCount = 0;
@@ -165,6 +166,7 @@ void tick_sweep(bool strictGameplay) {
 } // namespace
 
 void on_calcview(bool strictGameplay) {
+    if (strictGameplay) g_lastGameplayMs = GetTickCount64();
     watch_map(strictGameplay);
     if (g_pendingLoad) {
         const int r = bvr::vr::room_file_result();
@@ -199,6 +201,12 @@ void start() {
     if (g_active.load(std::memory_order_relaxed)) return;
     if (!bvr::vr::room_snapshot()) {
         BVR_LOG("[room] capture refused: the room snapshot is off (F10 Display, or vrsnap on)");
+        return;
+    }
+    // 2026-10-23: only in gameplay. The F10 preferences save every toggle, this one included, and restoring a saved
+    // "on" at launch started a sweep before any level existed (the 21:20 run: "capture sweep ... map " at start-up).
+    if (!g_lastGameplayMs || GetTickCount64() - g_lastGameplayMs > 500 || !screens::map_name()[0]) {
+        BVR_LOG("[room] capture refused: not in gameplay (stand in the room you want, then turn it on)");
         return;
     }
     build_dirs();

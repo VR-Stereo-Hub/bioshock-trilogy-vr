@@ -156,14 +156,17 @@ inline constexpr Phase kLauncher[] = {
 // Tommy's drum pull, on a lever; the box (X_AmmoBox, 120 units of flip in the clip, never played) is the gun's
 // own bone carried at the palm, as the launcher's, off the gun and back on with the clip held at 1.95 s (the
 // lever up, the box on in the clip). Palm paths against the grip from reload_pose.py (2026-10-22).
+// 2026-10-23 (the tester: the lever's "grab point is wrong"): each lever path's first point is the lever's TIP where
+// it sits while the clip waits there, measured from the 21:21 recording (X_LeverNUB in the grip's frame), not the
+// clip palm's first sample - those were 6 units under the tip for the pulls up and 11-14 off for the pulls down.
 inline constexpr Pt kCrossbowLeverUp[] = {
-    {0.45f, {-23.5f, -10.7f, 28.6f}}, {0.65f, {0.4f, -4.6f, 49.9f}}, {0.75f, {4.2f, -3.6f, 50.3f}}};
+    {0.45f, {-23.7f, -12.8f, 34.4f}}, {0.65f, {0.4f, -4.6f, 49.9f}}, {0.75f, {4.2f, -3.6f, 50.3f}}};
 inline constexpr Pt kCrossbowBoxOut[] = {
     {1.95f, {4.3f, -4.7f, 30.0f}}, {1.95f, {0.0f, -5.0f, 42.0f}}, {1.95f, {-6.0f, -6.0f, 54.0f}}};
 inline constexpr Pt kCrossbowBoxIn[] = {
     {1.95f, {-6.0f, -6.0f, 54.0f}}, {1.95f, {0.0f, -5.0f, 42.0f}}, {1.95f, {4.3f, -4.7f, 31.0f}}};
 inline constexpr Pt kCrossbowLeverDown[] = {
-    {2.25f, {18.6f, 5.5f, 48.5f}}, {2.35f, {15.6f, 4.4f, 48.0f}}, {2.45f, {-12.8f, -6.4f, 31.5f}}, {2.55f, {-10.9f, -7.7f, 27.9f}}};
+    {2.25f, {11.2f, 4.6f, 56.5f}}, {2.35f, {15.6f, 4.4f, 48.0f}}, {2.45f, {-12.8f, -6.4f, 31.5f}}, {2.55f, {-10.9f, -7.7f, 27.9f}}};
 // 2026-10-23 (the tester: the lever's "spot is hard to grab"; the 07:27 run logged lever grabs at reach 0.72-0.99, a
 // hair inside the 12 cm radius): every lever pull is grabbed from 21 cm (grabScale 1.75), from either side of the stock.
 inline constexpr Phase kCrossbow[] = {
@@ -181,9 +184,9 @@ inline constexpr Phase kCrossbow[] = {
 // shotgun's pump), the lever is pulled up and down along the clip's own hand path with the hand locked on it, and
 // the clip runs out. Palm paths from reload_pose.py on Crossbow__FireCrossbow / Default__Fire.
 inline constexpr Pt kCrossbowCockUp[] = {
-    {0.85f, {-20.6f, -10.8f, 31.8f}}, {0.90f, {-4.8f, -7.3f, 48.5f}}, {0.95f, {6.0f, -2.6f, 50.9f}}, {1.00f, {7.0f, -2.4f, 51.0f}}};
+    {0.85f, {-19.2f, -7.6f, 37.7f}}, {0.90f, {-4.8f, -7.3f, 48.5f}}, {0.95f, {6.0f, -2.6f, 50.9f}}, {1.00f, {7.0f, -2.4f, 51.0f}}};
 inline constexpr Pt kCrossbowCockDown[] = {
-    {1.30f, {12.8f, 3.0f, 47.3f}}, {1.35f, {-6.7f, -3.1f, 39.1f}}, {1.40f, {-14.0f, -7.4f, 28.6f}}};
+    {1.30f, {0.6f, 1.8f, 54.6f}}, {1.35f, {-6.7f, -3.1f, 39.1f}}, {1.40f, {-14.0f, -7.4f, 28.6f}}};
 inline constexpr Phase kCrossbowCock[] = {
     {Kind::Pull, 0.85f, 1.00f, kCrossbowCockUp, 4, "X_Lever", "cock the lever up", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
     {Kind::Pull, 1.30f, 1.40f, kCrossbowCockDown, 3, "X_Lever", "cock the lever down", false, true, 1.75f, -1.0f, 0.0f, -1.0f, false, true},
@@ -685,7 +688,14 @@ private:
         lastNow_ = in.now;
         // A pull the hand is already holding at its start - the reload's own first pull, or the next
         // stroke of the same part (the pump back, then forward) - is already being dragged.
-        if (ph().kind == Kind::Pull && in.grip && near_phase(ph(), in.hand, grabU_)) sub_ = Sub::Drag;
+        // 2026-10-23 (the tester: the lever down once had "no grab point"; the 21:25 run: the crossbow's lever-down
+        // pull completed 9 ms after the box was seated): only the reload's first pull or the next stroke of the SAME
+        // part carries the held grip over - the hand still squeezing a seated box is not holding the lever.
+        const bool samePartAsBefore = phase_ > 0 && prog_->phases[phase_ - 1].kind == Kind::Pull &&
+                                      ph().part && prog_->phases[phase_ - 1].part &&
+                                      !strcmp(ph().part, prog_->phases[phase_ - 1].part);
+        if (ph().kind == Kind::Pull && in.grip && (phase_ == 0 || samePartAsBefore) && near_phase(ph(), in.hand, grabU_))
+            sub_ = Sub::Drag;
         // The next stroke of a slide the hand is still holding (the pump back, then forward) goes on
         // from where the hand is.
         if (ph().kind == Kind::Slide && in.grip && phase_ > 0 && prog_->phases[phase_ - 1].kind == Kind::Slide) {

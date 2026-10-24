@@ -9,6 +9,7 @@
 #include "core/gfx/desktop_present.h"
 
 #include "core/gfx/blit.h"
+#include "core/gfx/anim_shots.h"
 #include "core/gfx/cube_snapshot.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
@@ -2537,6 +2538,7 @@ void teardown_session(const char* why) {
     if (g_space != XR_NULL_HANDLE) { xrDestroySpace(g_space); g_space = XR_NULL_HANDLE; }
     if (g_session != XR_NULL_HANDLE) { xrDestroySession(g_session); g_session = XR_NULL_HANDLE; }
     bvr::cube_snapshot::release(); // device objects; the next splat rebuilds them
+    bvr::anim_shots::release();
     g_cubeLastSplatMs = 0;
     if (g_context) { g_context->Release(); g_context = nullptr; }
     if (g_device) { g_device->Release(); g_device = nullptr; }
@@ -3186,6 +3188,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     PhaseScope psBegin(kPhPresentBegin); // records on every return path
     g_presentsSeen.fetch_add(1, std::memory_order_relaxed);
     room_file_service(); // a room save/load the adapter asked for, on the device's thread
+    bvr::anim_shots::service(g_context); // animation snapshots: a few finished frames to disk
     // Sticky, for the watchdog to aim at when no draw stage is open (session 35).
     g_presentTidSticky.store(GetCurrentThreadId(), std::memory_order_relaxed);
     trace_thread_start(); // idempotent; the flat simulation needs it too
@@ -4577,6 +4580,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // board floats in the room instead of on the frame's black.
                     if (!projectionMode && room_snapshot_showing())
                         screenKeyed = bvr::cube_snapshot::key_black(g_context, g_images[target][index].texture);
+                    // Animation snapshots (a diagnostic, off by default): the left eye as the headset shows it.
+                    if (target == 0 && bvr::anim_shots::enabled())
+                        bvr::anim_shots::on_eye_image(g_context, g_images[target][index].texture);
                     if (snapFrame) {
                         const XrView* gen = g_viewsContent;
                         if (srFrame) {

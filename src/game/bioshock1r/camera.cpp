@@ -30,6 +30,9 @@
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/room_capture.h"
+#include "game/bioshock1r/hands_state.h"
+#include "game/bioshock1r/two_hand.h"
+#include "core/gfx/anim_shots.h"
 #include "game/bioshock1r/scripted.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
@@ -2288,6 +2291,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // engine's own movie stack names them exactly.
     screens::on_calcview(self, viewActor ? *viewActor : nullptr);
     room_capture::on_calcview(strictGameplay); // the per-level room and the capture sweep
+    // 2026-10-23 the animation snapshots' label (core/gfx/anim_shots): what is playing now, empty when nothing is -
+    // the hands' state when it is not an idle, a reload step, or a two-handed hold.
+    if (bvr::anim_shots::enabled()) {
+        char label[200] = "";
+        const wchar_t* st = hands_state::current_name(hands::hands_actor());
+        void* w = nullptr;
+        const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
+        const char* step = manual_reload::phase_text();
+        const bool idle = !st || wcsstr(st, L"Idling");
+        if (!idle || step[0] || two_hand::held())
+            sprintf_s(label, "%S %S%s%s%s", st ? st : L"?", cls ? cls : L"-", step[0] ? " | " : "", step,
+                      two_hand::held() ? " | two-handed" : "");
+        bvr::anim_shots::set_label(label);
+    }
 
     // s64 part 2: PausePC.swf IS ON THE STACK DURING BATHYSPHERE RIDES AND EVERY
     // SCRIPTED SCENE, not just at the pause menu. Measured 2026-08-22:

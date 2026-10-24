@@ -96,6 +96,10 @@ float hand_lock(uint64_t nowMs);
 // Game thread: the reload asks for the free hand on the part this frame (the bolt held) - the hand pose
 // engine's input; the ease is the engine's (hand_pose.h).
 bool hand_lock_wanted();
+// ...and the locked part is a handle the hand closes round (Phase::handOnPart: the crossbow's lever).
+bool hand_closed_on_part();
+// The step the reload waits at or works now, in words ("" when none) - for the animation snapshots' labels.
+const char* phase_text();
 // Game thread: the reload's hand is pulling or sliding a part (taken hold, not yet done) - the clip's hand
 // shape on it is the one to draw (hand_pose.h rule 5).
 bool dragging();

@@ -8056,6 +8056,7 @@ void m4_compose(bool late) {
             in.hasRestPose = rest != nullptr && leftFrameOk;
             in.designedGrip = designed != nullptr && leftFrameOk;
             in.partLocked = manual_reload::hand_lock_wanted();
+            in.partClosed = manual_reload::hand_closed_on_part();
             in.dragging = manual_reload::dragging();
             in.hasRelaxed = relaxed != nullptr && relaxedN > 0 && leftFrameOk;
             in.weaponInHand = curGun != nullptr && (manual_reload::handles_reloads() || gun_row(curGun) != nullptr);

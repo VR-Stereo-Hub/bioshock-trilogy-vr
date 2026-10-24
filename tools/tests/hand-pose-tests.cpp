@@ -88,6 +88,15 @@ int main() {
         in.partLocked = true;
         Decision d = resolve_free(in);
         check(d.wrist == Wrist::OnPart && d.fingers == Fingers::Clip && d.rule == 4, "the bolt: on the part, the clip's fingers");
+        // 2026-10-23: a handle the hand closes round (the crossbow's lever) keeps the gun's grip fist.
+        in.partClosed = true;
+        in.hasRestPose = true;
+        d = resolve_free(in);
+        check(d.wrist == Wrist::OnPart && d.fingers == Fingers::Rest && d.rule == 4, "the lever: on the part, the grip fist");
+        in.hasRestPose = false;
+        d = resolve_free(in);
+        check(d.fingers == Fingers::Clip, "the lever on a gun with no rest pose: the clip's fingers (control)");
+        in.partClosed = false;
         in.partLocked = false;
         in.dragging = true;
         d = resolve_free(in);

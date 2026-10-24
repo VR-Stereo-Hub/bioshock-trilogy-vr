@@ -597,6 +597,15 @@ bool sticky_grip() { return g_sticky.load(std::memory_order_relaxed); }
 float gun_motion_keep() { return g_gunKeep; }
 
 bool hand_lock_wanted() { return g_handLock && g_machine.active(); }
+const char* phase_text() {
+    const rr::Program* p = g_machine.program();
+    if (!g_machine.active() || !p || g_machine.phase() >= p->n) return "";
+    return p->phases[g_machine.phase()].say ? p->phases[g_machine.phase()].say : "";
+}
+bool hand_closed_on_part() {
+    const rr::Program* p = g_machine.program();
+    return hand_lock_wanted() && p && g_machine.phase() < p->n && p->phases[g_machine.phase()].handOnPart;
+}
 bool dragging() {
     // Waiting at a part and taken hold of (Pull / Slide / Flick dragging): the machine says the hand is not free.
     const rr::Program* p = g_machine.program();

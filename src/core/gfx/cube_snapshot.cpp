@@ -51,10 +51,18 @@ void splat_at(float2 cubeUv, out float2 uv, out float2 t) {
     if (t.x < tans.x * k || t.x > tans.y * k || t.y > tans.z * k || t.y < tans.w * k) discard;
     uv = float2((t.x - tans.x) / (tans.y - tans.x), (tans.z - t.y) / (tans.z - tans.w));
 }
+// 2026-10-23 (the tester: "some pretty visible seamlines"): a splat used to replace the cube out to the
+// rim of its view, so neighbouring captures met at a hard edge. Its weight now falls to 0 over the outer
+// fifth of the image (the alpha the splat's blend uses), so overlapping captures fade into each other;
+// with the sweep's overlap every texel is near the middle of some capture.
+float edge_w(float2 uv) {
+    float e = min(min(uv.x, 1 - uv.x), min(uv.y, 1 - uv.y)); // 0 at the rim, 0.5 in the middle
+    return smoothstep(0.0, 0.2, e);
+}
 float4 ps_main(VSOut i) : SV_Target {
     float2 uv, t;
     splat_at(i.uv, uv, t);
-    return float4(eyeTex.Sample(samp0, uv).rgb, 1);
+    return float4(eyeTex.Sample(samp0, uv).rgb, edge_w(uv));
 }
 // 2026-10-23 (the tester: "mono painted around you"): with the eye image's linear depth
 // (uu along the view axis) the cube keeps each texel's DISTANCE too, in metres (params.z
@@ -65,7 +73,7 @@ SplatOut ps_splat_depth(VSOut i) {
     float2 uv, t;
     splat_at(i.uv, uv, t);
     SplatOut o;
-    o.c = float4(eyeTex.Sample(samp0, uv).rgb, 1);
+    o.c = float4(eyeTex.Sample(samp0, uv).rgb, edge_w(uv));
     o.d = depthTex.SampleLevel(samp0, uv, 0).r * sqrt(1 + dot(t, t)) / params.z;
     return o;
 }
@@ -136,6 +144,7 @@ ImageRtv g_imageRtvs[16] = {}; // the swapchain images the passes wrote (eye and
 int g_imageRtvCount = 0;
 ID3D11Buffer* g_cb = nullptr;
 ID3D11BlendState* g_blend = nullptr;
+ID3D11BlendState* g_blendSplat = nullptr; // a splat fades into the cube by its edge weight (colour only)
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_raster = nullptr;
 ID3D11DepthStencilState* g_depth = nullptr;
@@ -170,6 +179,24 @@ void release_src() {
     g_src = nullptr;
     g_srcW = g_srcH = 0;
     g_srcFmt = DXGI_FORMAT_UNKNOWN;
+}
+
+// The splat's blend: colour = src * a + dst * (1 - a) with a the edge weight; the cube's alpha keeps the
+// largest weight seen (coverage); the distance target (RT1) is written outright.
+bool make_splat_blend(ID3D11Device* dev) {
+    D3D11_BLEND_DESC bd{};
+    bd.IndependentBlendEnable = TRUE;
+    auto& c = bd.RenderTarget[0];
+    c.BlendEnable = TRUE;
+    c.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    c.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    c.BlendOp = D3D11_BLEND_OP_ADD;
+    c.SrcBlendAlpha = D3D11_BLEND_ONE;
+    c.DestBlendAlpha = D3D11_BLEND_ONE;
+    c.BlendOpAlpha = D3D11_BLEND_OP_MAX;
+    c.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    bd.RenderTarget[1].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    return SUCCEEDED(dev->CreateBlendState(&bd, &g_blendSplat));
 }
 
 bool ensure_pipeline(ID3D11Device* dev) {
@@ -228,7 +255,7 @@ bool ensure_pipeline(ID3D11Device* dev) {
         rd.DepthClipEnable = TRUE;
         D3D11_DEPTH_STENCIL_DESC dd{};
         ok = SUCCEEDED(dev->CreateBuffer(&cbd, nullptr, &g_cb)) &&
-             SUCCEEDED(dev->CreateBlendState(&bd, &g_blend)) &&
+             SUCCEEDED(dev->CreateBlendState(&bd, &g_blend)) && make_splat_blend(dev) &&
              SUCCEEDED(dev->CreateSamplerState(&sd, &g_sampler)) &&
              SUCCEEDED(dev->CreateRasterizerState(&rd, &g_raster)) &&
              SUCCEEDED(dev->CreateDepthStencilState(&dd, &g_depth));
@@ -462,6 +489,7 @@ bool splat(ID3D11DeviceContext* ctx, ID3D11Texture2D* eyeImage, const float q[4]
     ID3D11ShaderResourceView* oldT2 = nullptr;
     ctx->PSGetShaderResources(2, 1, &oldT2);
     bind_pass(ctx, withDepth ? g_psSplatDepth : g_ps, static_cast<float>(kFaceSize), static_cast<float>(kFaceSize));
+    ctx->OMSetBlendState(g_blendSplat, nullptr, 0xFFFFFFFF);
     if (withDepth) ctx->PSSetShaderResources(2, 1, &linearZ);
 
     SplatCB cb{};
@@ -724,7 +752,7 @@ void reset() {
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
     if (ctx) {
-        const float black[4] = {0, 0, 0, 1};
+        const float black[4] = {0, 0, 0, 0}; // alpha: no capture has covered it yet
         const float none[4] = {0, 0, 0, 0};
         for (auto* r : g_faceRtv)
             if (r) ctx->ClearRenderTargetView(r, black);
@@ -744,6 +772,8 @@ void release() {
     clear_saved();
     if (g_cb) g_cb->Release();
     if (g_blend) g_blend->Release();
+    if (g_blendSplat) g_blendSplat->Release();
+    g_blendSplat = nullptr;
     if (g_sampler) g_sampler->Release();
     if (g_raster) g_raster->Release();
     if (g_depth) g_depth->Release();

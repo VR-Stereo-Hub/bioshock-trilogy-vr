@@ -39,6 +39,7 @@ struct Inputs {
     bool hasRestPose = false;    // the gun has a rest pose table (a two-handed gun)
     bool designedGrip = false;   // a carried part has a designed grip table
     bool partLocked = false;     // the reload asks for the hand on the part (the bolt)
+    bool partClosed = false;     // ...and the part is a handle the hand closes round (the crossbow's lever)
     bool dragging = false;       // the reload's hand is pulling or sliding a part (waiting, taken hold)
     bool hasRelaxed = false;     // the relaxed finger table is available
     bool weaponInHand = false;   // a holdable with a program or a fore-grip; false: a plasmid, nothing
@@ -69,6 +70,10 @@ inline Decision resolve_free(const Inputs& in) {
     }
     if (in.partLocked) {
         d.wrist = Wrist::OnPart;
+        // 2026-10-23 (the tester: the lever's "animation pose is wrong"): the clip opens the fingers flat over the
+        // lever's stroke (the 07:58 recording: index and middle curl 119 -> 15 deg); a handle the hand closes round
+        // keeps the gun's own grip fist on it.
+        if (in.partClosed && in.hasRestPose) d.fingers = Fingers::Rest;
         d.rule = 4;
         return d;
     }

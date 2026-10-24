@@ -7888,3 +7888,27 @@ tester's request).
 - **The left-handed crossbow** could not be measured from it: a pose recording does not rebuild the
   mirror, and the gun's drawn place was not in the file. Recordings now carry `weaponfix` (the drawn
   gun's correction and its frame) and `mirrorplane` (axis and plane) every frame.
+
+## 2026-10-23 - The 21:20 run: the lever's grab and fist, the seams, a sweep at launch, the right hand
+
+- **The lever down with no grab point** (21:25:19): the lever-down pull completed 9 ms after the box was
+  seated. A pull begins already dragged when the hand still grips inside its reach - meant for the next
+  stroke of the same part (the pump back then forward) - and the hand still squeezing the seated box was
+  inside the lever's widened 21 cm reach. Now only the reload's first pull or the next stroke of the same
+  part carries the grip over.
+- **The lever's grab point** was the clip palm's first sample, not the lever: measured from the 21:21
+  recording (X_LeverNUB in the grip's frame while each program waits), 6 units under the tip for the pulls
+  up and 11-14 off for the pulls down. Each lever path now starts at the tip.
+- **The lever's pose**: locked on the lever, the hand took the clip's fingers, which open flat over the
+  stroke; it now keeps the gun's grip fist (hand_pose rule 4, partClosed).
+- **The seams in the room**: every splat replaced the cube out to the rim of its view, so neighbouring
+  captures met at hard edges; a splat's weight now falls to 0 over the outer fifth of the image and it
+  blends over what is there.
+- **A capture sweep at launch**: the F10 preferences save every toggle, and the saved "Capture this room
+  now" started a sweep at launch before any level existed. A capture is refused outside gameplay.
+- **The right hand low and turned (unresolved)**: the placement settings (hands.ini, weapons.ini,
+  vrpreset.ini, the F10 preferences but that one toggle), the recenter, the camera height, the runtime and
+  the drawn palm (on the controller in 984 of 1318 hand-back trace lines, the rest within 2.4 cm during
+  recoil) all match the morning run, where the hand was right. Which controller profile the runtime bound
+  per hand is not logged (the SteamVR shim's call surface forbids the query). The animation snapshots are
+  for exactly this.

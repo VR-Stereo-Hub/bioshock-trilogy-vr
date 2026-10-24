@@ -11,6 +11,7 @@
 #include "game_ini.h"
 #include "handback.h"
 #include "room_capture.h"
+#include "core/gfx/anim_shots.h"
 #include "hands.h"
 #include "hud_elements.h"
 #include "dial_input.h"
@@ -142,6 +143,7 @@ float raw_read(Setting id,int hand) {
         case S::RoomSnapshot: return vr::room_snapshot();
         case S::RoomCapture: return room_capture::active();
         case S::RoomCircle: return room_capture::circle();
+        case S::AnimShots: return bvr::anim_shots::enabled();
         case S::CutsceneDisplay: return vr::cinematic_stereo();
         case S::InputEnabled: return input::enabled();
         case S::CameraEnabled: return vr::vr_camera_mode();
@@ -253,6 +255,7 @@ bool raw_write(Setting id,int hand,float value) {
         case S::RoomSnapshot: vr::set_room_snapshot(value!=0);break;
         case S::RoomCapture: if(value!=0) room_capture::start(); else room_capture::cancel();break;
         case S::RoomCircle: room_capture::set_circle(value);break;
+        case S::AnimShots: bvr::anim_shots::set_enabled(value!=0);break;
         case S::CutsceneDisplay: vr::set_cinematic_stereo(value!=0);break;
         case S::InputEnabled: input::set_enabled(value!=0);break;
         case S::CameraEnabled: vr::set_camera_mode(value!=0);break;

@@ -21,6 +21,8 @@ add_library(bioshockvr SHARED
     core/debug/value_scan.h
     core/gfx/blit.cpp
     core/gfx/blit.h
+    core/gfx/anim_shots.cpp
+    core/gfx/anim_shots.h
     core/gfx/cube_snapshot.cpp
     core/gfx/cube_snapshot.h
     core/gfx/dlss_client.cpp

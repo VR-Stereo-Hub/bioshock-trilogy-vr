@@ -90,6 +90,8 @@ enum class Setting {
     ManualReload, ReloadAbort,
     // The room around the flat screen (core/gfx/cube_snapshot).
     RoomSnapshot, RoomCapture, RoomCircle,
+    // The animation snapshots (core/gfx/anim_shots: pictures of what the headset showed during animations).
+    AnimShots,
     Count
 };
 struct Spec {
