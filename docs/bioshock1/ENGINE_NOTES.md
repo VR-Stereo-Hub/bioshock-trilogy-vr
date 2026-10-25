@@ -8109,10 +8109,20 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   mirror-symmetric in the hands: the right trim's mirror (-64.7 14.8 162.5) is 24 degrees off the left hand's own
   tune (-46.9 35.2 133.2). At a fore-grip about 20 cm from the hand, 24 degrees is 8.4 cm, which is the 9-10 cm every
   left-handed grab measured. Each hand now keeps its own rotation trim and its own fist offset, mirrored or not.
-- The flamethrower's handle sits on the side of the tank, so the hand holding it is drawn as if its controller were
-  rolled a quarter turn clockwise about its forward axis (-Z), and mirrored the other way. It is applied only while
-  that gun is in that hand.
+- (Withdrawn the same evening, at the tester's word: a weapon switch keeps the hand straight and where it was, so the
+  flamethrower cannot be turned to its side handle on the switch. The quarter-turn roll was taken out again.)
 - With the manual reload off, the game's own reload owns both hands: the two-handed grip lets go as it begins and
   takes nothing until it ends (handback::game_reload). A reload whose clip works the gun's parts (the launcher, the
   crossbow) also holds the gun hand's controller where it was when the reload began, fading with the reload's
   weight, so the clip moves the whole arm.
+
+## 2026-10-24, late night - The flamethrower's centre plane is its tank's, not its bones' median
+
+- The tester: in the left hand the flamethrower's grab point is in the middle of the model; it should be the handle on
+  top. A gun in the left hand is drawn turned about its centre plane, and the support hand is mirrored about it, so
+  the plane has to be the gun body's real symmetry plane. The plane was the median of the weapon bones' sideways
+  positions: -8.54 in weapon space (logged -10.68 after the draw scales). The thrower's hose bones sit far to one
+  side and pull that median. Measured in Blender on the idle clip: the tank body's mesh is centred at -15.6, the top
+  handle (Bone_Wrench's mesh) at -15.2, and the clip's left palm grips there at -16.2. Mirrored about the median,
+  the left-hand grab point and the drawn tank both sat about 7 weapon units off the handle.
+  gun_geometry::measured_centre gives the thrower -15.4, converted like the median.

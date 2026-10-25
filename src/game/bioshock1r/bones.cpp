@@ -7387,6 +7387,12 @@ const Qts* m4_pose(const Qts* A, int n) {
         if (!g_m4.actor || !ds_read(g_m4.actor, &kh) || !(kh > 0.01f)) kh = 1.0f;
         plane = gun_geometry::centre_plane(&restP[0][0], g_wBoneCount, uAxis, kw, kh);
         planeFrom = "the weapon skeleton's centre line";
+        // A gun whose bones do not straddle its body (the thrower's hoses): its measured body centre instead.
+        float measured = 0.0f;
+        if (uAxis == 1 && gun_geometry::measured_centre(patterns::object_class_name(weapon), &measured)) {
+            plane = measured * kw / kh;
+            planeFrom = "the gun body's measured centre (gun_geometry::measured_centre)";
+        }
     } else if (weapon) {
         // 2026-10-20: NO SKELETON (the wrench, any rigid holdable): its mesh's own centre. A flip
         // about the grip's origin moves a mesh built off its origin by twice that offset - the

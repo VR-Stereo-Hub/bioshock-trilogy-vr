@@ -133,6 +133,19 @@ inline Vec side_axis(const float* socketAxes /* 9 floats, rows X Y Z; null: none
 // rest bone positions' coordinate along that axis INDEX (the skeleton is in the weapon's own frame, the
 // one the socket's axes give), a root sitting at the origin left out (it is the grip, not the gun), times
 // the weapon's DrawScale over the hands'. n < 1 (no skeleton): 0, the grip's own origin.
+// 2026-10-24 (the tester: in the left hand the flamethrower's grab point is "in the middle of the model"; it should be
+// the handle on top): a gun whose bones do not straddle its body evenly gets its centre plane from its measured mesh.
+// The chemical thrower's hose bones sit far to one side, so the bones' median (-8.54 in weapon space) is 7 units off
+// the tank's own centre line: tools\blender, the thrower on its idle clip - the tank body's mesh centred at -15.6, the
+// top handle (Bone_Wrench's mesh) at -15.2, where the clip's left hand holds it. Mirrored about the median, the left
+// hand's grab point and the drawn tank both went that far off the handle. Weapon space, the median's units.
+inline bool measured_centre(const wchar_t* cls, float* weaponSpace) {
+    if (cls && same(cls, L"ChemicalThrower")) {
+        *weaponSpace = -15.4f;
+        return true;
+    }
+    return false;
+}
 inline float centre_plane(const float* restP /* n x 3 */, int n, int axis, float weaponDrawScale, float handsDrawScale) {
     if (!restP || n < 1) return 0.0f;
     const int a = axis < 0 ? 0 : axis > 2 ? 2 : axis;

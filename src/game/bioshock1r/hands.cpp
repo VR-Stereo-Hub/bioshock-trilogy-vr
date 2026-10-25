@@ -1820,26 +1820,6 @@ void on_calcview(const FrameContext& ctx) {
                 // meet it. (2026-10-19 took the other hand's trim, mirrored - "the trims did not carry
                 // over" - when the left hand's own tune was a plasmid hand's.)
                 bones::off_hand_rot_deg(h, &trimP, &trimY, &trimR);
-                // 2026-10-24 (the tester: the flamethrower "is the only one where the handle starts on the side so
-                // I have to roll it 90 degrees clockwise to hold the handle properly"): its handle sits on the
-                // side of the tank (the idle clip's gun hand holds it there), so the hand holding it is drawn as
-                // if its controller were rolled a quarter turn clockwise about its own forward axis (-Z) - top
-                // to the right, seen from behind; mirrored, to the left. Only while that gun is in this hand.
-                if (h == heldMesh) {
-                    void* hw = nullptr;
-                    const wchar_t* hcls = current_holdable(&hw) && hw ? patterns::object_class_name(hw) : nullptr;
-                    if (hcls && !_wcsicmp(hcls, L"ChemicalThrower")) {
-                        float tq[4], rq[4], nq[4];
-                        bvr::xrmath::xr_local_trim_quat(trimP / kRadToDeg, trimY / kRadToDeg, trimR / kRadToDeg, tq);
-                        bvr::xrmath::quat_axis_angle(0.0f, 0.0f, -1.0f, (mirrored ? -90.0f : 90.0f) / kRadToDeg, rq);
-                        bvr::xrmath::quat_mul(rq, tq, nq); // ctrl (x) roll (x) trim
-                        float p = 0, y = 0, r = 0;
-                        xr_local_trim_angles(nq, &p, &y, &r);
-                        trimP = p * kRadToDeg;
-                        trimY = y * kRadToDeg;
-                        trimR = r * kRadToDeg;
-                    }
-                }
                 // s86f: the step rows, converted in THIS frame of this hand (frame_context.h).
                 for (const HandStep& st : steps) {
                     if (st.hand != h) continue;
