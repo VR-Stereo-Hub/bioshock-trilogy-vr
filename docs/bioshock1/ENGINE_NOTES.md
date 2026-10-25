@@ -8126,3 +8126,42 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   handle (Bone_Wrench's mesh) at -15.2, and the clip's left palm grips there at -16.2. Mirrored about the median,
   the left-hand grab point and the drawn tank both sat about 7 weapon units off the handle.
   gun_geometry::measured_centre gives the thrower -15.4, converted like the median.
+
+## 2026-10-25 - The left-held flamethrower cannot be held as a solid; it is drawn reflected
+
+- **Not a regression.** The tester reported the left-held thrower 180 degrees off after dffe2f9 (each hand's own trim)
+  and 8c672a0 (the tank's centre plane). An F10 A/B of both, each flipped both ways in one run (20:21), changed
+  nothing the tester could see.
+- **The cause, from the 20:22 captures** (one eye, the gun in each hand): in the right hand the thrower's ribbed side
+  handle is on the right of the tank and the hand is on it. In the left hand the same gun is drawn the same way round,
+  the handle still on the tank's right, and the mirrored left hand grips the bare left of the tank. The left-handed hold
+  draws the gun as a SOLID mirror (mirror_math.h mirrored_solid_u: the rig's reflection times the gun's own sideways
+  flip, a rotation), which keeps the gun's handedness; a gun with a handle on one side can never bring it to the other
+  hand. The centre plane only moved where on the bare tank the hand landed.
+- **The fix: the thrower is drawn reflected.** The solid mirror is `mx * grip * F` pinned on the plane, so the gun's own
+  reflection about that plane, in its own space, gives `mx * grip`: the exact mirror image of the right-handed hold,
+  whatever the plane (host suite mirror-math). The skin palette is CPU-skinned (session 87), so the reflection goes on
+  the gun's palette in the gather (`v M F`), and on a static-mesh draw's LocalToWorld (`F L`, WorldToLocal `W F`).
+  Reflected geometry turns its winding round; its DrawIndexed calls get the game's rasterizer state with
+  FrontCounterClockwise turned round, given back before the next draw that is not the gun's.
+- **Which draws are the gun's.** First tried: the draws after the gather skinned the gun. The 20:46 run (headset:
+  mirrored correctly, but inside out) flipped NOTHING - no draw at all came while that was the last gather, so the
+  gun's skinned draw does not follow its own gather. Now: a DrawIndexed whose stack carries the skinned bake's return
+  address (`+0x3EDCBF`, the hands' skinned draw's stack, session 87) AND the gun's mesh instance pointer (the one the
+  gather skinned). The 20:53 run: every skinned draw matched (the hands drew inside out too) - the instance was a
+  stale slot in the mod's own frames, two dwords up. It now counts only ABOVE the bake's return address. The gun drew
+  BLACK in that run: only its first draw (the one with the bake on its stack) was flipped, and the skinner (rs10,
+  `+0x5EBAB0`) transforms position and all three basis vectors by the same matrix, so the lighting data is
+  consistent - the later passes over the same vertices, not flipped, failed against the first one's depth. Now the
+  gun's first draw records its vertex and index buffers and offsets, and every later draw from the same place is
+  flipped too, until another mesh's bake draw lands there.
+- The 21:00 run: the hands were right again and the gun inside out again - NO skinned draw carried the gun's
+  instance above the bake. The instance is not on the draw's stack, and the bake address `+0x3EDCBF` is on about 60
+  draws a frame (roughly 6,000 a second), not only the skinned ones. The order trace showed the frame's gathers as
+  one batch (`g o h o`: the gun, another, the hands, another) before all the draws. Both stack markers are dropped.
+- **Now: the index count.** The viewmodel draws into its own slice of depth (viewport MaxDepth 0.010 in the
+  temporal census of the same runs: about 10 draws a frame); its skinned meshes come from the 56-byte vertex ring;
+  the hands are one draw of 26,178 indices, repeated per light pass. So while the reflected gun is held, a draw in
+  that slice from 56-byte vertices with any other index count is the gun's. frame_inspector's draw tap gained an
+  optional callback with the draw's arguments (null for every other game). Not yet seen; `[gunflip]` lists the index
+  counts it flipped and passed.

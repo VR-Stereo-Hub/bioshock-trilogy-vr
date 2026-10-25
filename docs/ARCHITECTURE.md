@@ -3142,3 +3142,20 @@ headset showing the live cube filling in. A level's room on disk is shown from t
 starts. Rejected: showing nothing for a level without a room (black again on every transition), keying the
 sweep to CalcView calls (three per frame in the simulator), and a passive-only cube (gaps wherever the
 player never looked). The loading board is cut to a circle (a slider; the frame's black is keyed out).
+
+### 2026-10-25: a one-sided gun is drawn reflected in the left hand; only its draws flip culling
+
+The left-handed hold (2026-10-19) mirrors the hands on the skin palette as rotations and moves the gun as a solid,
+which keeps the gun's handedness. That is right for a gun symmetric about its sideways plane and wrong for the
+flamethrower, whose handle is on one side of its tank: in the left hand the handle stays on the far side. The tester
+asked for the right-hand hold exactly, mirrored. A gun marked `trueMirror` (gun_geometry.h) is therefore drawn
+reflected in its own space about the plane the solid mirror flips it about, which makes it the exact mirror image of
+the right-handed hold (palette.cpp: the skin palette and the static-mesh draw). A reflection reverses winding, so
+`gun_flip.cpp` gives only the gun's DrawIndexed calls a rasterizer state with FrontCounterClockwise turned round, on
+BS1's existing draw tap. The gun's draws are known by what they draw (the viewmodel's depth slice, the skinned
+vertex stride, an index count that is not the hands'), which needed one additive core change: the draw tap's
+optional `on_draw_indexed_args`, null unless a game sets it, so BS2 and Infinite run the same code as before.
+Stack markers were tried first and rejected by the headset (ENGINE_NOTES 2026-10-25). Rejected: reflecting the whole viewmodel draw at its constant buffer (the
+left-hand fork's vm_mirror), because the hands are already mirrored on the palette; a 180-degree roll so the side
+handle reaches the left hand (the gauge underneath); and putting the left hand on the top handle (not what was asked).
+Only the thrower opts in; the other guns keep the solid mirror. F10 Controls > Grab and hand-over can turn it off.

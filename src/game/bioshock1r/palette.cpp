@@ -3,6 +3,7 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/arm_ik.h"
+#include "game/bioshock1r/gun_flip.h"
 #include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/patterns.h"
 
@@ -52,6 +53,33 @@ struct Published {
     uint64_t ms = 0;
 };
 Published g_pub;
+
+// ---- 2026-10-25: a held gun drawn REFLECTED (gun_geometry.h trueMirror) ---------------------------------------
+// The weapon actor, the weapon-space axis flipped and the plane it is flipped about, and when it was last asked
+// for (a stale request is ignored, as the hands' are).
+std::atomic<void*> g_reflActor{nullptr};
+std::atomic<int> g_reflAxis{1};
+std::atomic<float> g_reflPlane{0.0f};
+std::atomic<uint64_t> g_reflMs{0};
+std::atomic<uint32_t> g_reflSkinned{0}, g_reflStatic{0};
+
+void* reflection_actor() {
+    void* a = g_reflActor.load(std::memory_order_relaxed);
+    return a && GetTickCount64() - g_reflMs.load(std::memory_order_relaxed) <= 250 ? a : nullptr;
+}
+// Row-vector 4x4 (rows 0-2 the axes' images, row 3 the translation). F flips local axis `a` about x_a = c.
+// After: v M F (the matrix's OUTPUT space reflected) - the skin palette and a WorldToLocal.
+void reflect_after(float* m, int a, float c) {
+    for (int r = 0; r < 3; ++r) m[r * 4 + a] = -m[r * 4 + a];
+    m[12 + a] = 2.0f * c - m[12 + a];
+}
+// Before: v F M (the matrix's INPUT space reflected) - a LocalToWorld.
+void reflect_before(float* m, int a, float c) {
+    for (int k = 0; k < 4; ++k) {
+        m[12 + k] += 2.0f * c * m[a * 4 + k];
+        m[a * 4 + k] = -m[a * 4 + k];
+    }
+}
 
 // ---- 2026-10-19: the hands mirrored (mirror_math.h) ------------------------------------------
 // The engine's evaluated pose, published by the drive each frame, so the gather can measure the
@@ -467,19 +495,32 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
     }
 
     // ---- the held weapon (Dishonored 1.5): the hand's world correction, in the weapon's space
-    if (g_enabled.load(std::memory_order_relaxed) && owner && p.weapon.valid && owner == p.weapon.actor &&
-        GetTickCount64() - p.ms <= 250) {
+    // 2026-10-25: and a gun drawn reflected (trueMirror) gets its own axis flipped first, in its own space.
+    void* reflActor = reflection_actor();
+    const bool refl = owner && reflActor && owner == reflActor;
+    if (refl) gun_flip::note_gun_gather();
+    const bool corrected = g_enabled.load(std::memory_order_relaxed) && owner && p.weapon.valid &&
+                           owner == p.weapon.actor && GetTickCount64() - p.ms <= 250;
+    if (corrected || refl) {
         uint8_t* b = static_cast<uint8_t*>(inst);
         if (readable(b + patterns::kMeshInstPaletteOffset, 8)) {
             float** wslot = reinterpret_cast<float**>(b + patterns::kMeshInstPaletteOffset);
             float* wengine = *wslot;
             const int wn = *reinterpret_cast<int*>(b + patterns::kMeshInstPaletteCountOffset);
             if (wengine && wn > 0 && wn <= 256 && readable(wengine, static_cast<size_t>(wn) * 64)) {
-                const Sim g = sim_mul(sim_inv(p.weapon.lWeapon), sim_mul(p.weapon.dWorld, p.weapon.lWeapon));
+                const Sim g = corrected ? sim_mul(sim_inv(p.weapon.lWeapon), sim_mul(p.weapon.dWorld, p.weapon.lWeapon))
+                                        : Sim{};
                 memcpy(g_copy, wengine, static_cast<size_t>(wn) * 64);
-                for (int i = 0; i < wn; ++i) apply_sim(g, g_copy + i * 16);
+                if (refl) {
+                    const int ax = g_reflAxis.load(std::memory_order_relaxed);
+                    const float c = g_reflPlane.load(std::memory_order_relaxed);
+                    for (int i = 0; i < wn; ++i) reflect_after(g_copy + i * 16, ax, c);
+                    g_reflSkinned.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (corrected)
+                    for (int i = 0; i < wn; ++i) apply_sim(g, g_copy + i * 16);
                 const int r = call_with_copy(self, inst, lod, out, a5, wslot, wengine);
-                g_weaponComposed.fetch_add(1, std::memory_order_relaxed);
+                if (corrected) g_weaponComposed.fetch_add(1, std::memory_order_relaxed);
                 return r;
             }
         }
@@ -660,15 +701,17 @@ int __fastcall mesh_draw_detour(void* mesh, void* /*edx*/, void* rec, void* rend
             return call_mesh_draw(mesh, rec, renderer, a4, hl2w, hw2l, hnl, hnw);
         }
     }
-    if (!g_enabled.load(std::memory_order_relaxed) || !p.weapon.valid || !p.weapon.actor || !rec ||
-        GetTickCount64() - p.ms > 250 || !readable(rec, 0x120))
-        return g_meshDrawOrig(mesh, rec, renderer, a4);
+    const bool corrected = g_enabled.load(std::memory_order_relaxed) && p.weapon.valid && p.weapon.actor &&
+                           GetTickCount64() - p.ms <= 250;
+    void* reflActor = reflection_actor(); // 2026-10-25: a gun drawn reflected (trueMirror)
+    void* target = corrected ? p.weapon.actor : reflActor;
+    if (!target || !rec || !readable(rec, 0x120)) return g_meshDrawOrig(mesh, rec, renderer, a4);
     uint8_t* b = static_cast<uint8_t*>(rec);
     int off = g_recOwnerOffset.load(std::memory_order_relaxed);
     if (off < 0) {
         // Discovery: the first record that carries the held weapon actor names the field.
         for (int o = 0; o < 0x120; o += 4)
-            if (*reinterpret_cast<void**>(b + o) == p.weapon.actor) {
+            if (*reinterpret_cast<void**>(b + o) == target) {
                 off = o;
                 g_recOwnerOffset.store(o, std::memory_order_relaxed);
                 BVR_LOG("[palette] weapon: the static-mesh draw record holds its owner actor at +0x%X", o);
@@ -676,32 +719,62 @@ int __fastcall mesh_draw_detour(void* mesh, void* /*edx*/, void* rec, void* rend
             }
         if (off < 0) return g_meshDrawOrig(mesh, rec, renderer, a4);
     }
-    if (*reinterpret_cast<void**>(b + off) != p.weapon.actor) return g_meshDrawOrig(mesh, rec, renderer, a4);
+    void* recOwner = *reinterpret_cast<void**>(b + off);
+    const bool refl = reflActor && recOwner == reflActor;
+    const bool corr = corrected && recOwner == p.weapon.actor;
+    if (!refl && !corr) return g_meshDrawOrig(mesh, rec, renderer, a4);
 
     float* l2w = reinterpret_cast<float*>(b + patterns::kDrawRecLocalToWorldOffset);
     float* w2l = reinterpret_cast<float*>(b + patterns::kDrawRecWorldToLocalOffset);
-    // L' = D_world * L ; W' = W * inverse(D_world), both row-vector.
+    // L' = F * L * D_world ; W' = inverse(D_world) * W * F, all row-vector (F: the reflection in the gun's own
+    // space, an involution; identity unless reflected; D: identity unless corrected).
     float nl[16], nw[16], dinv[16];
     memcpy(nl, l2w, 64);
-    apply_sim(p.weapon.dWorld, nl);
+    const int ax = g_reflAxis.load(std::memory_order_relaxed);
+    const float c = g_reflPlane.load(std::memory_order_relaxed);
+    if (refl) reflect_before(nl, ax, c);
+    if (corr) apply_sim(p.weapon.dWorld, nl);
     if (g_hideAll.load(std::memory_order_relaxed)) {
         // Hidden outright: the weapon's record drawn far below the world.
         nl[12] = kHideAllAt[0];
         nl[13] = kHideAllAt[1];
         nl[14] = kHideAllAt[2];
     }
-    sim_rows(sim_inv(p.weapon.dWorld), dinv);
-    mat_mul(dinv, w2l, nw);
+    if (corr) {
+        sim_rows(sim_inv(p.weapon.dWorld), dinv);
+        mat_mul(dinv, w2l, nw);
+    } else {
+        memcpy(nw, w2l, 64);
+    }
+    if (refl) reflect_after(nw, ax, c);
     const uint64_t now = GetTickCount64();
-    if (now - g_recLog >= 2000) {
+    if (corr && now - g_recLog >= 2000) {
         g_recLog = now;
         BVR_LOG("[palette] weapon draw: record LocalToWorld translation %.1f %.1f %.1f (the actor's location "
                 "%.1f %.1f %.1f) -> %.1f %.1f %.1f",
                 l2w[12], l2w[13], l2w[14], p.weapon.lWeapon.t[0], p.weapon.lWeapon.t[1], p.weapon.lWeapon.t[2],
                 nl[12], nl[13], nl[14]);
     }
-    g_weaponDraws.fetch_add(1, std::memory_order_relaxed);
-    return call_mesh_draw(mesh, rec, renderer, a4, l2w, w2l, nl, nw);
+    if (corr) g_weaponDraws.fetch_add(1, std::memory_order_relaxed);
+    if (!refl) return call_mesh_draw(mesh, rec, renderer, a4, l2w, w2l, nl, nw);
+    g_reflStatic.fetch_add(1, std::memory_order_relaxed);
+    gun_flip::static_draw(true);
+    const int r = call_mesh_draw(mesh, rec, renderer, a4, l2w, w2l, nl, nw);
+    gun_flip::static_draw(false);
+    return r;
+}
+
+void set_reflection(void* weaponActor, int axis, float planeWeaponSpace) {
+    void* was = g_reflActor.exchange(weaponActor, std::memory_order_relaxed);
+    g_reflAxis.store(axis < 0 ? 0 : axis > 2 ? 2 : axis, std::memory_order_relaxed);
+    g_reflPlane.store(planeWeaponSpace, std::memory_order_relaxed);
+    g_reflMs.store(GetTickCount64(), std::memory_order_relaxed);
+    gun_flip::set_gun(weaponActor);
+    if (was != weaponActor) {
+        BVR_LOG("[palette] reflected gun: %s (axis %c, plane %.2f weapon space; skinned %u, static %u draws so far)",
+                weaponActor ? "ON - the held gun is drawn as the mirror image" : "off", "XYZ"[axis < 0 ? 0 : axis > 2 ? 2 : axis],
+                planeWeaponSpace, g_reflSkinned.load(), g_reflStatic.load());
+    }
 }
 
 bool install_mesh_draw(const void* imageBase) {
@@ -769,6 +842,10 @@ void set_hide_all(bool on, void* weaponActor, const float camLoc[3]) {
 }
 bool hide_all() { return g_hideAll.load(std::memory_order_relaxed); }
 bool active() { return g_installed && enabled(); }
+
+void set_gun_reflection(void* weaponActor, int axis, float planeWeaponSpace) {
+    set_reflection(weaponActor, axis, planeWeaponSpace);
+}
 
 void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored) {
     std::lock_guard<std::mutex> lock(g_mutex);

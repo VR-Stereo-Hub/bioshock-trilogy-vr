@@ -46,7 +46,27 @@ from 2026-10-23 is the only core diff).
 
 ### Next steps
 
-- **2026-10-25: the left-held flamethrower is NOT a regression; its hold design is wrong.** An F10 A/B of dffe2f9's
+- **2026-10-25, 21:00 run: hands right, the gun inside out again** - no draw carried the gun's pointer, so nothing
+  was flipped. Installed 21:06, not seen: the gun's draws are known by their index count (the viewmodel's depth
+  slice, 56-byte skinned vertices, not the hands' 26,178). `[gunflip]` lists the counts it flipped. A small additive
+  core change: frame_inspector's draw tap passes the draw's arguments to a new optional callback (BS1 only sets it).
+- (Superseded.) **2026-10-25, 20:53 run: the gun BLACK and the arms inside out** (the gun's pointer matched a stale slot in the
+  mod's own stack frames, so the hands' draws flipped too; only the first of the gun's several draws per frame was
+  flipped). Installed 20:58, not seen: the pointer counts only in the game's frames, and every later draw of the gun's
+  vertices is flipped with the first (ENGINE_NOTES 2026-10-25).
+- (Superseded.) **2026-10-25, 20:46 run: the mirrored thrower is right but drawn INSIDE OUT** - the face flip found none of the
+  gun's draws (no `[gunflip]` count at all). Installed 20:50, not seen: the gun's draws are now matched by its mesh
+  instance on the draw's stack. If it is still inside out, the `[gunflip]` lines say how many skinned draws carried
+  the instance or the actor, and the order line shows when the gun is drawn (ENGINE_NOTES 2026-10-25).
+- **2026-10-25 (installed 20:44): the left-held flamethrower is drawn as the MIRROR IMAGE of the
+  right-hand hold** (the owner's pick: "exactly like" the right-hand picture, "but mirrored"). The gun is reflected
+  in its own space (palette.cpp, gun_geometry.h trueMirror, thrower only) and its draws cull the other face
+  (gun_flip.cpp on the temporal draw tap). F10 Controls > Grab and hand-over > "Mirror the flamethrower too" (on)
+  turns it off. **Tester: thrower in the LEFT hand; the side handle should be on the tank's left, in your hand.** If
+  the gun looks inside out (see-through, its far side showing), read `[gunflip]` in the log: a rising "WITHOUT the
+  skin bake" count means the skinned-draw marker is wrong (ENGINE_NOTES 2026-10-25). The flame may start a little off
+  the nozzle (the effect socket still rides the solid mirror).
+- (Superseded by the line above.) **2026-10-25: the left-held flamethrower is NOT a regression; its hold design is wrong.** An F10 A/B of dffe2f9's
   own trim and 8c672a0's tank plane (run 20:21, both flipped both ways) changed nothing the tester could see. The
   20:22 captures (`afw-20261024-202233` right, `-202249` left) show why: in the right hand the ribbed side handle is on
   the tank's right and the hand is on it; in the left hand the gun is drawn the SAME way round (a rigid gun cannot be

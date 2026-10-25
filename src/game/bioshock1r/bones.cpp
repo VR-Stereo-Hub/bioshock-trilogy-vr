@@ -6902,6 +6902,9 @@ std::atomic<bool> g_mirrorHands{true};
 // `vrbones mirrorpin <v>|auto`: the held gun's centre plane along its flipped axis, in the grip's
 // frame, instead of the one read from its skeleton (NaN = read it). For checking the reading.
 std::atomic<float> g_mirrorPinOverride{std::numeric_limits<float>::quiet_NaN()};
+// 2026-10-25: a gun marked trueMirror (gun_geometry.h; the flamethrower) is drawn as the mirror image in the left
+// hand. F10 Controls > Grab and hand-over; on by default.
+std::atomic<bool> g_trueMirror{true};
 // The flip m4_pose applied to the held gun this frame (its axis and centre plane, grip frame), for
 // unmirror_grip_point. Game thread.
 float g_mirU[3] = {0, 1, 0};
@@ -7380,6 +7383,10 @@ const Qts* m4_pose(const Qts* A, int n) {
     const arm_ik::Vec u = gun_geometry::side_axis(fromSocket ? &ax[0][0] : nullptr, uAxis);
     float plane = 0.0f; // along u, in the grip's frame (rig units)
     const char* planeFrom = "no weapon skeleton: the grip's own origin";
+    // 2026-10-25: the two DrawScales, for the plane in the weapon's own space (the reflected gun, trueMirror).
+    float kwOut = 1.0f, khOut = 1.0f;
+    if (weapon && (!ds_read(weapon, &kwOut) || !(kwOut > 0.01f))) kwOut = 1.0f;
+    if (!g_m4.actor || !ds_read(g_m4.actor, &khOut) || !(khOut > 0.01f)) khOut = 1.0f;
     if (weapon && weapon == g_wHoldable && g_wBoneCount > 2 && g_wBoneCount <= kMaxBones) {
         // The pin: the gun's OWN centre plane. Flipping u mirrors the gun about the plane through the grip's
         // origin, which is the model's centre only if the model is built about its grip. The pistol is not:
@@ -7432,6 +7439,17 @@ const Qts* m4_pose(const Qts* A, int n) {
                 fromSocket ? "SOCKET axis" : "grip bone's axis", "XYZ"[uAxis], u.x, u.y, u.z, plane, planeFrom);
     }
     const mirror::Basis* b = n >= patterns::kHandsRigBoneCount ? palette::mirror_basis() : nullptr;
+    // 2026-10-25 (the tester: the left-handed thrower should be "exactly like" the right-hand hold, "but
+    // mirrored"): a gun marked trueMirror is DRAWN reflected in the left hand - its own sideways axis flipped
+    // about the same centre plane the solid mirror below flips it about. The solid mirror is mx * grip * F
+    // (mirror_math.h mirrored_solid_u, pinned on the plane); the gun's own reflection F about that plane undoes
+    // the F, so the gun as drawn is mx * grip: the exact mirror image of the right-handed hold, whatever the
+    // plane. The draws cull the other face (gun_flip.cpp).
+    {
+        const bool want = g_m4.mirror && b && weapon && row && row->trueMirror &&
+                          g_trueMirror.load(std::memory_order_relaxed);
+        palette::set_gun_reflection(want ? weapon : nullptr, uAxis, plane * khOut / kwOut);
+    }
     if (!g_m4.mirror || !b) return A;
     memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
     auto aff = [&](int i) { return mirror::from_frame(A[i].q, A[i].p, A[i].s); };
@@ -10574,6 +10592,12 @@ void draw_debug_ui() {
 }
 
 bool mirror_hands() { return mirror_wanted(); }
+bool true_mirror_gun() { return g_trueMirror.load(std::memory_order_relaxed); }
+void set_true_mirror_gun(bool on) {
+    if (g_trueMirror.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[bones] the flamethrower in the left hand is drawn %s",
+                on ? "as the mirror image of the right-hand hold" : "unmirrored, turned to the left hand (before 2026-10-25)");
+}
 bool attach_relative(void* actor, int bone, const float worldP[3], const float worldQ[4], float relP[3], float relQ[4]) {
     namespace ik = arm_ik;
     g_fxaIgnore.store(actor, std::memory_order_relaxed);

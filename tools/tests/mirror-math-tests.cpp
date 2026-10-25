@@ -213,6 +213,23 @@ int main() {
         const float e1[3] = {0, 1, 0};
         check(diff(mirror::mirrored_solid_u(b, gripPose, e1), mirror::mirrored_solid(b, gripPose, 1)) < 1e-6f,
               "a bone axis through mirrored_solid_u is mirrored_solid");
+
+        // 2026-10-25 (palette.cpp set_gun_reflection): the solid mirror pinned on the gun's centre plane, then the
+        // gun reflected in ITS OWN space (its Y flipped about that plane), is exactly the mirror image of the
+        // right-handed gun - whatever the plane.
+        Aff grip = gripPose;
+        grip.t[0] = 3.0f; grip.t[1] = 41.0f; grip.t[2] = -7.5f;
+        for (float plane : {0.0f, -15.4f, 8.2f}) {
+            const float off[3] = {u[0] * plane, u[1] * plane, u[2] * plane};
+            const Aff solidGun = mirror::mul(mirror::mirrored_solid_u(b, grip, u, off), sock);
+            Aff fw; // the gun's own Y flipped about y = plane (weapon space)
+            fw.R[4] = -1.0f;
+            fw.t[1] = 2.0f * plane;
+            const Aff drawn = mirror::mul(solidGun, fw);
+            const Aff want = mirror::mul(mirror::mul(b.mx, grip), sock);
+            check(diff(drawn, want) < 1e-4f, "the solid mirror then the gun's own reflection is the true mirror image",
+                  diff(drawn, want), 0);
+        }
     }
 
     // Negative control: break the symmetry and the rig must be refused.

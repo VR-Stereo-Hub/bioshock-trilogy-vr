@@ -236,6 +236,9 @@ bool off_hand_tracked();
 // controller and passes the LEFT hand as the one holding the gun.
 bool mirror_hands();
 bool mirror_hands_enabled();
+// 2026-10-25: a gun marked trueMirror (gun_geometry.h) drawn as the mirror image in the left hand.
+bool true_mirror_gun();
+void set_true_mirror_gun(bool on);
 // 2026-10-20: a pose against the LEFT wrist (a designed grip's part, the spare drum's hold), mirrored to the
 // same pose against the RIGHT wrist of the mirrored hands (the free hand with the gun in the left hand):
 // inverse(Mb wrist) * rel * a flip of the part's local Y (a part symmetric about it - a cylinder, a drum).

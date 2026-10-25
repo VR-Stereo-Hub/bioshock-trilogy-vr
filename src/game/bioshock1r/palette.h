@@ -95,6 +95,11 @@ Sim sim_world(const Sim& L, const Sim& S);
 // which the drive computed from the mirrored pose.
 void publish(void* ownerActor, const HandXform hands[2], bool hideArms, const WeaponXform& weapon,
              bool mirrored = false);
+// 2026-10-25 (gun_geometry.h trueMirror): draw this weapon actor REFLECTED - its own axis `axis` (0 X, 1 Y,
+// 2 Z of its local space) flipped about the plane at `planeWeaponSpace` along it, in its skin palette and its
+// static-mesh draws, which then cull the other face (gun_flip.cpp). Null: none. Game thread, every frame it is
+// wanted (a request older than 250 ms lapses).
+void set_gun_reflection(void* weaponActor, int axis, float planeWeaponSpace);
 // 2026-10-19: the engine's evaluated pose (bones.cpp Qts: p[4] q[4] s[4], `stride` floats per
 // bone), every frame until the mirror basis is measured from it against the skin matrices.
 void publish_pose(const float* frames, int count, int stride);

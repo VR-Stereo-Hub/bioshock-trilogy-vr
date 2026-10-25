@@ -54,6 +54,13 @@ struct Gun {
     // mirrored hold - the anchor is not reflected, and the drawn wrist is pre-reflected so the pair mirror lands
     // it there. A gun gripped from either side of a centred fore-end (the shotgun's pump) is reflected as before.
     bool gripSameSpot;
+    // 2026-10-25 (the tester, the flamethrower in the left hand: it should be "exactly like" the right-hand hold,
+    // "but mirrored"): in the left hand the gun is DRAWN REFLECTED - its own sideways axis flipped about its
+    // centre plane (palette.cpp set_gun_reflection), which turns the solid mirror (mirror_math.h
+    // mirrored_solid_u) into the true mirror image of the right-handed hold, and its draws cull the other face
+    // (gun_flip.cpp). For a gun that is not symmetric: the thrower's side handle stayed on the tank's right, the
+    // mirrored left hand on the bare tank (the 20:22 captures).
+    bool trueMirror = false;
 };
 
 // Measured 2026-10-21 (the fist centre, left hand, against R_grip; clip times 0..3 s):
@@ -68,7 +75,7 @@ inline constexpr Gun kGuns[] = {
     {L"MachineGun", true, {45.0f, 5.5f, 3.0f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
     {L"Shotgun", true, {54.05f, 14.7f, 14.3f}, 1, {-15.51f, -6.37f, -6.47f}, {0.0f, 0.0f, -1.0f}, false},
     {L"GrenadeLauncher", true, {51.4f, 20.6f, 15.2f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
-    {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false},
+    {L"ChemicalThrower", true, {12.5f, -10.8f, 22.5f}, 1, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, false, true},
     // 2026-10-24: gripSameSpot off - the snapshot of the left-handed hold put the free hand on the far side of the
     // stock by the bow's limb; the crossbow mirrors as every other gun.
     {L"Crossbow", true, {26.9f, 8.7f, -3.4f}, 1, {0.0f, 0.0f, 0.0f}, {0.11f, -0.63f, 0.77f}, false},

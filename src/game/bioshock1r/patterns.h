@@ -658,6 +658,10 @@ inline constexpr uint32_t kSkinnedVertexWeightsOffset = 60;
 inline constexpr uint32_t kStaticMeshDrawRva = 0x3DBCF0;
 inline constexpr uint8_t kStaticMeshDrawPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24, 0x83,
                                                       0x7D, 0x10, 0x00, 0x53, 0x56, 0x57};
+// 2026-10-25 (gun_flip.cpp): the hands' one CPU-skinned DrawIndexed - NEWPlayerHands LOD 0, 8,726 triangles
+// (ENGINE_NOTES "The hands are one CPU-skinned draw", "The hands draw on the palette route"; repeated per light pass).
+// A mesh constant, not an address: every other skinned viewmodel draw is the held gun's.
+inline constexpr unsigned kHandsIndexCount = 26178;
 inline constexpr uint32_t kDrawRecLocalToWorldOffset = 160;
 inline constexpr uint32_t kDrawRecWorldToLocalOffset = 224;
 // s82: the EVALUATOR - the engine routine that rebuilds the bone array from the

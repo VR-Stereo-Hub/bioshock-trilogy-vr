@@ -83,7 +83,7 @@ enum class Setting {
     DialEnabled, DialGripTrigger, DialHoldSwap, DialDirectionOnly, DialNeutral, DialTravel, DialSnap,
     DialEntryTilt, DialEntryYaw, DialWidth, DialDistance,
     // Grab and hand-over (dial_input.cpp's pad override).
-    GrabEnabled, GrabDistance, GrabMirror,
+    GrabEnabled, GrabDistance, GrabMirror, GrabMirrorGun,
     // The two-handed grip and the gunshot kick (two_hand.cpp).
     TwoHandEnabled, TwoHandDistance, ShotHaptics, ShotHapticStrength,
     // The manual reload (manual_reload.cpp).
