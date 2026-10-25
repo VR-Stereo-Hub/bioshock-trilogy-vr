@@ -24,6 +24,10 @@
 
 #include <cstdint>
 
+namespace bvr::input {
+struct PadOverride;
+}
+
 namespace bvr::b1r::aim {
 
 enum class Hand { Left = 0, Right = 1 };
@@ -99,6 +103,13 @@ bool hook_live();
 // s91: the hand's aim ray (world origin and unit direction) as the fire seams use it; false when
 // aim is off, outside gameplay, or the ray is stale. hand 0 = left (plasmid), 1 = right.
 bool hand_ray(int hand, float origin[3], float dir[3]);
+
+// 2026-10-25: dual-wielded plasmids (F10 Controls > Dual plasmids). True while they are on and a plasmid is in
+// hand; the right hand's plasmid ray (the plasmid aim mirrored) while it is; and the pad step that makes the right
+// trigger cast (dial_input override_sticks, the XInput thread).
+bool dual_plasmids();
+bool plasmid_ray_right(float origin[3], float dir[3]);
+bool dual_cast_pad(bvr::input::PadOverride* pad);
 
 // 2026-10-14: this frame's laser and reticle on the fire ray, in world UU, for the in-image
 // laser (laser_draw.h). Game thread: temporal.cpp's note_camera carries it with the build.

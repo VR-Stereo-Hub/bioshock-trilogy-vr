@@ -235,6 +235,10 @@ bool off_hand_tracked();
 // and the rig measured as mirror-symmetric. hands.cpp then places each hand on its own
 // controller and passes the LEFT hand as the one holding the gun.
 bool mirror_hands();
+// 2026-10-25, dual-wielded plasmids: around a cast run for `hand` (aim.cpp). For the right hand the plasmid's
+// casting sockets point at the right palm for the cast, and the effects it attaches stay there.
+void cast_hand_begin(int hand);
+void cast_hand_end(int hand);
 bool mirror_hands_enabled();
 // 2026-10-25: a gun marked trueMirror (gun_geometry.h) drawn as the mirror image in the left hand.
 bool true_mirror_gun();

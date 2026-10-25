@@ -6,6 +6,7 @@
 #include "manual_reload.h"
 #include "grip_owner.h"
 #include "bones.h"
+#include "aim.h"
 #include "menu_theme.h"
 #include "core/input/xinput_bridge.h"
 #include "core/input/swing.h"
@@ -270,6 +271,8 @@ bool override_sticks(bvr::input::PadOverride* pad) {
         }
     }
     bool changed = grab(pad);
+    // 2026-10-25: dual-wielded plasmids - the right trigger casts too (aim.cpp).
+    changed = aim::dual_cast_pad(pad) || changed;
     changed = (g_gripTrigger.load(std::memory_order_relaxed) && combine_grip_trigger(pad)) || changed;
     const uint16_t buttons = pad->buttons;
     const bool on = g_enabled.load(std::memory_order_relaxed) && wheel_state::live();

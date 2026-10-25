@@ -1059,6 +1059,11 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
     // 8. The laser, last: after the AFW store copied this image, so the beam never becomes
     //    scenery the rebuild carries into the other eye. Drawn through this image's camera.
     st.laser = camOk ? cam.laser : laser_draw::Segment{};
+    // 2026-10-25: the dynamic reticle - its ray marched through this image's own linear depth (read back for a
+    // later image's draw: one or two frames' latency, as Darkness II VR's cast).
+    if (guidesOk && camOk)
+        laser_draw::measure(ctx, g_guides.linear_z_srv(), maskOk ? g_guides.hands_srv() : nullptr, f.srcW, f.srcH, tc,
+                            cam.laser);
     if (written && camOk && laser_draw::draw(ctx, f.dst, f.dstW, f.dstH, tc, cam.laser))
         g_laserDrawMs.store(now, std::memory_order_relaxed);
     log_maybe(now);

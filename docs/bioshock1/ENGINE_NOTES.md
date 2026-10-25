@@ -8165,3 +8165,35 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   that slice from 56-byte vertices with any other index count is the gun's. frame_inspector's draw tap gained an
   optional callback with the draw's arguments (null for every other game). Not yet seen; `[gunflip]` lists the index
   counts it flipped and passed.
+- **Headset, 21:06: "flamethrower works well".** Merged to staging in #105.
+
+## 2026-10-25 (night) - Dual-wielded plasmids: the cast run once per hand; the reticle on the surface
+
+- **The cast seam.** A plasmid cast is `UAttackAbility::InitiateDamage` (`+0x1BBD80`, thiscall, FName by value,
+  `ret 8`; patterns.h), called from the anim notify's `UseAbility`; it calls the fire start the aim already
+  substitutes. With dual-wielded plasmids on (F10 Controls > Dual plasmids) the mod's detour runs it once per hand
+  that pulled: the left as ever, the right with the fire start aimed along the right controller with the plasmid aim
+  mirrored (pitch as the left's, yaw and the sideways offset negated). The pull is latched per hand at the trigger
+  (hand_loadout.h CastRouter), because the notify arrives after the trigger is let go (ENGINE_NOTES s30: `lt=0 rt=0`
+  at the seam). The right trigger, which the game binds to `SwitchAndFireWeapon`, is routed to the plasmid trigger
+  while the right hand holds a plasmid, so it casts instead of switching to the gun. **Unknown, for the first run:**
+  whether EVE is charged per `InitiateDamage` (two casts, two charges - or one); whether a projectile plasmid
+  (Incinerate, Winter Blast) takes a second `InitiateDamage` in the same notify as a trace one does; and whether the
+  right hand shows the plasmid's effect (no socket follows the right hand outside the mirrored hold). `[dualcast]`
+  logs which hands each cast came from.
+- **The 22:09 run: the casts routed right, the visuals did not.** `[dualcast]` logged right-only, left-only and
+  both-hands casts as pulled, but both plasmids came out of the LEFT hand: the right hand showed nothing of the
+  plasmid and the cast's effect sockets are the left hand's. Now, with dual plasmids on, the right hand and arm show
+  the LEFT hand's layout mirrored (bones.cpp m4_pose, palette.cpp copy_left_skins) - exactly the right hand of the
+  mirrored hold, the left keeping its own - so both hands play the plasmid's animations, and the right takes the
+  left's hand-back. Around a right-hand cast the left hand's casting socket records (FireballSocket) take a record
+  built for the right palm with the beam along the right hand's plasmid ray, and every effect actor that appears
+  during that cast is kept on the right palm for its life (bones.cpp cast_hand_begin/end, fx_actor_follow). Effects
+  the cast's own animation notifies attach (outside InitiateDamage) and the idle palm glow stay on the left: the
+  engine makes one of each. Not yet seen.
+- **The reticle's distance from the scene's depth.** BO3 Zombies VR and Darkness II VR trace for it (the engine's ray
+  trace from the muzzle); BS1's AActor::Trace is only observed here, never called. The eye's linear view depth
+  (temporal_gpu `linear_z`, uu along the camera's forward, the viewmodel masked out) is already made per fresh eye,
+  so a compute shader marches each reticle's ray through it (96 geometric steps 0.3 to 60 m, then six bisections)
+  and the hit is read back one to two frames later. Needs the image processing on (AFW, DLSS or TAA); without it the
+  reticle stays at its set distance. `[reticle]` logs hits per 5 s.

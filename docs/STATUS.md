@@ -2,6 +2,32 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-25 (night) - BS1: dual-wielded plasmids, the dynamic reticle, one plasmid aim
+
+**Branch `claude/bs1-dual-plasmids`** off `staging` at da0015f (#105). Local commits, not pushed. **INSTALLED in BS1
+(21:48), not yet run.** Host tests 22 suites green (the new `hand-loadout`), lint clean, no core change.
+
+### Current state
+
+- **Dual-wielded plasmids** (F10 Controls > Dual plasmids > "Cast plasmids from both hands", OFF by default): with
+  a plasmid in hand the right trigger casts it too, from the right hand, aimed with the plasmid aim mirrored; both
+  triggers cast from both hands. Each hand gets its own reticle. 22:09 run: the casts routed right, but both came
+  out of the left hand; installed 22:18, not seen: the right hand shows the left's plasmid mirrored (animations
+  too), and a right-hand cast leaves from the right palm with its effects. The idle palm glow stays on the left. Built on `hand_loadout.h`, the per-hand slots and
+  trigger router the mix-and-match system will fill from the wheels (ARCHITECTURE 2026-10-25). Open: EVE per cast,
+  projectile plasmids, the right hand's effect (ENGINE_NOTES 2026-10-25 night).
+- **The reticle sits on what you aim at** (F10 Aim > Reticle > "Reticle on what you aim at", on): its ray marched
+  through the eye's depth on the GPU. Looks like BO3 Zombies VR's: white, 5 mrad (0.29 deg), dark rim. The owner's
+  saved ReticleSize 0.32 deg still wins over the new 0.29 default.
+- **One aim for all plasmids** (F10 Aim > Reticle > "One aim for all plasmids", on): the "Plasmid" profile, seeded from
+  the plasmid in hand at first use.
+
+### Next steps
+
+- **Tester:** turn on Dual plasmids, hold Electro Bolt, pull the right trigger alone, then both. Watch the EVE bar
+  and where each bolt lands; read `[dualcast]` and `[reticle]` in the log. Then Incinerate (a projectile).
+- Then the mix-and-match wheels: a wheel on either hand filling that hand's slot.
+
 ## Session 2026-10-25 - BS1: the left-held flamethrower mirrored; this branch to staging
 
 **Branch `claude/bs1-manual-reload-2` is published and goes to `staging` by PR, at the owner's word** ("good enough

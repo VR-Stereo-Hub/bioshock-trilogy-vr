@@ -93,8 +93,10 @@ Sim sim_world(const Sim& L, const Sim& S);
 // `mirrored`: the gun is in the left hand and each hand shows the other's layout, mirrored
 // (mirror_math.h) - the gather swaps in the mirrored skin matrices before composing `hands`,
 // which the drive computed from the mirrored pose.
+// `copyLeft` (2026-10-25, dual-wielded plasmids): the RIGHT hand and arm take the left's skin matrices, mirrored,
+// and the left keeps its own (the drive computed `hands` from the same copied pose, bones.cpp m4_pose).
 void publish(void* ownerActor, const HandXform hands[2], bool hideArms, const WeaponXform& weapon,
-             bool mirrored = false);
+             bool mirrored = false, bool copyLeft = false);
 // 2026-10-25 (gun_geometry.h trueMirror): draw this weapon actor REFLECTED - its own axis `axis` (0 X, 1 Y,
 // 2 Z of its local space) flipped about the plane at `planeWeaponSpace` along it, in its skin palette and its
 // static-mesh draws, which then cull the other face (gun_flip.cpp). Null: none. Game thread, every frame it is
