@@ -8197,3 +8197,41 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   so a compute shader marches each reticle's ray through it (96 geometric steps 0.3 to 60 m, then six bisections)
   and the hit is read back one to two frames later. Needs the image processing on (AFW, DLSS or TAA); without it the
   reticle stays at its set distance. `[reticle]` logs hits per 5 s.
+
+## 2026-10-25 (night, later) - Two independent plasmids: a second Hands actor (from the script corpus)
+
+Read from the local UnrealScript corpus (tools\uscript\bs1, ShockGame): summarised, not copied.
+- **An ability is a plain Object, one per class per player.** `Ability` (config Abilities) holds the plasmid's
+  animation names, its EVE cost and pending-fire settings, and a flag that its effects are triggered. The player keeps
+  the classes it has and the active one, and hands out the object through a per-class lookup (GetAbilityFromClass,
+  not decompiled). There is no cooldown field: refire is the hands' state machine and the animation lengths.
+- **The HANDS own everything per hand.** `Hands` (an Actor; the player's is FirstPersonHands.PlayerHands, spawned
+  natively, held as ShockPawn.Hands) keeps the current and previous ability, the hand mode, the pending-fire press
+  and release, and the state machine (AbilityFiring, FinishAbilityFiringWithEve/WithoutEve, AbilityIdling). Its
+  UseActiveAbility checks the EVE gate and enters AbilityFiring; the fire animation's AnimNotify_UseAbility calls
+  UseCurrentAbility on the hands actor that OWNS the animation, which calls the ability's UseAbility - and that
+  charges the EVE (RemoveBioAmmo) once, then (AttackAbility) the damage, InitiateDamage. So the earlier double
+  InitiateDamage gave two casts for one charge, and never reached the five plasmids that do not use InitiateDamage
+  (AirBlast, DecoyHuman, InsectSwarm, SpringBoardTrap, Telekinesis).
+- **Effects are effect EVENTS on the hands actor**, keyed by the ability's class name: 'SelectedAbility' with a
+  persistent context (the palm glow), 'UsedAbility' (the cast), the animations' AnimNotify_EffectEvent cues. Which
+  bone an effect lands on is effect data, attached to the actor that fired the event - so a second hands actor makes
+  a second, complete set of every plasmid's effects, on its own bones.
+- **The design (second_hands.cpp):** a second hands actor of the player's own hands class, spawned owned by the
+  player while dual plasmids are on, a plasmid is in hand and the game is in gameplay; destroyed the moment that ends
+  (menus, cinematics and loads are where a save happens - Actor's PreLevelSave cannot be overridden from outside).
+  Its PawnOwner is written after the spawn (its PostBeginPlay sets none; it spawns its own gatherer tool, destroyed
+  with it). It takes the main hands' plasmid with SetActiveAbility and is fired by the right trigger through
+  UseActiveAbility / UseActiveAbilityRelease. Its draw is collapsed in the skin gather; its skin matrices and its
+  evaluated pose are what the main mesh's RIGHT hand shows, mirrored. Its own UpdateLocation places it at the pawn
+  plus its PlayerViewOffset(Widescreen) turned by the view, every tick, so that offset is set each frame to put its
+  left palm on the drawn right palm, and its effects follow in the same tick. Its cast is told apart by its own
+  pointer on the call stack (the script frames of its UseCurrentAbility) and aimed along the right hand's plasmid ray.
+- **Known, from the script, not handled yet:** AbilityIdling, on entering, takes the controller's held-plasmid-trigger
+  flag (the LEFT trigger's hold) and fires; at 0 EVE both hands may inject a hypo; Telekinesis and Decoy keep one
+  target per player; the same plasmid in both hands shares one ability object (a different plasmid per hand gets its
+  own: the mix-and-match step).
+- **Cheats:** every plasmid as the game's GEP developer command gives one: ShockPlayer.TestAddAvailablePlasmid (or
+  AddAvailablePlasmid where the censored build refuses the Test function), UnlockTrackSlot on the active track up to
+  its six slots, TestEquipPlasmid / EquipPlasmid; the eleven are the ShockGame classes extending ActivePlasmid.
+  Infinite EVE: AddBioAmmo up to GetMaxBioAmmo once a second (as the cheat manager's GiveBioAmmo).

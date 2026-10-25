@@ -43,6 +43,7 @@
 #include "game/bioshock1r/grip_crossbow_lever.h"
 #include "game/bioshock1r/hand_pose.h"
 #include "game/bioshock1r/cheats.h"
+#include "game/bioshock1r/second_hands.h"
 #include "game/bioshock1r/script_call.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/two_hand_math.h"
@@ -6980,6 +6981,7 @@ bool lever_handle_component(float out[3]) {
     return bones::world_to_component(g_m4.actor, w, out);
 }
 Qts g_evMirror[kMaxBones];
+Qts g_rig2Pose[kMaxBones]; // 2026-10-25: the second hands' evaluated pose this frame (second_hands.h)
 
 bool mirror_wanted() {
     return g_mirrorHands.load(std::memory_order_relaxed) && bvr::input::left_handed() && palette::active() &&
@@ -7457,9 +7459,15 @@ const Qts* m4_pose(const Qts* A, int n) {
         // Dual-wielded plasmids: the right hand and arm take the left's, mirrored - exactly the right hand of the
         // mirrored hold - and the left keeps its own. No gun to place.
         memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
+        // The source: the SECOND hands' left hand when they are up (the right hand's own plasmid, its own
+        // animation - second_hands.h), else this rig's own left.
+        const Qts* src = A;
+        Skel s2;
+        if (resolve_skel(second_hands::actor(), s2) && s2.count >= n && read_n(s2.bones, g_rig2Pose, sizeof(Qts) * n))
+            src = g_rig2Pose;
         for (int k = 0; k < mirror::kPairs; ++k) {
             const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
-            mirror_into(mirror::mirrored_pose(*b, mirror::from_frame(A[L].q, A[L].p, A[L].s), b->mbRight[k]),
+            mirror_into(mirror::mirrored_pose(*b, mirror::from_frame(src[L].q, src[L].p, src[L].s), b->mbRight[k]),
                         g_evMirror[R]);
         }
         return g_evMirror;
@@ -7902,6 +7910,8 @@ void socket_follow_restore() {
     }
 }
 
+void rig2_place(const palette::HandXform X[2], const Qts* A, float k); // below
+
 void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) {
     if (!g_sockFollow.load(std::memory_order_relaxed)) {
         socket_follow_restore();
@@ -8041,6 +8051,90 @@ void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) 
     g_rightPalmValid = g_m4.copyLeft && X[1].valid;
     if (g_rightPalmValid) g_rightPalm = fx_palm_drawn(X[1], 1, A, k);
     fx_actor_follow(X, A, n, k, tAttach);
+    rig2_place(X, A, k);
+}
+
+// 2026-10-25: THE SECOND HANDS ON THE RIGHT HAND (second_hands.h). Its own UpdateLocation puts it at the pawn plus
+// its PlayerViewOffset(Widescreen) turned by the view, every tick, and carries everything attached to its bones -
+// so that offset is set to put ITS LEFT PALM on the drawn right palm: its effects (palm glow, cast, beam) then appear
+// on the right hand in the same tick. Its cast socket (FireballSocket, on its head bone) keeps the game's offset,
+// which is its own left palm; only its axes are turned onto the right hand's plasmid ray, as the main hands' are.
+struct Rig2Sock {
+    void* inst = nullptr;
+    int index = -1;
+    float orig[12] = {};
+    float wrote[12] = {};
+    bool have = false;
+} g_rig2Sock;
+uint64_t g_rig2LogMs = 0;
+
+void rig2_place(const palette::HandXform X[2], const Qts* A, float k) {
+    namespace ik = arm_ik;
+    void* rig = second_hands::actor();
+    if (!rig || !g_m4.copyLeft || !X[1].valid || !g_m4.actor) return;
+    Skel s2;
+    if (!resolve_skel(rig, s2) || s2.count <= patterns::kBoneLPalm || s2.count <= kBoneHead) return;
+    Qts palm{}, head{};
+    if (!read_n(&s2.bones[patterns::kBoneLPalm], &palm, sizeof palm) || !read_n(&s2.bones[kBoneHead], &head, sizeof head))
+        return;
+    float k2 = 1.0f;
+    if (!ds_read(rig, &k2) || !(k2 > 0.01f)) k2 = 1.0f;
+    // Both actors stand at the pawn turned by the view, so an actor-local offset is a component point times its
+    // DrawScale: the drawn right palm (this mesh) against the second hands' own left palm.
+    const ik::Vec want = fx_palm_drawn(X[1], 1, A, k) * k;
+    const ik::Vec have = ik::vec(palm.p) * k2;
+    const ik::Vec delta = want - have;
+    int wrote = 0;
+    for (const wchar_t* prop : {L"PlayerViewOffsetWidescreen", L"PlayerViewOffset"}) {
+        const int32_t mo = script::property_offset(g_m4.actor, prop), ro = script::property_offset(rig, prop);
+        float base[3];
+        if (mo < 0 || ro < 0 || !read_n(static_cast<uint8_t*>(g_m4.actor) + mo, base, 12)) continue;
+        const float v[3] = {base[0] + delta.x, base[1] + delta.y, base[2] + delta.z};
+        if (write_n(static_cast<uint8_t*>(rig) + ro, v, 12)) ++wrote;
+    }
+    // Its cast socket's axes along the right hand's plasmid ray.
+    void* inst = nullptr;
+    struct {
+        const int32_t* names;
+        int32_t count;
+    } tn{};
+    float* coords = nullptr;
+    int fire = -1;
+    for (int i = 0; i < g_sock.count && fire < 0; ++i)
+        if (g_sock.bone[i] == kBoneHead && g_sock.hand[i] == 0) fire = i;
+    if (fire >= 0 && read_n(static_cast<uint8_t*>(rig) + patterns::kActorMeshInstOffset, &inst, sizeof inst) && inst &&
+        read_n(static_cast<uint8_t*>(inst) + 0xE8, &tn, sizeof tn) &&
+        read_n(static_cast<uint8_t*>(inst) + 0x100, &coords, sizeof coords) && tn.names && coords && tn.count > 0 &&
+        tn.count <= kMaxSock) {
+        if (inst != g_rig2Sock.inst) {
+            g_rig2Sock = Rig2Sock{};
+            g_rig2Sock.inst = inst;
+            for (int i = 0; i < tn.count; ++i) {
+                int32_t nm[2] = {};
+                if (read_n(tn.names + 2 * i, nm, 8) && !memcmp(nm, g_sock.name[fire], 8)) g_rig2Sock.index = i;
+            }
+        }
+        const int i = g_rig2Sock.index;
+        float cur[12];
+        if (i >= 0 && read_n(coords + 12 * i, cur, 48)) {
+            if (!g_rig2Sock.have || memcmp(cur, g_rig2Sock.wrote, 48)) {
+                memcpy(g_rig2Sock.orig, cur, 48);
+                g_rig2Sock.have = true;
+            }
+            float w[12], o[3], d[3];
+            memcpy(w, g_rig2Sock.orig, 48);
+            if (g_beamAim.load(std::memory_order_relaxed) && aim::plasmid_ray_right(o, d))
+                beam_axes(g_rig2Sock.orig, ik::normalized(ik::quat(head.q)), d, w);
+            if (write_n(coords + 12 * i, w, 48)) memcpy(g_rig2Sock.wrote, w, 48);
+        }
+    }
+    const uint64_t now = GetTickCount64();
+    if (now - g_rig2LogMs >= 2000) {
+        g_rig2LogMs = now;
+        BVR_LOG("[hands2] placed: its left palm moved %.1f %.1f %.1f (actor-local) onto the drawn right palm (%d "
+                "offset field(s) written); cast socket %s",
+                delta.x, delta.y, delta.z, wrote, g_rig2Sock.index >= 0 ? "aimed along the right hand" : "NOT found");
+    }
 }
 
 void m4_compose(bool late) {
@@ -9347,6 +9441,10 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
                                       "own controller"
                                     : "dual plasmids off: each hand its own layout");
         g_m4.copyLeft = c;
+        // The right hand's own plasmid on its own hands actor (second_hands.h): only in gameplay, so a menu, a
+        // cinematic or a load - every moment a save can happen - takes it away.
+        second_hands::tick(handsActor, c && aim::gameplay_view());
+        cheats::tick_hands(handsActor); // F10 > Cheats: plasmids, infinite EVE
     }
     const uint64_t now = GetTickCount64();
     g_m4.ms = now;

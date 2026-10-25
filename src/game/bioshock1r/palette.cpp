@@ -4,6 +4,7 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/arm_ik.h"
 #include "game/bioshock1r/gun_flip.h"
+#include "game/bioshock1r/second_hands.h"
 #include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/patterns.h"
 
@@ -137,9 +138,12 @@ void mirror_skins(const float* engine, float* out, int count) {
 // stay the engine's.
 void copy_left_skins(const float* engine, float* out, int count) {
     if (count != patterns::kHandsRigBoneCount) return;
+    // The source is the SECOND hands' left hand when they are up (their own plasmid's animation), else this mesh's.
+    const float* src = second_hands::skins();
+    if (!src) src = engine;
     for (int k = 0; k < mirror::kPairs; ++k) {
         const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
-        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(engine + L * 16)), out + R * 16);
+        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(src + L * 16)), out + R * 16);
     }
     g_mirrored.fetch_add(1, std::memory_order_relaxed);
 }
@@ -486,6 +490,23 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
         owner = *reinterpret_cast<void**>(static_cast<uint8_t*>(inst) + patterns::kMeshInstOwnerOffset);
     if (owner && readable(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset, 4))
         census_note(owner, *reinterpret_cast<int*>(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset));
+
+    // ---- 2026-10-25: the SECOND hands (second_hands.h, the right hand's own plasmid): its skin matrices are what
+    // the main mesh's right hand shows (mirrored, below), and its own draw is collapsed away - only its effects show.
+    if (owner && owner == second_hands::actor() && inst) {
+        uint8_t* b = static_cast<uint8_t*>(inst);
+        if (readable(b + patterns::kMeshInstPaletteOffset, 8)) {
+            float** sslot = reinterpret_cast<float**>(b + patterns::kMeshInstPaletteOffset);
+            float* sengine = *sslot;
+            const int sn = *reinterpret_cast<int*>(b + patterns::kMeshInstPaletteCountOffset);
+            if (sengine && sn > 0 && sn <= 256 && readable(sengine, static_cast<size_t>(sn) * 64)) {
+                second_hands::capture_skins(sengine, sn);
+                memcpy(g_copy, sengine, static_cast<size_t>(sn) * 64);
+                for (int i = 0; i < sn; ++i) collapse(kHideAllAt, g_copy + i * 16);
+                return call_with_copy(self, inst, lod, out, a5, sslot, sengine);
+            }
+        }
+    }
 
     // ---- hidden outright (the room capture sweep): every matrix of the hands' and the held
     // weapon's palettes collapsed far below the world, so nothing of either is drawn.

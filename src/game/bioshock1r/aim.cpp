@@ -22,6 +22,7 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/hand_loadout.h"
+#include "game/bioshock1r/second_hands.h"
 #include "game/bioshock1r/handback.h"
 #include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/hands.h"
@@ -683,9 +684,15 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
         // here, and the trigger-keyed map moves it back to the right hand the
         // first time it swings. 2026-10-25: a dual-wielded plasmid's right-hand cast is the right hand's,
         // whatever was learned (AbilityInitDetour).
-        Hand h = g_castHand >= 0 ? (g_castHand ? Hand::Right : Hand::Left) : hand_for_object(self, Hand::Left);
+        // The second hands' cast (second_hands.h) is the right hand's even outside InitiateDamage.
+        const bool rig2 = g_castHand < 0 && second_hands::on_stack();
+        Hand h = rig2 ? Hand::Right
+                      : g_castHand >= 0 ? (g_castHand ? Hand::Right : Hand::Left) : hand_for_object(self, Hand::Left);
         float* outs[3] = {outA, outB, outC};
+        const bool wasForced = g_forceRight;
+        if (rig2) g_forceRight = true;
         bool subbed = substitute(g_abilityFire, h, outs, 3);
+        g_forceRight = wasForced;
         if (subbed) {
             note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
             note_hand(g_abilityFire, h);
@@ -710,6 +717,16 @@ int __fastcall AbilityInitDetour(void* self, void* edx, int32_t nameIndex, int32
     void* instigator = nullptr;
     if (self) read_ptr(static_cast<uint8_t*>(self) + patterns::kAbilityInstigatorOffset, &instigator);
     if (g_castHand >= 0 || !is_player_pawn(instigator)) return orig(self, edx, nameIndex, nameNumber);
+    // The second hands' own cast (second_hands.h): the right hand's, aimed along its ray - once, as the game cast it.
+    if (second_hands::on_stack()) {
+        g_castHand = 1;
+        g_forceRight = true;
+        const int r = orig(self, edx, nameIndex, nameNumber);
+        g_castHand = -1;
+        g_forceRight = false;
+        g_castsR.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
     loadout::CastPlan plan;
     {
         std::lock_guard<std::mutex> lock(g_loadoutMutex);
@@ -754,12 +771,14 @@ bool dual_cast_pad_impl(bvr::input::PadOverride* pad) {
         static const loadout::Loadout kNone{};
         const uint8_t t[2] = {pad->lt, pad->rt};
         g_router.route(kNone, t, GetTickCount64()); // resets its edge state
+        second_hands::set_right_trigger(false);
         return false;
     }
     const uint8_t t[2] = {pad->lt, pad->rt}; // the plasmid role is the left hand, the weapon role the right
     const loadout::GameTriggers g = g_router.route(g_loadout, t, GetTickCount64());
     pad->lt = g.plasmid;
     pad->rt = g.weapon;
+    second_hands::set_right_trigger(g.own[1]); // the right hand's own plasmid (second_hands.h)
     return true;
 }
 
@@ -1690,6 +1709,7 @@ void load_weapon_profiles() {
 
 bool dual_cast_pad(bvr::input::PadOverride* pad) { return dual_cast_pad_impl(pad); }
 bool dual_plasmids() { return dual_casting(); }
+bool gameplay_view() { return g_gameplayView; }
 bool plasmid_ray_right(float origin[3], float dir[3]) {
     if (!g_plasmidRayR.valid) return false;
     origin[0] = g_plasmidRayR.origin.x;
@@ -2275,7 +2295,8 @@ void on_calcview(const FrameContext& ctx) {
     {
         const bool plasmid = hands::active_hand() == 0;
         const loadout::Loadout l = loadout::resolve(plasmid, g_weaponKey.c_str(), !plasmid && !g_weaponKey.empty(),
-                                                    g_weaponKey.c_str(), g_dualCast.load(std::memory_order_relaxed));
+                                                    g_weaponKey.c_str(), g_dualCast.load(std::memory_order_relaxed),
+                                                    second_hands::actor() != nullptr);
         std::lock_guard<std::mutex> lock(g_loadoutMutex);
         g_loadout = l;
     }

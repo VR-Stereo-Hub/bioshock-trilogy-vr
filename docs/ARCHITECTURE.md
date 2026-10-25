@@ -3172,6 +3172,18 @@ the plasmid in hand too); the wheels will fill them instead, and the router and 
 are. Rejected: casting a second time on every cast (the right hand could not cast alone, and the game's own
 scripted casts would double); a second ability actor (the game has one ability slot, `Hands +0x454`).
 
+### 2026-10-25: each plasmid hand is its own Hands actor
+
+The owner wants two fully independent plasmids, the same or different, each with its own cast, animation, effects
+and EVE use, as the base of mix-and-match. In BS1 all of that lives on the Hands actor, not on the ability: its state
+machine, its animations, its effect events (ENGINE_NOTES 2026-10-25, the script corpus). So the right hand's plasmid
+is a second Hands actor of the same class, made and driven by the mod (second_hands.cpp), hidden in the skin
+gather, its left hand shown mirrored on the main mesh's right hand, and placed by its own view offset so its effects
+land on the right hand. Rejected: running the cast twice (one EVE charge for two casts, nothing for the plasmids
+that do not use InitiateDamage, one set of effects); a second ability object fired by the mod (no animation, no
+state, its effects on the one Hands' left hand). The two-casts path stays only as the fallback when the second Hands
+cannot be spawned.
+
 ### 2026-10-25: the BS1 reticle finds its distance in the eye's depth, not a trace
 
 The sibling mods place the reticle by the engine's ray trace. BS1 cannot call its trace. The temporal pipeline

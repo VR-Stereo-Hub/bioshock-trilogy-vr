@@ -40,6 +40,26 @@ int main() {
         check(d.plasmid_hands() == 0 && !d.weapon(0) && !d.weapon(1), "empty hands hold nothing");
     }
     const Loadout dual = resolve(true, "Incineration", false, "", true);
+    // Both hands' plasmids on the GAME's one input (no second hands actor): the router merges and latches.
+    Loadout shared = dual;
+    shared.hand[1].ownHands = false;
+    // ownHands: the right hand's plasmid runs on its own hands actor - its trigger never reaches the game.
+    {
+        check(dual.hand[1].ownHands && !dual.hand[0].ownHands, "dual: the right hand's plasmid is its own");
+        CastRouter r;
+        const uint8_t right[2] = {0, 255}, left[2] = {255, 0};
+        GameTriggers g = r.route(dual, right, 0);
+        check(g.plasmid == 0 && g.weapon == 0 && g.own[1], "own hands: the right pull goes to its own hands only",
+              g.plasmid, 0);
+        g = r.route(dual, left, 10);
+        check(g.plasmid == 255 && !g.own[1], "own hands: the left trigger is the game's plasmid trigger", g.plasmid, 255);
+        CastPlan p = r.take(dual, 20, -1);
+        check(!p.hand[1], "own hands: the game's cast is never the right hand's", p.count(), 1);
+        // NEGATIVE CONTROL: the same pull on the shared loadout DOES feed the game
+        CastRouter s;
+        g = s.route(shared, right, 0);
+        check(g.plasmid == 255, "control: shared, the right pull is the game's plasmid trigger", g.plasmid, 255);
+    }
     const Loadout single = resolve(true, "Incineration", false, "", false);
     const Loadout gun = resolve(false, "", true, "Pistol", true);
     // route: pass-through
@@ -55,41 +75,41 @@ int main() {
     {
         CastRouter r;
         const uint8_t right[2] = {0, 255};
-        GameTriggers g = r.route(dual, right, 100);
+        GameTriggers g = r.route(shared, right, 100);
         check(g.plasmid == 255 && g.weapon == 0, "dual: the right trigger is the plasmid trigger", g.weapon, 0);
-        g = r.route(dual, right, 110);
-        CastPlan p = r.take(dual, 300, 0);
+        g = r.route(shared, right, 110);
+        CastPlan p = r.take(shared, 300, 0);
         check(p.hand[1] && !p.hand[0], "dual: a right pull casts from the right hand only");
-        p = r.take(dual, 310, 0);
+        p = r.take(shared, 310, 0);
         check(p.hand[0] && !p.hand[1], "consumed: the next cast without a pull is the fallback hand");
         // left then right while the left is held: the right latches and the plasmid trigger gaps
         const uint8_t left[2] = {255, 0}, both[2] = {255, 255};
-        r.route(dual, left, 400);
-        g = r.route(dual, both, 410);
+        r.route(shared, left, 400);
+        g = r.route(shared, both, 410);
         check(g.plasmid == 0, "a second hand's pull lets the plasmid trigger go first", g.plasmid, 0);
-        g = r.route(dual, both, 420);
+        g = r.route(shared, both, 420);
         check(g.plasmid == 0, "for the whole gap", g.plasmid, 0);
-        g = r.route(dual, both, 430);
+        g = r.route(shared, both, 430);
         check(g.plasmid == 255, "then presses it again", g.plasmid, 255);
-        p = r.take(dual, 500, 0);
+        p = r.take(shared, 500, 0);
         check(p.hand[0] && p.hand[1], "both pulls: the cast comes from both hands", p.count(), 2);
         // held: no second latch
-        r.route(dual, both, 600);
-        p = r.take(dual, 700, -1);
+        r.route(shared, both, 600);
+        p = r.take(shared, 700, -1);
         check(p.count() == 0, "a held trigger does not latch again", p.count(), 0);
         // NEGATIVE CONTROL: the same sequence with the hand released in between DOES latch again
         const uint8_t none[2] = {0, 0};
-        r.route(dual, none, 800);
-        r.route(dual, right, 810);
-        p = r.take(dual, 900, -1);
+        r.route(shared, none, 800);
+        r.route(shared, right, 810);
+        p = r.take(shared, 900, -1);
         check(p.hand[1], "control: released and pulled again latches", p.count(), 1);
     }
     // stale
     {
         CastRouter r;
         const uint8_t right[2] = {0, 255};
-        r.route(dual, right, 0);
-        CastPlan p = r.take(dual, CastRouter::kLatchMs + 1, 0);
+        r.route(shared, right, 0);
+        CastPlan p = r.take(shared, CastRouter::kLatchMs + 1, 0);
         check(p.hand[0] && !p.hand[1], "a stale pull is dropped for the fallback");
     }
     // single plasmid: the right (weapon) hand keeps the weapon trigger
@@ -105,7 +125,7 @@ int main() {
     {
         CastRouter r;
         const uint8_t right[2] = {0, 255};
-        r.route(dual, right, 0);
+        r.route(shared, right, 0);
         CastPlan p = r.take(single, 10, -1);
         check(!p.hand[1], "the right hand let go of the plasmid: its latch does not cast", p.count(), 0);
     }

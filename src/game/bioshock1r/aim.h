@@ -108,6 +108,8 @@ bool hand_ray(int hand, float origin[3], float dir[3]);
 // hand; the right hand's plasmid ray (the plasmid aim mirrored) while it is; and the pad step that makes the right
 // trigger cast (dial_input override_sticks, the XInput thread).
 bool dual_plasmids();
+// The camera is the gameplay view (no menu, cinematic or scripted camera) as of the last CalcView.
+bool gameplay_view();
 bool plasmid_ray_right(float origin[3], float dir[3]);
 bool dual_cast_pad(bvr::input::PadOverride* pad);
 

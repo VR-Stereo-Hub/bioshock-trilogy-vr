@@ -24,6 +24,9 @@ enum class Kind : uint8_t { Empty, Weapon, Plasmid };
 struct Slot {
     Kind kind = Kind::Empty;
     char key[48] = {}; // the item: the aim profile key ("ElectricBolt", "Shotgun", ...), "" when unknown
+    // 2026-10-25: this hand's item runs on its OWN hands actor (second_hands.h) - its trigger goes to that actor,
+    // never to the game's input; the game's single plasmid stays the other hand's.
+    bool ownHands = false;
     bool same(const Slot& o) const { return kind == o.kind && strcmp(key, o.key) == 0; }
 };
 
@@ -41,14 +44,18 @@ inline void set_key(Slot& s, const char* key) {
 }
 
 // Today's rules. The game's own item goes to its own hand (a weapon in the right, a plasmid in the left); with
-// `dualPlasmids` the right hand holds the same plasmid while a plasmid is in hand.
+// `dualPlasmids` the right hand holds the same plasmid while a plasmid is in hand - on its own hands actor when
+// `rightOwnHands` (second_hands.h made one), else on the game's one input (the cast run once per hand that asked).
 inline Loadout resolve(bool plasmidInHand, const char* plasmidKey, bool weaponInHand, const char* weaponKey,
-                       bool dualPlasmids) {
+                       bool dualPlasmids, bool rightOwnHands = true) {
     Loadout l;
     if (plasmidInHand) {
         l.hand[0].kind = Kind::Plasmid;
         set_key(l.hand[0], plasmidKey);
-        if (dualPlasmids) l.hand[1] = l.hand[0];
+        if (dualPlasmids) {
+            l.hand[1] = l.hand[0];
+            l.hand[1].ownHands = rightOwnHands; // the right hand's plasmid is a second, independent one
+        }
     } else if (weaponInHand) {
         l.hand[1].kind = Kind::Weapon;
         set_key(l.hand[1], weaponKey);
@@ -60,6 +67,7 @@ inline Loadout resolve(bool plasmidInHand, const char* plasmidKey, bool weaponIn
 struct GameTriggers {
     uint8_t plasmid = 0; // the plasmid (ability) trigger
     uint8_t weapon = 0;  // the weapon trigger
+    bool own[2] = {false, false}; // a hand whose item runs on its own hands actor: its trigger is pulled
 };
 
 // Which hands one cast comes from.
@@ -93,6 +101,12 @@ struct CastRouter {
         uint8_t plasmidLevel = 0;
         for (int h = 0; h < 2; ++h) {
             const bool down = trig[h] > kPull;
+            if (l.hand[h].ownHands) {
+                // Its own hands actor takes the pull; the game's input never sees it.
+                out.own[h] = down;
+                was[h] = false;
+                continue;
+            }
             if (l.plasmid(h)) {
                 if (down && !was[h]) {
                     latched[h] = true;
@@ -121,7 +135,7 @@ struct CastRouter {
     CastPlan take(const Loadout& l, uint64_t nowMs, int fallbackHand) {
         CastPlan p;
         for (int h = 0; h < 2; ++h) {
-            if (latched[h] && l.plasmid(h) && nowMs - latchMs[h] <= kLatchMs) p.hand[h] = true;
+            if (latched[h] && l.plasmid(h) && !l.hand[h].ownHands && nowMs - latchMs[h] <= kLatchMs) p.hand[h] = true;
             latched[h] = false;
         }
         if (p.count() == 0 && fallbackHand >= 0) p.hand[fallbackHand & 1] = true;

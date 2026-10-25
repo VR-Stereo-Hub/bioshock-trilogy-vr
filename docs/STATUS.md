@@ -12,8 +12,11 @@
 - **Dual-wielded plasmids** (F10 Controls > Dual plasmids > "Cast plasmids from both hands", OFF by default): with
   a plasmid in hand the right trigger casts it too, from the right hand, aimed with the plasmid aim mirrored; both
   triggers cast from both hands. Each hand gets its own reticle. 22:09 run: the casts routed right, but both came
-  out of the left hand; installed 22:18, not seen: the right hand shows the left's plasmid mirrored (animations
-  too), and a right-hand cast leaves from the right palm with its effects. The idle palm glow stays on the left. Built on `hand_loadout.h`, the per-hand slots and
+  out of the left hand. **Installed 23:01, not seen: the right hand's plasmid is a SECOND HANDS ACTOR**
+  (second_hands.cpp; ENGINE_NOTES 2026-10-25 night, later): its own cast, animation, effects and EVE use, its
+  animation shown on the right hand, its effects placed there. `[hands2]` logs its spawn, plasmid and placement.
+- **Cheats** (F10 > Cheats > Plasmids and EVE): "Give all plasmids" (all eleven available, six equipped) and
+  "Infinite EVE". Built on `hand_loadout.h`, the per-hand slots and
   trigger router the mix-and-match system will fill from the wheels (ARCHITECTURE 2026-10-25). Open: EVE per cast,
   projectile plasmids, the right hand's effect (ENGINE_NOTES 2026-10-25 night).
 - **The reticle sits on what you aim at** (F10 Aim > Reticle > "Reticle on what you aim at", on): its ray marched
