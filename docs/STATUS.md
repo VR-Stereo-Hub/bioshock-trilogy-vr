@@ -46,8 +46,18 @@ from 2026-10-23 is the only core diff).
 
 ### Next steps
 
-- **The flamethrower's 180 degrees first** (a regression from this session's last two commits). Find which hand,
-  then bisect dffe2f9 and 8c672a0 by reverting one at a time. Then the left-handed crossbow yaw when the owner picks
+- **2026-10-25: the left-held flamethrower is NOT a regression; its hold design is wrong.** An F10 A/B of dffe2f9's
+  own trim and 8c672a0's tank plane (run 20:21, both flipped both ways) changed nothing the tester could see. The
+  20:22 captures (`afw-20261024-202233` right, `-202249` left) show why: in the right hand the ribbed side handle is on
+  the tank's right and the hand is on it; in the left hand the gun is drawn the SAME way round (a rigid gun cannot be
+  mirrored), so the handle stays on the tank's right and the mirrored left hand grips the bare left of the tank.
+  Every mirror plane only moves where on the bare tank it lands. The switches were taken out again; the recording
+  keeps each controller's rotation (`ctrl` lines). **Next: the owner picks the left-handed hold** - the left hand on
+  the TOP handle where the game's own idle puts the left hand (no mirror: the gun hangs from the left hand as the
+  idle clip places it; the right hand free or on the side handle), or the gun rolled a half turn so the side handle
+  is in the left hand (gauge underneath). A Blender mock-up before implementing, as for the crossbow.
+- (Superseded by the line above.) **The flamethrower's 180 degrees first** (a regression from this session's last two
+  commits). Find which hand, then bisect dffe2f9 and 8c672a0 by reverting one at a time. Then the left-handed crossbow yaw when the owner picks
   it up again: start from the 19:32 recording (`dumps\poserec-*`) and measure the drawn gun's yaw against the left
   controller. The controller pose is not in the recording, so add it there first rather than infer it.
 - Then a draft PR of this branch into `staging`, only on the owner's go.

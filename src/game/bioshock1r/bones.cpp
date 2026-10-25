@@ -6881,6 +6881,8 @@ struct M4State {
     // the camera rotation, all WORLD, as of this CalcView.
     float gripWorld[2][3] = {};
     FRotator handRot[2] = {};
+    FRotator ctrlRot[2] = {}; // 2026-10-25: the controller as held (no trim), for the pose recording
+    bool ctrlValid[2] = {};
     FRotator camRot{};
     // s90: the final camera, WORLD, for PIVOTPROBE's fg-eye line (compared against the eye the
     // foreground pass actually renders the hands from - a frame dump's cb0 floats 56..58).
@@ -7148,6 +7150,12 @@ void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float q
                 l.q[3], l.t[0], l.t[1], l.t[2], l.s);
         fprintf(f, "mirrorplane %.6g %.6g %.6g  %.6g\n", g_mirU[0], g_mirU[1], g_mirU[2], g_mirPlane);
     }
+    // 2026-10-25: each controller as held (world UE rotator, no trim; per mesh, so mirrored the left mesh's is the
+    // left controller) and the drawn hand's trimmed one, so a replay can tell the tester's own wrist from the code's.
+    for (int h = 0; h < 2; ++h)
+        fprintf(f, "ctrl %d %d  %d %d %d  hand %d %d %d\n", h, g_m4.ctrlValid[h] ? 1 : 0, g_m4.ctrlRot[h].pitch,
+                g_m4.ctrlRot[h].yaw, g_m4.ctrlRot[h].roll, g_m4.handRot[h].pitch, g_m4.handRot[h].yaw,
+                g_m4.handRot[h].roll);
     for (int h = 0; h < 2; ++h) {
         const palette::HandXform& X = palX[h];
         fprintf(f, "handfix %d %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g %.6g %.6g  %.6g\n", h, X.valid ? 1 : 0, X.q[0],
@@ -9359,6 +9367,8 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
         g_m4.gripWorld[h][1] = raw[h].loc.y + an[1];
         g_m4.gripWorld[h][2] = raw[h].loc.z + an[2];
         g_m4.handRot[h] = gp[h].rot;
+        g_m4.ctrlRot[h] = raw[h].rot;
+        g_m4.ctrlValid[h] = valid[h];
         g_m4.camRot = FRotator{ctx.camPitch, ctx.camYaw, ctx.camRoll};
         g_m4.camWorld[0] = ctx.camX;
         g_m4.camWorld[1] = ctx.camY;
