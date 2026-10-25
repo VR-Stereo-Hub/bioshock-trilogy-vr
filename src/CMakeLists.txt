@@ -21,6 +21,12 @@ add_library(bioshockvr SHARED
     core/debug/value_scan.h
     core/gfx/blit.cpp
     core/gfx/blit.h
+    core/gfx/anim_shots.cpp
+    core/gfx/anim_shots.h
+    core/gfx/cube_snapshot.cpp
+    core/gfx/room_codec.cpp
+    core/gfx/room_codec.h
+    core/gfx/cube_snapshot.h
     core/gfx/dlss_client.cpp
     core/gfx/dlss_client.h
     core/gfx/dlss_ipc.h
@@ -77,6 +83,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/menu_view.cpp
     game/bioshock1r/menu_backend.cpp
     game/bioshock1r/screens.cpp
+    game/bioshock1r/room_capture.cpp
+    game/bioshock1r/room_capture.h
     game/bioshock1r/probe_bob.cpp
     game/bioshock1r/body.h
     game/bioshock1r/bones.cpp
@@ -90,7 +98,37 @@ add_library(bioshockvr SHARED
     game/bioshock1r/frame_context.h
     game/bioshock1r/hands.cpp
     game/bioshock1r/palette.cpp
+    game/bioshock1r/gun_flip.cpp
     game/bioshock1r/handback.cpp
+    game/bioshock1r/hud_elements.cpp
+    game/bioshock1r/hud_elements.h
+    game/bioshock1r/hud_elements_plan.h
+    game/bioshock1r/wheel_state.cpp
+    game/bioshock1r/menu_blur.cpp
+    game/bioshock1r/swap_hold.cpp
+    game/bioshock1r/wheel_state.h
+    game/bioshock1r/wheel_mirror.h
+    game/bioshock1r/wheel_dial.h
+    game/bioshock1r/dial_input.cpp
+    game/bioshock1r/dial_input.h
+    game/bioshock1r/manual_reload.cpp
+    game/bioshock1r/dropped_part.cpp
+    game/bioshock1r/sound_engine.cpp
+    game/bioshock1r/sound_engine.h
+    game/bioshock1r/manual_reload.h
+    game/bioshock1r/script_call.cpp
+    game/bioshock1r/cheats.cpp
+    game/bioshock1r/script_call.h
+    game/bioshock1r/two_hand.cpp
+    game/bioshock1r/two_hand.h
+    game/bioshock1r/two_hand_math.h
+    game/bioshock1r/gun_geometry.h
+    game/bioshock1r/grip_rest_poses.h
+    game/bioshock1r/gun_state.h
+    game/bioshock1r/grip_owner.h
+    game/bioshock1r/hand_pose.h
+    game/bioshock1r/gun_suppress.h
+    game/bioshock1r/gun_sounds.h
     game/bioshock1r/attach_census.cpp
     game/bioshock1r/muzzle.cpp
     game/bioshock1r/muzzle.h

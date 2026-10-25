@@ -3,6 +3,8 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/arm_ik.h"
+#include "game/bioshock1r/gun_flip.h"
+#include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -35,6 +37,11 @@ using GatherFn = int(__thiscall*)(void* self, void* inst, int lod, void* out, in
 GatherFn g_orig = nullptr;
 bool g_installed = false;
 std::atomic<bool> g_enabled{true};
+std::atomic<bool> g_hideAll{false}; // the room capture sweep: hands and weapon collapsed away
+std::atomic<void*> g_hideActor{nullptr}; // the held weapon actor the hands module names, while hidden
+std::atomic<float> g_hideCam[3] = {0.0f, 0.0f, 0.0f}; // the camera, for the by-reach rule
+constexpr float kHideReachUu = 120.0f;
+constexpr float kHideAllAt[3] = {0.0f, 0.0f, -100000.0f};
 
 std::mutex g_mutex; // the drive publishes on the game thread; the gather may run on the render thread
 struct Published {
@@ -42,9 +49,89 @@ struct Published {
     HandXform hand[2];
     WeaponXform weapon;
     bool hideArms = false;
+    bool mirror = false; // each hand shows the other's layout, mirrored (mirror_math.h)
     uint64_t ms = 0;
 };
 Published g_pub;
+
+// ---- 2026-10-25: a held gun drawn REFLECTED (gun_geometry.h trueMirror) ---------------------------------------
+// The weapon actor, the weapon-space axis flipped and the plane it is flipped about, and when it was last asked
+// for (a stale request is ignored, as the hands' are).
+std::atomic<void*> g_reflActor{nullptr};
+std::atomic<int> g_reflAxis{1};
+std::atomic<float> g_reflPlane{0.0f};
+std::atomic<uint64_t> g_reflMs{0};
+std::atomic<uint32_t> g_reflSkinned{0}, g_reflStatic{0};
+
+void* reflection_actor() {
+    void* a = g_reflActor.load(std::memory_order_relaxed);
+    return a && GetTickCount64() - g_reflMs.load(std::memory_order_relaxed) <= 250 ? a : nullptr;
+}
+// Row-vector 4x4 (rows 0-2 the axes' images, row 3 the translation). F flips local axis `a` about x_a = c.
+// After: v M F (the matrix's OUTPUT space reflected) - the skin palette and a WorldToLocal.
+void reflect_after(float* m, int a, float c) {
+    for (int r = 0; r < 3; ++r) m[r * 4 + a] = -m[r * 4 + a];
+    m[12 + a] = 2.0f * c - m[12 + a];
+}
+// Before: v F M (the matrix's INPUT space reflected) - a LocalToWorld.
+void reflect_before(float* m, int a, float c) {
+    for (int k = 0; k < 4; ++k) {
+        m[12 + k] += 2.0f * c * m[a * 4 + k];
+        m[a * 4 + k] = -m[a * 4 + k];
+    }
+}
+
+// ---- 2026-10-19: the hands mirrored (mirror_math.h) ------------------------------------------
+// The engine's evaluated pose, published by the drive each frame, so the gather can measure the
+// rig's binds (bind = inverse(skin) * pose) against the skin matrices of the same evaluation.
+// The basis is measured once and then never changes (binds are constant); `g_mirrorState` says
+// which: 0 not yet, 1 valid, -1 refused (logged).
+std::mutex g_poseMutex;
+mirror::Aff g_pose[patterns::kHandsRigBoneCount];
+bool g_poseValid = false;
+mirror::Basis g_basis;
+std::atomic<int> g_mirrorState{0};
+int g_mirrorTries = 0;
+std::atomic<uint32_t> g_mirrored{0};
+
+void measure_mirror(const float* engine, int count) {
+    if (g_mirrorState.load(std::memory_order_relaxed) != 0 || count != patterns::kHandsRigBoneCount) return;
+    mirror::Aff bind[patterns::kHandsRigBoneCount];
+    {
+        std::lock_guard<std::mutex> lock(g_poseMutex);
+        if (!g_poseValid) return;
+        for (int i = 0; i < count; ++i) {
+            mirror::Aff inv;
+            if (!mirror::inverse(mirror::from_palette(engine + i * 16), &inv)) return;
+            bind[i] = mirror::mul(inv, g_pose[i]);
+        }
+    }
+    mirror::Basis b;
+    const bool ok = mirror::measure(bind, count, &b);
+    // A pose and a palette from different evaluations would read as asymmetric; give it a few
+    // gathers before calling the rig asymmetric.
+    if (!ok && ++g_mirrorTries < 60) return;
+    g_basis = b;
+    g_mirrorState.store(ok ? 1 : -1, std::memory_order_release);
+    BVR_LOG("[palette] mirror basis %s: plane normal %.3f %.3f %.3f through %.2f %.2f %.2f | the twins' rest "
+            "positions mirror to %.3f (%.1f%% of the hand's size), worst Mb determinant %.3f%s",
+            ok ? "MEASURED" : "REFUSED", b.mx.R[0] < 1.0f ? std::sqrt((1.0f - b.mx.R[0]) * 0.5f) : 0.0f,
+            b.mx.R[4] < 1.0f ? std::sqrt((1.0f - b.mx.R[4]) * 0.5f) : 0.0f,
+            b.mx.R[8] < 1.0f ? std::sqrt((1.0f - b.mx.R[8]) * 0.5f) : 0.0f, b.mx.t[0] * 0.5f, b.mx.t[1] * 0.5f,
+            b.mx.t[2] * 0.5f, b.residual, b.span > 0 ? 100.0f * b.residual / b.span : 0.0f, b.worstDet,
+            ok ? "" : " - the rig is not mirror-symmetric enough; the hands are not mirrored");
+}
+
+// Each hand's bones take the other hand's skin matrices, mirrored (mx * P * mx - a rotation).
+void mirror_skins(const float* engine, float* out, int count) {
+    if (count != patterns::kHandsRigBoneCount) return;
+    for (int k = 0; k < mirror::kPairs; ++k) {   // the hands and the arms
+        const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(engine + R * 16)), out + L * 16);
+        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(engine + L * 16)), out + R * 16);
+    }
+    g_mirrored.fetch_add(1, std::memory_order_relaxed);
+}
 
 std::atomic<uint32_t> g_calls{0}, g_composed{0}, g_refused{0};
 std::atomic<void*> g_linkActor{nullptr}, g_linkSkel{nullptr};
@@ -389,20 +476,51 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
     if (owner && readable(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset, 4))
         census_note(owner, *reinterpret_cast<int*>(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset));
 
+    // ---- hidden outright (the room capture sweep): every matrix of the hands' and the held
+    // weapon's palettes collapsed far below the world, so nothing of either is drawn.
+    if (g_hideAll.load(std::memory_order_relaxed) && owner && inst &&
+        (owner == p.instance || owner == g_hideActor.load(std::memory_order_relaxed) ||
+         (p.weapon.valid && owner == p.weapon.actor))) {
+        uint8_t* b = static_cast<uint8_t*>(inst);
+        if (readable(b + patterns::kMeshInstPaletteOffset, 8)) {
+            float** hslot = reinterpret_cast<float**>(b + patterns::kMeshInstPaletteOffset);
+            float* hengine = *hslot;
+            const int hn = *reinterpret_cast<int*>(b + patterns::kMeshInstPaletteCountOffset);
+            if (hengine && hn > 0 && hn <= 256 && readable(hengine, static_cast<size_t>(hn) * 64)) {
+                memcpy(g_copy, hengine, static_cast<size_t>(hn) * 64);
+                for (int i = 0; i < hn; ++i) collapse(kHideAllAt, g_copy + i * 16);
+                return call_with_copy(self, inst, lod, out, a5, hslot, hengine);
+            }
+        }
+    }
+
     // ---- the held weapon (Dishonored 1.5): the hand's world correction, in the weapon's space
-    if (g_enabled.load(std::memory_order_relaxed) && owner && p.weapon.valid && owner == p.weapon.actor &&
-        GetTickCount64() - p.ms <= 250) {
+    // 2026-10-25: and a gun drawn reflected (trueMirror) gets its own axis flipped first, in its own space.
+    void* reflActor = reflection_actor();
+    const bool refl = owner && reflActor && owner == reflActor;
+    if (refl) gun_flip::note_gun_gather();
+    const bool corrected = g_enabled.load(std::memory_order_relaxed) && owner && p.weapon.valid &&
+                           owner == p.weapon.actor && GetTickCount64() - p.ms <= 250;
+    if (corrected || refl) {
         uint8_t* b = static_cast<uint8_t*>(inst);
         if (readable(b + patterns::kMeshInstPaletteOffset, 8)) {
             float** wslot = reinterpret_cast<float**>(b + patterns::kMeshInstPaletteOffset);
             float* wengine = *wslot;
             const int wn = *reinterpret_cast<int*>(b + patterns::kMeshInstPaletteCountOffset);
             if (wengine && wn > 0 && wn <= 256 && readable(wengine, static_cast<size_t>(wn) * 64)) {
-                const Sim g = sim_mul(sim_inv(p.weapon.lWeapon), sim_mul(p.weapon.dWorld, p.weapon.lWeapon));
+                const Sim g = corrected ? sim_mul(sim_inv(p.weapon.lWeapon), sim_mul(p.weapon.dWorld, p.weapon.lWeapon))
+                                        : Sim{};
                 memcpy(g_copy, wengine, static_cast<size_t>(wn) * 64);
-                for (int i = 0; i < wn; ++i) apply_sim(g, g_copy + i * 16);
+                if (refl) {
+                    const int ax = g_reflAxis.load(std::memory_order_relaxed);
+                    const float c = g_reflPlane.load(std::memory_order_relaxed);
+                    for (int i = 0; i < wn; ++i) reflect_after(g_copy + i * 16, ax, c);
+                    g_reflSkinned.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (corrected)
+                    for (int i = 0; i < wn; ++i) apply_sim(g, g_copy + i * 16);
                 const int r = call_with_copy(self, inst, lod, out, a5, wslot, wengine);
-                g_weaponComposed.fetch_add(1, std::memory_order_relaxed);
+                if (corrected) g_weaponComposed.fetch_add(1, std::memory_order_relaxed);
                 return r;
             }
         }
@@ -434,6 +552,10 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
         return g_orig(self, inst, lod, out, a5);
     }
     memcpy(g_copy, engine, static_cast<size_t>(count) * patterns::kSkinnedVertexStride);
+    measure_mirror(engine, count); // once; nothing after it is measured
+    // The gun in the left hand: each hand's skin matrices become the other's, mirrored, BEFORE
+    // the placement below - which the drive computed from the mirrored pose, so the two agree.
+    if (p.mirror && g_mirrorState.load(std::memory_order_acquire) == 1) mirror_skins(engine, g_copy, count);
     for (int h = 0; h < 2; ++h) {
         const HandXform& x = p.hand[h];
         if (!x.valid) continue;
@@ -442,7 +564,14 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
         if (x.wristBone >= 0 && x.wristBone < count) measure_anchor(h, x, g_copy, count);
         const int first = h == 1 ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
         const int last = h == 1 ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
-        for (int i = first; i <= last && i < count; ++i) compose(x, g_copy + i * 16);
+        for (int i = first; i <= last && i < count; ++i) {
+            const int f = i - first;
+            if (f < HandXform::kMaxFix && x.fixValid[f]) {
+                static const float kZero[3] = {0, 0, 0};
+                apply_sim(palette_math::hand_sim(x.fixQ[f], 1.0f, kZero, x.fixT[f]), g_copy + i * 16);
+            }
+            compose(x, g_copy + i * 16);
+        }
         const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
         if (x.armValid) {
             // s88: the IK arm (Dishonored arm_ik_draw.inc): each sleeve matrix carried from the
@@ -532,15 +661,57 @@ int __fastcall mesh_draw_detour(void* mesh, void* /*edx*/, void* rec, void* rend
         std::lock_guard<std::mutex> lock(g_mutex);
         p = g_pub;
     }
-    if (!g_enabled.load(std::memory_order_relaxed) || !p.weapon.valid || !p.weapon.actor || !rec ||
-        GetTickCount64() - p.ms > 250 || !readable(rec, 0x120))
-        return g_meshDrawOrig(mesh, rec, renderer, a4);
+    // Hidden outright (the room capture sweep): the held weapon's record, whichever
+    // actor the hands module names, drawn far below the world - the weapon lane
+    // above need not be live for it (it is idle for the wrench).
+    const bool hideAll = g_hideAll.load(std::memory_order_relaxed);
+    void* hideActor = hideAll ? g_hideActor.load(std::memory_order_relaxed) : nullptr;
+    if (hideAll && rec && readable(rec, 0x120)) {
+        uint8_t* hb = static_cast<uint8_t*>(rec);
+        int hoff = g_recOwnerOffset.load(std::memory_order_relaxed);
+        if (hoff < 0 && hideActor) {
+            for (int o = 0; o < 0x120; o += 4)
+                if (*reinterpret_cast<void**>(hb + o) == hideActor) {
+                    hoff = o;
+                    g_recOwnerOffset.store(o, std::memory_order_relaxed);
+                    BVR_LOG("[palette] weapon: the static-mesh draw record holds its owner actor at +0x%X (hide)", o);
+                    break;
+                }
+        }
+        const bool byActor = hideActor && hoff >= 0 && *reinterpret_cast<void**>(hb + hoff) == hideActor;
+        // By REACH when the actor is unknown (the wrench is never resolved): a static
+        // mesh drawn within arm's reach of the camera is the viewmodel, nothing else is.
+        bool byReach = false;
+        if (!byActor) {
+            const float* t = reinterpret_cast<const float*>(hb + patterns::kDrawRecLocalToWorldOffset) + 12;
+            const float dx = t[0] - g_hideCam[0].load(std::memory_order_relaxed);
+            const float dy = t[1] - g_hideCam[1].load(std::memory_order_relaxed);
+            const float dz = t[2] - g_hideCam[2].load(std::memory_order_relaxed);
+            byReach = dx * dx + dy * dy + dz * dz < kHideReachUu * kHideReachUu;
+        }
+        if (byActor || byReach) {
+            float* hl2w = reinterpret_cast<float*>(hb + patterns::kDrawRecLocalToWorldOffset);
+            float* hw2l = reinterpret_cast<float*>(hb + patterns::kDrawRecWorldToLocalOffset);
+            float hnl[16], hnw[16];
+            memcpy(hnl, hl2w, 64);
+            memcpy(hnw, hw2l, 64);
+            hnl[12] = kHideAllAt[0];
+            hnl[13] = kHideAllAt[1];
+            hnl[14] = kHideAllAt[2];
+            return call_mesh_draw(mesh, rec, renderer, a4, hl2w, hw2l, hnl, hnw);
+        }
+    }
+    const bool corrected = g_enabled.load(std::memory_order_relaxed) && p.weapon.valid && p.weapon.actor &&
+                           GetTickCount64() - p.ms <= 250;
+    void* reflActor = reflection_actor(); // 2026-10-25: a gun drawn reflected (trueMirror)
+    void* target = corrected ? p.weapon.actor : reflActor;
+    if (!target || !rec || !readable(rec, 0x120)) return g_meshDrawOrig(mesh, rec, renderer, a4);
     uint8_t* b = static_cast<uint8_t*>(rec);
     int off = g_recOwnerOffset.load(std::memory_order_relaxed);
     if (off < 0) {
         // Discovery: the first record that carries the held weapon actor names the field.
         for (int o = 0; o < 0x120; o += 4)
-            if (*reinterpret_cast<void**>(b + o) == p.weapon.actor) {
+            if (*reinterpret_cast<void**>(b + o) == target) {
                 off = o;
                 g_recOwnerOffset.store(o, std::memory_order_relaxed);
                 BVR_LOG("[palette] weapon: the static-mesh draw record holds its owner actor at +0x%X", o);
@@ -548,26 +719,62 @@ int __fastcall mesh_draw_detour(void* mesh, void* /*edx*/, void* rec, void* rend
             }
         if (off < 0) return g_meshDrawOrig(mesh, rec, renderer, a4);
     }
-    if (*reinterpret_cast<void**>(b + off) != p.weapon.actor) return g_meshDrawOrig(mesh, rec, renderer, a4);
+    void* recOwner = *reinterpret_cast<void**>(b + off);
+    const bool refl = reflActor && recOwner == reflActor;
+    const bool corr = corrected && recOwner == p.weapon.actor;
+    if (!refl && !corr) return g_meshDrawOrig(mesh, rec, renderer, a4);
 
     float* l2w = reinterpret_cast<float*>(b + patterns::kDrawRecLocalToWorldOffset);
     float* w2l = reinterpret_cast<float*>(b + patterns::kDrawRecWorldToLocalOffset);
-    // L' = D_world * L ; W' = W * inverse(D_world), both row-vector.
+    // L' = F * L * D_world ; W' = inverse(D_world) * W * F, all row-vector (F: the reflection in the gun's own
+    // space, an involution; identity unless reflected; D: identity unless corrected).
     float nl[16], nw[16], dinv[16];
     memcpy(nl, l2w, 64);
-    apply_sim(p.weapon.dWorld, nl);
-    sim_rows(sim_inv(p.weapon.dWorld), dinv);
-    mat_mul(dinv, w2l, nw);
+    const int ax = g_reflAxis.load(std::memory_order_relaxed);
+    const float c = g_reflPlane.load(std::memory_order_relaxed);
+    if (refl) reflect_before(nl, ax, c);
+    if (corr) apply_sim(p.weapon.dWorld, nl);
+    if (g_hideAll.load(std::memory_order_relaxed)) {
+        // Hidden outright: the weapon's record drawn far below the world.
+        nl[12] = kHideAllAt[0];
+        nl[13] = kHideAllAt[1];
+        nl[14] = kHideAllAt[2];
+    }
+    if (corr) {
+        sim_rows(sim_inv(p.weapon.dWorld), dinv);
+        mat_mul(dinv, w2l, nw);
+    } else {
+        memcpy(nw, w2l, 64);
+    }
+    if (refl) reflect_after(nw, ax, c);
     const uint64_t now = GetTickCount64();
-    if (now - g_recLog >= 2000) {
+    if (corr && now - g_recLog >= 2000) {
         g_recLog = now;
         BVR_LOG("[palette] weapon draw: record LocalToWorld translation %.1f %.1f %.1f (the actor's location "
                 "%.1f %.1f %.1f) -> %.1f %.1f %.1f",
                 l2w[12], l2w[13], l2w[14], p.weapon.lWeapon.t[0], p.weapon.lWeapon.t[1], p.weapon.lWeapon.t[2],
                 nl[12], nl[13], nl[14]);
     }
-    g_weaponDraws.fetch_add(1, std::memory_order_relaxed);
-    return call_mesh_draw(mesh, rec, renderer, a4, l2w, w2l, nl, nw);
+    if (corr) g_weaponDraws.fetch_add(1, std::memory_order_relaxed);
+    if (!refl) return call_mesh_draw(mesh, rec, renderer, a4, l2w, w2l, nl, nw);
+    g_reflStatic.fetch_add(1, std::memory_order_relaxed);
+    gun_flip::static_draw(true);
+    const int r = call_mesh_draw(mesh, rec, renderer, a4, l2w, w2l, nl, nw);
+    gun_flip::static_draw(false);
+    return r;
+}
+
+void set_reflection(void* weaponActor, int axis, float planeWeaponSpace) {
+    void* was = g_reflActor.exchange(weaponActor, std::memory_order_relaxed);
+    g_reflAxis.store(axis < 0 ? 0 : axis > 2 ? 2 : axis, std::memory_order_relaxed);
+    g_reflPlane.store(planeWeaponSpace, std::memory_order_relaxed);
+    g_reflMs.store(GetTickCount64(), std::memory_order_relaxed);
+    gun_flip::set_gun(weaponActor);
+    if (was != weaponActor) {
+        BVR_LOG("[palette] reflected gun: %s (axis %c, plane %.2f weapon space; skinned %u, static %u draws so far)",
+                weaponActor ? "ON - the held gun is drawn as the mirror image" : "off", "XYZ"[axis < 0 ? 0 : axis > 2 ? 2 : axis],
+                planeWeaponSpace, g_reflSkinned.load(), g_reflStatic.load());
+    }
 }
 
 bool install_mesh_draw(const void* imageBase) {
@@ -627,16 +834,42 @@ void set_enabled(bool on) {
                                : "OFF - the hands go back to the bone drive");
 }
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
+void set_hide_all(bool on, void* weaponActor, const float camLoc[3]) {
+    g_hideActor.store(on ? weaponActor : nullptr, std::memory_order_relaxed);
+    if (camLoc)
+        for (int i = 0; i < 3; ++i) g_hideCam[i].store(camLoc[i], std::memory_order_relaxed);
+    g_hideAll.store(on, std::memory_order_relaxed);
+}
+bool hide_all() { return g_hideAll.load(std::memory_order_relaxed); }
 bool active() { return g_installed && enabled(); }
 
-void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon) {
+void set_gun_reflection(void* weaponActor, int axis, float planeWeaponSpace) {
+    set_reflection(weaponActor, axis, planeWeaponSpace);
+}
+
+void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_pub.instance = meshInstance;
     g_pub.weapon = weapon;
     g_pub.hand[0] = hands[0];
     g_pub.hand[1] = hands[1];
     g_pub.hideArms = hideArms;
+    g_pub.mirror = mirrored;
     g_pub.ms = GetTickCount64();
+}
+
+void publish_pose(const float* frames, int count, int stride) {
+    if (g_mirrorState.load(std::memory_order_relaxed) != 0 || count != patterns::kHandsRigBoneCount) return;
+    std::lock_guard<std::mutex> lock(g_poseMutex);
+    for (int i = 0; i < count; ++i) {
+        const float* f = frames + i * stride; // p[4] q[4] s[4] (bones.cpp Qts)
+        g_pose[i] = mirror::from_frame(f + 4, f, f + 8);
+    }
+    g_poseValid = true;
+}
+
+const mirror::Basis* mirror_basis() {
+    return g_mirrorState.load(std::memory_order_acquire) == 1 ? &g_basis : nullptr;
 }
 
 Sim sim_world(const Sim& L, const Sim& S) { return palette_math::sim_world(L, S); }

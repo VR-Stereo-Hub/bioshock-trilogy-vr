@@ -247,10 +247,18 @@ void scan_key(HKEY root, const char* subkey, REGSAM view, const char* where, boo
 
 } // namespace
 
-// Every place the OpenXR loader looks for implicit layers. HKCU\SOFTWARE is not
-// WOW64-redirected, so the plain key and the WOW6432Node one are both read for
-// HKLM and the same list is walked for HKCU - a layer registered in any of them
-// reaches this process.
+// Every place the OpenXR loader looks for implicit layers IN THIS PROCESS.
+// HKCU\SOFTWARE is not WOW64-redirected, so a 64-bit layer registered there does
+// reach us. HKLM is: the loader opens it with no KEY_WOW64_* flag
+// (manifest_file.cpp, ReadLayerDataFilesInHive), so a 32-bit process sees only
+// WOW6432Node and the 64-bit hive never reaches it.
+//
+// The 64-bit hive is NOT scanned, and must not be. Measured 2026-10-21: VRCapture
+// registers an x64 manifest in HKLM(64) and an x86 one in HKLM(32), and both
+// declare the SAME disable_environment (DISABLE_VRCAPTURE). Disabling the x64
+// entry - which the loader would never have tried - set that variable and
+// switched off the loadable x86 layer with it, so the recorder never saw the
+// game.
 void apilayer_guard() {
     static const char* kPath = "SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit";
 
@@ -266,7 +274,6 @@ void apilayer_guard() {
     int seen = 0, bad = 0, stuck = 0;
     scan_key(HKEY_CURRENT_USER, kPath, 0, "HKCU", enabled, &seen, &bad, &stuck);
     scan_key(HKEY_LOCAL_MACHINE, kPath, KEY_WOW64_32KEY, "HKLM(32)", enabled, &seen, &bad, &stuck);
-    scan_key(HKEY_LOCAL_MACHINE, kPath, KEY_WOW64_64KEY, "HKLM(64)", enabled, &seen, &bad, &stuck);
 
     if (!seen) {
         BVR_LOG("apilayer: no implicit OpenXR API layers are registered, so none can be the "

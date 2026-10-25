@@ -30,7 +30,9 @@ bool enabled();
 // XR action layer publishes its composed pad here once per frame (render
 // thread). `active` false means "no data this frame" (no session / not
 // focused); the slot also self-expires if publishing stops entirely.
-void publish_xr_state(const Gamepad& pad, bool active);
+// `leftHanded`: the role mapping the XR composer built this pad with (set_left_handed as
+// it read it); it reaches the pad override with the pad (PadOverride::leftHanded).
+void publish_xr_state(const Gamepad& pad, bool active, bool leftHanded = false);
 
 // The last pad published above + its active flag - what the composer will
 // merge this frame. The session-20 recorder taps it per CalcView so a replay
@@ -71,6 +73,12 @@ bool pitch_kill();
 // true = the historical semantics; BS1 and BS2 never call the setter, so
 // their composed pad is byte-identical.
 void set_pitch_kill_lift_on_bumpers(bool lift);
+// 2026-10-20, opt-in per game (default off: the real pad's buttons are merged as before). On: while the
+// VR controllers drive the pad, a real/virtual XInput pad's BUTTONS are left out - a virtual pad with a
+// bumper stuck down (Virtual Desktop / Steam Input / ViGEm emulation; BS1's headset run reported 0x0200,
+// RB, from the first packet) held the weapon grip down for the whole session. Its sticks and triggers
+// still merge; with no VR input live the real pad is merged in full.
+void set_ignore_real_buttons_in_vr(bool on);
 
 // s52 (Infinite I9): head-relative locomotion. The game adapter publishes the
 // head-vs-body yaw residual (degrees) once per view dispatch; while fresh and
@@ -102,6 +110,9 @@ void last_composed_bumpers(bool* lb, bool* rb);
 // The full wButtons word the game last saw (composed or real pad). Additive,
 // read-only; session 42 consumer is BS2's menukey lane (pad-A -> Enter).
 void last_composed_buttons(uint16_t* buttons);
+// Diagnostic, read only: the REAL pad's buttons as XInputGetState last returned them (0 with no pad),
+// before any synthetic input is merged in - so a stuck bit can be told apart from the VR compose.
+uint16_t last_real_buttons();
 
 // s50 (Infinite): the FLOURISH CHORD - left thumbrest touched + A pressed.
 // arm_flourish_chord(true) makes the XR composer consume A while the left
@@ -119,6 +130,21 @@ void set_flourish_chord_suspended(bool on);
 // Session 22: the FINAL composed sticks the game consumed (post merge/
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
+
+// BS1 (2026-10-15): the last word on the composed pad. When set, it runs on the
+// composed (VR) path after every other stage, on the game's XInput thread, with the
+// final pad; returning true means it rewrote some of it (the BS1 hand dial: the
+// bumpers that open the weapon/plasmid wheels, the triggers a grip+trigger opening
+// consumes, the sticks it steers the wheel with). Null (the default) = untouched:
+// BS2 and Infinite never set it.
+struct PadOverride {
+    uint16_t buttons;
+    uint8_t lt, rt;
+    int16_t lx, ly, rx, ry;
+    bool leftHanded; // read only: the role mapping the bumper/trigger bits were composed with
+};
+using StickOverrideFn = bool (*)(PadOverride* pad);
+void set_stick_override(StickOverrideFn fn);
 
 // Session 22 turn controls (persisted via vrpreset.ini; overlay sliders).
 // Smooth scale multiplies composed stick X under the vr-gameplay gate; snap
@@ -146,6 +172,16 @@ void set_snap_angle_deg(float d);
 enum class AmmoMod { Click = 0, Thumbrest = 1, Both = 2 };
 AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
+
+// Handedness (2026-10-19, ported from Owloeb's left-handed fork, made live). Swaps ROLES,
+// not bindings: the XR bindings stay physical (A/B, X/Y and menu keep working), and the
+// XR composer routes the LEFT controller's grip/aim pose, trigger and grip into the
+// WEAPON role (hand slot 1) and the right controller into the PLASMID role (slot 0).
+// Every consumer keyed by role follows. Read once per input sync, so it may change at
+// any time (BS1 hands the gun over when one hand grabs it from the other). Default
+// off, never persisted here: a game that never sets it composes exactly as before.
+bool left_handed();
+void set_left_handed(bool on);
 
 // s63 D-PAD MODIFIER, ported from BRVR's ControllerDpadModifier - the state
 // lives in the XR composer (openxr_input.cpp) beside the code that reads it

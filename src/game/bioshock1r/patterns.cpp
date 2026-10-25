@@ -395,6 +395,31 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
         BVR_LOG("[b1r] AActor::GetBoneCoords prologue mismatch at RVA 0x%X - the barrel origin is unavailable",
                 kActorGetBoneCoordsRva);
     }
+
+    // 2026-10-20: script functions by name (the manual reload). Both gated on their heads.
+    const uint8_t* findFn = image.base + kFindFunctionRva;
+    const uint8_t* procEv = image.base + kNativeConstantAnchorRva;
+    if (is_memory_valid(findFn, sizeof kFindFunctionPrologue) &&
+        memcmp(findFn, kFindFunctionPrologue, sizeof kFindFunctionPrologue) == 0 &&
+        is_memory_valid(procEv, sizeof kProcessEventPrologue) &&
+        memcmp(procEv, kProcessEventPrologue, sizeof kProcessEventPrologue) == 0) {
+        out.findFunction = const_cast<uint8_t*>(findFn);
+        out.processEvent = const_cast<uint8_t*>(procEv);
+        BVR_LOG("[b1r] UObject::FindFunction = %p, ProcessEvent = %p (script calls by name)", findFn, procEv);
+    } else {
+        BVR_LOG("[b1r] FindFunction/ProcessEvent prologue mismatch - script calls (the manual reload) unavailable");
+    }
+    // 2026-10-20: script properties by name (the cheats), gated on two pieces of its body.
+    const uint8_t* findField = image.base + kFindFieldRva;
+    if (is_memory_valid(findField, kFindFieldBodyOffset + sizeof kFindFieldBody) &&
+        memcmp(findField, kFindFieldPrologue, sizeof kFindFieldPrologue) == 0 &&
+        memcmp(findField + kFindFieldBodyOffset, kFindFieldBody, sizeof kFindFieldBody) == 0) {
+        out.findField = const_cast<uint8_t*>(findField);
+        BVR_LOG("[b1r] FindField = %p (script properties by name)", findField);
+    } else {
+        BVR_LOG("[b1r] FindField prologue mismatch at RVA 0x%X - script properties (the cheats) unavailable",
+                kFindFieldRva);
+    }
 }
 
 const wchar_t* fname_text(int32_t index) {

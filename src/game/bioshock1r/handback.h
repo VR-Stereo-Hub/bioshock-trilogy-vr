@@ -50,6 +50,12 @@ float carry(int hand, uint64_t nowMs);
 // The weapon hand while an animation plays at the gun, or a gun fires: how much of the clip's
 // own motion of the hand, against its pose just before, plays on the controller (0 = pinned).
 float gun_motion(int hand, uint64_t nowMs);
+// 2026-10-24: the reload played at the gun whose clip works the gun's own parts (the launcher, the crossbow, with the
+// manual reload off): how much of that clip's motion of the gun hand is layered on, 0..1 - the part of gun_motion the
+// manual reload's keep record must not take away (it passes only a shot's recoil).
+float reload_full_motion(int hand, uint64_t nowMs);
+// 2026-10-24: the game is playing its own reload of the gun in hand (the manual reload off).
+bool game_reload();
 
 // How much of the carry applies when the clip has the free hand's palm `clipCm` from the
 // weapon hand's: 1 within the join distance, 0 beyond it plus 20 cm, smootherstep between.
@@ -62,6 +68,10 @@ float tracked(int hand, uint64_t nowMs);
 // True while any part of the hand-back is in effect for that hand (owned, releasing,
 // blending, carried or moving with the clip) - the arms follow the same weight.
 bool active(int hand, uint64_t nowMs);
+// active() less the recoil: a clip owns or carries the hand, or a reload moves it. A shot's kick
+// alone is not - the two-handed grip holds through it (2026-10-20: pausing it for the ~1 s of
+// every shot's recoil took the front hand off the gun on each shot).
+bool clip_owns(int hand, uint64_t nowMs);
 
 // F10 (menu_backend): the reload's place, the gun's share of the clip, the join distance.
 int reload_place();

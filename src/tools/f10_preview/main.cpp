@@ -83,6 +83,10 @@ struct PreviewBackend final : Backend {
     void diagnostics(Tab tab) override {
         if(tab==Tab::Runtime && theme::section("Runtime status"))
             ImGui::TextUnformatted("Preview fixture / no game connected");
+        if(tab==Tab::Cheats && theme::section("Weapons")) {
+            theme::button("Give all weapons");ImGui::SameLine();theme::button("Give all weapons, upgraded");
+            theme::note("Preview fixture: the live panel is cheats.cpp.");
+        }
     }
 };
 bool save_bmp(const std::filesystem::path& path,const unsigned char* data,int w,int h,int pitch) {
@@ -264,7 +268,7 @@ int main(int argc,char** argv) {
     options.expandSections=true;
     for(int tier=0;tier<3;++tier) {
         backend.set(Setting::ViewLevel,static_cast<float>(tier));
-        for(int tab=0;tab<(tier==2?9:7);++tab) {
+        for(int tab=0;tab<(tier==2?10:8);++tab) {
             state.tab=static_cast<Tab>(tab);
             capture(std::string(tab_name(state.tab))+"-"+(tier==0?"Basic":tier==1?"Advanced":"Debug"));
         }

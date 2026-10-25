@@ -738,6 +738,7 @@ void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCou
     if (t_suppress == 0) {
         const DrawTap* tap = g_drawTap.load(std::memory_order_acquire);
         if (tap && tap->on_draw_indexed) tap->on_draw_indexed(ctx);
+        if (tap && tap->on_draw_indexed_args) tap->on_draw_indexed_args(ctx, indexCount, startIndex, baseVertex);
     }
     // Session 34: adapter mesh veto. Checked BEFORE recording on purpose - a
     // dropped draw did not happen, and a dump that lists it would be describing

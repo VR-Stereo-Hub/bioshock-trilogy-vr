@@ -524,7 +524,10 @@ static XrResult impl_CreateSwapchain(XrSession session, const XrSwapchainCreateI
     if (!info || !out) return XR_ERROR_VALIDATION_FAILURE;
     if (g.hazards.swapchainFail) return XR_ERROR_RUNTIME_FAILURE;
     if (info->width == 0 || info->height == 0) return XR_ERROR_VALIDATION_FAILURE;
-    if (info->faceCount != 1 || info->arraySize != 1) return XR_ERROR_FEATURE_UNSUPPORTED;
+    // Flat swapchains, and the cube layer's six-face one (the room snapshot).
+    const bool cube = info->faceCount == 6;
+    if ((info->faceCount != 1 && !cube) || info->arraySize != 1) return XR_ERROR_FEATURE_UNSUPPORTED;
+    if (cube && (!g.cubeEnabled || info->width != info->height)) return XR_ERROR_FEATURE_UNSUPPORTED;
 
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_device) return XR_ERROR_SESSION_LOST;
@@ -541,17 +544,19 @@ static XrResult impl_CreateSwapchain(XrSession session, const XrSwapchainCreateI
     sc.width = info->width;
     sc.height = info->height;
     sc.format = info->format;
+    sc.faces = cube ? 6 : 1;
     sc.imageCount = 3; // triple buffered, the shape a streaming runtime uses
 
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = info->width;
     desc.Height = info->height;
     desc.MipLevels = info->mipCount ? info->mipCount : 1;
-    desc.ArraySize = 1;
+    desc.ArraySize = sc.faces;
     desc.Format = static_cast<DXGI_FORMAT>(info->format);
     desc.SampleDesc.Count = info->sampleCount ? info->sampleCount : 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = cube ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
     if (info->usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT)
         desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
 
@@ -568,8 +573,8 @@ static XrResult impl_CreateSwapchain(XrSession session, const XrSwapchainCreateI
 
     sc.used = true;
     *out = static_cast<XrSwapchain>(make_handle(HT_SWAPCHAIN, slot, gen));
-    XRSIM_LOG("xrsim: swapchain %u created %ux%u fmt %lld (%u images)", slot, sc.width, sc.height,
-              static_cast<long long>(sc.format), sc.imageCount);
+    XRSIM_LOG("xrsim: swapchain %u created %ux%u fmt %lld (%u images%s)", slot, sc.width, sc.height,
+              static_cast<long long>(sc.format), sc.imageCount, cube ? ", cube" : "");
     return XR_SUCCESS;
 }
 

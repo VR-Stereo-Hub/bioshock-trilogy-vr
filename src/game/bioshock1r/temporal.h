@@ -32,6 +32,8 @@ namespace bvr::b1r::temporal {
 void init();
 // Apply the latest mode/output intent once no live resize is in flight. Game thread.
 void tick_resolution();
+// 2026-10-25: the draw tap armed whether or not DLSS/AFW is on (gun_flip.cpp rides it). Idempotent.
+void arm_draw_tap();
 
 // Game thread, CalcView of the RENDER VIEW only (scenedraw::in_gameplay_build - one per
 // frame; the engine's other CalcView calls are not frames): the FINAL camera of the image

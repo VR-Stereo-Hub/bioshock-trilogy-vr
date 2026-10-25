@@ -36,6 +36,7 @@
 #include "game/bioshock1r/menu_backend.h"
 #include "game/bioshock1r/palette.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/room_capture.h"
 #include "game/bioshock1r/scripted.h"
 
 #include <windows.h>
@@ -1559,7 +1560,7 @@ void on_calcview(const FrameContext& ctx) {
 
         bones::eval_probe_tick(rig); // s82 P1, a no-op unless `vrbones evalprobe on`
         if (rig) {
-            const bool hide = scripted::want_rig_hidden();
+            const bool hide = scripted::want_rig_hidden() || room_capture::hide_rig();
             if (hide) {
                 bones::collapse_rig(rig);
             } else if (g_rigWasCollapsed) {
@@ -1794,18 +1795,38 @@ void on_calcview(const FrameContext& ctx) {
             std::lock_guard<std::mutex> lock(g_stepMutex);
             steps.swap(g_steps);
         }
+        // 2026-10-19: the gun in the LEFT hand with the hands mirrored (bones::mirror_hands): each
+        // hand mesh goes to its OWN controller - the role slots are swapped, so mesh h reads slot
+        // 1 - h - and the left mesh, which now shows the grip on the gun, is the held one. Each
+        // keeps its own trims (they belong to the hand, not to the role).
+        const bool mirrored = bones::mirror_hands();
+        const int heldMesh = mirrored ? 1 - hand : hand;
         if (ctx.vrDriving) {
             for (int h = 0; h < 2; ++h) {
-                if (h != hand && !bones::off_hand_tracked()) continue;
+                if (h != heldMesh && !bones::off_hand_tracked()) continue;
                 bvr::vr::HeadPose hp2{};
-                if (!bvr::vr::get_hand_pose(h, /*aimPose=*/false, hp2)) continue;
+                if (!bvr::vr::get_hand_pose(mirrored ? 1 - h : h, /*aimPose=*/false, hp2)) continue;
                 const float p2[3] = {hp2.px, hp2.py, hp2.pz};
                 const float q2[4] = {hp2.qx, hp2.qy, hp2.qz, hp2.qw};
                 float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
+                // 2026-10-24 (the tester: the crossbow's "left right rotation is not the same between the
+                // left and right hand"): EACH HAND KEEPS ITS OWN TRIM, mirrored or not. A trim aligns a
+                // controller with the drawn wrist bone of that hand, whatever the hand shows - and this
+                // tester's two controllers do not sit mirror-symmetric in the hands: the right trim's mirror
+                // (-64.7 14.8 162.5) is 24 deg off the left hand's own tune (-46.9 35.2 133.2). The left
+                // hand holding a gun took that mirror, so the gun sat 24 deg off the real hand: the fore-grip
+                // ~8.4 cm from where the right hand reaches, which is what every left-handed two-handed grab
+                // measured (9-10 cm, the 16:54 and 18:15 runs), and the aim turned the gun up to 106 deg to
+                // meet it. (2026-10-19 took the other hand's trim, mirrored - "the trims did not carry
+                // over" - when the left hand's own tune was a plasmid hand's.)
                 bones::off_hand_rot_deg(h, &trimP, &trimY, &trimR);
                 // s86f: the step rows, converted in THIS frame of this hand (frame_context.h).
                 for (const HandStep& st : steps) {
                     if (st.hand != h) continue;
+                    if (mirrored) { // they would write the mirrored trim into this hand's own slot
+                        BVR_LOG("[hands] step ignored while the hands are mirrored - hand the gun back to adjust");
+                        continue;
+                    }
                     if (st.rot) {
                         float p = trimP, y = trimY, r = trimR;
                         if (hand_rotation_step(ctx, q2, st.axis, st.amount, &p, &y, &r)) {
@@ -1836,7 +1857,7 @@ void on_calcview(const FrameContext& ctx) {
                 valid[h] = true;
             }
         }
-        bones::m4_frame(ctx, target, hand, valid, gps, raws);
+        bones::m4_frame(ctx, target, heldMesh, valid, gps, raws);
         g_writes.fetch_add(1, std::memory_order_relaxed);
         return;
     }

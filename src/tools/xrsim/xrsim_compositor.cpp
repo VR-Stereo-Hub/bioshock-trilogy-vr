@@ -55,6 +55,7 @@ struct VSOut {
 };
 
 Texture2D    srcTex : register(t0);
+TextureCube  cubeTex : register(t1);
 SamplerState srcSmp : register(s0);
 
 float3 rotate_by(float4 q, float3 v) {
@@ -103,6 +104,16 @@ float4 PSQuad(VSOut i) : SV_TARGET {
     float2 uv = lerp(rectMin.xy, rectMax.xy, i.uv);
     return srcTex.Sample(srcSmp, uv);
 }
+
+// Cube layer (the room snapshot): the eye ray rotated into the layer's frame
+// looks the cubemap up directly - a picture at infinity, so no position enters.
+float4 PSCube(VSOut i) : SV_TARGET {
+    float tanX = lerp(eyeTan.x, eyeTan.y, i.uv.x);
+    float tanY = lerp(eyeTan.z, eyeTan.w, i.uv.y);
+    float3 dEye = normalize(float3(tanX, tanY, -1.0));
+    float3 dLay = rotate_by(qRel, dEye);
+    return float4(cubeTex.Sample(srcSmp, dLay).rgb, 1.0);
+}
 )HLSL";
 
 struct Constants {
@@ -120,6 +131,7 @@ ID3D11DeviceContext* g_ctx = nullptr;
 ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_psProj = nullptr;
 ID3D11PixelShader* g_psQuad = nullptr;
+ID3D11PixelShader* g_psCube = nullptr;
 ID3D11Buffer* g_cb = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11BlendState* g_blendOff = nullptr;
@@ -424,13 +436,18 @@ void compositor_init(ID3D11Device* device, ID3D11DeviceContext* context) {
     }
     if (FAILED(D3DCompile(kShaderSource, strlen(kShaderSource), "xrsim", nullptr, nullptr, "PSQuad",
                           "ps_4_0", flags, 0, &psb2, &err))) { fail("PSQuad compile failed"); return; }
+    ID3DBlob* psb3 = nullptr;
+    if (FAILED(D3DCompile(kShaderSource, strlen(kShaderSource), "xrsim", nullptr, nullptr, "PSCube",
+                          "ps_4_0", flags, 0, &psb3, &err))) { fail("PSCube compile failed"); return; }
 
     device->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &g_vs);
     device->CreatePixelShader(psb1->GetBufferPointer(), psb1->GetBufferSize(), nullptr, &g_psProj);
     device->CreatePixelShader(psb2->GetBufferPointer(), psb2->GetBufferSize(), nullptr, &g_psQuad);
+    device->CreatePixelShader(psb3->GetBufferPointer(), psb3->GetBufferSize(), nullptr, &g_psCube);
     vsb->Release();
     psb1->Release();
     psb2->Release();
+    psb3->Release();
     if (err) err->Release();
 
     D3D11_BUFFER_DESC bd{};
@@ -493,7 +510,7 @@ void compositor_shutdown() {
         if (g_staging[i]) { g_staging[i]->Release(); g_staging[i] = nullptr; }
     }
     auto rel = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };
-    rel(g_vs); rel(g_psProj); rel(g_psQuad); rel(g_cb); rel(g_sampler);
+    rel(g_vs); rel(g_psProj); rel(g_psQuad); rel(g_psCube); rel(g_cb); rel(g_sampler);
     rel(g_blendOff); rel(g_blendPremul); rel(g_blendAlpha); rel(g_depthOff); rel(g_raster);
     g_ready = false;
     g_rtW = g_rtH = 0;
@@ -611,13 +628,57 @@ void compose_eye(int eye, const SimSubmission& sub, std::vector<LayerStat>& stat
             continue;
         }
 
-        // --- quad layer ---
         if (L.eyeVisibility == XR_EYE_VISIBILITY_LEFT && eye != 0) continue;
         if (L.eyeVisibility == XR_EYE_VISIBILITY_RIGHT && eye != 1) continue;
 
         uint32_t tw = 0, th = 0;
         ID3D11Texture2D* tex = swapchain_last_image(L.sub.swapchain, &tw, &th);
         if (!tex) continue;
+
+        // --- cube layer (the room snapshot) ---
+        if (L.type == XR_TYPE_COMPOSITION_LAYER_CUBE_KHR) {
+            stats[li].kind = "cube";
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+            D3D11_TEXTURE2D_DESC td{};
+            tex->GetDesc(&td);
+            sv.Format = td.Format;
+            sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+            sv.TextureCube.MipLevels = 1;
+            ID3D11ShaderResourceView* csrv = nullptr;
+            if (td.ArraySize < 6 || FAILED(g_device->CreateShaderResourceView(tex, &sv, &csrv))) continue;
+
+            SimSpace* space = space_get(L.space);
+            Pose base = pose_identity();
+            bool tracked = true;
+            if (space) space_pose(*space, sub.snap, base, tracked);
+            Pose layerPose = pose_identity();
+            layerPose.q = L.pose.orientation.w == 0 && L.pose.orientation.x == 0 &&
+                                  L.pose.orientation.y == 0 && L.pose.orientation.z == 0
+                              ? Quat{0, 0, 0, 1}
+                              : Quat{L.pose.orientation.x, L.pose.orientation.y, L.pose.orientation.z,
+                                     L.pose.orientation.w};
+            const Quat layerWorld = quat_norm(quat_mul(base.q, layerPose.q));
+
+            Constants c{};
+            tangents(eyeFov, c.eyeTan);
+            const Quat qRel = quat_norm(quat_mul(quat_conj(layerWorld), eyeWorld.q));
+            c.qRel[0] = qRel.x; c.qRel[1] = qRel.y; c.qRel[2] = qRel.z; c.qRel[3] = qRel.w;
+            c.quadParams[0] = 0.0f; // the fullscreen triangle
+            set_constants(c);
+
+            g_ctx->OMSetBlendState(g_blendOff, bf, 0xFFFFFFFF);
+            g_ctx->PSSetShader(g_psCube, nullptr, 0);
+            g_ctx->PSSetShaderResources(1, 1, &csrv);
+            g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            g_ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* none = nullptr;
+            g_ctx->PSSetShaderResources(1, 1, &none);
+            csrv->Release();
+            stats[li].pixelsCovered[eye] = g_rtW * g_rtH;
+            continue;
+        }
+
+        // --- quad layer ---
         ID3D11ShaderResourceView* srv = nullptr;
         if (FAILED(g_device->CreateShaderResourceView(tex, nullptr, &srv))) continue;
 
@@ -841,10 +902,11 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
                       src_json(st.src[0], sb0, sizeof(sb0)), src_json(st.src[1], sb1, sizeof(sb1)),
                       (i + 1 < sub.layerCount) ? "," : "");
         } else {
-            sprintf_s(buf, "    {\"i\": %u, \"type\": \"quad\", \"space\": \"%s\", "
+            sprintf_s(buf, "    {\"i\": %u, \"type\": \"%s\", \"space\": \"%s\", "
                            "\"sizeM\": [%.4f, %.4f], \"pose\": [%.4f, %.4f, %.4f], "
                            "\"premultiplied\": %s, \"pixelsCoveredL\": %u, \"pixelsCoveredR\": %u, \"src\": [%s, %s]}%s\n",
-                      i, spaceName, L.size.width, L.size.height, L.pose.position.x,
+                      i, L.type == XR_TYPE_COMPOSITION_LAYER_CUBE_KHR ? "cube" : "quad", spaceName,
+                      L.size.width, L.size.height, L.pose.position.x,
                       L.pose.position.y, L.pose.position.z,
                       (L.flags & XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT) ? "true"
                                                                                       : "false",
@@ -1101,7 +1163,8 @@ void compositor_on_end_frame(const SimSubmission& sub, bool capture) {
                           "(layer %u %s, image %u released on frame %u, pose norm %.3f, fov "
                           "l/r/u/d %.1f/%.1f/%.1f/%.1f deg) - COMPOSITOR fault",
                           eye == 0 ? "L" : "R", s.nonBlackPct, li,
-                          L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION ? "projection" : "quad",
+                          L.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION ? "projection"
+                          : L.type == XR_TYPE_COMPOSITION_LAYER_CUBE_KHR ? "cube" : "quad",
                           s.imageIndex, s.releasedOnFrame, qn, rad2deg(f.angleLeft),
                           rad2deg(f.angleRight), rad2deg(f.angleUp), rad2deg(f.angleDown));
                 named = true;

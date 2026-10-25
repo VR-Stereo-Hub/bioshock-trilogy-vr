@@ -176,4 +176,8 @@ void note_preset_baseline();
 // level load. `why` is logged. Game thread.
 void weapon_scan_rearm(const char* why);
 
+// How many shots the PLAYER has fired through the fire seams (a weapon's bullet or pellet
+// volley, an ability's cast) - a counter; a change is a shot. Any thread.
+uint32_t player_shots();
+
 } // namespace bvr::b1r::aim

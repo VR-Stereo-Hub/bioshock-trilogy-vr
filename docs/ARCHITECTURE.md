@@ -2990,3 +2990,172 @@ in that mod. BRVR's size-gated adoption is the reference for that path. The stat
 `hands_state` (`WeaponReloading` lasts the whole clip, ENGINE_NOTES 2026-10-14). Reading the
 playing clip's name or time from the engine would allow per-clip rules; it was not needed for
 the reload and is left for later.
+
+### 2026-10-15: BS1's HUD in pieces - cut from the one capture, not routed per draw
+
+The Dishonored VR mod splits its HUD by routing each Scaleform draw to a sink by the draw's own
+rectangle. That gives clean pieces even where they overlap, and it cost that mod frames that took
+weeks to find: a per-draw vertex probe (~11 ms of CPU a second), cross-thread routing locks and a
+render-target switch per piece. BS1 takes the pieces and the anchors and leaves the routing:
+gameswf is still captured whole into the one existing target, and the pieces are fixed rectangles
+of that capture, cut on the HUD swapchain image once per present (a copy per moved piece into a
+strip below the capture, one ClearView for the vacated places, a quad per piece over the same
+image). Core gains only a provider seam (`set_hud_elements_provider`), inert unless registered;
+the element table, anchors and F10 live in `bioshock1r/hud_elements.cpp`. What it gives up:
+overlapping pieces cannot be separated, and Dishonored's `frame` anchor (a piece drawn into the
+eye image) is not offered, since that needs the per-draw route. Both are acceptable for BS1's HUD,
+whose pieces sit in separate parts of the screen; if one is ever needed, route only that piece's
+draws by state, not by probe.
+
+### 2026-10-16: BS1's menu blur switched off at the engine's post-effect runner, not per draw
+
+The paused game blurs the view behind the pause menu, the map, the machines and the
+weapon/plasmid wheels. In VR it reads as a blurred box that follows the head. A first attempt
+skipped HUD-target draws that sample a rendered texture; the headset run showed it took the
+game's normal final composite and missed the blur. A frame dump with the wheel open named the
+real one: the camera's post-effect runner (+0x7C9CB0, ENGINE_NOTES "The blur behind the menus")
+draws every effect in its list, the list is empty in play, and the menu blur is in it while a
+menu is up. So BS1 hooks the runner and returns early while a menu the player opened or a wheel
+is up (F10 HUD > Menus > Hide the blurred backdrop, on) - one check per view, the BS1 form of the
+Dishonored VR mod's NoBlur. It also stops any other post effect for as long as a menu is up,
+which is acceptable: the game is paused. Core is untouched.
+
+### 2026-10-19: Handedness is a live role swap; the grip near the other hand grabs
+
+Owloeb's left-handed fork (github.com/Owloeb/bioshock-trilogy-vr-lefthand, branch
+`pr/left-handed`) swaps ROLES at the XR composer: the physical controller that fills hand slot 1
+(the weapon) and slot 0 (the plasmid), and the trigger and grip that go with each, while the
+bindings stay physical. That part is ported to core (`bvr::input::set_left_handed`, read once per
+input sync, default off and not persisted, so a game that never sets it composes exactly as
+before). It is LIVE rather than a setting because BS1 now hands the gun over: a grip squeezed with
+that hand within the grab distance of the other hand is a grab (never a bumper, so no wheel), and a
+grab by the hand without the gun swaps the roles. `dial_input.cpp`'s `grab_target()` is the one
+place that says where a hand grabs - the other hand today, the game's own second-hand spot on the
+weapon when two-handed holding is built, so that press becomes the hold. Not ported: the fork's
+mirrored viewmodel (a renderer-side reflection keyed on draw-call return addresses, on the hands
+code this branch replaced) - the gun is still drawn by the game's right-hand rig, at whichever
+controller holds it. The fork's recorded per-weapon grab points (`twohand.cpp`) are not ported
+either: the target is meant to come from the game's animation, not a recording.
+
+### 2026-10-19: With the gun in the left hand, the hands are mirrored on the skin palette
+
+The game's rig only ever holds the gun in its RIGHT hand, so after a hand-over the right hand was
+drawn on the left controller. Each hand now takes the other hand's bone layout, mirrored across
+the rig (`mirror_math.h`): the two hands' 16 bones pair up one to one (left 6+k, right 27+k), the
+mirror is measured once from the rig's own rest pose (bind = inverse(skin) * pose, the plane
+halfway between each bone and its twin), and the skin matrix a mirrored bone gets is
+`Mx * P_twin * Mx` - a rotation, because the reflection appears on both sides, so the mesh is not
+turned inside out and no cull state changes (the fork's mirrored viewmodel reflected the whole
+draw and flipped the winding instead). The drive reads the mirrored POSE `Mx * A_twin * Mb`
+(Mb the constant bone-local fix-up from the binds), so the placement, the grip calibration, the
+arms and the hand-back all agree with what is skinned; each hand goes to its own controller, and
+the gun's grip and tip (43/44, no twin) go to their mirror image as a solid object (the bone-local axis flipped is the one sideways in the live pose), and the arms are mirrored with the hands so each arm's IK reaches its own hand. Palette route
+only; refused, with a log line, if the rig does not measure as mirror-symmetric. Host suite
+`mirror-math` proves the algebra on a synthetic mirrored rig.
+
+### 2026-10-19: BS1's two-handed grip uses the clip's own off hand, at the compose
+
+The grab point is where the game's firing clip already holds the two-handed guns with the off
+hand (BRVR M6-S2: "the grab point costs nothing"), not a point the player records per weapon (the
+left-hand fork). The decision is made inside `m4_compose`, where both are known: the gun hand's
+placement carries the free hand's clip anchor to where the drawn gun has it, and that is compared
+with the free hand's own target. Holding reuses two existing pieces instead of a new pose path:
+the gun hand's placement is turned about its palm (a shortest-arc rotation onto the real
+rear->front line, roll kept), and the free hand takes the reload's `carried_by` at the hold's
+weight. The grip itself stays on the XInput thread with the hand-over grab (it owns the bumper
+bits and the haptics), fed by a seqlocked snapshot; a stale snapshot is no grab point. The
+gunshot kick is an EVENT, not BRVR's signal: BRVR reads the firing clip's wrist jerk, which the
+simulator showed too small on the Tommy Gun (one kick per burst) and too large on a wrench swing
+(eight per swing); the player's fire seam (one call per shot, aim.cpp) and, for the wrench, the
+hands' firing state beginning give one kick per shot and still follow fire rate and ammo without
+a trigger watch. Pure logic in `two_hand_math.h`.
+
+### 2026-10-20: BS1's manual reload holds the game's own reload clip; it never replays one
+
+The reload is the game's: the mod calls `PlayerWeapon.Reload` by name and holds the clip the game's
+script waits on (`Weapon.FinishAnimations`) through Actor's animation API (`script_call.cpp`: GNames ->
+FindFunction -> ProcessEvent). The alternative - recording the clips and drawing them ourselves, then
+writing the ammunition - was rejected: it would duplicate the game's ammunition rules, its sounds and
+its timing, and every weapon would need its ammo fields found. Holding the clip keeps all of that the
+game's; the mod only decides the clip's TIME, from the player's hand along the clip hand's own path
+(the paths and times measured once per clip, `reload_rig.h`). A part a hand carries is moved by the
+same placement that moves the clip's hand onto the controller (back through the gun hand's, on through
+the free hand's), so it stays in the drawn fingers without a per-part offset table. Pure state machine
+in `reload_rig.h` (host suite `reload-rig`); a reload the button begins is never held.
+
+### 2026-10-20: BS1's shotgun pump is a ratchet on the fore-end hold (after Half-Life 2 VR)
+
+The pump between shots first followed the hand along a fixed 17-unit path from wherever the hand was
+when the Fire clip reached its pump, completing at 90% of it, and the two-handed hold let go when the
+hand slid along the gun - so a natural, shorter pump never finished ("stuck between shots") and a
+long one dropped the hold. Half-Life 2 VR's shotgun (ENGINE_NOTES, "Half-Life 2 VR's shotgun pump")
+treats the fore-grip as the pump and each stroke as a ratchet: a short distance (2 in) past the
+farthest point reached the other way, its reference set at the shot, fire gated until the forward
+stroke. BS1 now does the same over the game's own Fire clip: the clip's time is the pump's position
+(1:1 with the hand inside a stroke), a stroke completes 6 cm past the ratchet's reference and the clip
+plays the rest, the stroke may begin during the recoil, the hold cannot slide off mid-stroke, and a
+trigger while the pump waits only buzzes. Rejected: a separate pump grab (two grabs on one fore-end)
+and a free fore-grip object (the pump is a bone the clip animates). Pure logic in `reload_rig.h` Pump.
+
+### 2026-10-21: BS1's gun geometry is a per-gun table, never a latched frame
+
+The two-handed grab point, the grip pose, the free hand's rest on the gun, the mirror's sideways axis and
+centre plane, and the magazine's seat used to be latched from live frames - the first idle seen, the first
+mirrored frame, every idle frame while held - with rules on top for the frames that must not count (an
+empty idle, an equip, a settle time, per hand, per gun). The audit (docs/bioshock1/HELD_GUN_AUDIT.md 1.4)
+traced five regressions of one day to those latches: each fix added a condition, and the next clip or
+state found a frame the conditions let through. All of them are constants of the gun in its grip bone's
+frame, measured once offline from the game's own idle clip and the weapon's rest skeleton
+(`gun_geometry.h`, `grip_rest_poses.h`, ENGINE_NOTES 2026-10-21 "Gun geometry as constants"), checked
+against 2946 live frames, and mirrored by one function. A gun the table does not know keeps the clip's
+hand. BRVR latched its anchor because it could not read a driven cluster; the constant is the same number
+taken once, and it is the design rule from here: a point of the gun is table data, not a memory.
+
+### 2026-10-22: the room around the flat screen is a cubemap layer, accumulated from the eye images
+
+Loading screens, the main menu and cinematics are a flat quad in the dark. The tester's ask was to stand
+in the room they were just in instead. The picture is a 512² cubemap (`core/gfx/cube_snapshot`) that the
+present path splats one eye image into every 100 ms while the projection layer is live and the gameplay
+verdict is clean - each face texel's direction rotated into the eye's frame, projected onto its tangent
+plane, sampled; outside the fov the texel keeps what it had - so looking around fills it, and nothing
+clears it but a reset. It goes under the quad as `XrCompositionLayerCubeKHR` in LOCAL space with the
+identity orientation, and the quad's image has its black keyed to transparent (premultiplied) only when
+the cube is under it. Chosen over a reprojected flat frame (one view, holes everywhere but ahead) and over
+re-rendering the level (the game is not rendering during a load). Rejected: splatting during the cinematic
+hysteresis frames (a board in the cube for good) and resetting on every screen (the first pause after a
+load would be black again). The pause menu rides the HUD inside the projection in BS1, so it is not a
+flat-screen case and gets no cube. Core default off; the extension is enabled when the runtime offers it
+(the Meta runtime, VDXR, the simulator), and the quad stands alone without it.
+
+### 2026-10-23: the room cube is world-yaw aligned, one room per level on disk, the sweep drives the camera
+
+The first cut kept the cube in the headset's frame, which a recenter or a stick turn between the splat and
+the screen would have rotated, and which no file could carry across runs. The cube is now aligned to the
+game world's yaw: the adapter publishes, every camera frame, the pawn's yaw less the recenter yaw (the yaw
+that carries a headset direction into the world); a splat rotates its eye orientation by it and the layer
+counter-rotates by it. A room on disk (`rooms\<map>.cube`, the six RGBA8 faces) is therefore in its own
+level's frame and comes back right in a later run. One room per level, by the map's package name, taken by
+an explicit capture (the F10 toggle "Capture this room now"): hands and gun hidden, the camera driven
+through 38 directions by the live head lane with the located head replaced, each held by the clock, the
+headset showing the live cube filling in. A level's room on disk is shown from the moment its name resolves
+(which is during the load), and a level without one keeps the previous room up until its own gameplay
+starts. Rejected: showing nothing for a level without a room (black again on every transition), keying the
+sweep to CalcView calls (three per frame in the simulator), and a passive-only cube (gaps wherever the
+player never looked). The loading board is cut to a circle (a slider; the frame's black is keyed out).
+
+### 2026-10-25: a one-sided gun is drawn reflected in the left hand; only its draws flip culling
+
+The left-handed hold (2026-10-19) mirrors the hands on the skin palette as rotations and moves the gun as a solid,
+which keeps the gun's handedness. That is right for a gun symmetric about its sideways plane and wrong for the
+flamethrower, whose handle is on one side of its tank: in the left hand the handle stays on the far side. The tester
+asked for the right-hand hold exactly, mirrored. A gun marked `trueMirror` (gun_geometry.h) is therefore drawn
+reflected in its own space about the plane the solid mirror flips it about, which makes it the exact mirror image of
+the right-handed hold (palette.cpp: the skin palette and the static-mesh draw). A reflection reverses winding, so
+`gun_flip.cpp` gives only the gun's DrawIndexed calls a rasterizer state with FrontCounterClockwise turned round, on
+BS1's existing draw tap. The gun's draws are known by what they draw (the viewmodel's depth slice, the skinned
+vertex stride, an index count that is not the hands'), which needed one additive core change: the draw tap's
+optional `on_draw_indexed_args`, null unless a game sets it, so BS2 and Infinite run the same code as before.
+Stack markers were tried first and rejected by the headset (ENGINE_NOTES 2026-10-25). Rejected: reflecting the whole viewmodel draw at its constant buffer (the
+left-hand fork's vm_mirror), because the hands are already mirrored on the palette; a 180-degree roll so the side
+handle reaches the left hand (the gauge underneath); and putting the left hand on the top handle (not what was asked).
+Only the thrower opts in; the other guns keep the solid mirror. F10 Controls > Grab and hand-over can turn it off.

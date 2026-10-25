@@ -1,9 +1,18 @@
-The bundled calibration (v0.6.0)
-================================
+The bundled calibration (2026-10-24, the developer's headset tune)
+==================================================================
 
-You do NOT need these files for a fresh install: the mod's built-in
-defaults are identical to them. Install the two DLLs, press VR PRESET 1,
-play.
+These are the developer's own settings from the build this release was
+tested with: the hand and arm tune (hands.ini), the per-weapon and
+per-plasmid aim profiles (weapons.ini), the VR preset (vrpreset.ini),
+every F10 menu choice (menu-settings.ini: hand and weapon size, the
+grip calibration, HUD and screen placement, upscaler and stereo method)
+and the controller bindings (BioshockVR.ini). The mod's built-in
+defaults are older than some of these.
+
+The hand calibration is tuned to one pair of Quest 3 controllers in one
+person's hands. If your hands sit wrong with it, re-tune in F10 (Hands)
+or delete hands.ini and the HandCalib/HandFist lines of
+menu-settings.ini to go back to the built-in defaults.
 
 IF YOU ADOPTED THE v0.5.0 BUNDLE: that vrpreset.ini shipped
 effectsInFrame=1, which is what empties the health and EVE bars. Either
@@ -11,13 +20,14 @@ replace vrpreset.ini with this one, or just change that single line to
   effectsInFrame=0
 and restart. Nothing else about your tuning is affected.
 
-They matter only if you ALREADY have your own tuning in
+Your own files in
   %LOCALAPPDATA%\BioshockVR\
-(your files always win over the built-in defaults, key by key):
+always win over the built-in defaults, key by key:
 
 - Keep your tuning:        do nothing.
-- Adopt this calibration:  back up and replace vrpreset.ini, hands.ini
-                           and weapons.ini in %LOCALAPPDATA%\BioshockVR\
+- Adopt this calibration:  back up and replace vrpreset.ini, hands.ini,
+                           weapons.ini, menu-settings.ini and
+                           BioshockVR.ini in %LOCALAPPDATA%\BioshockVR\
                            with these, then restart the game.
 - Mix and match:           copy only the file you want (e.g. weapons.ini
                            for the per-weapon aim profiles), or even

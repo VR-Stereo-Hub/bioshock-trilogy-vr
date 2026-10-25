@@ -5,6 +5,8 @@
 // that socket into world coordinates on the weapon as it is posed - and the held weapon rides the
 // hand bone (bones.cpp), so this is the barrel the player sees. ENGINE_NOTES "The weapon's muzzle".
 
+#include <cstdint>
+
 namespace bvr::b1r::muzzle {
 
 // The resolved AActor::GetBoneCoords (patterns::Symbols), or null: locate() then always fails.
@@ -16,6 +18,19 @@ void init(void* getBoneCoords);
 // False when unresolved, when the weapon's mesh has no "muzzle" socket, or when the engine left
 // the result unwritten or non-finite.
 bool locate(void* weapon, float origin[3], float socketAxes[3][3], float boneAxes[3][3]);
+
+// Game thread. A BONE of `actor`'s mesh (by GNames index) in world space - origin, then its X, Y
+// and Z axes normalised - as the engine places it now (2026-10-20, the manual reload's parts).
+bool bone_coords(void* actor, int32_t nameIndex, float origin[3], float axes[3][3]);
+
+// 2026-10-22: turn the weapon's muzzle socket itself - its FCoords offset in the mesh instance's socket table - so
+// its X runs along `dirWorld` (world, unit). Everything attached to the socket (the chemical thrower's spray, a
+// DamageEmitter the game draws from the attach matrix) follows. The original offset is kept and put back by
+// restore_socket() (call it when the weapon leaves the hand). `degBefore`/`degAfter`: the socket's X against the
+// line before and after the write, degrees (after -1 when unreadable). False when there is no socket table, no
+// muzzle socket, the offset is not a frame, or the engine's calls fail.
+bool aim_socket(void* weapon, const float dirWorld[3], float* degBefore, float* degAfter);
+void restore_socket();
 
 // One status line: resolved, calls, hits and each failure kind, the last weapon's socket.
 void log_status();

@@ -19,18 +19,26 @@
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/manual_reload.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
+#include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/room_capture.h"
+#include "game/bioshock1r/hands_state.h"
+#include "game/bioshock1r/two_hand.h"
+#include "core/gfx/anim_shots.h"
 #include "game/bioshock1r/scripted.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/temporal.h"
+#include "game/bioshock1r/menu_blur.h"
+#include "game/bioshock1r/wheel_state.h"
 #include "game/bioshock1r/native_proof.h"
 #include "game/shared/ue_math.h"
 
@@ -743,6 +751,8 @@ void apply_command(const char* cmd, const char* args) {
         aim::handle_command(args); // M6 decoupled aim; logs its own echoes
     } else if (strcmp(cmd, "vrhands") == 0) {
         hands::handle_command(args); // M7 viewmodel; logs its own echoes
+    } else if (strcmp(cmd, "vrreload") == 0) {
+        manual_reload::handle_command(args); // 2026-10-20 the manual reload; logs its own echoes
     } else if (strcmp(cmd, "vrbones") == 0) {
         bones::handle_command(args); // M7-v2 skeleton probes; logs its own echoes
     } else if (strcmp(cmd, "vrbody") == 0) {
@@ -779,6 +789,10 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
     } else if (strcmp(cmd, "vrcine") == 0) {
         bvr::vr::handle_cine_command(args); // session 22 cinematic quad fallback
+    } else if (strcmp(cmd, "vrsnap") == 0) {
+        bvr::vr::handle_room_snapshot_command(args); // the room around the flat screen (2026-10-22)
+    } else if (strcmp(cmd, "vrroom") == 0) {
+        room_capture::handle_command(args); // per-level rooms and the capture sweep (2026-10-23)
     } else if (strcmp(cmd, "vroverlay") == 0) {
         bool on = strncmp(args, "on", 2) == 0;
         bvr::overlay::set_visible(on);
@@ -1558,6 +1572,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // AER: one head sample per eye pair (BRVR's latch) - no-op for every other method.
         alt_eye::latch_head(&hp, altSign);
     }
+    // The room capture sweep drives the camera itself through the live lane.
+    if (driveHead && liveHead) room_capture::override_head(&hp);
     if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
         // RAW, not recenter-relative. Subtracting recenter_yaw_rad() here is
@@ -1616,6 +1632,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         int32_t gameYawUnits = rot->yaw;
         int32_t headYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
         residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
+        // The room cube's world frame: headset yaw + this = the rendered yaw.
+        {
+            const float camLoc[3] = {loc->x, loc->y, loc->z};
+            room_capture::publish_world_yaw(wrap_rot(gameYawUnits - g_recenterYawUnits), camLoc);
+        }
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
         // Session 30: publish how far the ENGINE's own pitch is from the head's
         // BEFORE we overwrite it, so the pitch servo can steer it through the
@@ -1906,7 +1927,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // Deliberately NOT gated on vrDrove: hand samples only exist with a live
         // XR session anyway, and leaving it out is what lets `vrinput swing sim`
         // exercise the whole decision path flat.
-        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench"));
+        // 2026-10-20: and shut for 400 ms after the gun changes hands. The detector samples the
+        // weapon hand's slot; a hand-over moves that slot to the other controller, and the jump
+        // between the two read as a swing ("the wrench swings when switching hands").
+        static bool s_swingLh = bvr::input::left_handed();
+        static uint64_t s_swingFlipMs = 0;
+        const uint64_t swingNow = GetTickCount64();
+        if (bvr::input::left_handed() != s_swingLh) {
+            s_swingLh = bvr::input::left_handed();
+            s_swingFlipMs = swingNow;
+        }
+        const bool swingSettled = !s_swingFlipMs || swingNow - s_swingFlipMs > 400;
+        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench") && swingSettled);
 
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;
@@ -2258,6 +2290,21 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // flows draw over a live world, so no render-side signal can see them; the
     // engine's own movie stack names them exactly.
     screens::on_calcview(self, viewActor ? *viewActor : nullptr);
+    room_capture::on_calcview(strictGameplay); // the per-level room and the capture sweep
+    // 2026-10-23 the animation snapshots' label (core/gfx/anim_shots): what is playing now, empty when nothing is -
+    // the hands' state when it is not an idle, a reload step, or a two-handed hold.
+    if (bvr::anim_shots::enabled()) {
+        char label[200] = "";
+        const wchar_t* st = hands_state::current_name(hands::hands_actor());
+        void* w = nullptr;
+        const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
+        const char* step = manual_reload::phase_text();
+        const bool idle = !st || wcsstr(st, L"Idling");
+        if (!idle || step[0] || two_hand::held())
+            sprintf_s(label, "%S %S%s%s%s", st ? st : L"?", cls ? cls : L"-", step[0] ? " | " : "", step,
+                      two_hand::held() ? " | two-handed" : "");
+        bvr::anim_shots::set_label(label);
+    }
 
     // s64 part 2: PausePC.swf IS ON THE STACK DURING BATHYSPHERE RIDES AND EVERY
     // SCRIPTED SCENE, not just at the pause menu. Measured 2026-08-22:
@@ -2337,7 +2384,17 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // exactly what the first cut did.
     }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
-    bvr::vr::publish_ui_pause(panelUp && (!sceneOwnsPanel || g_playerOpenedPanel));
+    // A UI pause whose Menus row (F10 > HUD) is not the flat screen RIDES the
+    // HUD instead: no ui pause, so the projection stays up and the menu, which
+    // gameswf draws into the HUD capture over the live world, goes where that
+    // row says. Off (the default) is exactly the line before this change.
+    const bool uiPause = panelUp && (!sceneOwnsPanel || g_playerOpenedPanel);
+    const bool rides = uiPause && hud_elements::screen_rides(static_cast<int>(screens::panel_kind()));
+    hud_elements::set_riding_screen(rides ? static_cast<int>(screens::panel_kind()) : 0);
+    bvr::vr::publish_ui_pause(uiPause && !rides);
+    // The paused game's blurred backdrop (F10 HUD > Menus): skipped while a menu
+    // the player opened or a weapon/plasmid wheel is up, so the world shows behind.
+    menu_blur::set_suppressed(hud_elements::hide_backdrop() && (uiPause || wheel_state::open_kind() >= 0));
     // Suppress the aim laser and the aim dot while a scene owns the view. The
     // game's own reticle is NOT this call - it goes out through the engine SET
     // handler in assert_crosshair, which reads the same predicate so the three

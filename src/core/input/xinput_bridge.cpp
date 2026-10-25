@@ -36,6 +36,7 @@ std::atomic<float> g_deadzone{0.10f};
 // thread applies test commands. Copies are 12 bytes - contention is trivial.
 std::mutex g_mutex;
 Gamepad g_xrPad{};
+std::atomic<bool> g_xrPadLeftHanded{false}; // the mapping g_xrPad was composed with
 bool g_xrActive = false;
 uint64_t g_xrLastMs = 0;          // publish staleness guard (session teardown
                                   // stops publishing entirely - expire the slot)
@@ -56,12 +57,14 @@ constexpr uint64_t kVrGameplayStaleMs = 500;
 // semantics). Infinite opts out - see the header note. Default preserves the
 // historical behaviour bit-for-bit for games that never call the setter.
 std::atomic<bool> g_pitchLiftOnBumpers{true};
+std::atomic<bool> g_ignoreRealButtonsInVr{false}; // set_ignore_real_buttons_in_vr (opt-in per game)
 
 // s52 (Infinite I9): head-relative locomotion - the published head-vs-body
 // yaw residual the composer rotates the movement stick by. Same self-expiring
 // slot shape as the pitch error above; stale or zero composes byte-identical
 // sticks, which is the whole cross-game safety argument.
 std::atomic<float> g_moveYawOffDeg{0.0f};
+std::atomic<StickOverrideFn> g_stickOverride{nullptr}; // BS1 hand dial; null = untouched
 std::atomic<uint64_t> g_moveYawOffMs{0};
 
 // s63 MOVEMENT-STICK DEADZONE PRE-COMPENSATION, ported from the BRVR mod.
@@ -189,6 +192,7 @@ constexpr int16_t kPitchServoMax = 8000; // ~24% deflection
 std::atomic<float> g_turnScale{1.0f};
 std::atomic<bool> g_snapTurn{false};
 std::atomic<int> g_ammoMod{1}; // AmmoMod::Thumbrest (user's call, session 23)
+std::atomic<bool> g_leftHanded{false}; // weapon role on the LEFT controller (see the header)
 // Session 44: which per-game map the XR composer builds. 0 == PadProfile::
 // Bioshock1, the historical hardcoded semantics, so BS1 and BS2 (which never
 // call the setter) compose exactly what they composed before.
@@ -264,6 +268,7 @@ Gamepad g_lastComposed{};
 // the game thread never has to take g_mutex.
 std::atomic<uint16_t> g_lastTriggers{0};
 std::atomic<uint16_t> g_lastButtons{0}; // composed button bits, same contract
+std::atomic<uint16_t> g_lastRealButtons{0}; // the real pad's bits before the merge (diagnostic)
 uint32_t g_packet = 0;            // bridge-owned monotonic dwPacketNumber
 bool g_packetBump = false;        // forced bump on enable/disable edges
 
@@ -428,13 +433,25 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     Gamepad real{};
     if (*result == ERROR_SUCCESS) {
         memcpy(&real, &xs->Gamepad, sizeof real);
+        g_lastRealButtons.store(real.buttons, std::memory_order_relaxed);
     } else {
+        g_lastRealButtons.store(0, std::memory_order_relaxed);
         // Failed real call leaves the buffer unspecified - never merge it.
         memset(xs, 0, sizeof(XINPUT_STATE));
     }
 
     uint64_t now = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_ignoreRealButtonsInVr.load(std::memory_order_relaxed) && g_xrActive && now - g_xrLastMs <= kXrStaleMs &&
+        real.buttons) {
+        static uint16_t s_told = 0;
+        if (real.buttons != s_told) {
+            s_told = real.buttons;
+            BVR_LOG("input: a real/virtual XInput pad reports buttons 0x%04X - left out while the VR controllers "
+                    "drive (set_ignore_real_buttons_in_vr)", real.buttons);
+        }
+        real.buttons = 0;
+    }
     Gamepad out = merge(real, compose_synthetic(now));
     // Stick-pitch kill: yaw (rx) deliberately stays - stick turn composes
     // with the M7.5 body transfer; only pitch belongs to the HMD. The kill
@@ -571,6 +588,14 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
                                                                    : lroundf(ys));
                 }
             }
+        }
+    }
+    if (StickOverrideFn ov = g_stickOverride.load(std::memory_order_relaxed)) {
+        PadOverride p{out.buttons, out.lt, out.rt, out.lx, out.ly, out.rx, out.ry,
+                      g_xrPadLeftHanded.load(std::memory_order_relaxed)};
+        if (ov(&p)) {
+            out.buttons = p.buttons; out.lt = p.lt; out.rt = p.rt;
+            out.lx = p.lx; out.ly = p.ly; out.rx = p.rx; out.ry = p.ry;
         }
     }
     if (g_packetBump || memcmp(&out, &g_lastComposed, sizeof out) != 0) {
@@ -874,9 +899,10 @@ void set_enabled(bool on) {
 
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
 
-void publish_xr_state(const Gamepad& pad, bool active) {
+void publish_xr_state(const Gamepad& pad, bool active, bool leftHanded) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_xrPad = pad;
+    g_xrPadLeftHanded = leftHanded;
     g_xrActive = active;
     g_xrLastMs = GetTickCount64();
 }
@@ -895,6 +921,11 @@ void publish_vr_gameplay(bool on) {
 void publish_pitch_error(float headMinusEngineDeg) {
     g_pitchErrDeg.store(headMinusEngineDeg, std::memory_order_relaxed);
     g_pitchErrMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+void set_ignore_real_buttons_in_vr(bool on) {
+    if (g_ignoreRealButtonsInVr.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("input: a real pad's buttons are %s while the VR controllers drive", on ? "LEFT OUT" : "merged");
 }
 
 void set_pitch_kill_lift_on_bumpers(bool lift) {
@@ -937,12 +968,16 @@ void last_composed_bumpers(bool* lb, bool* rb) {
     if (rb) *rb = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
 }
 
+uint16_t last_real_buttons() { return g_lastRealButtons.load(std::memory_order_relaxed); }
+
 void last_composed_buttons(uint16_t* buttons) {
     // The whole wButtons word as the game last saw it - stored on both the
     // composed (VR) path and the disabled/real-pad path, so a consumer reading
     // edges here covers a physical pad too. Session 42: BS2's menukey lane.
     if (buttons) *buttons = g_lastButtons.load(std::memory_order_relaxed);
 }
+
+void set_stick_override(StickOverrideFn fn) { g_stickOverride.store(fn, std::memory_order_relaxed); }
 
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -955,6 +990,14 @@ void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
 AmmoMod ammo_mod() {
     return static_cast<AmmoMod>(g_ammoMod.load(std::memory_order_relaxed));
 }
+bool left_handed() { return g_leftHanded.load(std::memory_order_relaxed); }
+
+void set_left_handed(bool on) {
+    if (g_leftHanded.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("input: weapon hand -> %s controller (aim, laser, viewmodel, fire trigger, weapon grip, "
+                "swing); plasmids on the %s", on ? "LEFT" : "right", on ? "right" : "left");
+}
+
 void set_ammo_mod(AmmoMod m) {
     g_ammoMod.store(static_cast<int>(m), std::memory_order_relaxed);
 }

@@ -16,6 +16,10 @@
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/alt_eye.h"
 #include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/hud_elements.h"
+#include "game/bioshock1r/dial_input.h"
+#include "game/bioshock1r/menu_blur.h"
+#include "game/bioshock1r/wheel_state.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/resize.h"
@@ -92,6 +96,10 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // a headset with anchored placement at all. The F10 slider and
     // `vrscreen width` still move it, and a saved preset still overrides.
     bvr::vr::set_screen_width_m(1.9f);
+    // The room snapshot behind the flat screen (2026-10-22): a CORE behaviour,
+    // armed here and only here. The F10 toggle and `vrsnap off` turn it off; a
+    // saved preset overrides.
+    bvr::vr::set_room_snapshot(true);
     // Face buttons pass straight through by default (user directive,
     // 2026-08-22): A=use, B=med hypo, X=reload/hack/EVE, Y=jump, which is the
     // game's own pad layout and the BRVR mod's stock semantics. The session-19
@@ -199,6 +207,10 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
                 "%.1f UU (a saved vrpreset.ini loads LATER and overrides all three)",
                 bones::scale(1), bones::weapon_scale(), camera::head_up_uu());
     }
+    hud_elements::init();     // the HUD's pieces on their own anchors; all on the panel until moved
+    wheel_state::install(image); // the HUD movie's own calls: which wheel is up, how many slots
+    menu_blur::install(image);   // the blur the paused game draws behind menus and wheels (F10 HUD > Menus)
+    dial_input::init();       // pick from those wheels with the hand (F10 > Controls; on by default)
     menu::load_preferences(); // player choices win after legacy startup defaults
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;

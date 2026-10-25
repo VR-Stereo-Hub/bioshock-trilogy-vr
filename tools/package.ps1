@@ -59,7 +59,7 @@ Copy-Item "$bin\bvr_steamvr32.dll" $stage
 Copy-Item $ovrDll $stage
 Copy-Item "$repo\README.md" "$stage\README.txt"
 Copy-Item "$repo\docs\TROUBLESHOOTING.md" "$stage\TROUBLESHOOTING.txt"
-foreach ($n in @("vrpreset.ini", "hands.ini", "weapons.ini", "HOW-TO-USE.txt")) {
+foreach ($n in @("vrpreset.ini", "hands.ini", "weapons.ini", "menu-settings.ini", "BioshockVR.ini", "HOW-TO-USE.txt")) {
     Copy-Item "$repo\release\preset-bs1\$n" "$stage\preset-bs1\$n"
 }
 foreach ($n in @("vrpreset.ini", "weapons.ini", "HOW-TO-USE.txt")) {

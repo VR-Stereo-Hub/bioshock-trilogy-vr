@@ -36,11 +36,23 @@ void on_calcview(void* pc, void* viewActor);
 // chain has not resolved. Never null.
 const char* top_movie();
 
+// The map's package name, e.g. "2-MedicalPavilion" (2026-10-23: LevelInfo's
+// XLevel, its Outer package, its name). Empty until the first level resolves;
+// kept across a level change until the next one resolves. Never null.
+const wchar_t* map_name();
+
 // The top movie is one that should be shown as a stationary panel rather than
 // drawn over a live world: the pause menu, the map, the manual, the machine
 // flows. False whenever the chain has not resolved, so an unresolved chain
 // leaves placement exactly as it was.
 bool panel_screen_up();
+
+// Which panel screen is up, for the HUD pieces' Menus rows (hud_elements):
+// the pause menu, the map, a machine (vending, U-Invent, the Gatherer's Garden,
+// the Gene Bank), or any other panel (manual, plasmid training, hacking,
+// warnings), which never leaves the flat screen. None while no panel is up.
+enum class PanelKind { None = 0, Pause, Map, Machine, Other };
+PanelKind panel_kind();
 
 // Located LevelInfo, for anything else that needs it. Null until found.
 void* level();

@@ -421,6 +421,16 @@ inline constexpr uint32_t kExpectedWeaponFireStartImplRva = 0x226840;
 inline constexpr uint32_t kAbilityFireStartImplRva = 0x1BC220;   // direct call target
 inline constexpr uint8_t kAbilityFireStartPrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
 inline constexpr uint32_t kWeaponOwnerOffset = 0x454;      // AWeapon -> owning pawn
+// 2026-10-20 (the manual reload): the animation handles a weapon's reload waits on. Weapon.uc
+// stores AnimationHandle (the weapon's own clip) and PlayerWeapon the hands' clip handle as ints.
+// Found live by `vrreload probe` (manual_reload.cpp), which asks the game itself: during a reload
+// every int slot of the weapon was offered to IsAnimationHandleValid on the weapon, its holder and
+// the Hands actor, and only these two were live, named as the reload clips (Tommy Gun 'Reload' /
+// 'ReloadTommyGun', pistol 'FastReload' / 'FastReloadPistol', shotgun 'Reload_Loop' /
+// 'ReloadShotgun_LOOP' and 'Reload' / 'ReloadShotgun_End'), at the same time of the same length.
+// HolderAnimationHandle was never live on the holder (no holder clip in this view).
+inline constexpr uint32_t kWeaponAnimationHandleOffset = 0x5F4;      // on the weapon actor
+inline constexpr uint32_t kWeaponHandsAnimationHandleOffset = 0x8F0; // on the Hands actor
 inline constexpr uint32_t kAbilityInstigatorOffset = 0xF0; // UAttackAbility -> instigator
 // AActor field offsets used by the fire path (from the APawn::GetViewPoint /
 // GetViewDirection implementations, vtable slots +0x360 / +0x35C):
@@ -428,6 +438,12 @@ inline constexpr uint32_t kAbilityInstigatorOffset = 0xF0; // UAttackAbility -> 
 //   +0x550 eye height (GetViewPoint = location + eyeHeight on Z).
 inline constexpr uint32_t kActorLocOffset = 0x1D8;
 inline constexpr uint32_t kActorViewDirOffset = 0x1E4;
+// 2026-10-21 (tools\ida\se1_effect_event.py): AActor::TriggerEffectEvent is the actor vtable's +0x290 slot.
+// Actor's native table entry "intAActorexecTriggerEffectEvent" (RVA 0x11BB6AC) gets its exec thunk (RVA
+// 0x37B910) at startup; the thunk unpacks the script's 13 parameters and calls [vtable+0x290] - thiscall,
+// (FName EffectEvent by value, Other, Material, FVector*, FRotator*, bool, bool, Observer, FName ReferenceTag by
+// value, EffectEventInfo) = 12 dwords on the stack, bool in eax. Animation cues reach the same virtual.
+inline constexpr uint32_t kActorTriggerEffectEventVtbl = 0x290;
 // M7 session-11 actor-field probes, recorded honestly: a TRUE DrawScale has
 // NOT been located on this build. +0x16C (default 0.0) HIDES the mesh at small
 // values (0.5/0.8 both vanished the pistol - cull-distance-like semantics, and
@@ -514,6 +530,79 @@ inline constexpr uint32_t kMeshInstSocketCountOffset = 0xEC;
 inline constexpr uint32_t kActorGetBoneCoordsRva = 0x544FA0;
 inline constexpr uint8_t kActorGetBoneCoordsPrologue[12] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8,
                                                             0x83, 0xEC, 0x30, 0x56, 0x8B, 0xF1};
+// ---- 2026-10-20: CALLING SCRIPT FUNCTIONS BY NAME (the manual reload, script_call.h) ----------
+// UObject::FindFunction(FName name /* by value, 8 bytes */, UBOOL global), ret 0xC, tools\ida\mr2:
+// BS1 strips the "Failed to find function" text (mr1: NONE), so it was found by BS2's shape - the
+// `ret 0xC` callee followed within a few instructions by `call [reg+0xC]` (ProcessEvent, vtable slot
+// 3) at 70 sites. It returns null unless the engine's two script-ready globals are set, and null
+// for a name the class does not have - never asserts. Head: push ebp; mov ebp,esp; and esp,-8;
+// cmp dword ptr [global],0.
+inline constexpr uint32_t kFindFunctionRva = 0x6F5F70;
+inline constexpr uint8_t kFindFunctionPrologue[8] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0x3D};
+// UObject::ProcessEvent outer (kNativeConstantAnchorRva): (UFunction*, void* parms, void* result),
+// ret 0xC. Head: push ebp; mov ebp,esp; mov eax,[ecx+0xF8].
+inline constexpr uint8_t kProcessEventPrologue[9] = {0x55, 0x8B, 0xEC, 0x8B, 0x81, 0xF8, 0x00, 0x00, 0x00};
+// ---- 2026-10-20: SCRIPT PROPERTIES BY NAME (the cheats, script_call.h) ----------------------------
+// FindField(UStruct*, const TCHAR* name) -> UProperty*, __fastcall (ecx struct, edx name): the
+// console's GET/SET look a property up with it (tools\ida\rf2/rf3: "Unrecognized property %s" in
+// RVA 0x6FAC20; SET passes its result's +0x74 to GlobalSetProperty as the value's offset). It walks
+// UStruct::Children (+0x5C) by UField::Next (+0x44), names at +0x28, up the super chain, and returns
+// only UProperty fields. Head: push ebp; mov ebp,esp; push -1; push <seh>; and at +0x18
+// sub esp,0x20; mov [ebp-0x18],ecx; push ebx; mov ebx,edx.
+inline constexpr uint32_t kFindFieldRva = 0x1AE5A0;
+inline constexpr uint8_t kFindFieldPrologue[6] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68};
+inline constexpr uint32_t kFindFieldBodyOffset = 0x18;
+inline constexpr uint8_t kFindFieldBody[9] = {0x83, 0xEC, 0x20, 0x89, 0x4D, 0xE8, 0x53, 0x8B, 0xDA};
+inline constexpr uint32_t kPropertyOffsetOffset = 0x74; // UProperty::Offset (checked live, script_call.cpp)
+// UClass::Defaults (TArray<BYTE>) data pointer: the console's GET exports a class's DEFAULT value from
+// `*(class + 0x54C)` (count at +0x550) at the property's offset (tools\ida\rf3, RVA 0x6FAC20).
+inline constexpr uint32_t kClassDefaultsOffset = 0x54C;
+// ---- 2026-10-15: THE HUD MOVIE'S CALLS (the weapon/plasmid dial's stage seam) ----------------
+// Every call into a gameswf movie BY NAME goes through one routine, tools\ida\fw1/fw2:
+//   void __cdecl CallMethod(UFlashMovie* movie, const char* method, const char* printfFormat, ...)
+// It returns early unless movie+0x114 (the gameswf movie interface) is set. Both paths reach it:
+// the C++ HUD updaters (AddWeapon "%ls, %ls, %d, %d, %d", AddAbility "%ls, %ls", RemoveWeapon
+// "%ls", SelectWeapon "%ls", ... - 158 literal method names at 277 call sites) and the
+// UnrealScript natives execCallMethodVoid/Int/Float/String (+0x427480 ...), which pass the FName's
+// ANSI text - so CallHUDFunction('OpenWeaponMenu' / 'RBReleased' / ...) arrives here too. The
+// movie's filename is the string at movie+0x40 (screens.cpp reads the same field).
+// Prologue: push ebp / mov ebp,esp / mov eax,fs:0 / push -1 | push <SEH, relocated> | push eax /
+// mov fs:0,esp / sub esp,130h / push esi / push edi / mov edi,[ebp+8] / cmp [edi+114h],0 / jz.
+inline constexpr uint32_t kFlashCallMethodRva = 0x427220;
+inline constexpr uint8_t kFlashCallMethodHead[11] = {0x55, 0x8B, 0xEC, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF};
+inline constexpr uint32_t kFlashCallMethodTailAt = 0x10; // after the relocated 68 <imm32>
+inline constexpr uint8_t kFlashCallMethodTail[29] = {0x50, 0x64, 0x89, 0x25, 0x00, 0x00, 0x00, 0x00, 0x81, 0xEC,
+                                                     0x30, 0x01, 0x00, 0x00, 0x56, 0x57, 0x8B, 0x7D, 0x08, 0x83,
+                                                     0xBF, 0x14, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x13};
+inline constexpr uint32_t kFlashMovieInterfaceOffset = 0x114;
+
+// The camera's post-effect runner (tools\ida\mb1_menu_blur.py, ENGINE_NOTES "The blur behind the
+// menus"): void __thiscall Run(this), which draws every effect in the list at this+0x28 onto the
+// tonemapped image. Empty in play; the paused game's menu blur is in it while a menu or a wheel
+// is up (two passes: copy, draw, copy, draw). One caller (+0x7BCEEB). Prologue: push ebp /
+// mov ebp,esp / push -1 | push <SEH, relocated> | mov eax,fs:0 / push eax / mov fs:0,esp /
+// sub esp,20h / push ebx / mov ebx,ecx / push esi / push edi / mov edi,[ebx+28h].
+// gameswf's fscommand callback (tools\ida\fc1/fc2, ENGINE_NOTES "The movie's fscommands"):
+// the action executor tests a getURL for "FSCommand:" and calls ONE global function pointer,
+// void __cdecl cb(movie_interface*, const char* command, const char* args, void* user), with
+// its user data in the dword before it. No code is patched: the pointer is swapped. Its
+// address is read from the code that uses it and must agree at all three sites:
+//   +0x804105  39 05 <slot>   cmp [slot], eax  (is a callback registered)
+//   +0x804118  FF 35 <user>   push [slot-4]    (the user data)
+//   +0x80412E  FF 15 <slot>   call [slot]
+// Measured slot RVA 0x1380D68.
+inline constexpr uint32_t kFsCallbackTestRva = 0x804105; // 39 05 imm32
+inline constexpr uint32_t kFsCallbackUserRva = 0x804118; // FF 35 imm32
+inline constexpr uint32_t kFsCallbackCallRva = 0x80412E; // FF 15 imm32
+inline constexpr uint32_t kFsCallbackSlotRva = 0x1380D68;
+
+inline constexpr uint32_t kPostEffectRunRva = 0x7C9CB0;
+inline constexpr uint8_t kPostEffectRunHead[6] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68};
+inline constexpr uint32_t kPostEffectRunTailAt = 0x0A; // after the relocated <imm32>
+inline constexpr uint8_t kPostEffectRunTail[25] = {0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+                                                   0x25, 0x00, 0x00, 0x00, 0x00, 0x83, 0xEC, 0x20, 0x53,
+                                                   0x8B, 0xD9, 0x56, 0x57, 0x8B, 0x7B, 0x28};
+inline constexpr uint32_t kFlashMovieFilenameOffset = 0x40;
 inline constexpr uint32_t kSkelInstActorOffset = 0x04;   // backref to the actor
 inline constexpr uint32_t kSkelInstFreezeOffset = 0x20;  // int; SkeletonInstanceFreeze = 1
 inline constexpr uint32_t kSkelInstBonesOffset = 0x48;      // hkQsTransform* array A
@@ -569,6 +658,10 @@ inline constexpr uint32_t kSkinnedVertexWeightsOffset = 60;
 inline constexpr uint32_t kStaticMeshDrawRva = 0x3DBCF0;
 inline constexpr uint8_t kStaticMeshDrawPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24, 0x83,
                                                       0x7D, 0x10, 0x00, 0x53, 0x56, 0x57};
+// 2026-10-25 (gun_flip.cpp): the hands' one CPU-skinned DrawIndexed - NEWPlayerHands LOD 0, 8,726 triangles
+// (ENGINE_NOTES "The hands are one CPU-skinned draw", "The hands draw on the palette route"; repeated per light pass).
+// A mesh constant, not an address: every other skinned viewmodel draw is the held gun's.
+inline constexpr unsigned kHandsIndexCount = 26178;
 inline constexpr uint32_t kDrawRecLocalToWorldOffset = 160;
 inline constexpr uint32_t kDrawRecWorldToLocalOffset = 224;
 // s82: the EVALUATOR - the engine routine that rebuilds the bone array from the
@@ -853,6 +946,9 @@ struct Symbols {
     void* weaponInitDamage = nullptr;  // AWeapon::InitiateDamage impl (telemetry)
     void* abilityInitDamage = nullptr; // UAttackAbility::InitiateDamage impl (telemetry)
     void* actorGetBoneCoords = nullptr; // AActor::GetBoneCoords (the weapon's muzzle socket)
+    void* findFunction = nullptr;       // UObject::FindFunction (script_call.h)
+    void* processEvent = nullptr;       // UObject::ProcessEvent outer (script_call.h)
+    void* findField = nullptr;          // FindField (script_call.h property_offset)
 };
 
 // Runs all scans, logging each stage. False if anything failed to resolve.

@@ -596,6 +596,13 @@ bool g_chordAWasDown = false;
 XrAction g_poseL = XR_NULL_HANDLE;     // grip poses - hand position (M7 hands)
 XrAction g_poseR = XR_NULL_HANDLE;
 XrAction g_aimL = XR_NULL_HANDLE;      // AIM poses - where the controller POINTS.
+XrAction g_hapticL = XR_NULL_HANDLE;   // vibration outputs, per physical hand
+XrAction g_hapticR = XR_NULL_HANDLE;
+// pulse_hand's queue: any thread asks, input_sync (the XR thread) applies.
+std::atomic<uint32_t> g_pulseSeq[2] = {};
+std::atomic<float> g_pulseAmp[2] = {};
+std::atomic<int> g_pulseMs[2] = {};
+uint32_t g_pulseDone[2] = {};
 XrAction g_aimR = XR_NULL_HANDLE;      // The runtime's own pointing ray; the grip
                                        // pose runs along the handle and reads
                                        // tens of degrees low as an aim vector.
@@ -864,6 +871,13 @@ void input_create(XrInstance instance) {
     made += make_action("pose_r", "Right grip pose", XR_ACTION_TYPE_POSE_INPUT, &g_poseR);
     made += make_action("aim_l", "Left aim pose", XR_ACTION_TYPE_POSE_INPUT, &g_aimL);
     made += make_action("aim_r", "Right aim pose", XR_ACTION_TYPE_POSE_INPUT, &g_aimR);
+    // 2026-10-19: haptics, one output per PHYSICAL hand (pulse_hand). The two bindings
+    // sit LAST in each profile's table and are left out of the count unless both
+    // actions exist, so a failed create can never cost a profile its other bindings.
+    const bool hapticsOk =
+        make_action("haptic_l", "Left haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT, &g_hapticL) &&
+        make_action("haptic_r", "Right haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT, &g_hapticR);
+    const uint32_t noHaptics = hapticsOk ? 0u : 2u;
 
     // Quest 3 Touch. Never bind .../input/system/click - reserved by runtimes.
     XrActionSuggestedBinding touch[] = {
@@ -886,11 +900,13 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")}, // LAST two: dropped
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")}, // if not created
     };
     XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     sb.interactionProfile = path(instance, "/interaction_profiles/oculus/touch_controller");
     sb.suggestedBindings = touch;
-    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(touch) / sizeof(touch[0]));
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(touch) / sizeof(touch[0])) - noHaptics;
     r = xrSuggestInteractionProfileBindings(instance, &sb);
     if (XR_FAILED(r))
         BVR_LOG("xr-input: touch_controller binding suggestion failed (%d)",
@@ -941,10 +957,12 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile = path(instance, "/interaction_profiles/valve/index_controller");
     sb.suggestedBindings = index;
-    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(index) / sizeof(index[0]));
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(index) / sizeof(index[0])) - noHaptics;
     r = xrSuggestInteractionProfileBindings(instance, &sb);
     if (XR_FAILED(r))
         BVR_LOG("xr-input: index_controller binding suggestion failed (%d)",
@@ -971,10 +989,12 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile = path(instance, "/interaction_profiles/htc/vive_controller");
     sb.suggestedBindings = vive;
-    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(vive) / sizeof(vive[0]));
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(vive) / sizeof(vive[0])) - noHaptics;
     r = xrSuggestInteractionProfileBindings(instance, &sb);
     if (XR_FAILED(r))
         BVR_LOG("xr-input: vive_controller binding suggestion failed (%d)",
@@ -1004,11 +1024,13 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile =
         path(instance, "/interaction_profiles/microsoft/motion_controller");
     sb.suggestedBindings = wmr;
-    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(wmr) / sizeof(wmr[0]));
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(wmr) / sizeof(wmr[0])) - noHaptics;
     r = xrSuggestInteractionProfileBindings(instance, &sb);
     if (XR_FAILED(r))
         BVR_LOG("xr-input: motion_controller binding suggestion failed (%d)",
@@ -1164,10 +1186,20 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
 
     // M6: hand grip poses for the aim ray (never fatal - a hand that fails to
     // locate just leaves its slot invalid and the aim falls back to the view).
-    locate_hand(session, g_poseL, g_gripSpaceL, predictedDisplayTime, g_hands[0]);
-    locate_hand(session, g_poseR, g_gripSpaceR, predictedDisplayTime, g_hands[1]);
-    locate_hand(session, g_aimL, g_aimSpaceL, predictedDisplayTime, g_aims[0]);
-    locate_hand(session, g_aimR, g_aimSpaceR, predictedDisplayTime, g_aims[1]);
+    //
+    // Handedness (bvr::input::left_handed, ported from Owloeb's left-handed fork): the
+    // slots are ROLES - 0 the plasmid hand, 1 the weapon hand - and every consumer (aim
+    // ray, laser, viewmodel, swing, per-hand tuning) reads them by role. Which PHYSICAL
+    // controller fills which slot is the whole pose half of it; the bindings stay
+    // physical. Read once per sync, so a live switch never splits a frame. Off (every
+    // game that never sets it): exactly the old mapping.
+    const bool lh = bvr::input::left_handed();
+    const int slotL = lh ? 1 : 0; // the slot the physical LEFT controller fills
+    const int slotR = lh ? 0 : 1;
+    locate_hand(session, g_poseL, g_gripSpaceL, predictedDisplayTime, g_hands[slotL]);
+    locate_hand(session, g_poseR, g_gripSpaceR, predictedDisplayTime, g_hands[slotR]);
+    locate_hand(session, g_aimL, g_aimSpaceL, predictedDisplayTime, g_aims[slotL]);
+    locate_hand(session, g_aimR, g_aimSpaceR, predictedDisplayTime, g_aims[slotR]);
 
     // Session 31 swing-to-attack: feed the right hand's motion to the detector.
     // Read through input_get_hand_pose rather than off g_hands[1] directly, so
@@ -1201,13 +1233,16 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     pad.rx = axis_to_thumb(lx);
     pad.ry = axis_to_thumb(ly);
 
-    float rt = read_float(session, g_fire);
-    float lt = read_float(session, g_plasmid);
+    // g_fire / g_plasmid are the physical right / left triggers; the WEAPON trigger is
+    // whichever controller holds the weapon role. Same for the grips: gl / gr are ROLE
+    // grips (plasmid / weapon), read from the side that holds each role.
+    float rt = read_float(session, lh ? g_plasmid : g_fire);
+    float lt = read_float(session, lh ? g_fire : g_plasmid);
     pad.rt = static_cast<uint8_t>(rt * 255.0f + 0.5f);
     pad.lt = static_cast<uint8_t>(lt * 255.0f + 0.5f);
 
-    float gl = read_float(session, g_gripL);
-    float gr = read_float(session, g_gripR);
+    float gl = read_float(session, lh ? g_gripR : g_gripL);
+    float gr = read_float(session, lh ? g_gripL : g_gripR);
     g_gripLatchedL = g_gripLatchedL ? (gl >= kGripRelease) : (gl >= kGripPress);
     g_gripLatchedR = g_gripLatchedR ? (gr >= kGripRelease) : (gr >= kGripPress);
 
@@ -1536,7 +1571,33 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     if (now < g_startPulseUntilMs) pad.buttons |= XINPUT_GAMEPAD_START;
 
     g_lastActive.store(true, std::memory_order_relaxed);
-    bvr::input::publish_xr_state(pad, true);
+    // Haptic pulses asked for since the last sync (pulse_hand), one per physical hand.
+    for (int h = 0; h < 2; ++h) {
+        const uint32_t seq = g_pulseSeq[h].load(std::memory_order_acquire);
+        if (seq == g_pulseDone[h]) continue;
+        g_pulseDone[h] = seq;
+        const XrAction a = h ? g_hapticR : g_hapticL;
+        if (a == XR_NULL_HANDLE) continue;
+        XrHapticActionInfo hi{XR_TYPE_HAPTIC_ACTION_INFO};
+        hi.action = a;
+        XrHapticVibration v{XR_TYPE_HAPTIC_VIBRATION};
+        v.amplitude = g_pulseAmp[h].load(std::memory_order_relaxed);
+        v.duration = static_cast<XrDuration>(g_pulseMs[h].load(std::memory_order_relaxed)) * 1000000;
+        v.frequency = XR_FREQUENCY_UNSPECIFIED;
+        xrApplyHapticFeedback(session, &hi, reinterpret_cast<const XrHapticBaseHeader*>(&v));
+    }
+
+    // The mapping this pad was composed with travels with it, so a reader of the pad
+    // (BS1's grab) never pairs these bits with a switch made after this sync.
+    bvr::input::publish_xr_state(pad, true, lh);
+}
+
+void pulse_hand(int physicalHand, float amplitude, int durationMs) {
+    if (physicalHand < 0 || physicalHand > 1) return;
+    g_pulseAmp[physicalHand].store(amplitude < 0.0f ? 0.0f : amplitude > 1.0f ? 1.0f : amplitude,
+                                   std::memory_order_relaxed);
+    g_pulseMs[physicalHand].store(durationMs > 0 ? durationMs : 1, std::memory_order_relaxed);
+    g_pulseSeq[physicalHand].fetch_add(1, std::memory_order_release);
 }
 
 bool input_get_hand_pose(int hand, bool aimPose, float* pos3, float* quat4) {

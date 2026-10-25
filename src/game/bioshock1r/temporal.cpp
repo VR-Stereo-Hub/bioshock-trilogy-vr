@@ -2,6 +2,8 @@
 #include "game/bioshock1r/temporal.h"
 #include "core/gfx/frame_pacing.h"
 #include "game/bioshock1r/native_repair.h"
+#include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/gun_flip.h"
 
 #include "core/gfx/blit.h"
 #include "core/gfx/dlss_client.h"
@@ -522,6 +524,7 @@ void end_segment(ID3D11DeviceContext* ctx, bool bound) {
 }
 
 void tap_setrt(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv) {
+    gun_flip::on_boundary(ctx);
     if (!active() || !g_dev) return;
     new_interval_if_presented();
     ID3D11Texture2D* t = texture_of(dsv);
@@ -589,6 +592,7 @@ void squeeze_window() {
 }
 
 void tap_clear(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, unsigned flags) {
+    gun_flip::on_boundary(ctx);
     if (!active() || !g_dev || !(flags & D3D11_CLEAR_DEPTH)) return;
     new_interval_if_presented();
     ID3D11Texture2D* t = texture_of(dsv);
@@ -611,7 +615,12 @@ void tap_clear(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, unsigned f
     rel(t);
 }
 
-const bvr::frame_inspector::DrawTap kTap = {tap_setrt, tap_draw, tap_clear};
+// 2026-10-25: a reflected gun's draws cull the other face (gun_flip.cpp needs each draw's index count).
+void tap_draw_args(ID3D11DeviceContext* ctx, unsigned indexCount, unsigned /*startIndex*/, int /*baseVertex*/) {
+    gun_flip::on_draw(ctx, indexCount);
+}
+
+const bvr::frame_inspector::DrawTap kTap = {tap_setrt, tap_draw, tap_clear, tap_draw_args};
 
 // ---- the eye store ------------------------------------------------------------------------
 bool ensure_tex(ID3D11Texture2D** t, ID3D11ShaderResourceView** s, uint32_t w, uint32_t h, DXGI_FORMAT f) {
@@ -831,6 +840,13 @@ bool process_eye(ID3D11DeviceContext* ctx, const bvr::vr::EyeFrame& f) {
             static bool logged = false;
             if (!logged) { logged = true; BVR_LOG("[temporal] guides failed: %s", why); }
         }
+    }
+    // 2026-10-23: this image's linear depth to the room snapshot, so the room keeps its distances
+    // and the loading screen's backdrop is stereo (openxr_runtime.h provide_room_depth).
+    if (guidesOk) {
+        float ws = 0.0f;
+        camera::get_recenter_state(nullptr, nullptr, &ws);
+        bvr::vr::provide_room_depth(g_guides.linear_z_srv(), ws > 1.0f ? ws : 100.0f);
     }
 
     // The hands mask is worth binding when something is in it: a foreground pass, or the
@@ -1266,13 +1282,14 @@ int held_rebuild(ID3D11DeviceContext* ctx, const bvr::vr::HeldFrame& hf) {
 }
 
 bool g_seamsSet = false;
+std::atomic<bool> g_tapSet{false};
 
 // Armed on first use and then kept: switched off, the tap and the processor return at
 // their first line, and keeping them lets the processor itself stop the helper on the
 // present thread (the only thread that calls into the client while it runs).
 void update_seams() {
     if (!active() || g_seamsSet) return;
-    bvr::frame_inspector::set_draw_tap(&kTap);
+    if (!g_tapSet.exchange(true)) bvr::frame_inspector::set_draw_tap(&kTap);
     bvr::vr::set_eye_processor(&process_eye);
     g_seamsSet = true;
     BVR_LOG("[temporal] seams armed (depth tap + eye processor)");
@@ -1299,6 +1316,10 @@ bool word(const char* s, const char* w) {
 }
 
 } // namespace
+
+void arm_draw_tap() {
+    if (!g_tapSet.exchange(true)) bvr::frame_inspector::set_draw_tap(&kTap);
+}
 
 void init() {
     BVR_LOG("[temporal] DLSS/DLAA and alternate frame warp available (both off; F10 Display, `dlss`, `afw`)");
@@ -1604,6 +1625,8 @@ void request_dump(int presents, uint32_t delayMs) {
                  t.wMinute, t.wSecond);
     CreateDirectoryW(g_dumpDir, nullptr);
     g_dumpIndex = 0;
+    // 2026-10-20: and the hands' and gun's drawn pose beside the pictures (tools\blender\pose_capture.py).
+    bones::arm_pose_capture(g_dumpDir, delayMs, presents < 3 ? presents : 3);
     g_dumpAtMs.store(GetTickCount64() + delayMs);
     g_dumpLeft.store(presents);
     _snprintf_s(g_dumpStatus, sizeof(g_dumpStatus), _TRUNCATE, "armed: %d presents in %.1f s", presents, delayMs / 1000.0);

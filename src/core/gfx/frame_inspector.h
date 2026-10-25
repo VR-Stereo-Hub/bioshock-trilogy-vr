@@ -80,6 +80,10 @@ struct DrawTap {
     void (*on_draw_indexed)(ID3D11DeviceContext* ctx) = nullptr;
     // BEFORE the game's ClearDepthStencilView: the last chance to keep what it clears.
     void (*on_clear_dsv)(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, unsigned flags) = nullptr;
+    // 2026-10-25 (BS1's reflected gun): BEFORE each game DrawIndexed, right after on_draw_indexed, with the draw's
+    // own arguments. Null unless a game sets it.
+    void (*on_draw_indexed_args)(ID3D11DeviceContext* ctx, unsigned indexCount, unsigned startIndex,
+                                 int baseVertex) = nullptr;
 };
 void set_draw_tap(const DrawTap* tap);
 

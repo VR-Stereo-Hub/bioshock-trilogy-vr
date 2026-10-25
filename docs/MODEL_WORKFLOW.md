@@ -91,9 +91,54 @@ Unofficial BioShock SDK's `HAVOK BUILD` does, for the 2007 game's package format
 # a UI movie: XML structure, ActionScript, frames
 .\tools\flash-export.ps1 -Game bs1 -ListMovies
 .\tools\flash-export.ps1 -Game bs1 -Movie HUDPC [-What xml|script|frame]
+# ...with the real art: BS1 stores it as DXT in a gameswf custom tag FFDec draws solid red.
+# Decode both movies into one folder in the model workspace, then point FFDec at the copies.
+py tools\flash-decode.py <FlashMovies>\sharedlibrary.swf <ws>\flash\bs1\decoded\sharedlibrary.swf
+py tools\flash-decode.py <FlashMovies>\HUDRadial.swf <ws>\flash\bs1\decoded\HUDRadial.swf
+# ...and whole: the imported art merged in (FFDec does not follow imports when rendering)
+ffdec-cli -swf2xml <ws>\...\sharedlibrary.swf shared.xml ; ffdec-cli -swf2xml <ws>\...\HUDRadial.swf radial.xml
+py tools\flash-merge.py shared.xml radial.xml merged.xml ; ffdec-cli -xml2swf merged.xml HUDRadial_merged.swf
 # the UnrealScript corpus into tools\uscript\<game>\
 .\tools\uscript-export.ps1 -Game bs1 [-Only ShockGame] [-Inventory]
+# the hands and a first-person gun TOGETHER, as the game attaches them, posed by their clips: renders,
+# the part in the palm, the gun hand's motion, and a check of the hands against the live game
+.\tools\blender-run.ps1 tools\blender\reload_pose.py -- --hands <ws>\exports\bs1\NEWPlayerHands-all.glb
+    --gun <ws>\exports\bs1\WP_PistolMesh.glb --hands-action Pistol__FastReloadPistol --gun-action FastReload
+    --socket R_grip --times 0.53,0.80 [--part DrumParent] [--palm Bip01_L_Hand]
+    [--attach <ws>\bs1\shockgame-weapons\ShockGame\StaticMesh\PI_AmmoType.pskx] [--no-render]
 ```
+
+**The game's own frames, captured and replayed** (2026-10-20). The mod writes what it DRAWS: the
+F10 AFW capture ("Capture 6 presents in 5 s") also writes `pose_00..02.txt` into its folder, and
+while a gun is in hand every frame (30 a second) is appended to
+`dumps\poserec-<date>\Shotgun.bvrpose` - the hands' engine pose, each hand's palette correction,
+the hands actor, the gun actor and every gun bone as written, the clips and their times.
+`tools\blender\pose_capture.py` rebuilds them on the glbs (game_frames.py: the game's bone frames
+and Unreal axes): `--pose <pose_00.txt> --render cap` for one frame, `--record <Shotgun.bvrpose>
+--save run.blend --csv run.csv [--step 3]` for a whole run as an animation plus a per-frame table
+(state, clips and times, the gun hand's grip frame, the free palm on the gun, every gun bone in the
+grip's frame). A capture of the reference pose lands every bone on its rest (`hands_off_rest`
+0.00). The IK arms and the mirror are not rebuilt.
+
+**Designed grips** (2026-10-20). `tools\blender\grip_solve.py --hands <glb> --gun <glb> --hands-action <rx>
+--gun-action <rx> --time <s> --part "<bones>" [--hold rim|across] --emit src\game\bioshock1r\grip_<x>.h` places a part
+in the hand and closes each finger on it by the meshes (an exact cylinder fitted to the part; finger capsules
+sized from their skin), prints per finger the joints' turns, the contact along its length and the penetration
+on the deformed mesh, and emits the table the mod applies (`grips.h`). Check it with the mod's own math on a real
+capture before a run: `pose_capture.py --pose <pose_00.txt> --grip <grip_<x>.h>` prints the same contact numbers.
+A part that is a separate model hung on a gun bone rather than the gun's own skin (the shotgun's shell: its
+`SG_Shell` bone carries no triangles; `shotgun_shell.pskx` hangs on it through `SOCKET_AmmoSocket`, at the bone's
+origin) takes `--part-mesh <pskx>` with `--part <bone>`. In `pose_capture.py` such a model is shown with
+`--attach-socket <bone>` - a glTF socket is a node, not a pose bone, so the socket's own name hangs nothing.
+
+**`reload_pose.py` reproduces the game's own placement** (2026-10-20). The gun's origin sits on
+the hands' `R_grip` (bone 43) in the GAME's frame of that bone, the way the engine attaches it,
+and every position it reports is in Unreal axes. Each run prints `BVR_POSE check` lines: the off
+hand's palm in the grip's frame at the times `vrbones reloadrec` recorded in the running game
+(the paths in `reload_rig.h`), and the error. The Tommy Gun and pistol clips agree to 0.1-0.9
+units except one or two samples inside the fastest motion (frame timing); a run whose check
+is off by more is not showing the game. Ammo meshes (`--attach`) hang on the gun's
+`SOCKET_AmmoDummySocket` the same way.
 
 `model-export.ps1` exits 1 and names UModel's error when an export fails, and says when the
 failure is the Havok wall above. `inspect_model.py` prints every problem as a
@@ -119,6 +164,14 @@ its environment and exits non-zero on an uncaught exception.
   and the runtime refused it).
 - **Imported bone tails are display length (1 unit), not limb length.** Use head-to-head
   distances.
+- **Blender's glTF importer REORIENTS every bone** (it points each bone's Y along the bone), so
+  a pose bone's matrix is the game's bone frame times a fixed per-bone turn. Anything attached
+  to a pose bone, or measured in its frame, is turned by that amount: every reload render before
+  2026-10-20 evening had the gun at a wrong angle (the shotgun visibly misplaced, its root far
+  from its origin), and the pistol's 0.53 s carry pose was chosen from one. Undo the turn
+  (`reload_pose.py game_frame`: turn = node rest^-1 x bone rest, from the glb's own nodes) and
+  check against recorded game data before trusting a render. Bone HEAD positions were never
+  affected.
 - **In a `bsmesh-export` glb, Unreal's left (-Y) is Blender's +Y.** The conversion is a
   reflection, not a rotation (HAVOK_AND_PACKAGES.md section 4). Check a left/right claim
   numerically against a named bone, never by eye.
@@ -130,6 +183,16 @@ its environment and exits non-zero on an uncaught exception.
 - **Welded points are not draw vertices.** The engine splits vertices at UV/normal seams.
 - **A PSKX is a static mesh, but the add-on still makes a one-bone armature for it.**
   `inspect_model.py` skips the skin-weight checks for `.pskx` for that reason.
+- **FFDec draws BS1's UI art as solid red, and a HUDPC render is mostly empty.** The art is
+  DXT1/DXT5 in custom tag 512 (`id, w, h, format, 0`, then the blocks; 0 = DXT1, 4 = DXT5),
+  and HUDPC imports 93 symbols from `..\FlashMovies\sharedlibrary.swf`, which FFDec does not
+  resolve. `tools\flash-decode.py` fixes the first. FFDec 26.2.1 does not follow imports when
+  it renders even with a local path, so `tools\flash-merge.py` copies the imported symbols
+  into the movie through FFDec's XML (`-swf2xml`, merge, `-xml2swf`); in the merged movie a
+  root clip's id is its original id + 4000. A movie's static frame shows authored rest poses
+  and placeholders; the game fills and moves it from ActionScript at run time.
+- **BS1 in VR plays `HUDRadial.swf`, not `HUDPC.swf`** (`Gui.ini [HUD]` has both; the pad
+  build uses `Filename=`). Same clips and functions, slightly different placements.
 - **UModel prints its errors to stdout and its exit code says nothing**; the script reads
   the text (`*** ERROR`).
 - **A BS1 map has a localised copy per language** (`<map>_deu.bsm`, ...) holding voice and
