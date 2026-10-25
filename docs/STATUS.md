@@ -16,7 +16,14 @@
   (second_hands.cpp; ENGINE_NOTES 2026-10-25 night, later): its own cast, animation, effects and EVE use, its
   animation shown on the right hand, its effects placed there. `[hands2]` logs its spawn, plasmid and placement.
 - **Cheats** (F10 > Cheats > Plasmids and EVE): "Give all plasmids" (all eleven available, six equipped) and
-  "Infinite EVE". Built on `hand_loadout.h`, the per-hand slots and
+  "Infinite EVE". Harness commands: `vrcheat plasmids | plasmid <AbilityClass> | eve on|off`, and
+  `vrmenu set <Key> <value>` for any F10 setting, live and not saved.
+- **SIMULATOR-VERIFIED 2026-10-25 00:02** (ENGINE_NOTES 2026-10-25 night, simulator): the second hands spawn, take the
+  plasmid, cast from the right trigger; one EVE cost per cast (-15 / -15 / -30 both); only the casting hand animates
+  (measured per cast); casts attributed to the right hand correctly. Only the casting hand animates with ONE plasmid
+  too (F10 Controls > Dual plasmids > "Only the casting hand animates", on). Not settled: the bolt's exact start.
+- **Next (asked 2026-10-25):** Telekinesis on controller aim (it aims with the head today) and two objects held at
+  once, one per hand. Built on `hand_loadout.h`, the per-hand slots and
   trigger router the mix-and-match system will fill from the wheels (ARCHITECTURE 2026-10-25). Open: EVE per cast,
   projectile plasmids, the right hand's effect (ENGINE_NOTES 2026-10-25 night).
 - **The reticle sits on what you aim at** (F10 Aim > Reticle > "Reticle on what you aim at", on): its ray marched

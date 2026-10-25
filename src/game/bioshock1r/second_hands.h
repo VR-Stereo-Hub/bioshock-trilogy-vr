@@ -40,6 +40,8 @@ void set_right_trigger(bool down);
 
 // Game thread, inside an engine call: is the second hands' script on this call's stack (its cast)?
 bool on_stack();
+// Any pointer anywhere above this frame on the stack (diagnostics: which hands actor a cast runs under).
+bool ptr_on_stack(const void* p);
 
 // The skin gather (palette.cpp, the render thread): the second hands' palette, captured.
 void capture_skins(const float* engine, int count);

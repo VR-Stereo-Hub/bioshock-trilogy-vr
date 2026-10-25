@@ -40,6 +40,8 @@
 #include "game/bioshock1r/menu_blur.h"
 #include "game/bioshock1r/wheel_state.h"
 #include "game/bioshock1r/native_proof.h"
+#include "game/bioshock1r/second_hands.h"
+#include "game/bioshock1r/cheats.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -747,6 +749,33 @@ void apply_command(const char* cmd, const char* args) {
         bvr::frame_inspector::vb_tap_log(n);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
+    } else if (strcmp(cmd, "vrmenu") == 0) {
+        // 2026-10-25, for the harness: `vrmenu set <Key> <value> [hand]` - an F10 setting by its preferences key,
+        // live and NOT saved (an edit without the commit), so a test never changes the player's saved choices.
+        char verb[16] = {}, key[64] = {};
+        float value = 0.0f;
+        int hand = -1;
+        const int got = sscanf_s(args, "%15s %63s %f %d", verb, (unsigned)sizeof verb, key, (unsigned)sizeof key,
+                                 &value, &hand);
+        bool done = false;
+        if (got >= 3 && strcmp(verb, "set") == 0) {
+            std::size_t count = 0;
+            const menu::Spec* all = menu::specs(count);
+            for (std::size_t i = 0; i < count && !done; ++i)
+                if (all[i].key && strcmp(all[i].key, key) == 0) {
+                    menu::live_backend().edit(all[i].id, hand, value, false);
+                    done = true;
+                }
+        }
+        BVR_LOG("[menu] vrmenu %s %s %.3f (hand %d): %s", verb, key, value, hand,
+                done ? "set, live and not saved" : "NO such setting (usage: vrmenu set <Key> <value> [hand])");
+    } else if (strcmp(cmd, "vrcheat") == 0) {
+        // 2026-10-25, for the harness: `vrcheat plasmids` | `vrcheat eve on|off` - F10 > Cheats.
+        if (strncmp(args, "plasmids", 8) == 0) cheats::request_all_plasmids();
+        else if (strncmp(args, "plasmid ", 8) == 0) cheats::request_equip_plasmid(args + 8);
+        else if (strncmp(args, "eve on", 6) == 0) cheats::set_infinite_eve(true);
+        else if (strncmp(args, "eve off", 7) == 0) cheats::set_infinite_eve(false);
+        else BVR_LOG("[cheats] usage: vrcheat plasmids | vrcheat eve on|off");
     } else if (strcmp(cmd, "vraim") == 0) {
         aim::handle_command(args); // M6 decoupled aim; logs its own echoes
     } else if (strcmp(cmd, "vrhands") == 0) {
@@ -2300,9 +2329,13 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         const wchar_t* cls = hands::current_holdable(&w) && w ? patterns::object_class_name(w) : nullptr;
         const char* step = manual_reload::phase_text();
         const bool idle = !st || wcsstr(st, L"Idling");
-        if (!idle || step[0] || two_hand::held())
-            sprintf_s(label, "%S %S%s%s%s", st ? st : L"?", cls ? cls : L"-", step[0] ? " | " : "", step,
-                      two_hand::held() ? " | two-handed" : "");
+        // 2026-10-25: the right hand's own plasmid (second_hands.h) - its casts are pictured too.
+        void* rig2 = second_hands::actor();
+        const wchar_t* st2 = rig2 ? hands_state::current_name(rig2) : nullptr;
+        const bool idle2 = !st2 || wcsstr(st2, L"Idling");
+        if (!idle || !idle2 || step[0] || two_hand::held())
+            sprintf_s(label, "%S %S%s%s%s%s%S", st ? st : L"?", cls ? cls : L"-", step[0] ? " | " : "", step,
+                      two_hand::held() ? " | two-handed" : "", idle2 ? "" : " | right ", idle2 ? L"" : st2);
         bvr::anim_shots::set_label(label);
     }
 

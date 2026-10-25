@@ -8235,3 +8235,26 @@ Read from the local UnrealScript corpus (tools\uscript\bs1, ShockGame): summaris
   AddAvailablePlasmid where the censored build refuses the Test function), UnlockTrackSlot on the active track up to
   its six slots, TestEquipPlasmid / EquipPlasmid; the eleven are the ShockGame classes extending ActivePlasmid.
   Infinite EVE: AddBioAmmo up to GetMaxBioAmmo once a second (as the cheat manager's GiveBioAmmo).
+
+## 2026-10-25 (night, simulator) - The two plasmids measured: one EVE cost per cast, only the casting hand moves
+
+Simulator runs on the 11:01 save (Medical Pavilion), Electro Bolt in both hands, each hand's trigger pulled alone and
+together (scratchpad test script; `[animcheck]`, `[hands2] EVE`, `[dualcast]` in the log):
+- **EVE:** a right-hand cast -15.00, a left-hand cast -15.00, both together -30.00 in one frame - exactly one
+  Electro Bolt cost per cast, from the shared pool. At 0 EVE the GAME's hands inject a hypo (+35).
+- **Only the casting hand animates** (each drawn hand's largest finger-shape change over the cast window, against
+  the pose before it): right cast - right 95-112 deg, left 9-25 deg (its idle fidget); left cast - left 102-109,
+  right 8-12; both - both 99-158. With one plasmid and no dual (the right hand held): left 164, right 5.
+- **Fixed on the way:** Actor.Spawn by name returns nothing in this build - the second hands come from the hands'
+  own script spawn (ApplyScriptedHandAttachment, then detached, un-based, owned by the player); a script call into
+  the second hands re-enters the drive through the evaluation, so one pull cast 598 times (the trigger edge is taken
+  before the call, the tick guarded); the cheat's slot unlock opened the game's "new plasmid slot" flow - the cheat
+  now sets disableInventoryWarnings (a packed bool: its mask is the first single-bit dword after UProperty::Offset,
+  +0x9C here, mask 1) around it, as GEP does; reading the second hands' bone array at any moment gave a half-written
+  pose and a deformed right hand - its pose is copied in the evaluation hook right after its own evaluation; WHICH
+  hands cast: both hands actors' pointers sit above every cast, in either order, so each hands entering its fire
+  state arms one cast and a cast takes the armed one (the stack decides only when both are armed); the second hands'
+  cast socket took the game's flat-screen offset (the cast between the hands) - it is now its own left palm.
+- **Not settled on the simulator:** the exact start of each bolt. The left hand's own bolt starts away from its palm
+  there too (the simulated hands carry the hand offsets differently from real controllers), so the right now matches
+  the left; the headset decides.

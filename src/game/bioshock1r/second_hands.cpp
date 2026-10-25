@@ -1,6 +1,7 @@
 #include "game/bioshock1r/second_hands.h"
 
 #include "core/util/log.h"
+#include "game/bioshock1r/hands_state.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/script_call.h"
 
@@ -38,6 +39,8 @@ std::atomic<void*> g_rig{nullptr}; // the second hands (game thread writes)
 void* g_main = nullptr;             // the main hands it was made beside
 std::atomic<bool> g_rightDown{false};
 bool g_rightWas = false;
+bool g_armed[2] = {false, false};   // a fire state entered and its cast not yet seen: [0] the game's hands, [1] ours
+bool g_wasFiring[2] = {false, false};
 uint64_t g_spawnFailMs = 0;
 uint32_t g_casts = 0, g_releases = 0, g_equips = 0;
 
@@ -97,7 +100,40 @@ void* spawn(void* mainHands, void* pawn) {
     } sp{cls, pawn, {0, 0}, {}, {}, 1, {0, 0}, nullptr, {}};
     rd(static_cast<uint8_t*>(mainHands) + patterns::kActorLocOffset, &sp.loc);
     rd(static_cast<uint8_t*>(mainHands) + patterns::kActorLocOffset + 12, &sp.rot);
-    return script::call(mainHands, "Spawn", &sp) ? sp.ret : nullptr;
+    if (script::call(mainHands, "Spawn", &sp) && sp.ret) return sp.ret;
+    // Actor.Spawn by name returns nothing in this build (the 23:24 simulator run; dropped_part.cpp met the same):
+    // the hands' own script spawn instead - Hands.ApplyScriptedHandAttachment spawns the class in the game's
+    // bytecode - then taken back off the hands: ScriptedAttachment cleared so they never destroy it, detached and
+    // un-based so its own UpdateLocation moves it.
+    struct {
+        void* cls;
+        int32_t bone[2];
+        int32_t pad[5];
+    } ap{cls, {0, 0}, {}};
+    if (!script::call(mainHands, "ApplyScriptedHandAttachment", &ap)) return nullptr;
+    const int32_t off = script::property_offset(mainHands, L"ScriptedAttachment");
+    void* a = nullptr;
+    if (off < 0 || !rd(static_cast<uint8_t*>(mainHands) + off, &a) || !a) return nullptr;
+    wr(static_cast<uint8_t*>(mainHands) + off, static_cast<void*>(nullptr));
+    struct {
+        void* actor;
+        uint32_t ret;
+        int32_t pad[4];
+    } dp{a, 0, {}};
+    script::call(mainHands, "DetachFromBone", &dp);
+    struct {
+        void* base;
+        float floor[3];
+        int32_t pad[4];
+    } sb{nullptr, {0, 0, 0}, {}};
+    script::call(a, "SetBase", &sb);
+    struct {
+        void* owner;
+        int32_t pad[7];
+    } so{pawn, {}};
+    script::call(a, "SetOwner", &so);
+    BVR_LOG("[hands2] spawned through the hands' own script spawn (Actor.Spawn by name gave nothing)");
+    return a;
 }
 
 bool call_name(void* obj, const char* fn, const char* nameArg) {
@@ -117,6 +153,14 @@ void* actor() { return g_rig.load(std::memory_order_relaxed); }
 void set_right_trigger(bool down) { g_rightDown.store(down, std::memory_order_relaxed); }
 
 void tick(void* mainHands, bool wanted) {
+    // Re-entered from inside one of its own script calls (they evaluate the hands, which runs the drive): nothing.
+    static bool s_in = false;
+    if (s_in) return;
+    struct Guard {
+        bool& f;
+        explicit Guard(bool& b) : f(b) { f = true; }
+        ~Guard() { f = false; }
+    } guard(s_in);
     void* rig = g_rig.load(std::memory_order_relaxed);
     if (rig && (!wanted || mainHands != g_main)) {
         // A new main hands is a new level (the old actors are the level's to free): forget, never touch.
@@ -168,9 +212,50 @@ void tick(void* mainHands, bool wanted) {
             BVR_LOG("[hands2] the second hands take the plasmid %S", cn ? cn : L"?");
         }
     }
+    // Each hands entering its fire state arms one cast (on_stack).
+    {
+        void* both[2] = {mainHands, rig};
+        for (int i = 0; i < 2; ++i) {
+            const wchar_t* st = hands_state::current_name(both[i]);
+            const bool firing = st && !wcsncmp(st, L"AbilityFiring", 13);
+            if (firing && !g_wasFiring[i]) g_armed[i] = true;
+            g_wasFiring[i] = firing;
+        }
+    }
+    // Diagnostics: EVE as it changes, with each hands' state at that moment (so a test reads which cast cost what),
+    // and every 2 s the second hands' state and plasmid.
+    {
+        struct {
+            float ret;
+            int32_t pad[7];
+        } eve{};
+        if (script::call(pawn, "GetBioAmmo", &eve)) {
+            static float s_eve = -1.0f;
+            if (s_eve >= 0.0f && eve.ret != s_eve) {
+                const wchar_t* sm = hands_state::current_name(mainHands);
+                const wchar_t* sr = hands_state::current_name(rig);
+                BVR_LOG("[hands2] EVE %.2f -> %.2f (%+.2f) | left hands %S | right hands %S", s_eve, eve.ret,
+                        eve.ret - s_eve, sm ? sm : L"?", sr ? sr : L"?");
+            }
+            s_eve = eve.ret;
+        }
+        static uint64_t s_ms = 0;
+        if (now - s_ms >= 2000) {
+            s_ms = now;
+            const wchar_t* sr = hands_state::current_name(rig);
+            void* ab = prop_ptr(rig, L"CurrentAbility");
+            const wchar_t* cn = ab ? patterns::object_class_name(ab) : nullptr;
+            BVR_LOG("[hands2] state %S, plasmid %S, right trigger %s | casts %u, releases %u", sr ? sr : L"?",
+                    cn ? cn : L"none", g_rightDown.load() ? "DOWN" : "up", g_casts, g_releases);
+        }
+    }
     // The right trigger: its own press and release, as the game's input gives the main hands theirs.
     const bool down = g_rightDown.load(std::memory_order_relaxed);
     if (down != g_rightWas) {
+        // The edge is taken BEFORE the call: UseActiveAbility makes the game evaluate the hands, which runs the drive
+        // and this tick again - the 23:36 simulator run cast 598 times on one pull, every nested tick a new "press",
+        // until the EVE was gone.
+        g_rightWas = down;
         if (down) {
             struct {
                 uint32_t keepPending;
@@ -181,18 +266,48 @@ void tick(void* mainHands, bool wanted) {
             uint8_t none[32] = {};
             if (script::call(rig, "UseActiveAbilityRelease", none)) ++g_releases;
         }
-        g_rightWas = down;
     }
 }
 
-bool on_stack() {
-    const uintptr_t rig = reinterpret_cast<uintptr_t>(g_rig.load(std::memory_order_relaxed));
-    if (!rig) return false;
+bool ptr_on_stack(const void* p) {
+    const uintptr_t want = reinterpret_cast<uintptr_t>(p);
+    if (!want) return false;
     const NT_TIB* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
     const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(_AddressOfReturnAddress());
     const uintptr_t* top = reinterpret_cast<const uintptr_t*>(tib->StackBase);
     for (int i = 0; i < 16384 && sp + i < top; ++i)
+        if (sp[i] == want) return true;
+    return false;
+}
+
+bool nearest_is_rig();
+
+bool on_stack() {
+    // WHICH HANDS IS CASTING. Each hands actor entering its fire state arms one cast (tick, below); a cast takes the
+    // armed one. Only when both are armed does the stack decide (the nearer of the two pointers). The stack alone
+    // fails: both pointers sit above every cast, and their order is not the caller's (the 23:51 and 23:54
+    // simulator runs - a two-handed cast read as two right-hand casts, then a right-hand cast as the left's).
+    if (!g_rig.load(std::memory_order_relaxed)) return false;
+    const bool r = g_armed[1], l = g_armed[0];
+    bool right;
+    if (r && !l) right = true;
+    else if (l && !r) right = false;
+    else right = nearest_is_rig();
+    g_armed[right ? 1 : 0] = false;
+    return right;
+}
+
+bool nearest_is_rig() {
+    const uintptr_t rig = reinterpret_cast<uintptr_t>(g_rig.load(std::memory_order_relaxed));
+    if (!rig) return false;
+    const uintptr_t main = reinterpret_cast<uintptr_t>(g_main);
+    const NT_TIB* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+    const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(_AddressOfReturnAddress());
+    const uintptr_t* top = reinterpret_cast<const uintptr_t*>(tib->StackBase);
+    for (int i = 0; i < 16384 && sp + i < top; ++i) {
         if (sp[i] == rig) return true;
+        if (main && sp[i] == main) return false;
+    }
     return false;
 }
 

@@ -25,6 +25,8 @@ void tick(void* holdable);
 // TestEquipPlasmid, as ShockCheatManager.GEP), and infinite EVE (AddBioAmmo up to GetMaxBioAmmo once a second).
 // They reach the player through the hands actor's PawnOwner, so no weapon need be in hand.
 void request_all_plasmids();
+// The plasmid in hand, by its ability class name (ShockPlayer.EquipAbilityByClassName) - the harness's `vrcheat plasmid`.
+void request_equip_plasmid(const char* abilityClass);
 void set_infinite_eve(bool on);
 bool infinite_eve();
 // Game thread, once per frame: the hands actor.

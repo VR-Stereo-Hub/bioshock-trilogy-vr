@@ -123,6 +123,55 @@ void* class_defaults(void* cls) {
     return cls && read_ptr(static_cast<uint8_t*>(cls) + patterns::kClassDefaultsOffset, &data) ? data : nullptr;
 }
 
+// 2026-10-25: a bool property's dword and bit. UBoolProperty adds its BitMask after UProperty's own fields (the
+// Offset at +0x74, then the link and owner pointers): the first dword after the Offset with exactly one bit set.
+static bool bool_location(void* obj, const wchar_t* name, int32_t* off, uint32_t* mask) {
+    if (!g_findField || !obj || !name) return false;
+    void* cls = nullptr;
+    if (!read_ptr(static_cast<uint8_t*>(obj) + patterns::kUObjectClassOffset, &cls) || !cls) return false;
+    void* prop = find_field_guarded(cls, name);
+    void* raw = nullptr;
+    if (!prop || !read_ptr(static_cast<uint8_t*>(prop) + patterns::kPropertyOffsetOffset, &raw)) return false;
+    *off = static_cast<int32_t>(reinterpret_cast<intptr_t>(raw));
+    if (*off < 0 || *off > 0x10000) return false;
+    for (uint32_t at = patterns::kPropertyOffsetOffset + 4; at <= 0xB0; at += 4) {
+        void* v = nullptr;
+        if (!read_ptr(static_cast<uint8_t*>(prop) + at, &v)) return false;
+        const uint32_t m = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(v));
+        if (m && !(m & (m - 1))) {
+            static int s_logged = 0;
+            if (s_logged++ < 8) BVR_LOG("[script] bool %S: offset +0x%X, its mask 0x%08X (at +0x%X of the property)", name, *off, m, at);
+            *mask = m;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool get_bool(void* obj, const wchar_t* name, bool* value) {
+    int32_t off = 0;
+    uint32_t mask = 0;
+    void* word = nullptr;
+    if (!bool_location(obj, name, &off, &mask) || !read_ptr(static_cast<uint8_t*>(obj) + off, &word)) return false;
+    *value = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(word)) & mask) != 0;
+    return true;
+}
+
+bool set_bool(void* obj, const wchar_t* name, bool value) {
+    int32_t off = 0;
+    uint32_t mask = 0;
+    void* word = nullptr;
+    if (!bool_location(obj, name, &off, &mask) || !read_ptr(static_cast<uint8_t*>(obj) + off, &word)) return false;
+    uint32_t w = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(word));
+    w = value ? (w | mask) : (w & ~mask);
+    __try {
+        memcpy(static_cast<uint8_t*>(obj) + off, &w, 4);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool properties_ready(void* anyActor) {
     static int s_state = 0; // 0 unchecked, 1 good, -1 refused
     if (s_state || !anyActor) return s_state > 0;

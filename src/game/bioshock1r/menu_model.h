@@ -93,7 +93,7 @@ enum class Setting {
     // The animation snapshots (core/gfx/anim_shots: pictures of what the headset showed during animations).
     AnimShots,
     // 2026-10-25: the dynamic reticle, one aim for every plasmid, dual-wielded plasmids (aim.cpp).
-    ReticleDynamic, PlasmidSharedAim, DualPlasmids,
+    ReticleDynamic, PlasmidSharedAim, DualPlasmids, CastHandOnly,
     Count
 };
 struct Spec {

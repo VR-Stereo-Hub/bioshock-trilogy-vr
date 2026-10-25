@@ -52,9 +52,13 @@ struct Published {
     bool hideArms = false;
     bool mirror = false; // each hand shows the other's layout, mirrored (mirror_math.h)
     bool copyLeft = false; // 2026-10-25: the right hand shows the left's layout, mirrored; the left its own
+    bool holdRight = false; // 2026-10-25: the right hand keeps its skins from before a one-hand cast
     uint64_t ms = 0;
 };
 Published g_pub;
+// 2026-10-25: the right hand's skin matrices from before a one-hand cast (render thread).
+float g_rightHeldSkins[patterns::kHandsRigBoneCount * 16] = {};
+bool g_rightHeldValid = false;
 
 // ---- 2026-10-25: a held gun drawn REFLECTED (gun_geometry.h trueMirror) ---------------------------------------
 // The weapon actor, the weapon-space axis flipped and the plane it is flipped about, and when it was last asked
@@ -589,6 +593,17 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
     // the placement below - which the drive computed from the mirrored pose, so the two agree.
     if (p.mirror && g_mirrorState.load(std::memory_order_acquire) == 1) mirror_skins(engine, g_copy, count);
     else if (p.copyLeft && g_mirrorState.load(std::memory_order_acquire) == 1) copy_left_skins(engine, g_copy, count);
+    // 2026-10-25: only the casting hand plays the fire animation - the free right hand keeps its skins from before.
+    if (!p.mirror && !p.copyLeft && count == patterns::kHandsRigBoneCount) {
+        if (p.holdRight && g_rightHeldValid) {
+            for (int k = 0; k < mirror::kPairs; ++k)
+                memcpy(g_copy + mirror::kPairRight[k] * 16, g_rightHeldSkins + mirror::kPairRight[k] * 16, 64);
+        } else if (!p.holdRight) {
+            for (int k = 0; k < mirror::kPairs; ++k)
+                memcpy(g_rightHeldSkins + mirror::kPairRight[k] * 16, engine + mirror::kPairRight[k] * 16, 64);
+            g_rightHeldValid = true;
+        }
+    }
     for (int h = 0; h < 2; ++h) {
         const HandXform& x = p.hand[h];
         if (!x.valid) continue;
@@ -881,7 +896,7 @@ void set_gun_reflection(void* weaponActor, int axis, float planeWeaponSpace) {
 }
 
 void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored,
-             bool copyLeft) {
+             bool copyLeft, bool holdRight) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_pub.instance = meshInstance;
     g_pub.weapon = weapon;
@@ -890,6 +905,7 @@ void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const 
     g_pub.hideArms = hideArms;
     g_pub.mirror = mirrored;
     g_pub.copyLeft = copyLeft && !mirrored;
+    g_pub.holdRight = holdRight && !mirrored && !copyLeft;
     g_pub.ms = GetTickCount64();
 }
 

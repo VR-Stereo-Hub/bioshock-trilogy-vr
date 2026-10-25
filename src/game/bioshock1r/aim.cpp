@@ -717,8 +717,13 @@ int __fastcall AbilityInitDetour(void* self, void* edx, int32_t nameIndex, int32
     void* instigator = nullptr;
     if (self) read_ptr(static_cast<uint8_t*>(self) + patterns::kAbilityInstigatorOffset, &instigator);
     if (g_castHand >= 0 || !is_player_pawn(instigator)) return orig(self, edx, nameIndex, nameNumber);
+    // Which hands actor this cast runs under (the anim notify's Owner): logged, so a cast that leaves the wrong hand
+    // says why.
+    const bool rig2Cast = second_hands::on_stack(); // takes the armed cast: called once per cast
+    if (second_hands::actor())
+        BVR_LOG("[dualcast] a cast from the %s hands", rig2Cast ? "SECOND (right)" : "game's (left)");
     // The second hands' own cast (second_hands.h): the right hand's, aimed along its ray - once, as the game cast it.
-    if (second_hands::on_stack()) {
+    if (rig2Cast) {
         g_castHand = 1;
         g_forceRight = true;
         const int r = orig(self, edx, nameIndex, nameNumber);
