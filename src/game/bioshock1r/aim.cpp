@@ -685,7 +685,7 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
         // first time it swings. 2026-10-25: a dual-wielded plasmid's right-hand cast is the right hand's,
         // whatever was learned (AbilityInitDetour).
         // The second hands' cast (second_hands.h) is the right hand's even outside InitiateDamage.
-        const bool rig2 = g_castHand < 0 && second_hands::on_stack();
+        const bool rig2 = g_castHand < 0 && second_hands::on_stack(self);
         Hand h = rig2 ? Hand::Right
                       : g_castHand >= 0 ? (g_castHand ? Hand::Right : Hand::Left) : hand_for_object(self, Hand::Left);
         float* outs[3] = {outA, outB, outC};
@@ -719,7 +719,7 @@ int __fastcall AbilityInitDetour(void* self, void* edx, int32_t nameIndex, int32
     if (g_castHand >= 0 || !is_player_pawn(instigator)) return orig(self, edx, nameIndex, nameNumber);
     // Which hands actor this cast runs under (the anim notify's Owner): logged, so a cast that leaves the wrong hand
     // says why.
-    const bool rig2Cast = second_hands::on_stack(); // takes the armed cast: called once per cast
+    const bool rig2Cast = second_hands::on_stack(self); // takes the armed cast: called once per cast
     if (second_hands::actor())
         BVR_LOG("[dualcast] a cast from the %s hands", rig2Cast ? "SECOND (right)" : "game's (left)");
     // The second hands' own cast (second_hands.h): the right hand's, aimed along its ray - once, as the game cast it.
@@ -761,6 +761,41 @@ int __fastcall AbilityInitDetour(void* self, void* edx, int32_t nameIndex, int32
                 g_castsL.load(std::memory_order_relaxed), g_castsR.load(std::memory_order_relaxed));
     }
     return r;
+}
+
+// 2026-10-25: TELEKINESIS ON THE CONTROLLER (docs/bioshock1/TELEKINESIS_RE.md). Every Telekinesis pick, hold point
+// and throw takes its origin and direction from one function, which asks the camera - so it aimed with the head. It
+// is replaced: the casting hand's ray, the left hand's plasmid ray for the game's own ability object, the right
+// hand's (its plasmid aim mirrored) for the second hands' own object. Off VR aim, or with no ray: the game's own.
+Slot g_tkRay{"tkRay"};
+std::atomic<uint32_t> g_tkRays[2] = {0, 0};
+void __fastcall TkRayDetour(void* self, void* edx, float* outOrigin, float* outDir) {
+    using RayFn = void(__fastcall*)(void*, void*, float*, float*);
+    const RayFn orig = reinterpret_cast<RayFn>(g_tkRay.original);
+    const int hand = second_hands::is_right_ability(self) ? 1 : 0;
+    float o[3], d[3];
+    const bool ok = g_enabled.load(std::memory_order_relaxed) && outOrigin && outDir &&
+                    (hand ? plasmid_ray_right(o, d) : hand_ray(0, o, d));
+    if (!ok) {
+        orig(self, edx, outOrigin, outDir);
+        return;
+    }
+    write12(outOrigin, o);
+    write12(outDir, d);
+    g_tkRays[hand].fetch_add(1, std::memory_order_relaxed);
+    static uint64_t s_logMs = 0;
+    const uint64_t now = GetTickCount64();
+    static uint64_t s_rayMs[2] = {0, 0};
+    if (now - s_rayMs[hand] > 500) {
+        s_rayMs[hand] = now;
+        BVR_LOG("[telekinesis] the %s ray: origin %.0f %.0f %.0f, direction %.2f %.2f %.2f (ability %p)",
+                hand ? "RIGHT" : "LEFT", o[0], o[1], o[2], d[0], d[1], d[2], self);
+    }
+    if (now - s_logMs > 3000) {
+        s_logMs = now;
+        BVR_LOG("[telekinesis] aimed by the controllers: %u left-hand and %u right-hand rays so far", g_tkRays[0].load(),
+                g_tkRays[1].load());
+    }
 }
 
 // The pad step (dial_input override_sticks, the XInput thread): with a plasmid in hand and the plasmids
@@ -1061,6 +1096,21 @@ bool install_all() {
                         reinterpret_cast<void*>(&AbilityFireDetour));
     // 2026-10-25: the cast itself, for the dual-wielded plasmids (a pass-through unless they are on).
     install_slot(g_abilityInit, g_syms.abilityInitDamage, reinterpret_cast<void*>(&AbilityInitDetour));
+    // 2026-10-25: Telekinesis's view ray (patterns.h kTkViewRayRva), prologue-checked.
+    {
+        uint8_t* tk = const_cast<uint8_t*>(g_imageBase) + patterns::kTkViewRayRva;
+        uint8_t head[sizeof patterns::kTkViewRayPrologue] = {};
+        bool match = false;
+        __try {
+            memcpy(head, tk, sizeof head);
+            match = memcmp(head, patterns::kTkViewRayPrologue, sizeof head) == 0;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            match = false;
+        }
+        if (match) install_slot(g_tkRay, tk, reinterpret_cast<void*>(&TkRayDetour));
+        else BVR_LOG("[telekinesis] REFUSED: the view ray at RVA 0x%X does not carry the derived prologue",
+                     patterns::kTkViewRayRva);
+    }
     return any;
 }
 
@@ -1068,6 +1118,7 @@ void disable_all() {
     disable_slot(g_weaponFire);
     disable_slot(g_abilityFire);
     disable_slot(g_abilityInit);
+    disable_slot(g_tkRay);
 }
 
 void set_dump(int32_t n) {
@@ -2956,6 +3007,7 @@ float menu_read(menu::Setting id) {
         case S::ReticleDynamic: return g_dotDynamic.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
         case S::PlasmidSharedAim: return g_sharedPlasmidAim.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
         case S::DualPlasmids: return g_dualCast.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        case S::RightPlasmid: return static_cast<float>(second_hands::right_plasmid());
         case S::Laser: return static_cast<float>(g_laser.load(std::memory_order_relaxed));
         case S::LaserDots: return static_cast<float>(g_laserDots.load(std::memory_order_relaxed));
         case S::LaserReach: return static_cast<float>(g_laserFarM.load(std::memory_order_relaxed));
@@ -2987,6 +3039,7 @@ bool menu_write(menu::Setting id, float value) {
                 BVR_LOG("[dualcast] dual-wielded plasmids %s",
                         value != 0 ? "ON: either trigger casts the plasmid in hand, from its own hand" : "off");
             return true;
+        case S::RightPlasmid: second_hands::set_right_plasmid(static_cast<int>(value + 0.5f)); return true;
         case S::Laser: g_laser.store(static_cast<decltype(g_laser.load())>(value), std::memory_order_relaxed); return true;
         case S::LaserDots: g_laserDots.store(static_cast<decltype(g_laserDots.load())>(value), std::memory_order_relaxed); return true;
         case S::LaserReach: g_laserFarM.store(static_cast<decltype(g_laserFarM.load())>(value), std::memory_order_relaxed); return true;

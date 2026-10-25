@@ -4,28 +4,34 @@
 
 ## Session 2026-10-25 (night) - BS1: dual-wielded plasmids, the dynamic reticle, one plasmid aim
 
-**Branch `claude/bs1-dual-plasmids`** off `staging` at da0015f (#105). Local commits, not pushed. **INSTALLED in BS1
-(21:48), not yet run.** Host tests 22 suites green (the new `hand-loadout`), lint clean, no core change.
+**Branch `claude/bs1-dual-plasmids`** off `staging` at da0015f (#105). Local commits, not pushed (the local-only
+rule). **INSTALLED in BS1 at 01:05 (2026-10-25) from this tree.** Host tests 22 suites green (the new `hand-loadout`),
+no core change. Everything below is SIMULATOR-verified; none of it has been in the headset yet.
 
 ### Current state
 
 - **Dual-wielded plasmids** (F10 Controls > Dual plasmids > "Cast plasmids from both hands", OFF by default): with
-  a plasmid in hand the right trigger casts it too, from the right hand, aimed with the plasmid aim mirrored; both
-  triggers cast from both hands. Each hand gets its own reticle. 22:09 run: the casts routed right, but both came
-  out of the left hand. **Installed 23:01, not seen: the right hand's plasmid is a SECOND HANDS ACTOR**
-  (second_hands.cpp; ENGINE_NOTES 2026-10-25 night, later): its own cast, animation, effects and EVE use, its
-  animation shown on the right hand, its effects placed there. `[hands2]` logs its spawn, plasmid and placement.
-- **Cheats** (F10 > Cheats > Plasmids and EVE): "Give all plasmids" (all eleven available, six equipped) and
-  "Infinite EVE". Harness commands: `vrcheat plasmids | plasmid <AbilityClass> | eve on|off`, and
-  `vrmenu set <Key> <value>` for any F10 setting, live and not saved.
-- **SIMULATOR-VERIFIED 2026-10-25 00:02** (ENGINE_NOTES 2026-10-25 night, simulator): the second hands spawn, take the
-  plasmid, cast from the right trigger; one EVE cost per cast (-15 / -15 / -30 both); only the casting hand animates
-  (measured per cast); casts attributed to the right hand correctly. Only the casting hand animates with ONE plasmid
-  too (F10 Controls > Dual plasmids > "Only the casting hand animates", on). Not settled: the bolt's exact start.
-- **Next (asked 2026-10-25):** Telekinesis on controller aim (it aims with the head today) and two objects held at
-  once, one per hand. Built on `hand_loadout.h`, the per-hand slots and
-  trigger router the mix-and-match system will fill from the wheels (ARCHITECTURE 2026-10-25). Open: EVE per cast,
-  projectile plasmids, the right hand's effect (ENGINE_NOTES 2026-10-25 night).
+  a plasmid in hand the right trigger casts too, from the right hand. The right hand's plasmid is a SECOND HANDS
+  ACTOR (second_hands.cpp; ENGINE_NOTES 2026-10-25 night, later): its own cast, animation, effects and EVE use, its
+  animation shown mirrored on the right hand. Each hand has its own reticle.
+- **A different plasmid in each hand** (F10 Controls > Dual plasmids > "Right hand's plasmid": the left's, or any of
+  the eleven families; the right takes the highest level the player owns). The first mix-and-match step. 01:06 and
+  01:09 simulator runs: Telekinesis left with Electro Bolt right, and the reverse. The bolt casts from its own hand
+  (one EVE cost, -15) while the other hand's Telekinesis hold goes on and moves. The hand is told from the casting
+  ability object when the hands differ (a Telekinesis hold keeps the left hands in their fire state the whole time).
+- **Telekinesis on controller aim, two holds at once** (TELEKINESIS_RE.md). Its view ray (+0x1C0F70) is hooked: each
+  hand's own Telekinesis object aims with that hand's ray. With Telekinesis in both hands the right takes the
+  player's TelekinesisTwoAbility object (the same native code), so each hand has its own target and hold; the mod
+  ticks the right one at the game's 30 Hz. 00:52-00:55 run: the left held a physics prop and the right a corpse at
+  once, `[telekinesis] LEFT HOLDING ... | RIGHT HOLDING ...`; each followed its own hand.
+- **Cheats** (F10 > Cheats > Plasmids and EVE): "Give all plasmids" and "Infinite EVE". Harness commands:
+  `vrcheat plasmids | plasmid <AbilityClass> | eve on|off`, `vrmenu set <Key> <value>` (live, not saved), and
+  `vrhands attach find <class text>` lists the level's actors of a class with their distance.
+- **SIMULATOR-VERIFIED 2026-10-25 00:02** (ENGINE_NOTES 2026-10-25 night, simulator): one EVE cost per cast (-15 /
+  -15 / -30 both); only the casting hand animates (measured per cast). Not settled: the bolt's exact start.
+- **Known, not handled:** a fast swing drops a held corpse (the game's own BreakageDistance, or the corpse snagging);
+  the hanging corpses in the Medical Pavilion are picked but never pulled (pinned). The simulator's controllers make
+  the owner's 37 deg plasmid yaw trim point the right hand's ray wide; in the headset the mirror is the intent.
 - **The reticle sits on what you aim at** (F10 Aim > Reticle > "Reticle on what you aim at", on): its ray marched
   through the eye's depth on the GPU. Looks like BO3 Zombies VR's: white, 5 mrad (0.29 deg), dark rim. The owner's
   saved ReticleSize 0.32 deg still wins over the new 0.29 default.
@@ -34,9 +40,11 @@
 
 ### Next steps
 
-- **Tester:** turn on Dual plasmids, hold Electro Bolt, pull the right trigger alone, then both. Watch the EVE bar
-  and where each bolt lands; read `[dualcast]` and `[reticle]` in the log. Then Incinerate (a projectile).
-- Then the mix-and-match wheels: a wheel on either hand filling that hand's slot.
+- **Tester:** turn on Dual plasmids, hold Electro Bolt, pull the right trigger alone, then both. Then hold
+  Telekinesis and grab two objects, one per hand (crates and loose props; the hanging corpses do not come). Then set
+  "Right hand's plasmid" to Electro Bolt with Telekinesis in hand. Read `[dualcast]`, `[telekinesis]` and `[hands2]`.
+- Then the mix-and-match wheels: a wheel on either hand filling that hand's slot (today the right hand's plasmid is
+  the F10 row), and guns in the mix.
 
 ## Session 2026-10-25 - BS1: the left-held flamethrower mirrored; this branch to staging
 

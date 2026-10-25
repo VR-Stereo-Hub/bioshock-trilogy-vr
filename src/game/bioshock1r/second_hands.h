@@ -35,11 +35,18 @@ void tick(void* mainHands, bool wanted);
 // The second hands actor, or null.
 void* actor();
 
+// The right hand's plasmid (F10 RightPlasmid): 0 the left's, else a family (1 Incinerate! ... 11 Hypnotize Big
+// Daddy, the row's order). The right hand takes the player's own class of that family (its highest owned level).
+void set_right_plasmid(int family);
+int right_plasmid();
+
 // The right trigger as the player holds it (the XInput thread; dual plasmids only).
 void set_right_trigger(bool down);
 
-// Game thread, inside an engine call: is the second hands' script on this call's stack (its cast)?
-bool on_stack();
+// Game thread, inside a cast (InitiateDamage on `ability`): is it the second hands' cast? Takes the armed cast.
+bool on_stack(const void* ability);
+// `ability` is the second hands' OWN ability object (not the one the game's hands hold): the right hand's.
+bool is_right_ability(const void* ability);
 // Any pointer anywhere above this frame on the stack (diagnostics: which hands actor a cast runs under).
 bool ptr_on_stack(const void* p);
 

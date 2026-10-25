@@ -465,6 +465,15 @@ inline constexpr uint32_t kActorBaseOffset = 0x450;     // attach parent (AActor
 inline constexpr uint32_t kWeaponInitDamageVtblOffset = 0x2FC;
 inline constexpr uint32_t kExpectedWeaponInitDamageRva = 0x226050;
 inline constexpr uint32_t kAbilityInitDamageRva = 0x1BBD80;
+// 2026-10-25 (docs/bioshock1/TELEKINESIS_RE.md, tools\ida\tk1-tk9): UTelekinesisAbility's VIEW RAY - the one function
+// the target pick, the hold point and the throw all take their origin and direction from (it asks the camera:
+// PlayerCalcView). thiscall (this = the ability, FVector* outOrigin, FVector* outDir), ret 8.
+inline constexpr uint32_t kTkViewRayRva = 0x1C0F70;
+inline constexpr uint8_t kTkViewRayPrologue[12] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C, 0x53, 0x8B, 0xD9, 0x56, 0x57, 0x8B};
+// UTelekinesisAbility fields: the held/pulled Target and the CurrentState object (its vtable slot 1 is the state's
+// Tick(ability, dt), thiscall, ret 8 - the player's own tick calls it for the ACTIVE ability only, at 30 Hz).
+inline constexpr uint32_t kTkTargetOffset = 0x104;
+inline constexpr uint32_t kTkStateOffset = 0xE4;
 inline constexpr uint8_t kAbilityInitDamagePrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
 
 // ---- M6 aim natives (session 10) -------------------------------------------

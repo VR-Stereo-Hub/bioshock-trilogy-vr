@@ -8258,3 +8258,33 @@ together (scratchpad test script; `[animcheck]`, `[hands2] EVE`, `[dualcast]` in
 - **Not settled on the simulator:** the exact start of each bolt. The left hand's own bolt starts away from its palm
   there too (the simulated hands carry the hand offsets differently from real controllers), so the right now matches
   the left; the headset decides.
+
+## 2026-10-25 (early morning, simulator) - Telekinesis per hand, and a different plasmid in each hand
+
+The full derivation is `TELEKINESIS_RE.md` (headless IDA, `tools\ida\tk1..tk9_*.py`, BioshockHD.exe md5
+`b4db411ab3e5994b6cd39f8dd91fd990`). The addresses `patterns.h` now carries:
+- `kTkViewRayRva` +0x1C0F70: `UTelekinesisAbility`'s view ray, thiscall `(ability, FVector* outOrigin, FVector*
+  outDir)`, `ret 8`: the one function that asks `eventPlayerCalcView` (+0x1BE7A0) for the camera on Telekinesis'
+  behalf. Its only three callers are the pick, the hold point and the throw (tk2, tk9). The 12-byte prologue
+  (`kTkViewRayPrologue`) is checked before the hook goes in, and a mismatch leaves Telekinesis on the head.
+- `kTkTargetOffset` +0x104 (the held or picked actor) and `kTkStateOffset` +0xE4 (the state object; its kind byte at
+  +4: 0 idle, 1 pulling, 2 holding, 3 throwing, 4 dropping): the field layout as the natives read it, `execGetState`
+  +0x1C0F40 reading the kind byte (TELEKINESIS_RE.md "Field layout").
+  The state's vtable slot 1 is its tick, thiscall `(state, ability, float dt)`, `ret 8`.
+
+Live (the 11:01 save, Medical Pavilion):
+- **Each hand's Telekinesis aims with that hand's controller**: the detour answers with the left hand's ray, or the
+  right plasmid ray when `this` is the second hands' own object.
+- **Two holds at once**: the right hand takes the player's `TelekinesisTwoAbility` object (the same native code, a
+  config-only subclass). The class is found by name in the player's `PossibleAbilities`; loading
+  `ShockGame.ShockDesignerClasses.TelekinesisTwoAbility` by path gives nothing. The engine ticks only the object of
+  the player's ActiveAbility class, so the mod ticks the right one, at 30 Hz with its own accumulator. 00:55: a
+  PhysicalReactiveActor held left and a floor corpse held right at once, each following its own hand.
+- **A different plasmid in each hand**: the right hand's plasmid family comes from the player's `AvailableAbilities`
+  (its highest owned level) through `GetAbilityFromClass`. 01:06 and 01:09: Telekinesis and Electro Bolt either way
+  round, the bolt -15 EVE from its own hand while the other hand's hold went on.
+- **Attribution by the ability object.** Telekinesis keeps the casting hands in AbilityFiring for the whole hold, so
+  the armed-fire-state rule gave the right hand's bolt to the left (01:02). When the two hands hold different
+  ability objects, the casting object (InitiateDamage's and GetPerfectFireStart's `this`) names the hand.
+- **What does not come**: the hanging corpses are picked (their Target is set) but the pull never starts, and the
+  state stays Idle. A fast swing drops a held corpse.

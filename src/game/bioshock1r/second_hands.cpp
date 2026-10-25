@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 
 namespace bvr::b1r::second_hands {
@@ -65,9 +66,13 @@ bool set_prop_ptr(void* obj, const wchar_t* name, void* v) {
     return off >= 0 && wr(static_cast<uint8_t*>(obj) + off, v);
 }
 
+void drop_object(void* ability);
+void* prop_ptr(void* obj, const wchar_t* name);
+
 void destroy(const char* why) {
     void* rig = g_rig.exchange(nullptr, std::memory_order_relaxed);
     if (!rig) return;
+    drop_object(prop_ptr(rig, L"CurrentAbility")); // a right-hand Telekinesis hold lets go first
     struct {
         uint32_t ret;
         int32_t pad[7];
@@ -136,6 +141,115 @@ void* spawn(void* mainHands, void* pawn) {
     return a;
 }
 
+// A class in one of the player's TArray<Class<Ability>> properties (AvailableAbilities: the ones they own;
+// PossibleAbilities: every one), the best by `score(name)` (0 = no).
+template <typename Score>
+void* class_in(void* pawn, const wchar_t* prop, Score score) {
+    const int32_t off = script::property_offset(pawn, prop);
+    struct {
+        void** data;
+        int32_t num, max;
+    } arr{};
+    if (off < 0 || !rd(static_cast<uint8_t*>(pawn) + off, &arr) || !arr.data || arr.num <= 0 || arr.num > 256)
+        return nullptr;
+    void* best = nullptr;
+    int bestScore = 0;
+    for (int32_t i = 0; i < arr.num; ++i) {
+        void* c = nullptr;
+        int32_t ni = -1;
+        if (!rd(arr.data + i, &c) || !c || !rd(static_cast<uint8_t*>(c) + patterns::kUObjectNameIndexOffset, &ni))
+            continue;
+        const wchar_t* n = patterns::fname_text(ni);
+        const int s = n ? score(n) : 0;
+        if (s > bestScore) {
+            bestScore = s;
+            best = c;
+        }
+    }
+    return best;
+}
+
+// The RightPlasmid row's families, by class-name prefix (ShockPlayer.PossibleAbilities: <prefix>[Zero|Two|Three]
+// Ability, one class per upgrade level).
+constexpr int kFamilyCount = 12;
+const wchar_t* const kFamilies[kFamilyCount] = {
+    nullptr,          L"Incineration", L"ElectricBolt",   L"IcicleAssault",  L"Telekinesis",    L"AirBlast",
+    L"InsectSwarm",   L"BerserkRage",  L"SecurityBeacon", L"DecoyHuman",     L"SpringBoardTrap", L"SummonProtector"};
+std::atomic<int> g_rightFamily{0};
+
+// The player's owned class of a family, the highest level first (Three, Two, the base, Zero).
+void* family_class(void* pawn, const wchar_t* prefix) {
+    const size_t pl = wcslen(prefix);
+    return class_in(pawn, L"AvailableAbilities", [prefix, pl](const wchar_t* n) {
+        if (wcsncmp(n, prefix, pl)) return 0;
+        const wchar_t* rest = n + pl;
+        return !wcscmp(rest, L"ThreeAbility") ? 4
+               : !wcscmp(rest, L"TwoAbility") ? 3
+               : !wcscmp(rest, L"Ability")    ? 2
+               : !wcscmp(rest, L"ZeroAbility") ? 1
+                                               : 0;
+    });
+}
+
+// ShockPlayer.GetAbilityFromClass: the player's one ability object of a class (made on first use).
+void* ability_for(void* pawn, void* cls) {
+    struct {
+        void* cls;
+        void* ret;
+        int32_t pad[6];
+    } g{cls, nullptr, {}};
+    return script::call(pawn, "GetAbilityFromClass", &g) ? g.ret : nullptr;
+}
+
+bool is_telekinesis(void* ability) {
+    const wchar_t* cn = ability ? patterns::object_class_name(ability) : nullptr;
+    return cn && !wcsncmp(cn, L"Telekinesis", 11);
+}
+
+// A Telekinesis object's hold let go (TelekinesisAbility.DropObject, native).
+void drop_object(void* ability) {
+    if (!is_telekinesis(ability)) return;
+    struct {
+        uint32_t ret;
+        int32_t pad[7];
+    } p{0, {}};
+    script::call(ability, "DropObject", &p);
+}
+
+// The second Telekinesis object is not the player's ACTIVE ability, so the player's own tick never runs its state
+// (TELEKINESIS_RE.md section 4): it is ticked here, at the game's own 30 Hz step, with its own accumulator.
+float g_tkAcc = 0.0f;
+uint64_t g_tkMs = 0;
+uint32_t g_tkTicks = 0;
+void tick_telekinesis(void* ability, uint64_t now) {
+    const float dt = g_tkMs ? (now - g_tkMs) / 1000.0f : 0.0f;
+    g_tkMs = now;
+    if (!is_telekinesis(ability)) {
+        g_tkAcc = 0.0f;
+        return;
+    }
+    void* target = nullptr;
+    void* state = nullptr;
+    if (!rd(static_cast<uint8_t*>(ability) + patterns::kTkTargetOffset, &target) ||
+        !rd(static_cast<uint8_t*>(ability) + patterns::kTkStateOffset, &state) || !target || !state) {
+        g_tkAcc = 0.0f;
+        return;
+    }
+    g_tkAcc += dt > 0.25f ? 0.25f : dt;
+    if (g_tkAcc < 1.0f / 30.0f) return;
+    void** vt = nullptr;
+    void* slot1 = nullptr;
+    if (!rd(state, &vt) || !vt || !rd(vt + 1, &slot1) || !slot1) return;
+    using TickFn = void(__thiscall*)(void*, void*, float);
+    __try {
+        reinterpret_cast<TickFn>(slot1)(state, ability, g_tkAcc);
+        ++g_tkTicks;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        BVR_LOG("[hands2] the right hand's Telekinesis tick FAULTED");
+    }
+    g_tkAcc = 0.0f;
+}
+
 bool call_name(void* obj, const char* fn, const char* nameArg) {
     const int32_t nm = script::name_index(nameArg);
     if (nm < 0) return false;
@@ -149,6 +263,21 @@ bool call_name(void* obj, const char* fn, const char* nameArg) {
 } // namespace
 
 void* actor() { return g_rig.load(std::memory_order_relaxed); }
+
+void set_right_plasmid(int family) {
+    if (family < 0 || family >= kFamilyCount) family = 0;
+    if (g_rightFamily.exchange(family, std::memory_order_relaxed) != family)
+        BVR_LOG("[hands2] the right hand's plasmid: %S", family ? kFamilies[family] : L"the same as the left's");
+}
+
+int right_plasmid() { return g_rightFamily.load(std::memory_order_relaxed); }
+
+bool is_right_ability(const void* ability) {
+    void* rig = g_rig.load(std::memory_order_relaxed);
+    if (!rig || !ability || !g_main) return false;
+    void* rab = prop_ptr(rig, L"CurrentAbility");
+    return rab == ability && rab != prop_ptr(g_main, L"CurrentAbility");
+}
 
 void set_right_trigger(bool down) { g_rightDown.store(down, std::memory_order_relaxed); }
 
@@ -198,10 +327,54 @@ void tick(void* mainHands, bool wanted) {
         uint8_t none[32] = {};
         script::call(rig, "UpdateLocation", none);
     }
-    // Its plasmid: the main hands' (SetActiveAbility takes it only while no change is in flight - OldAbility none).
-    void* want = prop_ptr(mainHands, L"CurrentAbility");
+    // Its plasmid: the main hands', unless the F10 RightPlasmid row picks another family for the right hand (the
+    // mix-and-match step): then the player's own ability object of their class in that family, from the game's
+    // GetAbilityFromClass - its own state, cast and effects. SetActiveAbility takes it only while no change is in
+    // flight (OldAbility none).
+    void* const mainAb = prop_ptr(mainHands, L"CurrentAbility");
+    void* want = mainAb;
+    const int fam = g_rightFamily.load(std::memory_order_relaxed);
+    if (mainAb && fam > 0 && fam < kFamilyCount) {
+        void* cls = family_class(pawn, kFamilies[fam]);
+        void* ab = cls ? ability_for(pawn, cls) : nullptr;
+        static void* s_logged = reinterpret_cast<void*>(1);
+        if (s_logged != ab) {
+            s_logged = ab;
+            const wchar_t* an = ab ? patterns::object_class_name(ab) : nullptr;
+            if (ab)
+                BVR_LOG("[hands2] the right hand's plasmid: %S (the %S family, its own object %p)", an ? an : L"?",
+                        kFamilies[fam], ab);
+            else
+                BVR_LOG("[hands2] the right hand's plasmid: the player owns nothing of the %S family - it keeps the "
+                        "left's", kFamilies[fam]);
+        }
+        if (ab) want = ab;
+    }
+    // 2026-10-25 (TELEKINESIS_RE.md section 3): Telekinesis keeps its target and hold on the ability OBJECT, one per
+    // class per player, so two holds need two objects. With Telekinesis in both hands the right hand takes the
+    // player's object of the OTHER Telekinesis class (TelekinesisTwoAbility: config only, the same native code).
+    // Found by name in the player's own ShockPlayer.PossibleAbilities (loading it by path gives nothing - 00:35 run).
+    if (want && want == mainAb && is_telekinesis(want)) {
+        const wchar_t* cn = patterns::object_class_name(want);
+        const bool two = cn && !wcscmp(cn, L"TelekinesisAbility");
+        const wchar_t* other = two ? L"TelekinesisTwoAbility" : L"TelekinesisAbility";
+        static void* s_cls[2] = {nullptr, nullptr};
+        void*& cls = s_cls[two ? 1 : 0];
+        if (!cls)
+            cls = class_in(pawn, L"PossibleAbilities", [other](const wchar_t* n) { return !wcscmp(n, other) ? 1 : 0; });
+        void* ab = cls ? ability_for(pawn, cls) : nullptr;
+        static void* s_logged = reinterpret_cast<void*>(1);
+        if (s_logged != ab) {
+            s_logged = ab;
+            BVR_LOG("[telekinesis] the right hand's own object: %S -> %p%s", other, ab,
+                    ab ? "" : " - not found: the right hand shares the left's object");
+        }
+        if (ab && ab != want) want = ab;
+    }
     void* have = prop_ptr(rig, L"CurrentAbility");
     if (want && want != have && !prop_ptr(rig, L"OldAbility")) {
+        // A hold the old object had goes first.
+        if (have) drop_object(have);
         struct {
             void* ability;
             int32_t pad[7];
@@ -212,6 +385,9 @@ void tick(void* mainHands, bool wanted) {
             BVR_LOG("[hands2] the second hands take the plasmid %S", cn ? cn : L"?");
         }
     }
+    // The right hand's own Telekinesis object, ticked as the player ticks the active one.
+    void* rab = prop_ptr(rig, L"CurrentAbility");
+    if (rab && rab != prop_ptr(mainHands, L"CurrentAbility")) tick_telekinesis(rab, now);
     // Each hands entering its fire state arms one cast (on_stack).
     {
         void* both[2] = {mainHands, rig};
@@ -247,6 +423,35 @@ void tick(void* mainHands, bool wanted) {
             const wchar_t* cn = ab ? patterns::object_class_name(ab) : nullptr;
             BVR_LOG("[hands2] state %S, plasmid %S, right trigger %s | casts %u, releases %u", sr ? sr : L"?",
                     cn ? cn : L"none", g_rightDown.load() ? "DOWN" : "up", g_casts, g_releases);
+            // Telekinesis: what each hand's object holds (its Target), and the right one's own ticks.
+            void* lab = prop_ptr(mainHands, L"CurrentAbility");
+            if (is_telekinesis(ab) || is_telekinesis(lab)) {
+                void* lt = nullptr;
+                void* rt = nullptr;
+                if (is_telekinesis(lab)) rd(static_cast<uint8_t*>(lab) + patterns::kTkTargetOffset, &lt);
+                if (is_telekinesis(ab) && ab != lab) rd(static_cast<uint8_t*>(ab) + patterns::kTkTargetOffset, &rt);
+                const wchar_t* ln = lt ? patterns::object_class_name(lt) : nullptr;
+                const wchar_t* rn = rt ? patterns::object_class_name(rt) : nullptr;
+                float lp[3] = {}, rp[3] = {};
+                if (lt) rd(static_cast<uint8_t*>(lt) + patterns::kActorLocOffset, &lp);
+                if (rt) rd(static_cast<uint8_t*>(rt) + patterns::kActorLocOffset, &rp);
+                // The state's kind byte (TELEKINESIS_RE.md: state+4; 0 idle, 1 pulling, 2 holding, 3 throwing, 4
+                // dropping).
+                auto kind = [](void* a) -> const char* {
+                    static const char* const kNames[5] = {"idle", "PULLING", "HOLDING", "THROWING", "dropping"};
+                    void* st = nullptr;
+                    uint8_t k = 0xFF;
+                    if (!a || !rd(static_cast<uint8_t*>(a) + patterns::kTkStateOffset, &st) || !st ||
+                        !rd(static_cast<uint8_t*>(st) + 4, &k) || k > 4)
+                        return "-";
+                    return kNames[k];
+                };
+                BVR_LOG("[telekinesis] LEFT %s %p (%S) at %.0f %.0f %.0f %s| RIGHT %s %p (%S) at %.0f %.0f %.0f %s"
+                        "| right ticks %u",
+                        is_telekinesis(lab) ? kind(lab) : "-", lt, ln ? ln : L"nothing", lp[0], lp[1], lp[2],
+                        ab == lab ? "(SHARED with the right) " : "", ab != lab ? kind(ab) : "-", rt,
+                        rn ? rn : L"nothing", rp[0], rp[1], rp[2], lt && lt == rt ? "SAME TARGET " : "", g_tkTicks);
+            }
         }
     }
     // The right trigger: its own press and release, as the game's input gives the main hands theirs.
@@ -282,12 +487,24 @@ bool ptr_on_stack(const void* p) {
 
 bool nearest_is_rig();
 
-bool on_stack() {
-    // WHICH HANDS IS CASTING. Each hands actor entering its fire state arms one cast (tick, below); a cast takes the
-    // armed one. Only when both are armed does the stack decide (the nearer of the two pointers). The stack alone
-    // fails: both pointers sit above every cast, and their order is not the caller's (the 23:51 and 23:54
-    // simulator runs - a two-handed cast read as two right-hand casts, then a right-hand cast as the left's).
-    if (!g_rig.load(std::memory_order_relaxed)) return false;
+bool on_stack(const void* ability) {
+    // WHICH HANDS IS CASTING. With a different ability object in each hand (two plasmids, or Telekinesis in both),
+    // the casting ability says it: the right hand's own object is the right's cast. Telekinesis in the left keeps
+    // the game's hands in their fire state for the whole hold, so their armed flag alone would claim the right's
+    // bolt (the 01:02 simulator run). Otherwise each hands actor entering its fire state arms one cast (tick,
+    // below); a cast takes the armed one. Only when both are armed does the stack decide (the nearer of the two
+    // pointers). The stack alone fails: both pointers sit above every cast, and their order is not the caller's
+    // (the 23:51 and 23:54 simulator runs - a two-handed cast read as two right-hand casts, then a right-hand cast
+    // as the left's).
+    void* rig = g_rig.load(std::memory_order_relaxed);
+    if (!rig) return false;
+    void* rab = prop_ptr(rig, L"CurrentAbility");
+    void* lab = g_main ? prop_ptr(g_main, L"CurrentAbility") : nullptr;
+    if (ability && rab && lab && rab != lab && (ability == rab || ability == lab)) {
+        const bool right = ability == rab;
+        g_armed[right ? 1 : 0] = false;
+        return right;
+    }
     const bool r = g_armed[1], l = g_armed[0];
     bool right;
     if (r && !l) right = true;

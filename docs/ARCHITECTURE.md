@@ -3184,6 +3184,19 @@ that do not use InitiateDamage, one set of effects); a second ability object fir
 state, its effects on the one Hands' left hand). The two-casts path stays only as the fallback when the second Hands
 cannot be spawned.
 
+### 2026-10-25: the right hand's plasmid is chosen by family, and its own ability object names the hand
+
+The second Hands actor gives the right hand a whole plasmid. The first mix-and-match step lets it hold a different one
+(F10 "Right hand's plasmid", until the wheels fill it). The row names a FAMILY, not a class: each upgrade level is
+its own class, so the right hand takes the player's own class of that family from `AvailableAbilities`, the highest
+level owned, and the player's one object of that class from `GetAbilityFromClass`. With two different ability
+objects in the hands, a cast is attributed by the object casting, ahead of the armed fire states: a Telekinesis hold
+keeps one hands actor firing for its whole length. Telekinesis in both hands takes the player's
+`TelekinesisTwoAbility` object for the right, because a hold lives on the ability object; the mod ticks it, since
+the engine ticks only the active class's object. Rejected: constructing a second ability object with
+`StaticConstructObject` (no save or load handling, and one would be made per spawn); Telekinesis's head ray patched
+in the camera detour (every caller of the camera would see it).
+
 ### 2026-10-25: the BS1 reticle finds its distance in the eye's depth, not a trace
 
 The sibling mods place the reticle by the engine's ray trace. BS1 cannot call its trace. The temporal pipeline
