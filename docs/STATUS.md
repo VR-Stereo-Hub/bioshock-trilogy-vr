@@ -2,6 +2,17 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-25 - BS1: the left-held flamethrower mirrored; this branch to staging
+
+**Branch `claude/bs1-manual-reload-2` is published and goes to `staging` by PR, at the owner's word** ("good enough
+to be done with this branch"). It carries the whole manual reload series (it was merged into a local `staging` only),
+the room snapshots, the crossbow lever and the left-handed holds. **Headset-accepted at 21:06: the flamethrower in the
+left hand, drawn as the mirror image of the right-hand hold** ("works well"). Still open and parked: the left-handed
+crossbow turning sideways; the reticle drifting after some shots. The installed BS1 build is this branch's source
+(built 21:06). `release/preset-bs1/` now holds all of the owner's settings files as of 2026-10-24 (hands, weapons, VR
+preset, F10 menu choices, controller bindings); the built-in defaults are unchanged. Next work is on a new branch off
+`staging`: dual-wielded plasmids, the dynamic reticle distance, a shared plasmid reticle position.
+
 ## Session 2026-10-24 (day) - BS1: the approved lever hold, Blender mock-ups, crossbow X / box / launcher; two open bugs
 
 **Branch `claude/bs1-manual-reload-2`**, 29 commits over `staging`, HEAD 8c672a0, LOCAL ONLY (the owner's local-only
