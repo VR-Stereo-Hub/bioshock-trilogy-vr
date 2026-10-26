@@ -43,6 +43,7 @@
 #include "game/bioshock1r/grip_crossbow_lever.h"
 #include "game/bioshock1r/hand_pose.h"
 #include "game/bioshock1r/cheats.h"
+#include "game/bioshock1r/second_hands.h"
 #include "game/bioshock1r/script_call.h"
 #include "game/bioshock1r/two_hand.h"
 #include "game/bioshock1r/two_hand_math.h"
@@ -83,6 +84,13 @@ constexpr int kMaxBones = 128;
 void* g_skelInst = nullptr;
 Qts* g_bones = nullptr;
 int g_boneCount = 0;
+// 2026-10-25: the SECOND hands' skeleton instance (second_hands.h): its pose is copied right after the engine
+// evaluates it (ev_detour), the moment the main rig's is - read at any other time it was a half-written array and
+// the right hand drew deformed (the 23:44 simulator run).
+void* g_skelInst2 = nullptr;
+Qts* g_bones2 = nullptr;
+int g_boneCount2 = 0;
+uintptr_t g_ev2RetSaved = 0;
 
 // Reference pose (engine-evaluated) + the anchor value we last wrote.
 Qts g_ref[kMaxBones];
@@ -1408,9 +1416,71 @@ __declspec(naked) void ev_ret_stub() {
     }
 }
 
+// 2026-10-25: after the second hands' evaluation: its pose, copied (m4_pose shows it on the right hand).
+// 2026-10-25 (the 20:29 and 20:31 runs: twice, the right hand never appeared): a pose read right after a spawn can be
+// the new skeleton's unfilled array - a palm 117 km out - and rig2_place put the second hands there, where the engine
+// stopped drawing and evaluating them, so no sound pose ever came. A pose is taken only when every bone is a finite
+// point within kRig2PoseReachUu of the root, and is stamped with the skeleton it came from.
+Qts g_rig2Eval[kMaxBones];
+std::atomic<uint64_t> g_rig2EvalMs{0};
+std::atomic<void*> g_rig2EvalInst{nullptr};
+std::atomic<uint32_t> g_rig2EvalRejects{0};
+constexpr float kRig2PoseReachUu = 500.0f;
+Qts g_rig2Read[kMaxBones];
+void __cdecl ev2_post() {
+    const int n = g_boneCount2 < kMaxBones ? g_boneCount2 : kMaxBones;
+    if (n <= 0 || !g_bones2) return;
+    if (!read_n(g_bones2, g_rig2Read, sizeof(Qts) * n)) return;
+    for (int i = 0; i < n; ++i) {
+        const float* p = g_rig2Read[i].p;
+        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]) || fabsf(p[0]) > kRig2PoseReachUu ||
+            fabsf(p[1]) > kRig2PoseReachUu || fabsf(p[2]) > kRig2PoseReachUu) {
+            g_rig2EvalRejects.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+    memcpy(g_rig2Eval, g_rig2Read, sizeof(Qts) * n);
+    g_rig2EvalInst.store(g_skelInst2, std::memory_order_relaxed);
+    g_rig2EvalMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+// The second hands' evaluated pose is this skeleton's and recent (a stale one, or another actor's, is never used).
+bool rig2_pose_fresh(const void* inst) {
+    return inst && g_rig2EvalInst.load(std::memory_order_relaxed) == inst &&
+           GetTickCount64() - g_rig2EvalMs.load(std::memory_order_relaxed) <= 250;
+}
+__declspec(naked) void ev2_ret_stub() {
+    __asm {
+        pushad
+        pushfd
+        sub esp, 108
+        fnsave [esp]
+        call ev2_post
+        frstor [esp]
+        add esp, 108
+        popfd
+        popad
+        push dword ptr [g_ev2RetSaved]
+        mov dword ptr [g_ev2RetSaved], 0
+        ret
+    }
+}
+
 __declspec(naked) void ev_detour() {
     __asm {
         push eax
+        ; the second hands' instance: its pose copied after the evaluation (2026-10-25)
+        cmp ecx, [g_skelInst2]
+        jne notsecond
+        cmp ecx, 0
+        je notsecond
+        cmp dword ptr [g_ev2RetSaved], 0
+        jne passthrough              ; nested - leave it alone
+        mov eax, [esp + 4]
+        mov [g_ev2RetSaved], eax
+        mov eax, offset ev2_ret_stub
+        mov [esp + 4], eax
+        jmp passthrough
+      notsecond:
         ; only the hands rig's instance (ecx = this)
         cmp ecx, [g_skelInst]
         jne passthrough
@@ -6868,6 +6938,10 @@ struct M4State {
     void* actor = nullptr;
     int held = 1;
     bool mirror = false;         // 2026-10-19: the gun in the left hand, each hand mirrored (mirror_math.h)
+    // 2026-10-25: dual-wielded plasmids - the RIGHT hand shows the LEFT hand's layout, mirrored (as the right hand
+    // of the mirrored hold does), and the left keeps its own: both hands the plasmid's, animations and all.
+    bool copyLeft = false;
+    bool holdRight = false; // 2026-10-25: the free right hand holds its pre-cast pose this frame (m4_pose)
     M4Hand hand[2];
     // Arms: the shoulders and body axes, WORLD, from the same formula solve_arm uses.
     float shoulder[2][3] = {};
@@ -6977,6 +7051,12 @@ bool lever_handle_component(float out[3]) {
     return bones::world_to_component(g_m4.actor, w, out);
 }
 Qts g_evMirror[kMaxBones];
+Qts g_rig2Pose[kMaxBones]; // 2026-10-25: the second hands' evaluated pose this frame (second_hands.h)
+// 2026-10-25: the free right hand's pose before a one-hand cast, held through it (m4_pose). F10 Controls > Dual
+// plasmids > "Only the casting hand animates".
+Qts g_rightHeld[kMaxBones];
+bool g_rightHeldValid = false;
+std::atomic<bool> g_castHandOnly{true};
 
 bool mirror_wanted() {
     return g_mirrorHands.load(std::memory_order_relaxed) && bvr::input::left_handed() && palette::active() &&
@@ -7084,8 +7164,14 @@ constexpr uint64_t kRecMaxBytes = 300ull * 1024 * 1024;
 void pose_record(const Qts* A, int n, const float aLoc[3], const float qa[4], float k, const palette::HandXform palX[2],
                  bool mir, bool weaponOnSocket, uint64_t now) {
     void* weapon = nullptr;
-    if (g_recFull || !hands::current_holdable(&weapon) || !weapon) return;
-    const wchar_t* cls = patterns::object_class_name(weapon);
+    if (g_recFull) return;
+    // 2026-10-25: with a plasmid in hand too (Plasmid.bvrpose; DualPlasmid with the plasmids dual-wielded), to measure
+    // a hand's placement with the plasmids against its controller (the grip positions on the ctrl lines).
+    const bool gun = hands::current_holdable(&weapon) && weapon;
+    const wchar_t* cls = gun                          ? patterns::object_class_name(weapon)
+                         : hands::active_hand() != 0 ? nullptr
+                         : g_m4.copyLeft             ? L"DualPlasmid"
+                                                     : L"Plasmid";
     if (!cls || !cls[0] || now - g_recLastMs < 33) return;
     // 2026-10-22 (MANUAL_RELOAD_PLAN.md step 7): any gun in hand, one file per class in the session's folder
     // (<Class>.bvrpose) - it was the shotgun only. A change of gun closes the file and opens the next gun's.
@@ -7156,9 +7242,10 @@ void write_pose(FILE* f, const Qts* A, int n, const float aLoc[3], const float q
     // 2026-10-25: each controller as held (world UE rotator, no trim; per mesh, so mirrored the left mesh's is the
     // left controller) and the drawn hand's trimmed one, so a replay can tell the tester's own wrist from the code's.
     for (int h = 0; h < 2; ++h)
-        fprintf(f, "ctrl %d %d  %d %d %d  hand %d %d %d\n", h, g_m4.ctrlValid[h] ? 1 : 0, g_m4.ctrlRot[h].pitch,
-                g_m4.ctrlRot[h].yaw, g_m4.ctrlRot[h].roll, g_m4.handRot[h].pitch, g_m4.handRot[h].yaw,
-                g_m4.handRot[h].roll);
+        fprintf(f, "ctrl %d %d  %d %d %d  hand %d %d %d  grip %.6g %.6g %.6g\n", h, g_m4.ctrlValid[h] ? 1 : 0,
+                g_m4.ctrlRot[h].pitch, g_m4.ctrlRot[h].yaw, g_m4.ctrlRot[h].roll, g_m4.handRot[h].pitch,
+                g_m4.handRot[h].yaw, g_m4.handRot[h].roll, g_m4.gripWorld[h][0], g_m4.gripWorld[h][1],
+                g_m4.gripWorld[h][2]);
     for (int h = 0; h < 2; ++h) {
         const palette::HandXform& X = palX[h];
         fprintf(f, "handfix %d %d  %.8g %.8g %.8g %.8g  %.6g %.6g %.6g  %.6g %.6g %.6g  %.6g\n", h, X.valid ? 1 : 0, X.q[0],
@@ -7450,6 +7537,51 @@ const Qts* m4_pose(const Qts* A, int n) {
                           g_trueMirror.load(std::memory_order_relaxed);
         palette::set_gun_reflection(want ? weapon : nullptr, uAxis, plane * khOut / kwOut);
     }
+    // 2026-10-25 (the owner: only the hand that casts plays the fire animation): with one plasmid in hand the
+    // game's cast clip moves BOTH hands; the free right hand keeps the pose it had before the cast. (Dual plasmids
+    // already give each hand its own hands actor's animation.) The skins hold the same way (palette.cpp).
+    g_m4.holdRight = false;
+    if (!g_m4.mirror && !g_m4.copyLeft && n >= patterns::kHandsRigBoneCount) {
+        const wchar_t* st = hands_state::current_name(g_m4.actor);
+        const bool casting = st && (!wcsncmp(st, L"AbilityFiring", 13) || !wcsncmp(st, L"FinishAbilityFiring", 19));
+        const bool hold = g_castHandOnly.load(std::memory_order_relaxed) && hands::active_hand() == 0 && casting;
+        if (!hold) {
+            for (int k = 0; k < mirror::kPairs; ++k) g_rightHeld[mirror::kPairRight[k]] = A[mirror::kPairRight[k]];
+            g_rightHeldValid = true;
+        } else if (g_rightHeldValid) {
+            memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
+            for (int k = 0; k < mirror::kPairs; ++k) g_evMirror[mirror::kPairRight[k]] = g_rightHeld[mirror::kPairRight[k]];
+            g_m4.holdRight = true;
+            return g_evMirror;
+        }
+    }
+    if (g_m4.copyLeft && b && !g_m4.mirror) {
+        // Dual-wielded plasmids: the right hand and arm take the left's, mirrored - exactly the right hand of the
+        // mirrored hold - and the left keeps its own. No gun to place.
+        memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
+        // The source: the SECOND hands' left hand when they are up (the right hand's own plasmid, its own
+        // animation - second_hands.h), else this rig's own left.
+        const Qts* src = A;
+        Skel s2;
+        if (resolve_skel(second_hands::actor(), s2) && s2.count >= n) {
+            // Hooked: its pose is copied right after its evaluation (ev2_post); this frame's or the last one's.
+            g_bones2 = s2.bones;
+            g_boneCount2 = s2.count;
+            g_skelInst2 = s2.inst;
+            if (rig2_pose_fresh(s2.inst)) {
+                memcpy(g_rig2Pose, g_rig2Eval, sizeof(Qts) * n);
+                src = g_rig2Pose;
+            }
+        } else {
+            g_skelInst2 = nullptr;
+        }
+        for (int k = 0; k < mirror::kPairs; ++k) {
+            const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+            mirror_into(mirror::mirrored_pose(*b, mirror::from_frame(src[L].q, src[L].p, src[L].s), b->mbRight[k]),
+                        g_evMirror[R]);
+        }
+        return g_evMirror;
+    }
     if (!g_m4.mirror || !b) return A;
     memcpy(g_evMirror, A, sizeof(Qts) * static_cast<size_t>(n));
     auto aff = [&](int i) { return mirror::from_frame(A[i].q, A[i].p, A[i].s); };
@@ -7605,6 +7737,10 @@ std::atomic<float> g_plasmidFxCm[3] = {0.7f, 0.0f, -3.8f};
 // items carried with the drawn right hand. Restored when the follow stops.
 constexpr uint32_t kActorAttachRelativeOffset = 0x230;
 std::atomic<bool> g_beamAim{true}, g_beamFlip{false}; // `vrhands beamaim on|off|flip`
+// 2026-10-25 (the owner: with the beam along the aim, both hands' Electro Bolt effect runs above the reticle by about
+// the same angle): F10 Hands > Plasmid effect > "Bolt aim down" turns the ray the beam's axes are aimed along down by
+// this many degrees (about the ray's horizontal sideways axis) before beam_axes - the effect only, never the damage.
+std::atomic<float> g_beamDownDeg{0.0f};
 struct FxActor {
     void* actor = nullptr;
     int32_t name[2] = {};
@@ -7612,6 +7748,7 @@ struct FxActor {
     float wrote[3] = {};
     int bone = -1, hand = -1;
     bool viaSocket = false, have = false;
+    bool right = false; // 2026-10-25: attached by a RIGHT-hand cast (dual-wielded plasmids): kept on the right palm
 };
 FxActor g_fxa[32];
 int g_fxaN = 0;
@@ -7631,8 +7768,35 @@ struct SockCache {
     bool have[kMaxSock] = {};
     int bone[kMaxSock] = {};
     int hand[kMaxSock] = {};
+    // 2026-10-25, dual-wielded plasmids: the record a cast from the RIGHT hand needs (socket_follow), and what
+    // cast_hand_begin replaced, for cast_hand_end.
+    float right[kMaxSock][12] = {};
+    bool haveRight[kMaxSock] = {};
+    float beforeRight[kMaxSock][12] = {};
+    bool swapped[kMaxSock] = {};
+    // 2026-10-25: FireballSocket's entry, the bone it aliases as the game built it, and the table it is in - its alias
+    // is pointed at the left hand bone (socket_follow, `[bolt]`).
+    int fireIdx = -1;
+    int32_t fireAlias0[2] = {};
+    int32_t* bonesTable = nullptr;
+    bool aliased = false;
 };
 SockCache g_sock;
+// 2026-10-25: the drawn right palm (component space) this frame, and the effect actors a right-hand cast attached:
+// they stay on the right palm for their whole life (fx_actor_follow).
+arm_ik::Vec g_rightPalm{};
+bool g_rightPalmValid = false;
+constexpr int kMaxRightFx = 16;
+void* g_rightFx[kMaxRightFx] = {};
+int g_rightFxN = 0;
+void* g_castBefore[64] = {};
+int g_castBeforeN = 0;
+bool g_castRightOpen = false;
+bool is_right_fx(void* a) {
+    for (int i = 0; i < g_rightFxN; ++i)
+        if (g_rightFx[i] == a) return true;
+    return false;
+}
 std::atomic<uint32_t> g_sockDriven{0};
 
 // The held weapon's socket on its grip (43): the hands mesh's socket record named by the weapon's
@@ -7709,6 +7873,15 @@ void fx_actor_restore() {
 }
 
 std::atomic<void*> g_fxaIgnore{nullptr}; // an actor on the hands that its owner places (attach_relative)
+// 2026-10-25: the bolt effects the engine's attach was redirected onto the hand bone (attach_to_bone_detour): they
+// arrive with the palm itself as their relative, which fx_actor_follow must not add as an offset of their own.
+void* g_boltHooked[16] = {};
+int g_boltHookedN = 0;
+bool is_bolt_hooked(const void* a) {
+    for (int i = 0; i < g_boltHookedN; ++i)
+        if (g_boltHooked[i] == a) return true;
+    return false;
+}
 
 void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k, arm_ik::Vec tAttach) {
     namespace ik = arm_ik;
@@ -7758,6 +7931,7 @@ void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k
             if (h < 0 || b < 0 || b >= n) continue;
             f.bone = b;
             f.hand = h;
+            f.right = h == 0 && is_right_fx(a);
             g_fxa[g_fxaN++] = f;
             const wchar_t* cls = patterns::object_class_name(a);
             const wchar_t* an = patterns::fname_text(f.name[0]);
@@ -7784,12 +7958,20 @@ void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k
         const ik::Vec bpE = ik::vec(A[b].p) + (b == kBoneHead ? tAttach : ik::Vec{});
         const ik::Quat cq = ik::normalized(ik::quat(X[h].q));
         ik::Vec target;
-        if (h == 0) {
+        if (h == 0 && f.right && g_rightPalmValid) {
+            // 2026-10-25: a right-hand cast's effect on a left-hand bone: the drawn right palm.
+            target = g_rightPalm;
+        } else if (h == 0) {
             // The plasmid effects: the tuned palm point, each keeping its own small offset when it is
             // a hand-relative one (the smoke's 0/2/-2, IceShards' socket) - a head-bone socket's
             // relative is only where the flat screen drew the hand, so it is dropped.
             target = fx_palm_drawn(X[0], 0, A, k);
-            if (in_cluster(b, 0)) target = target + ik::rotate(ik::normalized(ik::mul(cq, bq)), ik::vec(f.rel0) * X[0].s);
+            // (An effect on FireballSocket - now on the hand bone - attached with the record's palm offset as its
+            // relative: that offset is the palm itself, not a small offset of its own, so it is not added again.)
+            const bool fire = (f.viaSocket && g_sock.fireIdx >= 0 && !memcmp(f.name, g_sock.name[g_sock.fireIdx], 8)) ||
+                              is_bolt_hooked(f.actor);
+            if (in_cluster(b, 0) && !fire)
+                target = target + ik::rotate(ik::normalized(ik::mul(cq, bq)), ik::vec(f.rel0) * X[0].s);
         } else {
             const ik::Vec pGame = ik::vec(A[b].p) + ik::rotate(bq, ik::vec(f.rel0));
             target = ik::vec(X[1].t) + ik::rotate(cq, (pGame - ik::vec(X[1].pivot)) * X[1].s);
@@ -7808,8 +7990,66 @@ void fx_actor_follow(const palette::HandXform X[2], const Qts* A, int n, float k
     }
 }
 
+// s91 / 2026-10-25: a head-bone socket record's axes turned so its effect's forward (the record's -Y in the bone's
+// frame) lies along `rayD` (world): the bolt's beam along the hand's aim. Writes floats 3-11 of `w`.
+void beam_axes(const float o[12], const arm_ik::Quat& bq, const float rayIn[3], float w[12]) {
+    namespace ik = arm_ik;
+    int32_t aRot[3];
+    if (!read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorViewDirOffset, aRot, 12)) return;
+    // The F10 "Bolt aim down" turn: the ray tipped toward the world's down by that angle, in its own vertical plane.
+    float rayD[3] = {rayIn[0], rayIn[1], rayIn[2]};
+    const float down = g_beamDownDeg.load(std::memory_order_relaxed) * 0.01745329f;
+    if (down != 0.0f) {
+        const ik::Vec d = ik::vec(rayIn);
+        const ik::Vec upP = ik::Vec{0.0f, 0.0f, 1.0f} - d * d.z; // world up, square to the ray
+        const float ul = ik::length(upP);
+        if (ul > 1e-4f) {
+            const ik::Vec t = d * std::cos(down) - upP * (std::sin(down) / ul);
+            ik::put(t, rayD);
+        }
+    }
+    float qa[4], qai[4], dc[3];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    quat_conj(qa, qai);
+    qts_rotate(qai, rayD, dc);
+    const ik::Vec dRaw = ik::rotate(ik::conj(bq), ik::vec(dc));
+    const ik::Vec fRaw{-o[6], -o[7], -o[8]};
+    const float ld = ik::length(dRaw), lf = ik::length(fRaw);
+    const ik::Vec dB = ld > 1e-6f ? dRaw * (1.0f / ld) : ik::Vec{0, -1, 0};
+    const ik::Vec fB = lf > 1e-6f ? fRaw * (1.0f / lf) : ik::Vec{0, -1, 0};
+    const ik::Vec cr = ik::cross(fB, dB);
+    const float d = ik::dot(fB, dB);
+    ik::Quat arc;
+    if (d > -0.9999f) {
+        arc.v[0] = cr.x;
+        arc.v[1] = cr.y;
+        arc.v[2] = cr.z;
+        arc.v[3] = 1.0f + d;
+        arc = ik::normalized(arc);
+    } else { // opposite: half a turn about the record's X
+        arc.v[0] = o[3];
+        arc.v[1] = o[4];
+        arc.v[2] = o[5];
+        arc.v[3] = 0.0f;
+        arc = ik::normalized(arc);
+    }
+    ik::Vec ax[3];
+    for (int a = 0; a < 3; ++a) ax[a] = ik::rotate(arc, ik::vec(o + 3 + 3 * a));
+    if (g_beamFlip.load(std::memory_order_relaxed)) {
+        const ik::Vec t0{ax[0].x, ax[1].x, ax[2].x}, t1{ax[0].y, ax[1].y, ax[2].y}, t2{ax[0].z, ax[1].z, ax[2].z};
+        ax[0] = t0;
+        ax[1] = t1;
+        ax[2] = t2;
+    }
+    for (int a = 0; a < 3; ++a) ik::put(ax[a], w + 3 + 3 * a);
+}
+
 void socket_follow_restore() {
     fx_actor_restore();
+    if (g_sock.aliased && g_sock.bonesTable && g_sock.fireIdx >= 0) {
+        write_n(g_sock.bonesTable + 2 * g_sock.fireIdx, g_sock.fireAlias0, 8);
+        g_sock.aliased = false;
+    }
     if (!g_sock.coords) return;
     for (int i = 0; i < g_sock.count; ++i) {
         float cur[12];
@@ -7817,6 +8057,426 @@ void socket_follow_restore() {
         if (g_sock.have[i] && read_n(g_sock.coords + 12 * i, cur, 48) && !memcmp(cur, g_sock.wrote[i], 48))
             write_n(g_sock.coords + 12 * i, g_sock.orig[i], 48);
         g_sock.have[i] = false;
+    }
+}
+
+void rig2_place(const palette::HandXform X[2], const Qts* A, float k); // below
+
+// ---- 2026-10-25: THE BOLT PROBE (log only) ----------------------------------------------------------------------
+// The owner, on the 10-10 path: the left bolt starts in one spot whatever the hand does, the right one swings with the
+// right hand's rotation. Where the cast effect really is was never measured: for 1.5 s after each player cast, every
+// actor attached to a hands actor's FireballSocket (the game's hands for the left, the second hands for the right) is
+// logged on frames 1, 3, 10 and 30 of its life - its Location against the drawn palm of its hand, in the view's frame
+// (cm forward, right, up) and as a distance - with the palm's own place against the view. Nothing is written.
+std::atomic<uint64_t> g_boltCastMs{0};
+std::atomic<int> g_boltCastHand{0};
+struct BoltSeen {
+    void* actor = nullptr;
+    int hand = 0;
+    uint32_t frames = 0;
+};
+BoltSeen g_boltSeen[8];
+int g_boltSeenN = 0;
+
+bool comp_to_world(void* actor, arm_ik::Vec c, float out[3]) {
+    float aLoc[3];
+    int32_t aRot[3];
+    float k = 1.0f;
+    if (!read_n(static_cast<uint8_t*>(actor) + patterns::kActorLocOffset, aLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(actor) + patterns::kActorViewDirOffset, aRot, 12))
+        return false;
+    if (!ds_read(actor, &k) || !(k > 0.01f)) k = 1.0f;
+    float qa[4];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    const float p[3] = {c.x * k, c.y * k, c.z * k};
+    float r[3];
+    qts_rotate(qa, p, r);
+    for (int e = 0; e < 3; ++e) out[e] = aLoc[e] + r[e];
+    return true;
+}
+
+void bolt_probe(const palette::HandXform X[2], const Qts* A, float k) {
+    namespace ik = arm_ik;
+    const uint64_t now = GetTickCount64();
+    if (now - g_boltCastMs.load(std::memory_order_relaxed) > 1500) {
+        g_boltSeenN = 0;
+        return;
+    }
+    // The new effects on either hands actor's cast socket.
+    void* const owners[2] = {g_m4.actor, second_hands::actor()};
+    for (int o = 0; o < 2; ++o) {
+        if (!owners[o]) continue;
+        void* linked[64];
+        const int nl = attach_census::collect_linked(owners[o], linked, 64);
+        for (int j = 0; j < nl; ++j) {
+            int32_t nm[2] = {};
+            if (!read_n(static_cast<uint8_t*>(linked[j]) + patterns::kActorAttachBoneNameOffset, nm, 8)) continue;
+            const wchar_t* an = patterns::fname_text(nm[0]);
+            // On the cast socket, or moved to the hand bone by bolt_follow (a bolt effect by its class).
+            const wchar_t* lc = patterns::object_class_name(linked[j]);
+            const bool bolt = lc && wcsstr(lc, L"ElectricBolt") && !wcsstr(lc, L"Smoke") && !wcsstr(lc, L"HandLight");
+            if (!an || (_wcsicmp(an, L"FireballSocket") && !(bolt && !_wcsicmp(an, L"Bip01_L_Hand")))) continue;
+            bool known = false;
+            for (int s = 0; s < g_boltSeenN; ++s) known = known || g_boltSeen[s].actor == linked[j];
+            if (!known && g_boltSeenN < 8) g_boltSeen[g_boltSeenN++] = BoltSeen{linked[j], o, 0};
+        }
+    }
+    // The view's frame (the camera this frame) for the offsets.
+    float vf[3], vr[3], vu[3];
+    ue_rot_basis(g_m4.camRot, vf, vr, vu);
+    const float uuPerCm = g_m4.uuPerCm > 0.0f ? g_m4.uuPerCm : 1.0f;
+    for (int s = 0; s < g_boltSeenN; ++s) {
+        BoltSeen& b = g_boltSeen[s];
+        const uint32_t f = ++b.frames;
+        if (f != 1 && f != 3 && f != 10 && f != 30) continue;
+        float loc[3], palm[3], rel[3] = {};
+        if (!read_n(static_cast<uint8_t*>(b.actor) + patterns::kActorLocOffset, loc, 12) || !X[b.hand].valid ||
+            !comp_to_world(g_m4.actor, fx_palm_drawn(X[b.hand], b.hand, A, k), palm))
+            continue;
+        read_n(static_cast<uint8_t*>(b.actor) + kActorAttachRelativeOffset, rel, 12);
+        const float d[3] = {loc[0] - palm[0], loc[1] - palm[1], loc[2] - palm[2]};
+        const float p[3] = {palm[0] - g_m4.camWorld[0], palm[1] - g_m4.camWorld[1], palm[2] - g_m4.camWorld[2]};
+        auto in_view = [&](const float v[3], float out[3]) {
+            out[0] = (v[0] * vf[0] + v[1] * vf[1] + v[2] * vf[2]) / uuPerCm;
+            out[1] = (v[0] * vr[0] + v[1] * vr[1] + v[2] * vr[2]) / uuPerCm;
+            out[2] = (v[0] * vu[0] + v[1] * vu[1] + v[2] * vu[2]) / uuPerCm;
+        };
+        float dv[3], pv[3];
+        in_view(d, dv);
+        in_view(p, pv);
+        const wchar_t* cls = patterns::object_class_name(b.actor);
+        BVR_LOG("[bolt] %s-hand cast effect %ls %p, frame %u: %.1f cm from the drawn palm (view fwd %+.1f right %+.1f "
+                "up %+.1f cm) | the palm is fwd %+.1f right %+.1f up %+.1f cm from the eye | its attach relative %.1f "
+                "%.1f %.1f",
+                b.hand ? "right" : "left", cls ? cls : L"?", b.actor, f,
+                std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / uuPerCm, dv[0], dv[1], dv[2], pv[0], pv[1], pv[2],
+                rel[0], rel[1], rel[2]);
+    }
+}
+
+// ---- 2026-10-25: THE BOLT ON THE PALM, FOLLOWED (the 16:02 bolt probe) -------------------------------------------
+// The probe answered it: the Electro Bolt's effect is ONE ElectricBoltParticle (4F012A80 for every cast of the run),
+// attached to the hands actor that cast last - the game's hands for the left, the second hands for the right - at
+// FireballSocket, i.e. their HEAD bone, with its attach relative (+0x230) at (15, -30, 30) and never changed. The
+// socket record is copied only when an effect attaches, so the record follow (socket_follow) never reached it; and
+// the s91 "attach origin gap" (15, -30, 30) was this effect's own relative all along. So the left bolt sat at one
+// spot ahead of the face whatever the hand did (35 fwd, -20 right, -12 up cm from the eye over four hand poses), and
+// the right one rode the second hands' head - 7-10 cm off the palm, 70 off with the wrist rolled.
+// Every frame now, each effect on either hands actor's FireballSocket takes the relative that puts it on the drawn
+// palm of that hand (component space of the actor it hangs on, the head bone's frame, as fx_actor_follow does for the
+// hand-bone effects), and its relative rotation the turn that carries the view's forward onto that hand's aim
+// (F10 "Bolt aim down" applied) - through the engine's own Actor.SetRelativeRotation. `[bolt]` (the probe) shows the
+// result; `vrhands boltfollow on|pos|off`.
+std::atomic<int> g_boltFollow{2}; // 0 off, 1 position only, 2 position and aim
+struct BoltFx {
+    void* actor = nullptr;
+    int32_t rot0[3] = {}; // its relative rotation as the game attached it (read once)
+    bool haveRot0 = false;
+    float rel0[3] = {};
+    int32_t lastRot[3] = {};
+    uint64_t rotMs = 0;
+};
+constexpr int kMaxBoltFx = 12;
+BoltFx g_boltFx[kMaxBoltFx];
+int g_boltFxN = 0;
+uint64_t g_boltFxScanMs = 0;
+
+// 2026-10-25 (the 17:18 run: most bolts right, about one in four from the wrong place and the wrong way): the probe
+// showed every bolt 45-58 cm off on its first frames and on the palm (0.0-0.3 cm) from frame 10 - the move came a
+// frame or two after the cast, and the beam is drawn at the cast. So each hand's relative and aim are kept ready
+// every frame (this cache), and the move is made AT the cast, from the effect event that attaches it
+// (on_effect_event, the TriggerEffectEvent hook), before the frame is drawn.
+struct BoltCache {
+    bool valid = false;
+    float rel[3] = {};     // the relative from that hands' hand bone onto its palm (the second hands; the game's
+                           // hands take zero - fx_actor_follow places their effects)
+    bool haveRot = false;
+    int32_t rot[3] = {};   // the relative rotation that aims the beam along that hand's aim
+};
+BoltCache g_boltCache[2];
+int32_t g_boltHandBone = -1;
+
+bool bolt_aim_rot(void* holder, const Qts& handB, const Qts& headB, int h, int32_t out[3]) {
+    namespace ik = arm_ik;
+    float o[3], d[3];
+    const bool ray = h ? aim::plasmid_ray_right(o, d) : aim::hand_ray(0, o, d);
+    if (!ray) return false;
+    int32_t aRot[3];
+    if (!read_n(static_cast<uint8_t*>(holder) + patterns::kActorViewDirOffset, aRot, 12)) return false;
+    // F10 "Bolt aim down": the aim tipped toward the world's down.
+    const float down = g_beamDownDeg.load(std::memory_order_relaxed) * 0.01745329f;
+    if (down != 0.0f) {
+        const ik::Vec dv = ik::vec(d);
+        const ik::Vec upP = ik::Vec{0.0f, 0.0f, 1.0f} - dv * dv.z;
+        const float ul = ik::length(upP);
+        if (ul > 1e-4f) ik::put(dv * std::cos(down) - upP * (std::sin(down) / ul), d);
+    }
+    float qa[4], qai[4], dc[3];
+    ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
+    quat_conj(qa, qai);
+    qts_rotate(qai, d, dc); // the aim in the holder's component space
+    const ik::Vec dcv = ik::vec(dc);
+    const float dcl = ik::length(dcv);
+    if (!(dcl > 1e-6f)) return false;
+    const ik::Vec f{1.0f, 0.0f, 0.0f}, t = dcv * (1.0f / dcl);
+    const ik::Vec cr = ik::cross(f, t);
+    const float dd = ik::dot(f, t);
+    if (dd < -0.999f) return false;
+    ik::Quat arc;
+    arc.v[0] = cr.x;
+    arc.v[1] = cr.y;
+    arc.v[2] = cr.z;
+    arc.v[3] = 1.0f + dd;
+    arc = ik::normalized(arc);
+    // On the head socket (attached rotation 0, the 17:06 log) the game's beam ran along the view (head). Wanted: that,
+    // turned by the arc onto the hand's aim, now from the hand bone: hand * rel = arc * head -> rel = hand^-1 * arc * head.
+    const ik::Quat handQ = ik::normalized(ik::quat(handB.q)), headQ = ik::normalized(ik::quat(headB.q));
+    const ik::Quat rq = ik::normalized(ik::mul(ik::conj(handQ), ik::mul(arc, headQ)));
+    const float rqf[4] = {rq.v[0], rq.v[1], rq.v[2], rq.v[3]};
+    const FRotator fr = ue_quat_to_rot(rqf);
+    out[0] = fr.pitch;
+    out[1] = fr.yaw;
+    out[2] = fr.roll;
+    return true;
+}
+
+// Off the head socket onto `holder`'s own left hand bone, with the cached relative and aim.
+bool bolt_move(void* holder, void* fx, int h) {
+    if (g_boltHandBone < 0) g_boltHandBone = script::name_index("Bip01_L_Hand");
+    if (g_boltHandBone < 0) return false;
+    struct {
+        void* actor;
+        uint32_t ret;
+        int32_t pad[6];
+    } dp{fx, 0, {}};
+    struct {
+        void* actor;
+        int32_t bone[2];
+        uint32_t ret;
+        int32_t pad[4];
+    } ap{fx, {g_boltHandBone, 0}, 0, {}};
+    script::call(holder, "DetachFromBone", &dp);
+    const bool att = script::call(holder, "AttachToBone", &ap) && ap.ret;
+    if (!att) return false;
+    const BoltCache& c = g_boltCache[h];
+    const float zero[3] = {0.0f, 0.0f, 0.0f};
+    write_n(static_cast<uint8_t*>(fx) + kActorAttachRelativeOffset, h && c.valid ? c.rel : zero, 12);
+    if (!h) g_fxaScanMs = 0; // fx_actor_follow picks it up on its next run
+    if (c.haveRot && g_boltFollow.load(std::memory_order_relaxed) >= 2) {
+        struct {
+            int32_t rot[3];
+            uint32_t ret;
+            int32_t pad[4];
+        } p{{c.rot[0], c.rot[1], c.rot[2]}, 0, {}};
+        script::call(fx, "SetRelativeRotation", &p);
+    }
+    return true;
+}
+
+// ---- 2026-10-25: THE BOLT ATTACHED TO THE HAND BY THE ENGINE'S OWN ATTACH (AActor::AttachToBone) ---------------
+// The 18:47 run: the socket-table alias changed nothing (the engine resolves a socket's bone at load), and the bolt
+// still reached the head first and the hand a frame later. So the C++ attach itself is hooked: an attachment to a
+// hands actor's FireballSocket goes to that hands' Bip01_L_Hand instead, in the same call, with the cached relative
+// (the drawn palm in that bone's frame) and aim - the bolt is never on the head, however fast the casts come.
+using AttachToBoneFn = int(__thiscall*)(void* self, void* attachment, int32_t nameIdx, int32_t nameNum);
+AttachToBoneFn g_attachOrig = nullptr;
+std::atomic<uint32_t> g_attachRedirects{0};
+int __fastcall attach_to_bone_detour(void* self, void* /*edx*/, void* attachment, int32_t nameIdx, int32_t nameNum) {
+    static int32_t s_fire = -2, s_hand = -2;
+    if (s_fire == -2 && script::ready()) {
+        s_fire = script::name_index("FireballSocket");
+        s_hand = script::name_index("Bip01_L_Hand");
+    }
+    void* const main = g_m4.actor;
+    void* const rig = second_hands::actor();
+    if (s_fire >= 0 && s_hand >= 0 && nameIdx == s_fire && attachment && self &&
+        (self == main || (rig && self == rig)) && g_boltFollow.load(std::memory_order_relaxed) >= 1) {
+        const int r = g_attachOrig(self, attachment, s_hand, 0);
+        if (r) {
+            const int h = self == rig && rig ? 1 : 0;
+            const BoltCache& c = g_boltCache[h];
+            // The game's hands: the drawn palm in its hand bone's frame (fx_actor_follow then keeps it there, with no
+            // offset of its own - is_bolt_hooked); the second hands: its own palm.
+            if (c.valid) write_n(static_cast<uint8_t*>(attachment) + kActorAttachRelativeOffset, c.rel, 12);
+            if (c.haveRot && g_boltFollow.load(std::memory_order_relaxed) >= 2) {
+                struct {
+                    int32_t rot[3];
+                    uint32_t ret;
+                    int32_t pad[4];
+                } p{{c.rot[0], c.rot[1], c.rot[2]}, 0, {}};
+                script::call(attachment, "SetRelativeRotation", &p);
+            }
+            if (!is_bolt_hooked(attachment)) {
+                if (g_boltHookedN >= 16) g_boltHookedN = 0;
+                g_boltHooked[g_boltHookedN++] = attachment;
+            }
+            // Followed for its aim every frame (bolt_follow).
+            bool known = false;
+            for (int s = 0; s < g_boltFxN; ++s) known = known || g_boltFx[s].actor == attachment;
+            if (!known) {
+                if (g_boltFxN >= kMaxBoltFx) g_boltFx[0] = g_boltFx[--g_boltFxN];
+                g_boltFx[g_boltFxN++] = BoltFx{attachment};
+            }
+            if (!h) g_fxaScanMs = 0;
+            g_attachRedirects.fetch_add(1, std::memory_order_relaxed);
+            static uint32_t s_logged = 0;
+            if (++s_logged <= 4)
+                BVR_LOG("[bolt] the engine attached a %s-hand effect %p to FireballSocket: put on the hand bone in the "
+                        "same call", h ? "right" : "left", attachment);
+        }
+        return r;
+    }
+    return g_attachOrig(self, attachment, nameIdx, nameNum);
+}
+
+void install_attach_hook() {
+    static bool s_tried = false;
+    if (s_tried || !g_imageBase) return;
+    s_tried = true;
+    uint8_t* target = const_cast<uint8_t*>(g_imageBase) + patterns::kActorAttachToBoneRva;
+    uint8_t head[16];
+    if (!read_n(target, head, 16) || memcmp(head, patterns::kActorAttachToBonePrologue, 16)) {
+        BVR_LOG("[bolt] AActor::AttachToBone at RVA 0x%X does not match its prologue - not hooked (the bolt is moved a "
+                "frame after the cast instead)", patterns::kActorAttachToBoneRva);
+        return;
+    }
+    MH_STATUS st = MH_CreateHook(target, reinterpret_cast<void*>(&attach_to_bone_detour),
+                                 reinterpret_cast<void**>(&g_attachOrig));
+    if (st == MH_OK) st = MH_EnableHook(target);
+    if (st != MH_OK) {
+        BVR_LOG("[bolt] hooking AActor::AttachToBone failed: %s", MH_StatusToString(st));
+        g_attachOrig = nullptr;
+        return;
+    }
+    BVR_LOG("[bolt] AActor::AttachToBone hooked (RVA 0x%X): the bolt attaches to the hand at the cast",
+            patterns::kActorAttachToBoneRva);
+}
+
+void bolt_follow(const palette::HandXform X[2], const Qts* A, float k) {
+    namespace ik = arm_ik;
+    const int mode = g_boltFollow.load(std::memory_order_relaxed);
+    void* const main = g_m4.actor;
+    void* const rig = second_hands::actor();
+    if (!mode || !main) return;
+    const uint64_t now = GetTickCount64();
+    install_attach_hook(); // once, lazily (the engine's attach, for the bolt at the cast)
+    // The cache, every frame: each hand's relative and aim, ready for a cast.
+    g_boltCache[0].valid = X[0].valid;
+    if (X[0].valid) { // the drawn left palm in the game's own left hand bone's frame
+        const Qts& hb = A[patterns::kBoneLWrist];
+        ik::put(ik::rotate(ik::conj(ik::normalized(ik::quat(hb.q))), fx_palm_drawn(X[0], 0, A, k) - ik::vec(hb.p)),
+                g_boltCache[0].rel);
+    }
+    g_boltCache[0].haveRot =
+        X[0].valid && bolt_aim_rot(main, A[patterns::kBoneLWrist], A[kBoneHead], 0, g_boltCache[0].rot);
+    g_boltCache[1].valid = false;
+    g_boltCache[1].haveRot = false;
+    if (rig && X[1].valid && rig2_pose_fresh(g_skelInst2)) {
+        const Qts& hb = g_rig2Eval[patterns::kBoneLWrist];
+        ik::put(ik::rotate(ik::conj(ik::normalized(ik::quat(hb.q))),
+                           ik::vec(g_rig2Eval[patterns::kBoneLPalm].p) - ik::vec(hb.p)),
+                g_boltCache[1].rel);
+        g_boltCache[1].valid = true;
+        g_boltCache[1].haveRot = bolt_aim_rot(rig, hb, g_rig2Eval[kBoneHead], 1, g_boltCache[1].rot);
+    }
+    // Every frame for a second after a cast (the game attaches the effect to the head socket at the cast), else
+    // ten times a second.
+    const bool justCast = now - g_boltCastMs.load(std::memory_order_relaxed) < 1000;
+    if (justCast || now - g_boltFxScanMs >= 100) {
+        g_boltFxScanMs = now;
+        void* const owners[2] = {main, rig};
+        for (int o = 0; o < 2; ++o) {
+            if (!owners[o]) continue;
+            void* linked[64];
+            const int nl = attach_census::collect_linked(owners[o], linked, 64);
+            for (int j = 0; j < nl; ++j) {
+                int32_t nm[2] = {};
+                if (!read_n(static_cast<uint8_t*>(linked[j]) + patterns::kActorAttachBoneNameOffset, nm, 8)) continue;
+                const wchar_t* an = patterns::fname_text(nm[0]);
+                if (!an || _wcsicmp(an, L"FireballSocket")) continue;
+                bool known = false;
+                for (int s = 0; s < g_boltFxN; ++s) known = known || g_boltFx[s].actor == linked[j];
+                if (known) continue;
+                if (g_boltFxN >= kMaxBoltFx) g_boltFx[0] = g_boltFx[--g_boltFxN];
+                BoltFx& b = g_boltFx[g_boltFxN++];
+                b = BoltFx{};
+                b.actor = linked[j];
+                uint8_t* a = static_cast<uint8_t*>(linked[j]);
+                read_n(a + kActorAttachRelativeOffset, b.rel0, 12);
+                int32_t r[3] = {};
+                // The relative rotation is assumed to follow the relative location (+0x23C): read only, and used only
+                // when it reads as a rotation.
+                if (read_n(a + kActorAttachRelativeOffset + 12, r, 12) && std::abs(r[0]) < 131072 &&
+                    std::abs(r[1]) < 131072 && std::abs(r[2]) < 131072) {
+                    memcpy(b.rot0, r, 12);
+                    b.haveRot0 = true;
+                }
+                const wchar_t* cls = patterns::object_class_name(a);
+                BVR_LOG("[bolt] following %ls %p on FireballSocket: attached relative %.1f %.1f %.1f, rotation %d %d %d%s",
+                        cls ? cls : L"?", a, b.rel0[0], b.rel0[1], b.rel0[2], r[0], r[1], r[2],
+                        b.haveRot0 ? "" : " (not a rotation: kept zero)");
+            }
+        }
+    }
+    if (g_boltHandBone < 0) g_boltHandBone = script::name_index("Bip01_L_Hand");
+    const int32_t s_handBone = g_boltHandBone;
+    for (int s = 0; s < g_boltFxN;) {
+        BoltFx& b = g_boltFx[s];
+        uint8_t* a = static_cast<uint8_t*>(b.actor);
+        void* l1 = nullptr;
+        void* l2 = nullptr;
+        int32_t nm[2] = {};
+        const wchar_t* an = nullptr;
+        const bool onSocket = read_n(a + 0xAC, &l1, 4) && read_n(a + 0xB0, &l2, 4) &&
+                              read_n(a + patterns::kActorAttachBoneNameOffset, nm, 8) &&
+                              (an = patterns::fname_text(nm[0])) != nullptr && !_wcsicmp(an, L"FireballSocket");
+        const bool onHand = an && !onSocket && s_handBone >= 0 && nm[0] == s_handBone;
+        if (!onSocket && !onHand) {
+            g_boltFx[s] = g_boltFx[--g_boltFxN]; // detached, gone, or on something else
+            continue;
+        }
+        ++s;
+        const bool onRig = rig && (l1 == rig || l2 == rig);
+        const bool onMain = l1 == main || l2 == main;
+        if (!onRig && !onMain) continue;
+        const int h = onRig ? 1 : 0;
+        void* holder = onRig ? rig : main;
+        // 2026-10-25 (the 17:06 run: on the head bone, the relative from the component-space model still left it
+        // 15-20 cm off the palm, moving as the head turned): the head bone's attachment does not compose the way the
+        // component pose does (s91 said as much). The HAND bone's does - every effect on Bip01_L_Hand sits exactly on
+        // it, and fx_actor_follow puts them on the tuned palm point. So the bolt is moved off the head socket onto
+        // the casting hands' own left hand bone, its relative zeroed; the game puts it back on the socket at each
+        // cast, and it is moved again (every frame for a second after a cast).
+        // The backstop: an effect still on FireballSocket a frame later goes onto the hand bone. (With the socket's
+        // alias on the hand bone it is already there; the move then only renames its attachment.)
+        if (onSocket) {
+            const bool att = bolt_move(holder, b.actor, h);
+            static uint32_t s_moves = 0;
+            if (++s_moves <= 6 || !att)
+                BVR_LOG("[bolt] the %s-hand bolt effect %p moved from the head socket to the hand bone a frame after the "
+                        "cast: %s", h ? "right" : "left", b.actor, att ? "attached" : "ATTACH FAILED");
+            continue;
+        }
+        if (!X[h].valid) continue;
+        // On the hand bone. The game's hands: fx_actor_follow carries it to the tuned palm point. The second hands
+        // (placed so their left palm is the drawn right palm): its relative from that hands' own hand bone to its palm.
+        const BoltCache& c = g_boltCache[h];
+        if (h && c.valid) write_n(a + kActorAttachRelativeOffset, c.rel, 12);
+        if (mode < 2 || !c.haveRot) continue;
+        const int32_t nr[3] = {c.rot[0], c.rot[1], c.rot[2]};
+        auto delta = [](int32_t x, int32_t y) { return std::abs(static_cast<int16_t>(static_cast<uint16_t>(x - y))); };
+        if (now - b.rotMs < 16 || (delta(nr[0], b.lastRot[0]) < 90 && delta(nr[1], b.lastRot[1]) < 90 &&
+                                   delta(nr[2], b.lastRot[2]) < 90))
+            continue;
+        struct {
+            int32_t rot[3];
+            uint32_t ret;
+            int32_t pad[4];
+        } p{{nr[0], nr[1], nr[2]}, 0, {}};
+        if (script::call(b.actor, "SetRelativeRotation", &p)) {
+            memcpy(b.lastRot, nr, 12);
+            b.rotMs = now;
+        }
     }
 }
 
@@ -7856,12 +8516,47 @@ void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) 
             if (b >= patterns::kBoneLClusterFirst && b <= patterns::kBoneLClusterLast) h = 0;
             else if (b >= patterns::kBoneRClusterFirst && b <= patterns::kBoneRClusterLast) h = 1;
             else if (sn && !_wcsicmp(sn, L"FireballSocket")) h = 0; // a cast effect on the head bone
+            if (sn && !_wcsicmp(sn, L"FireballSocket")) {
+                g_sock.fireIdx = i;
+                memcpy(g_sock.fireAlias0, bn, 8);
+                g_sock.bonesTable = const_cast<int32_t*>(bones);
+            }
             g_sock.bone[i] = b;
             g_sock.hand[i] = h;
             BVR_LOG("[bones] socket follow: '%ls' on bone %d -> %s", sn ? sn : L"?", b,
                     h < 0 ? "left alone (not a hand)" : socket_is_written(b) ? "carried by the socket write"
                                                        : h ? "follows the RIGHT hand" : "follows the LEFT hand");
         }
+    }
+    // FireballSocket's alias: the left hand bone while the bolt follow is on, the game's own (the head) otherwise.
+    if (g_sock.fireIdx >= 0 && g_sock.bonesTable) {
+        static const int32_t s_hand = script::name_index("Bip01_L_Hand");
+        static const int32_t s_head = script::name_index("bip01_head");
+        if (g_sock.fireAlias0[0] == s_hand && s_head >= 0) { // the cache was rebuilt over our own alias
+            g_sock.fireAlias0[0] = s_head;
+            g_sock.fireAlias0[1] = 0;
+        }
+        int32_t* slot = g_sock.bonesTable + 2 * g_sock.fireIdx;
+        int32_t cur[2] = {};
+        const bool want = g_boltFollow.load(std::memory_order_relaxed) >= 1 && s_hand >= 0;
+        if (read_n(slot, cur, 8)) {
+            if (want && cur[0] != s_hand) {
+                const int32_t v[2] = {s_hand, 0};
+                if (write_n(slot, v, 8)) {
+                    if (!g_sock.aliased)
+                        BVR_LOG("[bolt] FireballSocket now hangs on the left hand bone (it hung on '%ls'): the bolt "
+                                "attaches to the hand at the cast", patterns::fname_text(cur[0]) ? patterns::fname_text(cur[0]) : L"?");
+                    g_sock.aliased = true;
+                }
+            } else if (!want && g_sock.aliased) {
+                write_n(slot, g_sock.fireAlias0, 8);
+                g_sock.aliased = false;
+                BVR_LOG("[bolt] FireballSocket back on the game's own bone");
+            } else if (want) {
+                g_sock.aliased = true;
+            }
+        }
+        if (g_sock.aliased) g_sock.bone[g_sock.fireIdx] = patterns::kBoneLWrist; // for fx_actor_follow's lookup
     }
     if (!g_attachOriginOk && kBoneHead < n) {
         g_attachOriginComp = arm_ik::rotate(arm_ik::normalized(arm_ik::quat(A[kBoneHead].q)),
@@ -7895,6 +8590,22 @@ void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) 
         }
         const float* o = g_sock.orig[i];
         namespace ik = arm_ik;
+        // 2026-10-25 (the 18:26 run: the left bolt from the wrong place when cast quickly): FireballSocket hangs on
+        // the LEFT HAND bone (its alias in the table, set below each frame), so the game attaches the bolt to the hand
+        // at the cast however it does it, and its record is the drawn palm in that bone's frame - the frame every
+        // hand-bone effect sits on exactly - with its axes along the hand's aim.
+        if (i == g_sock.fireIdx && g_sock.aliased) {
+            const int hb = mir ? mirror_twin(patterns::kBoneLWrist) : patterns::kBoneLWrist;
+            if (hb < 0 || hb >= n) continue;
+            const ik::Quat bqh = ik::normalized(ik::quat(A[hb].q));
+            float wf[12];
+            memcpy(wf, o, 48);
+            ik::put(ik::rotate(ik::conj(bqh), fx_palm_drawn(X[h], h, A, k) - ik::vec(A[hb].p)), wf);
+            float rO[3], rD[3];
+            if (g_beamAim.load(std::memory_order_relaxed) && aim::hand_ray(h, rO, rD)) beam_axes(o, bqh, rD, wf);
+            if (write_n(coords + 12 * i, wf, 48)) memcpy(g_sock.wrote[i], wf, 48);
+            continue;
+        }
         const ik::Quat bq = ik::normalized(ik::quat(A[b].q));
         // Where the ENGINE takes the bone to be: the head bone's attach origin sits t off the array
         // (measured, s91); a hand bone's is exactly the array (the hand light's gap read 0.00).
@@ -7939,51 +8650,233 @@ void socket_follow(const palette::HandXform X[2], const Qts* A, int n, float k) 
         // taken as the effect's own axes in the bone's frame; `vrhands beamaim flip` writes the transpose
         // in case the engine composes them the other way. Copied at attach, like the offset.
         float rayO[3], rayD[3];
-        if (g_beamAim.load(std::memory_order_relaxed) && aim::hand_ray(h, rayO, rayD)) {
-            int32_t aRot[3];
-            if (read_n(static_cast<uint8_t*>(g_m4.actor) + patterns::kActorViewDirOffset, aRot, 12)) {
-                float qa[4], qai[4], dc[3];
-                ue_rot_to_quat(FRotator{aRot[0], aRot[1], aRot[2]}, qa);
-                quat_conj(qa, qai);
-                qts_rotate(qai, rayD, dc);
-                const ik::Vec dRaw = ik::rotate(ik::conj(bq), ik::vec(dc));
-                const ik::Vec fRaw{-o[6], -o[7], -o[8]};
-                const float ld = ik::length(dRaw), lf = ik::length(fRaw);
-                const ik::Vec dB = ld > 1e-6f ? dRaw * (1.0f / ld) : ik::Vec{0, -1, 0};
-                const ik::Vec fB = lf > 1e-6f ? fRaw * (1.0f / lf) : ik::Vec{0, -1, 0};
-                const ik::Vec cr = ik::cross(fB, dB);
-                const float d = ik::dot(fB, dB);
-                ik::Quat arc;
-                if (d > -0.9999f) {
-                    arc.v[0] = cr.x;
-                    arc.v[1] = cr.y;
-                    arc.v[2] = cr.z;
-                    arc.v[3] = 1.0f + d;
-                    arc = ik::normalized(arc);
-                } else { // opposite: half a turn about the record's X
-                    arc.v[0] = o[3];
-                    arc.v[1] = o[4];
-                    arc.v[2] = o[5];
-                    arc.v[3] = 0.0f;
-                    arc = ik::normalized(arc);
-                }
-                ik::Vec ax[3];
-                for (int a = 0; a < 3; ++a) ax[a] = ik::rotate(arc, ik::vec(o + 3 + 3 * a));
-                if (g_beamFlip.load(std::memory_order_relaxed)) {
-                    const ik::Vec t0{ax[0].x, ax[1].x, ax[2].x}, t1{ax[0].y, ax[1].y, ax[2].y}, t2{ax[0].z, ax[1].z, ax[2].z};
-                    ax[0] = t0;
-                    ax[1] = t1;
-                    ax[2] = t2;
-                }
-                for (int a = 0; a < 3; ++a) ik::put(ax[a], w + 3 + 3 * a);
-            }
-        }
+        if (g_beamAim.load(std::memory_order_relaxed) && aim::hand_ray(h, rayO, rayD)) beam_axes(o, bq, rayD, w);
         if (write_n(coords + 12 * i, w, 48)) {
             memcpy(g_sock.wrote[i], w, 48);
             g_sockDriven.fetch_add(1, std::memory_order_relaxed);
         }
+        // 2026-10-25, dual-wielded plasmids: the same record for a cast from the RIGHT hand - the drawn right palm,
+        // the beam along the right hand's plasmid ray - written only for the length of that cast (cast_hand_begin).
+        g_sock.haveRight[i] = false;
+        if (g_m4.copyLeft && h0 == 0 && X[1].valid) {
+            float* wr = g_sock.right[i];
+            memcpy(wr, w, 48);
+            ik::put(ik::rotate(ik::conj(bq), fx_palm_drawn(X[1], 1, A, k) - bp), wr);
+            if (g_beamAim.load(std::memory_order_relaxed) && aim::plasmid_ray_right(rayO, rayD)) beam_axes(o, bq, rayD, wr);
+            g_sock.haveRight[i] = true;
+        }
     }
+    // The right palm, for the effects a right-hand cast attaches to the left hand's bones (fx_actor_follow).
+    g_rightPalmValid = g_m4.copyLeft && X[1].valid;
+    if (g_rightPalmValid) g_rightPalm = fx_palm_drawn(X[1], 1, A, k);
     fx_actor_follow(X, A, n, k, tAttach);
+    rig2_place(X, A, k);
+    bolt_follow(X, A, k);
+    bolt_probe(X, A, k);
+}
+
+// 2026-10-25: THE SECOND HANDS ON THE RIGHT HAND (second_hands.h). Its own UpdateLocation puts it at the pawn plus
+// its PlayerViewOffset(Widescreen) turned by the view, every tick, and carries everything attached to its bones -
+// so that offset is set to put ITS LEFT PALM on the drawn right palm: its effects (palm glow, cast, beam) then appear
+// on the right hand in the same tick. Its cast socket (FireballSocket, on its head bone) keeps the game's offset,
+// which is its own left palm; only its axes are turned onto the right hand's plasmid ray, as the main hands' are.
+struct Rig2Sock {
+    void* inst = nullptr;
+    int index = -1;
+    float orig[12] = {};
+    float wrote[12] = {};
+    bool have = false;
+} g_rig2Sock;
+uint64_t g_rig2LogMs = 0;
+constexpr float kRig2MaxOffsetUu = 200.0f; // the most the second hands' left palm can be from the drawn right palm
+uint32_t g_rig2Homed = 0;
+uint64_t g_rig2HomeLogMs = 0;
+
+void rig2_place(const palette::HandXform X[2], const Qts* A, float k) {
+    namespace ik = arm_ik;
+    void* rig = second_hands::actor();
+    if (!rig || !g_m4.copyLeft || !X[1].valid || !g_m4.actor) return;
+    Skel s2;
+    const bool skel = resolve_skel(rig, s2) && s2.count > patterns::kBoneLPalm && s2.count > kBoneHead;
+    // Its pose as evaluated (ev2_post, checked sound there), not the array read now.
+    const bool posed = skel && rig2_pose_fresh(s2.inst);
+    const Qts palm = g_rig2Eval[patterns::kBoneLPalm], head = g_rig2Eval[kBoneHead];
+    float k2 = 1.0f;
+    if (!ds_read(rig, &k2) || !(k2 > 0.01f)) k2 = 1.0f;
+    // Both actors stand at the pawn turned by the view, so an actor-local offset is a component point times its
+    // DrawScale: the drawn right palm (this mesh) against the second hands' own left palm.
+    ik::Vec delta{0.0f, 0.0f, 0.0f};
+    if (posed) delta = fx_palm_drawn(X[1], 1, A, k) * k - ik::vec(palm.p) * k2;
+    // Never further than a hand can be from the other hands: anything else is a bad pose, and an actor sent off out of
+    // sight is no longer drawn or evaluated, so it would never come back. With no sound pose the second hands stand
+    // on the game's hands (no offset), where they are drawn and evaluated again; the next sound pose places them.
+    const bool homed = !posed || !std::isfinite(delta.x) || !std::isfinite(delta.y) || !std::isfinite(delta.z) ||
+                       fabsf(delta.x) > kRig2MaxOffsetUu || fabsf(delta.y) > kRig2MaxOffsetUu ||
+                       fabsf(delta.z) > kRig2MaxOffsetUu;
+    if (homed) delta = ik::Vec{0.0f, 0.0f, 0.0f};
+    int wrote = 0;
+    for (const wchar_t* prop : {L"PlayerViewOffsetWidescreen", L"PlayerViewOffset"}) {
+        const int32_t mo = script::property_offset(g_m4.actor, prop), ro = script::property_offset(rig, prop);
+        float base[3];
+        if (mo < 0 || ro < 0 || !read_n(static_cast<uint8_t*>(g_m4.actor) + mo, base, 12)) continue;
+        const float v[3] = {base[0] + delta.x, base[1] + delta.y, base[2] + delta.z};
+        if (write_n(static_cast<uint8_t*>(rig) + ro, v, 12)) ++wrote;
+    }
+    if (homed) {
+        ++g_rig2Homed;
+        const uint64_t now = GetTickCount64();
+        if (now - g_rig2HomeLogMs >= 2000) {
+            g_rig2HomeLogMs = now;
+            BVR_LOG("[hands2] placement held on the game's hands (%u frame(s)): %s | poses refused as unsound %u",
+                    g_rig2Homed, !skel ? "no skeleton yet" : !posed ? "no fresh pose of this skeleton" : "the offset was out of reach",
+                    g_rig2EvalRejects.load(std::memory_order_relaxed));
+        }
+        return; // the cast socket waits for a sound pose too
+    }
+    // Its cast socket's axes along the right hand's plasmid ray.
+    void* inst = nullptr;
+    struct {
+        const int32_t* names;
+        int32_t count;
+    } tn{};
+    float* coords = nullptr;
+    int fire = -1;
+    for (int i = 0; i < g_sock.count && fire < 0; ++i)
+        if (g_sock.bone[i] == kBoneHead && g_sock.hand[i] == 0) fire = i;
+    if (fire >= 0 && read_n(static_cast<uint8_t*>(rig) + patterns::kActorMeshInstOffset, &inst, sizeof inst) && inst &&
+        read_n(static_cast<uint8_t*>(inst) + 0xE8, &tn, sizeof tn) &&
+        read_n(static_cast<uint8_t*>(inst) + 0x100, &coords, sizeof coords) && tn.names && coords && tn.count > 0 &&
+        tn.count <= kMaxSock) {
+        if (inst != g_rig2Sock.inst) {
+            g_rig2Sock = Rig2Sock{};
+            g_rig2Sock.inst = inst;
+            for (int i = 0; i < tn.count; ++i) {
+                int32_t nm[2] = {};
+                if (read_n(tn.names + 2 * i, nm, 8) && !memcmp(nm, g_sock.name[fire], 8)) g_rig2Sock.index = i;
+            }
+        }
+        const int i = g_rig2Sock.index;
+        float cur[12];
+        if (i >= 0 && read_n(coords + 12 * i, cur, 48)) {
+            if (!g_rig2Sock.have || memcmp(cur, g_rig2Sock.wrote, 48)) {
+                memcpy(g_rig2Sock.orig, cur, 48);
+                g_rig2Sock.have = true;
+            }
+            float w[12], o[3], d[3];
+            memcpy(w, g_rig2Sock.orig, 48);
+            // Its origin on ITS OWN left palm (the one placed on the right hand): the game's offset is where the
+            // left hand appears on a flat screen, ~65 UU off the head bone (s91) - the 23:58 run's right-hand bolt
+            // started between the hands. As the main hands' record: the head bone's attach origin plus the palm.
+            // 2026-10-25: as the game's hands' (socket_follow): its FireballSocket hangs on its LEFT HAND bone, so the
+            // bolt attaches there at the cast, and its record is its own palm in that bone's frame, the axes along
+            // the right hand's aim. (Its table may be its own mesh instance's: its alias is set here too.)
+            const int32_t* rb = nullptr;
+            static const int32_t s_hand = script::name_index("Bip01_L_Hand");
+            const bool alias = g_boltFollow.load(std::memory_order_relaxed) >= 1 && s_hand >= 0 &&
+                               read_n(static_cast<uint8_t*>(inst) + 0xF4, &rb, sizeof rb) && rb;
+            if (alias) {
+                int32_t cur[2] = {};
+                const int32_t v[2] = {s_hand, 0};
+                if (read_n(rb + 2 * i, cur, 8) && cur[0] != s_hand) write_n(const_cast<int32_t*>(rb) + 2 * i, v, 8);
+                const Qts& hand = g_rig2Eval[patterns::kBoneLWrist];
+                const ik::Quat hq = ik::normalized(ik::quat(hand.q));
+                ik::put(ik::rotate(ik::conj(hq), ik::vec(palm.p) - ik::vec(hand.p)), w);
+                if (g_beamAim.load(std::memory_order_relaxed) && aim::plasmid_ray_right(o, d))
+                    beam_axes(g_rig2Sock.orig, hq, d, w);
+            } else {
+                if (g_attachOriginOk) {
+                    const ik::Quat hq = ik::normalized(ik::quat(head.q));
+                    const ik::Vec hp = ik::vec(head.p) + g_attachOriginComp;
+                    ik::put(ik::rotate(ik::conj(hq), ik::vec(palm.p) - hp), w);
+                }
+                if (g_beamAim.load(std::memory_order_relaxed) && aim::plasmid_ray_right(o, d))
+                    beam_axes(g_rig2Sock.orig, ik::normalized(ik::quat(head.q)), d, w);
+            }
+            if (write_n(coords + 12 * i, w, 48)) memcpy(g_rig2Sock.wrote, w, 48);
+        }
+    }
+    const uint64_t now = GetTickCount64();
+    if (now - g_rig2LogMs >= 2000) {
+        g_rig2LogMs = now;
+        BVR_LOG("[hands2] placed: its left palm moved %.1f %.1f %.1f (actor-local) onto the drawn right palm (%d "
+                "offset field(s) written); cast socket %s",
+                delta.x, delta.y, delta.z, wrote, g_rig2Sock.index >= 0 ? "aimed along the right hand" : "NOT found");
+    }
+}
+
+// 2026-10-25: WHICH HAND ANIMATES IN A CAST, measured (the owner: two hands that look alike are no proof). A cast
+// window opens when either hands actor - the game's, or the second hands of a dual plasmid - enters a fire state
+// and closes 300 ms after both are out of them. Over it, each drawn hand's largest change in SHAPE: every finger bone's
+// rotation relative to its wrist, against the pose of the frame before the window. Logged once per window.
+struct AnimCheck {
+    bool open = false;
+    uint64_t lastFireMs = 0, openMs = 0;
+    Qts base[kMaxBones];
+    float maxDeg[2] = {0.0f, 0.0f};
+    bool fired[2] = {false, false}; // [0] the game's hands fired in this window, [1] the second hands
+    Qts prev[kMaxBones];
+    bool havePrev = false;
+} g_animCheck;
+
+bool fire_state(const wchar_t* st) {
+    return st && (!wcsncmp(st, L"AbilityFiring", 13) || !wcsncmp(st, L"FinishAbilityFiring", 19) ||
+                  !wcsncmp(st, L"WeaponFiring", 12));
+}
+
+float hand_shape_change(const Qts* A, const Qts* B, int h) {
+    namespace ik = arm_ik;
+    const int first = h ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+    const int last = h ? patterns::kBoneRClusterLast - 2 : patterns::kBoneLClusterLast; // not the right's 43/44
+    const int wrist = h ? patterns::kBoneRWrist : patterns::kBoneLWrist;
+    const ik::Quat wa = ik::normalized(ik::quat(A[wrist].q)), wb = ik::normalized(ik::quat(B[wrist].q));
+    float worst = 0.0f;
+    for (int i = first; i <= last; ++i) {
+        if (i == wrist) continue;
+        const ik::Quat ra = ik::mul(ik::conj(wa), ik::normalized(ik::quat(A[i].q)));
+        const ik::Quat rb = ik::mul(ik::conj(wb), ik::normalized(ik::quat(B[i].q)));
+        const ik::Quat d = ik::mul(ik::conj(ra), rb);
+        const float w = d.v[3] < 0.0f ? -d.v[3] : d.v[3];
+        const float deg = 2.0f * acosf(w > 1.0f ? 1.0f : w) * 57.29578f;
+        if (deg > worst) worst = deg;
+    }
+    return worst;
+}
+
+void anim_check(const Qts* A, int n) {
+    if (n < patterns::kHandsRigBoneCount || !g_m4.actor) return;
+    AnimCheck& c = g_animCheck;
+    const uint64_t now = GetTickCount64();
+    const bool f0 = fire_state(hands_state::current_name(g_m4.actor));
+    void* rig = second_hands::actor();
+    const bool f1 = rig && fire_state(hands_state::current_name(rig));
+    if (f0 || f1) {
+        if (!c.open && c.havePrev) {
+            c = AnimCheck{c};
+            c.open = true;
+            c.openMs = now;
+            memcpy(c.base, c.prev, sizeof(Qts) * static_cast<size_t>(n));
+            c.maxDeg[0] = c.maxDeg[1] = 0.0f;
+            c.fired[0] = c.fired[1] = false;
+        }
+        c.lastFireMs = now;
+        c.fired[0] |= f0;
+        c.fired[1] |= f1;
+    }
+    if (c.open) {
+        for (int h = 0; h < 2; ++h) {
+            const float d = hand_shape_change(A, c.base, h);
+            if (d > c.maxDeg[h]) c.maxDeg[h] = d;
+        }
+        if (!f0 && !f1 && now - c.lastFireMs > 300) {
+            c.open = false;
+            BVR_LOG("[animcheck] a %.1f s cast window (fire states: the game's hands %s, the second hands %s): the drawn "
+                    "LEFT hand's shape changed up to %.1f deg, the RIGHT hand's up to %.1f deg%s",
+                    (now - c.openMs) / 1000.0f, c.fired[0] ? "YES" : "no", c.fired[1] ? "YES" : "no", c.maxDeg[0],
+                    c.maxDeg[1], g_m4.copyLeft ? " (dual plasmids)" : g_m4.holdRight ? " (the right hand held)" : "");
+        }
+    }
+    memcpy(c.prev, A, sizeof(Qts) * static_cast<size_t>(n));
+    c.havePrev = true;
 }
 
 void m4_compose(bool late) {
@@ -8015,6 +8908,7 @@ void m4_compose(bool late) {
     // the gun in the left hand, the drive reads the mirrored pose (each hand the other's layout).
     palette::publish_pose(g_evCopy[0].p, n, static_cast<int>(sizeof(Qts) / sizeof(float)));
     const Qts* A = m4_pose(g_evCopy, n);
+    if (late) anim_check(A, n);
     namespace hc = hand_compose;
     namespace ik = arm_ik;
     const uint64_t now = GetTickCount64();
@@ -8025,7 +8919,9 @@ void m4_compose(bool late) {
     // Mirrored, hand h shows the OTHER hand's animation, so the game's hand-back for that
     // animation is the other hand's (a reload played on the right hand now plays on the left).
     const bool mir = g_m4.mirror && A != g_evCopy;
-    auto hb = [&](int h) { return mir ? 1 - h : h; };
+    // 2026-10-25: dual-wielded plasmids - both hands show the LEFT hand's animation, so both take its hand-back.
+    const bool copyL = g_m4.copyLeft && A != g_evCopy;
+    auto hb = [&](int h) { return copyL ? 0 : mir ? 1 - h : h; };
     float hbWeight[2] = {handback::weight(hb(0), now), handback::weight(hb(1), now)};
     palette::HandXform palX[2];
     float palmComposed[2][3] = {};
@@ -9123,7 +10019,7 @@ void m4_compose(bool late) {
             memcpy(palX[h].fixT, boneFix[h].fixT, sizeof palX[h].fixT);
         }
         palette::publish(g_m4.actor, palX, g_m4.hideArms || (g_m4.arms && !palX[0].armValid && !palX[1].armValid), wx,
-                         mir);
+                         mir, copyL, g_m4.holdRight && A != g_evCopy);
         palette::set_link_probe(g_m4.actor, g_skelInst);
         (late ? g_m4Late : g_m4Composes).fetch_add(1, std::memory_order_relaxed);
     }
@@ -9275,12 +10171,40 @@ bool m4_frame(const FrameContext& ctx, void* handsActor, int held, const bool va
     // The gun in the left hand (hands.cpp already passes the LEFT hand as held and each hand its
     // own controller): each hand takes the other's layout, mirrored.
     {
+        // 2026-10-25 (the 16:06 run: the Tommy Gun handed to the left hand, then the plasmids - the hands stayed
+        // mirrored, dual plasmids never came on and the reticle sat up on the ceiling): the left-handed hold is the
+        // GUN's (the grab's hand-over sets it). With a plasmid in hand it is lifted - each hand its own, the plasmids
+        // where they belong - and put back when a gun comes out again, so the gun returns to the left hand.
+        {
+            static bool s_lhLifted = false;
+            const bool plasmidOut = hands::active_hand() == 0;
+            if (plasmidOut && bvr::input::left_handed()) {
+                bvr::input::set_left_handed(false);
+                s_lhLifted = true;
+                BVR_LOG("[hands] a plasmid in hand: the left-handed gun hold is lifted until a gun comes out again");
+            } else if (!plasmidOut && s_lhLifted) {
+                s_lhLifted = false;
+                bvr::input::set_left_handed(true);
+                BVR_LOG("[hands] a gun in hand again: back in the left hand, as it was handed over");
+            }
+        }
         const bool m = mirror_wanted();
         if (m != g_m4.mirror)
             BVR_LOG("[bones] hands %s", m ? "MIRRORED - the gun in the left hand: each hand shows the other's "
                                             "layout, mirrored across the rig, on its own controller"
                                           : "as the game draws them (the gun in the right hand)");
         g_m4.mirror = m;
+        // 2026-10-25: dual-wielded plasmids, a plasmid in hand (never with the hands mirrored for a gun).
+        const bool c = !m && aim::dual_plasmids() && palette::active() && palette::mirror_basis() != nullptr;
+        if (c != g_m4.copyLeft)
+            BVR_LOG("[bones] %s", c ? "DUAL PLASMIDS - the right hand shows the left hand's plasmid, mirrored, on its "
+                                      "own controller"
+                                    : "dual plasmids off: each hand its own layout");
+        g_m4.copyLeft = c;
+        // The right hand's own plasmid on its own hands actor (second_hands.h): only in gameplay, so a menu, a
+        // cinematic or a load - every moment a save can happen - takes it away.
+        second_hands::tick(handsActor, c && aim::gameplay_view());
+        cheats::tick_hands(handsActor); // F10 > Cheats: plasmids, infinite EVE
     }
     const uint64_t now = GetTickCount64();
     g_m4.ms = now;
@@ -9978,6 +10902,8 @@ float menu_read(menu::Setting id, int hand) {
         case S::RenderLateral: return static_cast<float>(g_lockGain.load(std::memory_order_relaxed));
         case S::RenderDepth: return static_cast<float>(g_lockDepthGain.load(std::memory_order_relaxed));
         case S::PinPosition: return static_cast<float>(g_animPinPos[hand].load(std::memory_order_relaxed));
+        case S::CastHandOnly: return g_castHandOnly.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        case S::RightHandOwnLook: return palette::second_draws_right() ? 1.0f : 0.0f;
         case S::PinRotation: return static_cast<float>(g_animPinRot[hand].load(std::memory_order_relaxed));
         case S::BoneProbes: return static_cast<float>(g_probes.load(std::memory_order_relaxed));
         case S::ArmAppearance: return static_cast<float>(g_armsMode.load(std::memory_order_relaxed));
@@ -10000,6 +10926,8 @@ bool menu_write(menu::Setting id, int hand, float value) {
         case S::RenderLateral: g_lockGain.store(static_cast<decltype(g_lockGain.load())>(value), std::memory_order_relaxed); return true;
         case S::RenderDepth: g_lockDepthGain.store(static_cast<decltype(g_lockDepthGain.load())>(value), std::memory_order_relaxed); return true;
         case S::PinPosition: g_animPinPos[hand].store(static_cast<decltype(g_animPinPos[hand].load())>(value), std::memory_order_relaxed); return true;
+        case S::CastHandOnly: g_castHandOnly.store(value != 0, std::memory_order_relaxed); return true;
+        case S::RightHandOwnLook: palette::set_second_draws_right(value != 0); return true;
         case S::PinRotation: g_animPinRot[hand].store(static_cast<decltype(g_animPinRot[hand].load())>(value), std::memory_order_relaxed); return true;
         case S::BoneProbes: g_probes.store(static_cast<decltype(g_probes.load())>(value), std::memory_order_relaxed); return true;
         case S::ArmAppearance:
@@ -10027,6 +10955,58 @@ void set_plasmid_fx_cm(float along, float across, float out) {
     g_plasmidFxCm[1].store(across, std::memory_order_relaxed);
     g_plasmidFxCm[2].store(out, std::memory_order_relaxed);
 }
+
+void on_effect_event(void* actor) {
+    // Only the hands actors, and only while the bolt follow is on: an effect event on any other actor is nothing here.
+    // With FireballSocket on the hand bone (socket_follow's alias) the bolt attaches to the hand itself: no move.
+    if (!actor || g_boltFollow.load(std::memory_order_relaxed) == 0 || g_sock.aliased) return;
+    void* const main = g_m4.actor;
+    void* const rig = second_hands::actor();
+    if (!main) return;
+    // The ability's own 'UsedAbility' fires on the player (Ability.UseAbility: the Instigator), so the player's events
+    // look at both hands actors; a hands actor's own events at that one.
+    void* pawn = nullptr;
+    read_n(static_cast<uint8_t*>(main) + patterns::kHandsBaseOffset, &pawn, sizeof pawn);
+    if (actor != main && actor != rig && actor != pawn) return;
+    if (actor == pawn) {
+        on_effect_event(main);
+        if (rig) on_effect_event(rig);
+        return;
+    }
+    const int h = actor == rig && rig ? 1 : 0;
+    void* linked[64];
+    const int nl = attach_census::collect_linked(actor, linked, 64);
+    for (int j = 0; j < nl; ++j) {
+        int32_t nm[2] = {};
+        if (!read_n(static_cast<uint8_t*>(linked[j]) + patterns::kActorAttachBoneNameOffset, nm, 8)) continue;
+        const wchar_t* an = patterns::fname_text(nm[0]);
+        if (!an || _wcsicmp(an, L"FireballSocket")) continue;
+        const bool att = bolt_move(actor, linked[j], h);
+        bool known = false;
+        for (int s = 0; s < g_boltFxN; ++s) known = known || g_boltFx[s].actor == linked[j];
+        if (!known) {
+            if (g_boltFxN >= kMaxBoltFx) g_boltFx[0] = g_boltFx[--g_boltFxN];
+            g_boltFx[g_boltFxN++] = BoltFx{linked[j]};
+        }
+        static uint32_t s_moves = 0;
+        if (++s_moves <= 6 || !att)
+            BVR_LOG("[bolt] the %s-hand bolt effect %p moved to the hand bone AT the cast: %s", h ? "right" : "left",
+                    linked[j], att ? "attached" : "ATTACH FAILED");
+    }
+}
+
+void set_bolt_follow(int mode) {
+    g_boltFollow.store(mode < 0 ? 0 : mode > 2 ? 2 : mode, std::memory_order_relaxed);
+    BVR_LOG("[bolt] the bolt effect follows %s", mode >= 2 ? "the drawn palm and the hand's aim"
+                                                 : mode == 1 ? "the drawn palm (its aim as the game attached it)"
+                                                             : "nothing (as the game attached it)");
+}
+void note_bolt_cast(int hand) {
+    g_boltCastMs.store(GetTickCount64(), std::memory_order_relaxed);
+    g_boltCastHand.store(hand, std::memory_order_relaxed);
+}
+float plasmid_beam_down_deg() { return g_beamDownDeg.load(std::memory_order_relaxed); }
+void set_plasmid_beam_down_deg(float deg) { g_beamDownDeg.store(deg, std::memory_order_relaxed); }
 void set_beam_aim(int mode) {
     if (mode == 2) g_beamFlip.store(!g_beamFlip.load(std::memory_order_relaxed), std::memory_order_relaxed);
     else g_beamAim.store(mode == 1, std::memory_order_relaxed);
@@ -10592,6 +11572,52 @@ void draw_debug_ui() {
 }
 
 bool mirror_hands() { return mirror_wanted(); }
+
+// 2026-10-25, dual-wielded plasmids: around a cast run for the RIGHT hand (aim.cpp AbilityInitDetour). The left
+// hand's casting sockets take the right-hand records socket_follow prepared (the right palm, the beam along the
+// right hand's plasmid ray), so what the cast attaches starts there; every effect actor that appears during the
+// cast is kept on the right palm for its life (fx_actor_follow). Game thread, inside the cast.
+void cast_hand_begin(int hand) {
+    if (hand != 1 || !g_m4.copyLeft || !g_sock.coords || !g_m4.actor || g_castRightOpen) return;
+    g_castBeforeN = attach_census::collect_linked(g_m4.actor, g_castBefore, 64);
+    for (int i = 0; i < g_sock.count; ++i) {
+        g_sock.swapped[i] = false;
+        if (!g_sock.haveRight[i] || !read_n(g_sock.coords + 12 * i, g_sock.beforeRight[i], 48)) continue;
+        g_sock.swapped[i] = write_n(g_sock.coords + 12 * i, g_sock.right[i], 48);
+    }
+    g_castRightOpen = true;
+}
+void cast_hand_end(int hand) {
+    if (hand != 1 || !g_castRightOpen) return;
+    g_castRightOpen = false;
+    for (int i = 0; i < g_sock.count; ++i) {
+        float cur[12];
+        // Only where the record is still ours: a game rewrite during the cast owns its new value.
+        if (g_sock.swapped[i] && read_n(g_sock.coords + 12 * i, cur, 48) && !memcmp(cur, g_sock.right[i], 48))
+            write_n(g_sock.coords + 12 * i, g_sock.beforeRight[i], 48);
+        g_sock.swapped[i] = false;
+    }
+    void* now[64];
+    const int nn = g_m4.actor ? attach_census::collect_linked(g_m4.actor, now, 64) : 0;
+    int added = 0;
+    for (int j = 0; j < nn; ++j) {
+        bool before = false;
+        for (int b = 0; b < g_castBeforeN && !before; ++b) before = g_castBefore[b] == now[j];
+        if (before || is_right_fx(now[j])) continue;
+        if (g_rightFxN < kMaxRightFx) g_rightFx[g_rightFxN++] = now[j];
+        else {
+            memmove(g_rightFx, g_rightFx + 1, sizeof(void*) * (kMaxRightFx - 1)); // the oldest goes
+            g_rightFx[kMaxRightFx - 1] = now[j];
+        }
+        ++added;
+    }
+    static uint64_t s_logMs = 0;
+    const uint64_t t = GetTickCount64();
+    if (t - s_logMs > 1000) {
+        s_logMs = t;
+        BVR_LOG("[dualcast] a right-hand cast: its sockets on the right palm; %d effect(s) it attached kept there", added);
+    }
+}
 bool true_mirror_gun() { return g_trueMirror.load(std::memory_order_relaxed); }
 void set_true_mirror_gun(bool on) {
     if (g_trueMirror.exchange(on, std::memory_order_relaxed) != on)

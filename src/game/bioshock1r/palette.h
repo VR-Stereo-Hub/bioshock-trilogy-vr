@@ -93,8 +93,12 @@ Sim sim_world(const Sim& L, const Sim& S);
 // `mirrored`: the gun is in the left hand and each hand shows the other's layout, mirrored
 // (mirror_math.h) - the gather swaps in the mirrored skin matrices before composing `hands`,
 // which the drive computed from the mirrored pose.
+// `copyLeft` (2026-10-25, dual-wielded plasmids): the RIGHT hand and arm take the left's skin matrices, mirrored,
+// and the left keeps its own (the drive computed `hands` from the same copied pose, bones.cpp m4_pose).
+// `holdRight` (2026-10-25): the right hand and arm keep the skin matrices they had before (a one-hand cast: only the
+// casting hand plays the fire animation; bones.cpp m4_pose holds the same pose).
 void publish(void* ownerActor, const HandXform hands[2], bool hideArms, const WeaponXform& weapon,
-             bool mirrored = false);
+             bool mirrored = false, bool copyLeft = false, bool holdRight = false);
 // 2026-10-25 (gun_geometry.h trueMirror): draw this weapon actor REFLECTED - its own axis `axis` (0 X, 1 Y,
 // 2 Z of its local space) flipped about the plane at `planeWeaponSpace` along it, in its skin palette and its
 // static-mesh draws, which then cull the other face (gun_flip.cpp). Null: none. Game thread, every frame it is
@@ -130,5 +134,12 @@ void set_rigid_wrist(bool on);
 void set_probe(bool on);
 // s91: log, once, which skeleton bones carry hand skin weight (the next gather of the hands).
 void request_weight_census();
+
+// 2026-10-25: with dual plasmids and the second hands up, the RIGHT hand drawn by the second hands' own mesh - their
+// left hand's animation mirrored onto their right arm, carried into their actor's space - so it wears their own
+// plasmid's look (materials and overlays are per actor); the game's hands then draw only the left. F10 Controls >
+// Dual plasmids > "Right hand shows its own plasmid", default on. Off: the game's mesh draws both, as before.
+void set_second_draws_right(bool on);
+bool second_draws_right();
 
 } // namespace bvr::b1r::palette

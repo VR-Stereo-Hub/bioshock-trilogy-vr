@@ -235,6 +235,10 @@ bool off_hand_tracked();
 // and the rig measured as mirror-symmetric. hands.cpp then places each hand on its own
 // controller and passes the LEFT hand as the one holding the gun.
 bool mirror_hands();
+// 2026-10-25, dual-wielded plasmids: around a cast run for `hand` (aim.cpp). For the right hand the plasmid's
+// casting sockets point at the right palm for the cast, and the effects it attaches stay there.
+void cast_hand_begin(int hand);
+void cast_hand_end(int hand);
 bool mirror_hands_enabled();
 // 2026-10-25: a gun marked trueMirror (gun_geometry.h) drawn as the mirror image in the left hand.
 bool true_mirror_gun();
@@ -380,6 +384,16 @@ void set_beam_aim(int mode); // s91: 0 off, 1 on, 2 flip the axes' composition
 // s91: the cast effect's place on the palm, cm: toward the fingers, across the palm, out of the palm.
 void plasmid_fx_cm(float* along, float* across, float* out);
 void set_plasmid_fx_cm(float along, float across, float out);
+// 2026-10-25: F10 Hands > Plasmid effect > "Bolt aim down" (degrees, + down): the beam effect's aim against the hand's.
+float plasmid_beam_down_deg();
+// 2026-10-25: a player plasmid cast (aim.cpp): the bolt probe logs the cast effect against the palm for 1.5 s.
+void note_bolt_cast(int hand);
+// 2026-10-25: the Electro Bolt effect on the cast socket follows 0 nothing, 1 the drawn palm, 2 the palm and the aim.
+void set_bolt_follow(int mode);
+// 2026-10-25: an effect event just ran on `actor` (the sound engine's TriggerEffectEvent hook, game thread): a bolt
+// effect it attached to a hands actor's head socket is moved onto that hand's bone at once, before the frame is drawn.
+void on_effect_event(void* actor);
+void set_plasmid_beam_down_deg(float deg);
 void set_sockets(int hand, const int* list, int count); // bones outside the hand's cluster are dropped
 void log_sockets();
 // s91: a world point into this actor's component space; a bone of its live array (component).

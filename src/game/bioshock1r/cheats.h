@@ -21,6 +21,17 @@ void request_all_weapons(bool upgraded);
 // Game thread, once per frame: `holdable` = the weapon in hand (hands::current_holdable).
 void tick(void* holdable);
 
+// 2026-10-25: every active plasmid (the game's own ShockPlayer.TestAddAvailablePlasmid / UnlockTrackSlot /
+// TestEquipPlasmid, as ShockCheatManager.GEP), and infinite EVE (AddBioAmmo up to GetMaxBioAmmo once a second).
+// They reach the player through the hands actor's PawnOwner, so no weapon need be in hand.
+void request_all_plasmids();
+// The plasmid in hand, by its ability class name (ShockPlayer.EquipAbilityByClassName) - the harness's `vrcheat plasmid`.
+void request_equip_plasmid(const char* abilityClass);
+void set_infinite_eve(bool on);
+bool infinite_eve();
+// Game thread, once per frame: the hands actor.
+void tick_hands(void* handsActor);
+
 // F10 > Cheats.
 void draw_panel();
 

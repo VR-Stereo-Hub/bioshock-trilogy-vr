@@ -21,6 +21,8 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
+#include "game/bioshock1r/hand_loadout.h"
+#include "game/bioshock1r/second_hands.h"
 #include "game/bioshock1r/handback.h"
 #include "game/bioshock1r/hud_elements.h"
 #include "game/bioshock1r/hands.h"
@@ -138,6 +140,13 @@ Barrel g_barrel;
 bool barrel_locked() {
     return g_barrelOrigin.load(std::memory_order_relaxed) && g_barrelAim.load(std::memory_order_relaxed);
 }
+// 2026-10-25: the lock is the GUN's. With a plasmid in hand there is no barrel, and the lock took the plasmid trims
+// and origin offsets off the left hand's ray only - the right hand's plasmid ray (mirrored from the same trims)
+// always had them, so the two reticles disagreed (the owner: the right one is good, the left feels off). With a
+// plasmid in hand both plasmid rays are built the same way, trims and offsets on.
+bool barrel_locked_now() {
+    return barrel_locked() && hands::active_hand() != 0;
+}
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 // Defaults = the user's in-headset calibration (their explicit ask: the
@@ -226,7 +235,27 @@ std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 // hole". BioVRDev's dot has the same shape and the same limitation.
 std::atomic<bool> g_dot{false};
 std::atomic<float> g_dotDistM{5.0f};
-std::atomic<float> g_dotSizeDeg{0.5f};
+// 2026-10-25: 5 mrad across (0.29 deg), BO3 Zombies VR's shipped aim aid (was 0.5 deg).
+std::atomic<float> g_dotSizeDeg{0.2865f};
+// 2026-10-25: the reticle where its ray meets the scene (laser_draw measure; BO3 Zombies VR and Darkness II VR
+// trace for it), the distance above only until a measurement comes in. F10 Aim > Reticle.
+std::atomic<bool> g_dotDynamic{true};
+// 2026-10-25: every plasmid shares ONE aim profile ("Plasmid"), so they share one reticle position. F10 Aim.
+std::atomic<bool> g_sharedPlasmidAim{true};
+// 2026-10-25: dual-wielded plasmids - the plasmid in hand cast from either hand, each hand's trigger its own cast,
+// the right hand aimed with the plasmid aim mirrored. F10 Controls > Dual plasmids. Off by default.
+std::atomic<bool> g_dualCast{false};
+std::atomic<uint32_t> g_castsL{0}, g_castsR{0};
+// What each hand holds (hand_loadout.h: today's rules, the slots the mix-and-match wheels will fill) and the
+// trigger router that latches each hand's cast. Written per frame on the game thread, routed on the XInput thread,
+// taken at the cast on the game thread - so under one lock.
+std::mutex g_loadoutMutex;
+loadout::Loadout g_loadout;
+loadout::CastRouter g_router;
+int g_castHand = -1; // game thread: the hand the cast now running is (AbilityInitDetour), -1 the game's own
+bool g_forceRight = false; // == (g_castHand == 1), for the fire seam and the ray
+// A plasmid is in hand and the plasmids are dual-wielded.
+bool dual_casting() { return g_dualCast.load(std::memory_order_relaxed) && hands::active_hand() == 0; }
 constexpr float kIdentQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
@@ -239,6 +268,9 @@ struct Ray {
     FRotator rot{};
 };
 Ray g_ray[2]; // 0 = left (plasmid), 1 = right (weapon)
+// 2026-10-25: the RIGHT hand casting the plasmid (dual-wielded plasmids): its controller, aimed with the plasmid
+// aim mirrored - the left hand's tilt, its turn and sideways offset the other way round.
+Ray g_plasmidRayR;
 uint64_t g_rayStampMs = 0;
 bool g_gameplayView = false;
 // Copied out of the frame context each CalcView so the detours - which run far
@@ -315,7 +347,6 @@ bool read12(const void* src, float* out3) {
         return false;
     }
 }
-
 bool write12(void* dst, const float* in3) {
     __try {
         memcpy(dst, in3, 12);
@@ -426,7 +457,7 @@ Hand hand_for_object(void* obj, Hand fallback) {
 bool ray_for(Hand h, FVector* origin, FRotator* rot) {
     if (!g_enabled.load(std::memory_order_relaxed)) return false;
     if (!g_gameplayView) return false; // scripted camera: leave the engine alone
-    const Ray& r = g_ray[static_cast<int>(h)];
+    const Ray& r = g_forceRight && h == Hand::Right && g_plasmidRayR.valid ? g_plasmidRayR : g_ray[static_cast<int>(h)];
     if (!r.valid) return false;
     // A ray older than a few frames means CalcView stopped running (load
     // screen, teardown) - never aim from a stale pose.
@@ -658,10 +689,18 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
     if (g_subAbility.load(std::memory_order_relaxed) && is_player_pawn(instigator)) {
         // Plasmids are the left hand; the wrench's melee ability also lands
         // here, and the trigger-keyed map moves it back to the right hand the
-        // first time it swings.
-        Hand h = hand_for_object(self, Hand::Left);
+        // first time it swings. 2026-10-25: a dual-wielded plasmid's right-hand cast is the right hand's,
+        // whatever was learned (AbilityInitDetour).
+        // The second hands' cast (second_hands.h) is the right hand's even outside InitiateDamage.
+        const bool rig2 = g_castHand < 0 && second_hands::on_stack(self);
+        Hand h = rig2 ? Hand::Right
+                      : g_castHand >= 0 ? (g_castHand ? Hand::Right : Hand::Left) : hand_for_object(self, Hand::Left);
         float* outs[3] = {outA, outB, outC};
+        const bool wasForced = g_forceRight;
+        if (rig2) g_forceRight = true;
         bool subbed = substitute(g_abilityFire, h, outs, 3);
+        g_forceRight = wasForced;
+        bones::note_bolt_cast(h == Hand::Right ? 1 : 0); // the bolt probe (bones.cpp), log only
         if (subbed) {
             note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
             note_hand(g_abilityFire, h);
@@ -669,6 +708,126 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
         watch_call(g_abilityFire, self, a, b, c, h, subbed);
     }
     log_call(g_abilityFire, self, a, b, c, note);
+}
+
+// 2026-10-25: DUAL-WIELDED PLASMIDS. UAttackAbility::InitiateDamage (patterns.h kAbilityInitDamageRva: thiscall,
+// an FName by value, `ret 8`) is the cast - the anim notify's UseAbility calls it, and it calls the fire start
+// above, which aims it. With the plasmids dual-wielded it runs once per hand whose trigger asked for this cast
+// (dual_cast_pad latches them at the pull, because the notify comes after the trigger is let go): the left as
+// ever, the right with g_forceRight, so AbilityFireDetour aims it along g_plasmidRayR. Only the player's casts
+// with a plasmid in hand (the wrench's melee is an ability too, and has a holdable). Whether the engine charges EVE
+// for each run is not known yet - the log line says how many casts each hand made.
+Slot g_abilityInit{"abilityInit"};
+int __fastcall AbilityInitDetour(void* self, void* edx, int32_t nameIndex, int32_t nameNumber) {
+    using InitFn = int(__fastcall*)(void*, void*, int32_t, int32_t);
+    const InitFn orig = reinterpret_cast<InitFn>(g_abilityInit.original);
+    g_abilityInit.calls.fetch_add(1, std::memory_order_relaxed);
+    void* instigator = nullptr;
+    if (self) read_ptr(static_cast<uint8_t*>(self) + patterns::kAbilityInstigatorOffset, &instigator);
+    if (g_castHand >= 0 || !is_player_pawn(instigator)) return orig(self, edx, nameIndex, nameNumber);
+    // Which hands actor this cast runs under (the anim notify's Owner): logged, so a cast that leaves the wrong hand
+    // says why.
+    const bool rig2Cast = second_hands::on_stack(self); // takes the armed cast: called once per cast
+    if (second_hands::actor())
+        BVR_LOG("[dualcast] a cast from the %s hands", rig2Cast ? "SECOND (right)" : "game's (left)");
+    // The second hands' own cast (second_hands.h): the right hand's, aimed along its ray - once, as the game cast it.
+    if (rig2Cast) {
+        g_castHand = 1;
+        g_forceRight = true;
+        const int r = orig(self, edx, nameIndex, nameNumber);
+        g_castHand = -1;
+        g_forceRight = false;
+        g_castsR.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
+    loadout::CastPlan plan;
+    {
+        std::lock_guard<std::mutex> lock(g_loadoutMutex);
+        // Only while a second hand holds a plasmid: the game's own one-hand cast is untouched otherwise.
+        if (!g_loadout.plasmid(1)) return orig(self, edx, nameIndex, nameNumber);
+        plan = g_router.take(g_loadout, GetTickCount64(), 0); // no pull seen: the game's own cast, the left hand
+    }
+    const bool left = plan.hand[0], right = plan.hand[1];
+    int r = 0;
+    for (int h = 0; h < 2; ++h) {
+        if (!plan.hand[h]) continue;
+        g_castHand = h;
+        g_forceRight = h == 1;
+        bones::cast_hand_begin(h); // the right hand's cast leaves from the right palm, its effects stay there
+        r = orig(self, edx, nameIndex, nameNumber);
+        bones::cast_hand_end(h);
+        g_castHand = -1;
+        g_forceRight = false;
+        (h ? g_castsR : g_castsL).fetch_add(1, std::memory_order_relaxed);
+    }
+    static uint64_t s_logMs = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_logMs > 1000) {
+        s_logMs = now;
+        BVR_LOG("[dualcast] a cast from %s (casts so far: left %u, right %u)",
+                left && right ? "BOTH hands" : right ? "the RIGHT hand" : "the left hand",
+                g_castsL.load(std::memory_order_relaxed), g_castsR.load(std::memory_order_relaxed));
+    }
+    return r;
+}
+
+// 2026-10-25: TELEKINESIS ON THE CONTROLLER (docs/bioshock1/TELEKINESIS_RE.md). Every Telekinesis pick, hold point
+// and throw takes its origin and direction from one function, which asks the camera - so it aimed with the head. It
+// is replaced: the casting hand's ray, the left hand's plasmid ray for the game's own ability object, the right
+// hand's (its plasmid aim mirrored) for the second hands' own object. Off VR aim, or with no ray: the game's own.
+Slot g_tkRay{"tkRay"};
+std::atomic<uint32_t> g_tkRays[2] = {0, 0};
+void __fastcall TkRayDetour(void* self, void* edx, float* outOrigin, float* outDir) {
+    using RayFn = void(__fastcall*)(void*, void*, float*, float*);
+    const RayFn orig = reinterpret_cast<RayFn>(g_tkRay.original);
+    const int hand = second_hands::is_right_ability(self) ? 1 : 0;
+    float o[3], d[3];
+    const bool ok = g_enabled.load(std::memory_order_relaxed) && outOrigin && outDir &&
+                    (hand ? plasmid_ray_right(o, d) : hand_ray(0, o, d));
+    if (!ok) {
+        orig(self, edx, outOrigin, outDir);
+        return;
+    }
+    write12(outOrigin, o);
+    write12(outDir, d);
+    g_tkRays[hand].fetch_add(1, std::memory_order_relaxed);
+    static uint64_t s_logMs = 0;
+    const uint64_t now = GetTickCount64();
+    static uint64_t s_rayMs[2] = {0, 0};
+    if (now - s_rayMs[hand] > 500) {
+        s_rayMs[hand] = now;
+        BVR_LOG("[telekinesis] the %s ray: origin %.0f %.0f %.0f, direction %.2f %.2f %.2f (ability %p)",
+                hand ? "RIGHT" : "LEFT", o[0], o[1], o[2], d[0], d[1], d[2], self);
+    }
+    if (now - s_logMs > 3000) {
+        s_logMs = now;
+        BVR_LOG("[telekinesis] aimed by the controllers: %u left-hand and %u right-hand rays so far", g_tkRays[0].load(),
+                g_tkRays[1].load());
+    }
+}
+
+// The pad step (dial_input override_sticks, the XInput thread): with a plasmid in hand and the plasmids
+// dual-wielded, the RIGHT trigger casts too, as the plasmid trigger, instead of reaching the game as the weapon
+// trigger (which would switch to the gun). Each trigger's pull is latched for AbilityInitDetour. A pull with the
+// other trigger already down lets the plasmid trigger go for two polls first, so the game sees a fresh press.
+bool dual_cast_pad_impl(bvr::input::PadOverride* pad) {
+    if (!pad) return false;
+    std::lock_guard<std::mutex> lock(g_loadoutMutex);
+    // The roles are composed with the gun handed to the left (leftHanded): the router is by physical hand, so it
+    // stands aside then, as it does while no second hand holds a plasmid (the game's own triggers, untouched).
+    if (pad->leftHanded || !g_loadout.plasmid(1)) {
+        static const loadout::Loadout kNone{};
+        const uint8_t t[2] = {pad->lt, pad->rt};
+        g_router.route(kNone, t, GetTickCount64()); // resets its edge state
+        second_hands::set_right_trigger(false);
+        return false;
+    }
+    const uint8_t t[2] = {pad->lt, pad->rt}; // the plasmid role is the left hand, the weapon role the right
+    const loadout::GameTriggers g = g_router.route(g_loadout, t, GetTickCount64());
+    pad->lt = g.plasmid;
+    pad->rt = g.weapon;
+    second_hands::set_right_trigger(g.own[1]); // the right hand's own plasmid (second_hands.h)
+    return true;
 }
 
 // ---- generic native probe --------------------------------------------------
@@ -943,12 +1102,31 @@ bool install_all() {
                         reinterpret_cast<void*>(&WeaponFireDetour));
     any |= install_slot(g_abilityFire, g_syms.abilityFireStart,
                         reinterpret_cast<void*>(&AbilityFireDetour));
+    // 2026-10-25: the cast itself, for the dual-wielded plasmids (a pass-through unless they are on).
+    install_slot(g_abilityInit, g_syms.abilityInitDamage, reinterpret_cast<void*>(&AbilityInitDetour));
+    // 2026-10-25: Telekinesis's view ray (patterns.h kTkViewRayRva), prologue-checked.
+    {
+        uint8_t* tk = const_cast<uint8_t*>(g_imageBase) + patterns::kTkViewRayRva;
+        uint8_t head[sizeof patterns::kTkViewRayPrologue] = {};
+        bool match = false;
+        __try {
+            memcpy(head, tk, sizeof head);
+            match = memcmp(head, patterns::kTkViewRayPrologue, sizeof head) == 0;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            match = false;
+        }
+        if (match) install_slot(g_tkRay, tk, reinterpret_cast<void*>(&TkRayDetour));
+        else BVR_LOG("[telekinesis] REFUSED: the view ray at RVA 0x%X does not carry the derived prologue",
+                     patterns::kTkViewRayRva);
+    }
     return any;
 }
 
 void disable_all() {
     disable_slot(g_weaponFire);
     disable_slot(g_abilityFire);
+    disable_slot(g_abilityInit);
+    disable_slot(g_tkRay);
 }
 
 void set_dump(int32_t n) {
@@ -1288,7 +1466,19 @@ void update_weapon_profile(const FrameContext& ctx) {
     const char* why = "weapon change";
     if (haveRig && !w && haveAbil) {
         const wchar_t* aname = patterns::object_class_name(abil);
-        if (aname) {
+        if (aname && g_sharedPlasmidAim.load(std::memory_order_relaxed)) {
+            // 2026-10-25 (the owner: every plasmid shares ONE reticle position): one profile for all of them. Its
+            // first use takes the tune of the plasmid in hand, so the shared aim starts where that one was.
+            key = "Plasmid";
+            why = "plasmid equipped (all plasmids share one aim)";
+            if (g_weaponProfiles.find(key) == g_weaponProfiles.end()) {
+                auto own = g_weaponProfiles.find(plasmid_key(narrow_key(aname)));
+                if (own != g_weaponProfiles.end()) {
+                    g_weaponProfiles[key] = own->second;
+                    BVR_LOG("[aim] the shared plasmid aim starts from the '%s' profile", own->first.c_str());
+                }
+            }
+        } else if (aname) {
             key = plasmid_key(narrow_key(aname));
             why = "plasmid equipped (Hands.CurrentAbility)";
         } else {
@@ -1581,6 +1771,18 @@ void load_weapon_profiles() {
 
 } // namespace
 
+bool dual_cast_pad(bvr::input::PadOverride* pad) { return dual_cast_pad_impl(pad); }
+bool dual_plasmids() { return dual_casting(); }
+bool gameplay_view() { return g_gameplayView; }
+bool plasmid_ray_right(float origin[3], float dir[3]) {
+    if (!g_plasmidRayR.valid) return false;
+    origin[0] = g_plasmidRayR.origin.x;
+    origin[1] = g_plasmidRayR.origin.y;
+    origin[2] = g_plasmidRayR.origin.z;
+    ue_rot_to_dir(g_plasmidRayR.rot, dir);
+    return true;
+}
+
 // s91: the aim ray the fire seams substitute, for the bones' effect follow (the bolt's beam points
 // along it, as the damage trace does).
 bool laser_segment(laser_draw::Segment* out) {
@@ -1704,7 +1906,7 @@ void apply_origin_offset(int i, Ray& out, float worldScale) {
         of = g_barrel.rayCm[0];
         orr = g_barrel.rayCm[1];
         ou = g_barrel.rayCm[2];
-    } else if (barrel_locked() && !out.synthetic) {
+    } else if (barrel_locked_now() && !out.synthetic) {
         // Locked: the last barrel this hand had with this gun (a reload, a frame the muzzle could
         // not be read), else the hand itself - never the per-hand origin sliders.
         const bool held = g_barrel.held && g_barrel.hand == i;
@@ -2090,7 +2292,7 @@ void on_calcview(const FrameContext& ctx) {
         // with `vraim synccheck` (roll forced 0 there - the camera owns roll).
         // Locked to the barrel (barrel_locked): no tilt/turn trim, ever - the barrel gives the
         // direction, and without a barrel the controller's own aim pose does.
-        const bool lock = barrel_locked();
+        const bool lock = barrel_locked_now();
         GamePose gp = ray_pose_from_xr(ctx, pos, quat,
                                        lock ? 0.0f : g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
                                        lock ? 0.0f : g_yawOffsetDeg[i].load(std::memory_order_relaxed));
@@ -2153,6 +2355,40 @@ void on_calcview(const FrameContext& ctx) {
     }
     g_prevBase = base;
 
+    // 2026-10-25: what each hand holds this frame (hand_loadout.h - today's rules).
+    {
+        const bool plasmid = hands::active_hand() == 0;
+        const loadout::Loadout l = loadout::resolve(plasmid, g_weaponKey.c_str(), !plasmid && !g_weaponKey.empty(),
+                                                    g_weaponKey.c_str(), g_dualCast.load(std::memory_order_relaxed),
+                                                    second_hands::actor() != nullptr);
+        std::lock_guard<std::mutex> lock(g_loadoutMutex);
+        g_loadout = l;
+    }
+    // 2026-10-25: the right hand's plasmid ray, while the plasmids are dual-wielded and a plasmid is in hand.
+    g_plasmidRayR = {};
+    if (dual_casting() && ctx.vrDriving) {
+        bvr::vr::HeadPose hp{};
+        if (bvr::vr::get_hand_pose(1, g_useAimPose.load(std::memory_order_relaxed), hp)) {
+            const float pos[3] = {hp.px, hp.py, hp.pz};
+            const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+            const GamePose gp = ray_pose_from_xr(ctx, pos, quat, g_pitchOffsetDeg[0].load(std::memory_order_relaxed),
+                                                 -g_yawOffsetDeg[0].load(std::memory_order_relaxed));
+            Ray& r = g_plasmidRayR;
+            r.origin = gp.loc;
+            r.rot = gp.rot;
+            const float of = g_posFwdCm[0].load(std::memory_order_relaxed);
+            const float orr = -g_posRightCm[0].load(std::memory_order_relaxed);
+            const float ou = g_posUpCm[0].load(std::memory_order_relaxed);
+            float fwd[3], right[3], up[3];
+            ue_rot_basis(r.rot, fwd, right, up);
+            const float uuPerCm = ctx.worldScale / 100.0f;
+            r.origin.x += (fwd[0] * of + right[0] * orr + up[0] * ou) * uuPerCm;
+            r.origin.y += (fwd[1] * of + right[1] * orr + up[1] * ou) * uuPerCm;
+            r.origin.z += (fwd[2] * of + right[2] * orr + up[2] * ou) * uuPerCm;
+            r.valid = true;
+        }
+    }
+
     // Publish the laser for the render thread. With a valid fire ray it draws that ray as given
     // (fixedRay, below); otherwise it reads the aim pose itself at submit time and takes the
     // trim from here, so the beam and the bullet are one ray by shared algebra.
@@ -2162,7 +2398,7 @@ void on_calcview(const FrameContext& ctx) {
     int lh = lc.hand == 0 ? 0 : 1;
     // Locked to the barrel: the laser takes no trim either (it draws the fire ray when there is
     // one; without one it is the controller's own aim).
-    const bool lockL = barrel_locked();
+    const bool lockL = barrel_locked_now();
     lc.pitchTrimDeg = lockL ? 0.0f : g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
     lc.yawTrimDeg = lockL ? 0.0f : g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
     lc.posFwdCm = lockL ? 0.0f : g_posFwdCm[lh].load(std::memory_order_relaxed);
@@ -2235,6 +2471,16 @@ void on_calcview(const FrameContext& ctx) {
             g_seg.nearUu = 0.05f * uuPerM;
             g_seg.farUu = (reticleOn ? reticleM : g_laserFarM.load(std::memory_order_relaxed)) * uuPerM;
             g_seg.reticleUu = reticleM * uuPerM;
+            g_seg.dynamic = g_dotDynamic.load(std::memory_order_relaxed);
+            // 2026-10-25: the right hand's reticle with the plasmids dual-wielded, on its own (mirrored-aim) ray.
+            if (reticleOn && g_plasmidRayR.valid) {
+                g_seg.reticle2 = true;
+                g_seg.origin2[0] = g_plasmidRayR.origin.x;
+                g_seg.origin2[1] = g_plasmidRayR.origin.y;
+                g_seg.origin2[2] = g_plasmidRayR.origin.z;
+                ue_rot_to_dir(g_plasmidRayR.rot, g_seg.dir2);
+                g_seg.reticle2Uu = reticleM * uuPerM;
+            }
             g_seg.dots = g_laserDots.load(std::memory_order_relaxed);
             g_seg.dotDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
             g_seg.reticleDeg = g_dotSizeDeg.load(std::memory_order_relaxed);
@@ -2261,6 +2507,9 @@ void on_calcview(const FrameContext& ctx) {
         float dir[3];
         ue_rot_to_dir(dr.rot, dir);
         float distUu = g_dotDistM.load(std::memory_order_relaxed) * ctx.worldScale;
+        // 2026-10-25: at the measured hit when there is one (laser_draw measure).
+        const float hitUu = g_dotDynamic.load(std::memory_order_relaxed) ? laser_draw::measured_uu(0) : -1.0f;
+        if (hitUu > 0.0f) distUu = hitUu;
         FVector at{dr.origin.x + dir[0] * distUu, dr.origin.y + dir[1] * distUu,
                    dr.origin.z + dir[2] * distUu};
         at = seen_point(ctx, at); // where the headset shows it (the round trip below checks this)
@@ -2763,6 +3012,10 @@ float menu_read(menu::Setting id) {
         case S::Reticle: return static_cast<float>(g_dot.load(std::memory_order_relaxed));
         case S::ReticleDistance: return static_cast<float>(g_dotDistM.load(std::memory_order_relaxed));
         case S::ReticleSize: return static_cast<float>(g_dotSizeDeg.load(std::memory_order_relaxed));
+        case S::ReticleDynamic: return g_dotDynamic.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        case S::PlasmidSharedAim: return g_sharedPlasmidAim.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        case S::DualPlasmids: return g_dualCast.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        case S::RightPlasmid: return static_cast<float>(second_hands::right_plasmid());
         case S::Laser: return static_cast<float>(g_laser.load(std::memory_order_relaxed));
         case S::LaserDots: return static_cast<float>(g_laserDots.load(std::memory_order_relaxed));
         case S::LaserReach: return static_cast<float>(g_laserFarM.load(std::memory_order_relaxed));
@@ -2782,6 +3035,19 @@ bool menu_write(menu::Setting id, float value) {
         case S::Reticle: g_dot.store(static_cast<decltype(g_dot.load())>(value), std::memory_order_relaxed); return true;
         case S::ReticleDistance: g_dotDistM.store(static_cast<decltype(g_dotDistM.load())>(value), std::memory_order_relaxed); return true;
         case S::ReticleSize: g_dotSizeDeg.store(static_cast<decltype(g_dotSizeDeg.load())>(value), std::memory_order_relaxed); return true;
+        case S::ReticleDynamic: g_dotDynamic.store(value != 0, std::memory_order_relaxed); return true;
+        case S::PlasmidSharedAim:
+            if (g_sharedPlasmidAim.exchange(value != 0, std::memory_order_relaxed) != (value != 0)) {
+                g_weaponKeyActor = nullptr; // re-key the plasmid in hand on the next frame
+                BVR_LOG("[aim] plasmids %s", value != 0 ? "share ONE aim profile ('Plasmid')" : "each keep their own aim profile");
+            }
+            return true;
+        case S::DualPlasmids:
+            if (g_dualCast.exchange(value != 0, std::memory_order_relaxed) != (value != 0))
+                BVR_LOG("[dualcast] dual-wielded plasmids %s",
+                        value != 0 ? "ON: either trigger casts the plasmid in hand, from its own hand" : "off");
+            return true;
+        case S::RightPlasmid: second_hands::set_right_plasmid(static_cast<int>(value + 0.5f)); return true;
         case S::Laser: g_laser.store(static_cast<decltype(g_laser.load())>(value), std::memory_order_relaxed); return true;
         case S::LaserDots: g_laserDots.store(static_cast<decltype(g_laserDots.load())>(value), std::memory_order_relaxed); return true;
         case S::LaserReach: g_laserFarM.store(static_cast<decltype(g_laserFarM.load())>(value), std::memory_order_relaxed); return true;

@@ -33,7 +33,18 @@ const wchar_t* const kAmmo[] = {
 constexpr int kAmmoAmount = 999; // GiveAll's: the inventory caps each type at its own maximum
 constexpr int kSlots = 40;       // GiveAll's UnlockInventorySlots
 
+// 2026-10-25: the active plasmids (every ShockGame class extending ActivePlasmid), by the class name the game's
+// own GEP / TestAddAvailablePlasmid take.
+const char* const kPlasmids[] = {"ElectricBolt",   "Incineration",   "IcicleAssault",      "Telekinesis",
+                                 "InsectSwarmPlasmid", "AirBlast",    "BerserkRage",        "DecoyHuman",
+                                 "SecurityBeacon", "SpringboardTrap", "SummonProtector"};
+constexpr int kActiveTrack = 1;   // Plasmid.ePlasmidTrack TRACK_Active
+constexpr int kMaxTrackSlots = 6; // GEP's own cap
+
 std::atomic<int> g_request{0}; // 0 none, 1 all weapons, 2 all weapons upgraded
+std::atomic<bool> g_plasmidRequest{false};
+std::atomic<bool> g_infiniteEve{false};
+uint64_t g_eveMs = 0;
 std::atomic<int> g_lastGiven{-1}, g_lastUpgraded{-1};
 char g_status[160] = "";
 
@@ -166,7 +177,158 @@ void run(void* pawn, bool upgraded) {
     BVR_LOG("[cheats] %s (%d upgrade(s) on %d weapon(s))", g_status, ups, upWeapons);
 }
 
+// 2026-10-25: every active plasmid, as the game's own GEP command gives one (ShockCheatManager.GEP): made available
+// through ShockPlayer.TestAddAvailablePlasmid (which quiets the inventory warnings itself), the active track's
+// slots unlocked up to its six, and the first six equipped through TestEquipPlasmid. The rest wait in the Gene Bank.
+void give_plasmids(void* pawn) {
+    int added = 0, equipped = 0;
+    // As GEP does: the inventory warnings off for the whole grant - an unlocked slot otherwise opens the game's
+    // "new plasmid slot" flow, which waits for a plasmid to be chosen (the 23:28 simulator run sat in it).
+    bool oldWarnings = false;
+    const bool haveFlag = script::get_bool(pawn, L"disableInventoryWarnings", &oldWarnings) &&
+                          script::set_bool(pawn, L"disableInventoryWarnings", true);
+    if (!haveFlag) BVR_LOG("[cheats] disableInventoryWarnings not found: the slots are left as they are");
+    struct NameParm {
+        int32_t name[2];
+        int32_t pad[6];
+    };
+    for (const char* pl : kPlasmids) {
+        const int32_t nm = script::name_index(pl);
+        if (nm < 0) {
+            BVR_LOG("[cheats] plasmid name '%s' is not in this build's names", pl);
+            continue;
+        }
+        NameParm p{{nm, 0}, {}};
+        script::call(pawn, "TestAddAvailablePlasmid", &p);
+        // The Test functions are refused in the censored build: then the plain one the Test function wraps.
+        struct {
+            int32_t name[2];
+            uint32_t ret;
+            int32_t pad[5];
+        } q{{nm, 0}, 0, {}};
+        if (script::call(pawn, "IsPlasmidAvailable", &q) && !q.ret) {
+            NameParm p2{{nm, 0}, {}};
+            script::call(pawn, "AddAvailablePlasmid", &p2);
+            q.ret = 0;
+            script::call(pawn, "IsPlasmidAvailable", &q);
+        }
+        if (q.ret) ++added;
+        else BVR_LOG("[cheats] %s did not become available", pl);
+    }
+    for (int i = 0; haveFlag && i < kMaxTrackSlots; ++i) {
+        struct {
+            uint8_t track;
+            uint8_t pad[3];
+            int32_t ret;
+            int32_t more[6];
+        } q{static_cast<uint8_t>(kActiveTrack), {}, 0, {}};
+        if (!script::call(pawn, "GetNumTrackSlots", &q) || q.ret >= kMaxTrackSlots) break;
+        struct {
+            uint8_t track;
+            uint8_t pad[3];
+            int32_t more[7];
+        } u{static_cast<uint8_t>(kActiveTrack), {}, {}};
+        script::call(pawn, "UnlockTrackSlot", &u);
+    }
+    for (int s = 0; s < kMaxTrackSlots && s < static_cast<int>(sizeof kPlasmids / sizeof kPlasmids[0]); ++s) {
+        const int32_t nm = script::name_index(kPlasmids[s]);
+        if (nm < 0) continue;
+        struct {
+            int32_t name[2];
+            int32_t slot;
+            int32_t pad[5];
+        } e{{nm, 0}, s, {}};
+        script::call(pawn, "TestEquipPlasmid", &e);
+        struct {
+            int32_t name[2];
+            uint32_t ret;
+            int32_t pad[5];
+        } q{{nm, 0}, 0, {}};
+        if (script::call(pawn, "IsPlasmidEquipped", &q) && !q.ret) {
+            decltype(e) e2{{nm, 0}, s, {}};
+            script::call(pawn, "EquipPlasmid", &e2);
+            q.ret = 0;
+            script::call(pawn, "IsPlasmidEquipped", &q);
+        }
+        if (q.ret) ++equipped;
+    }
+    if (haveFlag) script::set_bool(pawn, L"disableInventoryWarnings", oldWarnings);
+    snprintf(g_status, sizeof g_status, "Plasmids: %d made available, %d equipped (the active track holds six; the "
+             "rest are in the Gene Bank).", added, equipped);
+    BVR_LOG("[cheats] %s", g_status);
+}
+
+// 2026-10-25: infinite EVE - once a second, EVE topped up to its maximum through the game's own AddBioAmmo, so the
+// HUD's bar and every EVE check see it.
+void top_up_eve(void* pawn) {
+    struct {
+        float ret;
+        int32_t pad[7];
+    } cur{}, mx{};
+    if (!script::call(pawn, "GetBioAmmo", &cur) || !script::call(pawn, "GetMaxBioAmmo", &mx)) return;
+    if (!(mx.ret > 0.0f) || cur.ret >= mx.ret - 0.01f) return;
+    struct {
+        float amount;
+        int32_t pad[7];
+    } a{mx.ret - cur.ret, {}};
+    script::call(pawn, "AddBioAmmo", &a);
+}
+
 } // namespace
+
+// 2026-10-25, for the harness: the plasmid in hand by its ability class (ShockPlayer.EquipAbilityByClassName).
+char g_equipName[64] = "";
+std::atomic<bool> g_equipRequest{false};
+void request_equip_plasmid(const char* abilityClass) {
+    strncpy_s(g_equipName, abilityClass, _TRUNCATE);
+    for (char* c = g_equipName; *c; ++c) // the command file's line end and spaces
+        if (*c == '\r' || *c == '\n' || *c == ' ' || *c == '\t') {
+            *c = 0;
+            break;
+        }
+    g_equipRequest.store(true, std::memory_order_release);
+}
+
+void request_all_plasmids() {
+    g_plasmidRequest.store(true, std::memory_order_relaxed);
+    snprintf(g_status, sizeof g_status, "Giving every plasmid...");
+}
+void set_infinite_eve(bool on) {
+    if (g_infiniteEve.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[cheats] infinite EVE %s", on ? "ON" : "off");
+}
+bool infinite_eve() { return g_infiniteEve.load(std::memory_order_relaxed); }
+
+void tick_hands(void* handsActor) {
+    if (!handsActor || !script::ready()) return;
+    const bool plasmids = g_plasmidRequest.load(std::memory_order_relaxed);
+    const bool eve = g_infiniteEve.load(std::memory_order_relaxed);
+    const bool equip = g_equipRequest.load(std::memory_order_acquire);
+    if (!plasmids && !eve && !equip) return;
+    const uint64_t now = GetTickCount64();
+    if (!plasmids && !equip && now - g_eveMs < 1000) return;
+    const int32_t off = script::property_offset(handsActor, L"PawnOwner");
+    void* pawn = nullptr;
+    if (off < 0 || !rd(static_cast<uint8_t*>(handsActor) + off, &pawn) || !is_player(pawn)) return;
+    if (plasmids) {
+        g_plasmidRequest.store(false, std::memory_order_relaxed);
+        give_plasmids(pawn);
+    }
+    if (equip) {
+        g_equipRequest.store(false, std::memory_order_relaxed);
+        const int32_t nm = script::name_index(g_equipName);
+        struct {
+            int32_t name[2];
+            int32_t pad[6];
+        } p{{nm, 0}, {}};
+        const bool ok = nm >= 0 && script::call(pawn, "EquipAbilityByClassName", &p);
+        BVR_LOG("[cheats] equip the plasmid %s: %s", g_equipName, ok ? "asked" : "the name or the call failed");
+    }
+    if (eve) {
+        g_eveMs = now;
+        top_up_eve(pawn);
+    }
+}
 
 void request_all_weapons(bool upgraded) {
     g_request.store(upgraded ? 2 : 1, std::memory_order_relaxed);
@@ -192,6 +354,13 @@ void draw_panel() {
                 "own developer functions. Upgraded: both upgrades on every weapon, as New Game Plus starts them. "
                 "Runs as soon as a weapon is in your hand. Saving keeps them.");
     if (*g_status) ImGui::TextWrapped("%s", g_status);
+    if (!theme::section("Plasmids and EVE")) return;
+    if (theme::button("Give all plasmids")) request_all_plasmids();
+    theme::note("Every active plasmid made available, as the game's own developer command gives one, and the first six "
+                "equipped (the most the plasmid track holds). The rest are in the Gene Bank. Saving keeps them.");
+    bool eve = infinite_eve();
+    if (ImGui::Checkbox("Infinite EVE", &eve)) set_infinite_eve(eve);
+    theme::note("EVE is filled back to full every second. Not saved: off again after a restart.");
 }
 
 } // namespace bvr::b1r::cheats

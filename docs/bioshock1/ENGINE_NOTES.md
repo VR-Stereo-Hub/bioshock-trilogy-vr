@@ -8165,3 +8165,313 @@ turned as the clip's. The right hand's fist trim the tester set in that run (up 
   that slice from 56-byte vertices with any other index count is the gun's. frame_inspector's draw tap gained an
   optional callback with the draw's arguments (null for every other game). Not yet seen; `[gunflip]` lists the index
   counts it flipped and passed.
+- **Headset, 21:06: "flamethrower works well".** Merged to staging in #105.
+
+## 2026-10-25 (night) - Dual-wielded plasmids: the cast run once per hand; the reticle on the surface
+
+- **The cast seam.** A plasmid cast is `UAttackAbility::InitiateDamage` (`+0x1BBD80`, thiscall, FName by value,
+  `ret 8`; patterns.h), called from the anim notify's `UseAbility`; it calls the fire start the aim already
+  substitutes. With dual-wielded plasmids on (F10 Controls > Dual plasmids) the mod's detour runs it once per hand
+  that pulled: the left as ever, the right with the fire start aimed along the right controller with the plasmid aim
+  mirrored (pitch as the left's, yaw and the sideways offset negated). The pull is latched per hand at the trigger
+  (hand_loadout.h CastRouter), because the notify arrives after the trigger is let go (ENGINE_NOTES s30: `lt=0 rt=0`
+  at the seam). The right trigger, which the game binds to `SwitchAndFireWeapon`, is routed to the plasmid trigger
+  while the right hand holds a plasmid, so it casts instead of switching to the gun. **Unknown, for the first run:**
+  whether EVE is charged per `InitiateDamage` (two casts, two charges - or one); whether a projectile plasmid
+  (Incinerate, Winter Blast) takes a second `InitiateDamage` in the same notify as a trace one does; and whether the
+  right hand shows the plasmid's effect (no socket follows the right hand outside the mirrored hold). `[dualcast]`
+  logs which hands each cast came from.
+- **The 22:09 run: the casts routed right, the visuals did not.** `[dualcast]` logged right-only, left-only and
+  both-hands casts as pulled, but both plasmids came out of the LEFT hand: the right hand showed nothing of the
+  plasmid and the cast's effect sockets are the left hand's. Now, with dual plasmids on, the right hand and arm show
+  the LEFT hand's layout mirrored (bones.cpp m4_pose, palette.cpp copy_left_skins) - exactly the right hand of the
+  mirrored hold, the left keeping its own - so both hands play the plasmid's animations, and the right takes the
+  left's hand-back. Around a right-hand cast the left hand's casting socket records (FireballSocket) take a record
+  built for the right palm with the beam along the right hand's plasmid ray, and every effect actor that appears
+  during that cast is kept on the right palm for its life (bones.cpp cast_hand_begin/end, fx_actor_follow). Effects
+  the cast's own animation notifies attach (outside InitiateDamage) and the idle palm glow stay on the left: the
+  engine makes one of each. Not yet seen.
+- **The reticle's distance from the scene's depth.** BO3 Zombies VR and Darkness II VR trace for it (the engine's ray
+  trace from the muzzle); BS1's AActor::Trace is only observed here, never called. The eye's linear view depth
+  (temporal_gpu `linear_z`, uu along the camera's forward, the viewmodel masked out) is already made per fresh eye,
+  so a compute shader marches each reticle's ray through it (96 geometric steps 0.3 to 60 m, then six bisections)
+  and the hit is read back one to two frames later. Needs the image processing on (AFW, DLSS or TAA); without it the
+  reticle stays at its set distance. `[reticle]` logs hits per 5 s.
+
+## 2026-10-25 (night, later) - Two independent plasmids: a second Hands actor (from the script corpus)
+
+Read from the local UnrealScript corpus (tools\uscript\bs1, ShockGame): summarised, not copied.
+- **An ability is a plain Object, one per class per player.** `Ability` (config Abilities) holds the plasmid's
+  animation names, its EVE cost and pending-fire settings, and a flag that its effects are triggered. The player keeps
+  the classes it has and the active one, and hands out the object through a per-class lookup (GetAbilityFromClass,
+  not decompiled). There is no cooldown field: refire is the hands' state machine and the animation lengths.
+- **The HANDS own everything per hand.** `Hands` (an Actor; the player's is FirstPersonHands.PlayerHands, spawned
+  natively, held as ShockPawn.Hands) keeps the current and previous ability, the hand mode, the pending-fire press
+  and release, and the state machine (AbilityFiring, FinishAbilityFiringWithEve/WithoutEve, AbilityIdling). Its
+  UseActiveAbility checks the EVE gate and enters AbilityFiring; the fire animation's AnimNotify_UseAbility calls
+  UseCurrentAbility on the hands actor that OWNS the animation, which calls the ability's UseAbility - and that
+  charges the EVE (RemoveBioAmmo) once, then (AttackAbility) the damage, InitiateDamage. So the earlier double
+  InitiateDamage gave two casts for one charge, and never reached the five plasmids that do not use InitiateDamage
+  (AirBlast, DecoyHuman, InsectSwarm, SpringBoardTrap, Telekinesis).
+- **Effects are effect EVENTS on the hands actor**, keyed by the ability's class name: 'SelectedAbility' with a
+  persistent context (the palm glow), 'UsedAbility' (the cast), the animations' AnimNotify_EffectEvent cues. Which
+  bone an effect lands on is effect data, attached to the actor that fired the event - so a second hands actor makes
+  a second, complete set of every plasmid's effects, on its own bones.
+- **The design (second_hands.cpp):** a second hands actor of the player's own hands class, spawned owned by the
+  player while dual plasmids are on, a plasmid is in hand and the game is in gameplay; destroyed the moment that ends
+  (menus, cinematics and loads are where a save happens - Actor's PreLevelSave cannot be overridden from outside).
+  Its PawnOwner is written after the spawn (its PostBeginPlay sets none; it spawns its own gatherer tool, destroyed
+  with it). It takes the main hands' plasmid with SetActiveAbility and is fired by the right trigger through
+  UseActiveAbility / UseActiveAbilityRelease. Its draw is collapsed in the skin gather; its skin matrices and its
+  evaluated pose are what the main mesh's RIGHT hand shows, mirrored. Its own UpdateLocation places it at the pawn
+  plus its PlayerViewOffset(Widescreen) turned by the view, every tick, so that offset is set each frame to put its
+  left palm on the drawn right palm, and its effects follow in the same tick. Its cast is told apart by its own
+  pointer on the call stack (the script frames of its UseCurrentAbility) and aimed along the right hand's plasmid ray.
+- **Known, from the script, not handled yet:** AbilityIdling, on entering, takes the controller's held-plasmid-trigger
+  flag (the LEFT trigger's hold) and fires; at 0 EVE both hands may inject a hypo; Telekinesis and Decoy keep one
+  target per player; the same plasmid in both hands shares one ability object (a different plasmid per hand gets its
+  own: the mix-and-match step).
+- **Cheats:** every plasmid as the game's GEP developer command gives one: ShockPlayer.TestAddAvailablePlasmid (or
+  AddAvailablePlasmid where the censored build refuses the Test function), UnlockTrackSlot on the active track up to
+  its six slots, TestEquipPlasmid / EquipPlasmid; the eleven are the ShockGame classes extending ActivePlasmid.
+  Infinite EVE: AddBioAmmo up to GetMaxBioAmmo once a second (as the cheat manager's GiveBioAmmo).
+
+## 2026-10-25 (night, simulator) - The two plasmids measured: one EVE cost per cast, only the casting hand moves
+
+Simulator runs on the 11:01 save (Medical Pavilion), Electro Bolt in both hands, each hand's trigger pulled alone and
+together (scratchpad test script; `[animcheck]`, `[hands2] EVE`, `[dualcast]` in the log):
+- **EVE:** a right-hand cast -15.00, a left-hand cast -15.00, both together -30.00 in one frame - exactly one
+  Electro Bolt cost per cast, from the shared pool. At 0 EVE the GAME's hands inject a hypo (+35).
+- **Only the casting hand animates** (each drawn hand's largest finger-shape change over the cast window, against
+  the pose before it): right cast - right 95-112 deg, left 9-25 deg (its idle fidget); left cast - left 102-109,
+  right 8-12; both - both 99-158. With one plasmid and no dual (the right hand held): left 164, right 5.
+- **Fixed on the way:** Actor.Spawn by name returns nothing in this build - the second hands come from the hands'
+  own script spawn (ApplyScriptedHandAttachment, then detached, un-based, owned by the player); a script call into
+  the second hands re-enters the drive through the evaluation, so one pull cast 598 times (the trigger edge is taken
+  before the call, the tick guarded); the cheat's slot unlock opened the game's "new plasmid slot" flow - the cheat
+  now sets disableInventoryWarnings (a packed bool: its mask is the first single-bit dword after UProperty::Offset,
+  +0x9C here, mask 1) around it, as GEP does; reading the second hands' bone array at any moment gave a half-written
+  pose and a deformed right hand - its pose is copied in the evaluation hook right after its own evaluation; WHICH
+  hands cast: both hands actors' pointers sit above every cast, in either order, so each hands entering its fire
+  state arms one cast and a cast takes the armed one (the stack decides only when both are armed); the second hands'
+  cast socket took the game's flat-screen offset (the cast between the hands) - it is now its own left palm.
+- **Not settled on the simulator:** the exact start of each bolt. The left hand's own bolt starts away from its palm
+  there too (the simulated hands carry the hand offsets differently from real controllers), so the right now matches
+  the left; the headset decides.
+
+## 2026-10-25 (early morning, simulator) - Telekinesis per hand, and a different plasmid in each hand
+
+The full derivation is `TELEKINESIS_RE.md` (headless IDA, `tools\ida\tk1..tk9_*.py`, BioshockHD.exe md5
+`b4db411ab3e5994b6cd39f8dd91fd990`). The addresses `patterns.h` now carries:
+- `kTkViewRayRva` +0x1C0F70: `UTelekinesisAbility`'s view ray, thiscall `(ability, FVector* outOrigin, FVector*
+  outDir)`, `ret 8`: the one function that asks `eventPlayerCalcView` (+0x1BE7A0) for the camera on Telekinesis'
+  behalf. Its only three callers are the pick, the hold point and the throw (tk2, tk9). The 12-byte prologue
+  (`kTkViewRayPrologue`) is checked before the hook goes in, and a mismatch leaves Telekinesis on the head.
+- `kTkTargetOffset` +0x104 (the held or picked actor) and `kTkStateOffset` +0xE4 (the state object; its kind byte at
+  +4: 0 idle, 1 pulling, 2 holding, 3 throwing, 4 dropping): the field layout as the natives read it, `execGetState`
+  +0x1C0F40 reading the kind byte (TELEKINESIS_RE.md "Field layout").
+  The state's vtable slot 1 is its tick, thiscall `(state, ability, float dt)`, `ret 8`.
+
+Live (the 11:01 save, Medical Pavilion):
+- **Each hand's Telekinesis aims with that hand's controller**: the detour answers with the left hand's ray, or the
+  right plasmid ray when `this` is the second hands' own object.
+- **Two holds at once**: the right hand takes the player's `TelekinesisTwoAbility` object (the same native code, a
+  config-only subclass). The class is found by name in the player's `PossibleAbilities`; loading
+  `ShockGame.ShockDesignerClasses.TelekinesisTwoAbility` by path gives nothing. The engine ticks only the object of
+  the player's ActiveAbility class, so the mod ticks the right one, at 30 Hz with its own accumulator. 00:55: a
+  PhysicalReactiveActor held left and a floor corpse held right at once, each following its own hand.
+- **A different plasmid in each hand**: the right hand's plasmid family comes from the player's `AvailableAbilities`
+  (its highest owned level) through `GetAbilityFromClass`. 01:06 and 01:09: Telekinesis and Electro Bolt either way
+  round, the bolt -15 EVE from its own hand while the other hand's hold went on.
+- **Attribution by the ability object.** Telekinesis keeps the casting hands in AbilityFiring for the whole hold, so
+  the armed-fire-state rule gave the right hand's bolt to the left (01:02). When the two hands hold different
+  ability objects, the casting object (InitiateDamage's and GetPerfectFireStart's `this`) names the hand.
+- **What does not come**: the hanging corpses are picked (their Target is set) but the pull never starts, and the
+  state stays Idle. A fast swing drops a held corpse.
+
+## 2026-10-25 (midday) - The Electro Bolt's start and beams, the right hand with dual plasmids, the arms left behind
+
+From the owner's 12:37-12:40 headset run (log and F10 animation snapshots) and headless IDA (`tools\ida\ce1..ce3_*.py`).
+- **The cast socket can be solved against the engine.** `AActor::GetBoneCoords(socket name, bSocket)` (muzzle.cpp's
+  seam) returns FireballSocket as the engine composes it from the live record, and its bone. Read live: the record's
+  axes compose as ROWS in the bone's frame (rows 3.00 against transpose -1.00 of 3), and the composed -Y is the view
+  forward (-0.99). `bones.cpp cast_socket_solve` turns the record per frame so its composed forward lies on the aim
+  ray and its origin (from three probes of the composed point) lands on the target: 0.00 UU and 0.0 deg in the run.
+- **It did not move the beams.** With the socket exactly on the ray, the owner still saw both beams at a wrong angle;
+  the 12:39:36 snapshot shows the right beam leaving the right palm and fanning up and left. So the beams are not the
+  socket's. `UAttackAbility::InitiateDamage` (+0x1BBD80, ce1) calls GetPerfectFireStart with (StartLocation,
+  StartRotation, EffectStartLocation) and then the damage factory's vtable +0xEC with the player, the effect start and
+  the start BY VALUE; `UTraceDamageFactory`'s slot (+0x271850, ce2) forwards to +0x271900 (ce3), which traces from a
+  start along a rotator plus the class's spread (a SingleLineCheck through XLevel's vtable +0x168) and writes the hit
+  out. Which by-value argument the inner function reads as the rotator is not settled from the decompile (its
+  __userpurge signature mislabels them); live, the damage follows the seam's rotator (M7 session 11).
+- **The visible start.** `EffectStartLocation` was the aim ray's origin (the controller with the aim's offsets). It now
+  takes the cast point. The run: the right bolt's start correct, the left's still off - the target came from the s91
+  head-bone model, whose (15, -30, 30) attach-origin gap was measured at one head pose. The target is now the drawn
+  palm mapped to the world by the actor's location, rotation and DrawScale (the map hand bones sit on exactly); the
+  log line gives the old model's distance from it.
+- **Next measurement, built in:** for half a second after each player cast every effect event on any actor is logged
+  (`[castfx]`: its location against the palm, the game's effect start, its start and the ray origin; its rotation
+  against the view and the aim), and the census's spawn watch lists the actors the cast makes with their rotation
+  (`[attach] NEW`). An event at the game's own start moves to the palm and one carrying the view's rotation turns onto
+  the aim, on copies (`vraim castfx on|off`).
+- **The right hand with dual plasmids** draws the left hand's plasmid pose mirrored, and was placed with the right
+  hand's own trims (rotation 0/-8/0, the gun's) against the left's plasmid trims (-73/-22/+22) - a wrist frame tens of
+  degrees apart, and a palm-frame offset that turned with the controller (the owner: the model rotates around the
+  hand). **Tried and reverted (the 14:13 run: "an even bigger swivel"):** the left hand's trims and offsets mirrored.
+  The mode-4 drive does not read the hands.cpp trims at all (bones off_hand_rot_deg / off_hand_cm are the per-hand
+  ones), so only the mirrored palm-frame offset took effect, against the right hand's own rotation trim - worse. Each
+  hand's trim aligns the controller with that hand's drawn wrist whatever pose it shows (the gun-in-left hold proves
+  it), so the trims are not the cause by themselves. Open; the pose recording now also runs with a plasmid in hand
+  (`Plasmid.bvrpose`, `DualPlasmid.bvrpose`) and carries each controller's grip position, to measure the drawn right
+  hand against the controller.
+- **The cast lag (14:15 run).** Arming the census spawn watch on each cast scanned every level actor (8,700) each frame
+  for 0.6 s. Removed; it had shown only the hit's actors (HitSpang_ElectroBolt, ElectricBoltHit_Light, a decal), so the
+  beams are not spawned per cast: they are an effect on the hands, attached when the plasmid is equipped. The cast's
+  effect events (`[castfx]`) were WeaponImpacted at the hit and the hands' fidget and ElectricBoltTwo events with no
+  location or rotation, so none matched the event fix.
+- **The 14:33 run: the beam's angle right, its start ahead of the palm** (the owner; the snapshots show the starburst
+  a forearm's length along the bolt from either palm). Candidate: the cast effect's own ParticleEmitters spawn at their
+  StartLocationOffset in the emitter's frame (Engine ParticleEmitter.uc), authored for the flat-screen socket. Each
+  emitter of an effect on a hands actor's FireballSocket is now logged once (`[bones] cast effect ... start offset`)
+  and its StartLocationOffset zeroed (`vrhands fxstart on|off`). Unverified: if the log shows the offsets were already
+  zero, the start comes from something else (a beam emitter's own distance or a start range).
+- **The 14:43 run: still ahead.** The log named the effect: `ElectricBoltParticle`, a NEW actor attached to
+  FireballSocket at every cast (two BeamEmitters, three SpriteEmitters); only one sprite had a start offset
+  (-2, 5, -3.5), so that was not it. The attachment does not sit where GetBoneCoords composes the socket. Now each
+  cast effect is placed by its own Location for its whole life (bones.cpp cast_fx_place): the gap from the drawn palm,
+  in the socket bone's frame at the DrawScale, is added to its relative (+0x230) every frame; if its Location does not
+  follow within three frames it is left alone. `[bones] cast effect ... on the palm: frame N, X UU off` logs it.
+- **The 14:5x run: further away, and the right one jumping.** Correcting the effect's relative from its Location
+  moved the bolts much further off and, on the right hand, all over. **Everything above for the bolt's start is
+  reverted** at the owner's word to the 2026-10-10 path (d44bf9a, 59f9c7e): the socket record on the drawn palm by
+  the head-bone model, the beam's axes along the hand's aim (beam_axes), EffectStartLocation left at the aim ray's
+  origin, the effect actors untouched. What stays learned: GetBoneCoords' composition of FireballSocket is not where
+  the effect attached to it is drawn; the effect is a new ElectricBoltParticle per cast; its emitters' start offsets
+  are ~0. Kept from the day: the beam's direction now follows the trimmed plasmid aim (the barrel lock fix), which the
+  owner judged right. The F10 Hands > Plasmid effect offset is the lever for the start.
+- **The 15:41 run, on the 10-10 path:** both bolts fire from their origin, the beam runs above the reticle by about
+  the same angle for both hands - F10 Hands > Plasmid effect > "Bolt aim down" turns the beam's aim down by a tunable
+  angle (beam_axes). Still open: the left start stays in one spot whatever the hand does, and the right start swings
+  with the right hand's rotation the way the hand itself did before the tester re-tuned it. Neither is explained yet;
+  it needs where the attached ElectricBoltParticle actually is against the drawn palm, per cast and per hand pose.
+- **THE BOLT PROBE (16:02 run) - the answer.** The Electro Bolt effect is ONE ElectricBoltParticle for every cast of
+  a session, attached to the hands actor that cast last (the game's hands for the left, the second hands for the
+  right) at FireballSocket = the HEAD bone, with its attach relative (+0x230) at (15, -30, 30) and never changed. The
+  s91 "head-bone attach-origin gap" (15, -30, 30) was this effect's own relative, not a property of the bone. The
+  socket record is copied only when an effect attaches, so no record write ever reached it: the left bolt sat at one
+  spot ~35 cm ahead, 20 left and 12 down of the eye whatever the hand did; the right rode the second hands' head, 7-10
+  cm off the palm, 70 with the wrist rolled palm-up. (A light, ElectricBoltLight, is new per cast.) Now
+  `bones.cpp bolt_follow` gives each effect on either hands' FireballSocket, every frame, the relative that puts it on
+  that hand's drawn palm (in the component space of the actor it hangs on), and turns its relative rotation by the arc
+  from the view's forward onto the hand's aim through Actor.SetRelativeRotation (`vrhands boltfollow on|pos|off`).
+- **The 17:06 run: on the head bone the model misses.** The relative from the component-space model (head bone of the
+  pose array, the drawn palm) left the bolt 15-20 cm off the palm, the gap changing with the head's turn - the head
+  bone's attachment does not compose like the pose array (as s91 found for the record). Effects on the HAND bone do
+  (gap 0.00, fx_actor_follow). So `bolt_follow` now moves the bolt effect off FireballSocket onto the casting hands'
+  own Bip01_L_Hand (Actor.DetachFromBone, AttachToBone, the relative zeroed) - every frame for a second after a cast,
+  since the game re-attaches it to the socket at each cast; the game's hands' copy is then placed by fx_actor_follow,
+  the second hands' by its relative from that hands' hand bone to its palm. Its relative rotation: hand^-1 * arc *
+  head * rel0, the beam the game ran along the view turned onto the hand's aim.
+- **The 17:18 run: most bolts on the palm, about one in four wrong.** The probe: every bolt 45-58 cm off on its first
+  frames, on the palm (0.0-0.3 cm) from frame 10 - moved a frame or two after the cast, while the beam is drawn at the
+  cast. Now the move happens AT the cast: the effect-event hook (sound_engine.cpp's TriggerEffectEvent detour) calls
+  `bones::on_effect_event` after every event on the player (Ability.UseAbility fires 'UsedAbility' on the Instigator),
+  the game's hands or the second hands, and a bolt it attached to FireballSocket goes onto the hand bone in the same
+  call, with each hand's relative and aim kept ready every frame (bolt_follow's cache). The per-frame move stays as
+  the backstop. The tracking list was 4 effects, now 12 (one cast's bolt never moved: the list was full).
+- **The 18:26 run: right on the palm, the left wrong when cast quickly.** The game keeps a small pool of bolt actors
+  and re-attaches one to FireballSocket at each cast, not always from an effect event the hook sees: many left casts
+  still started 30-60 cm off. A move after the attach always loses that race. So FireballSocket ITSELF now hangs on
+  the left hand bone: its alias in the hands mesh's socket table (+0xF4, the bone FName per socket) is set to
+  Bip01_L_Hand each frame (the game's own put back when the follow is off), on the game's hands and the second hands,
+  and its record is the drawn palm in that bone's frame (the frame hand-bone effects sit on exactly) with the axes
+  along the hand's aim (beam_axes). The game then attaches every bolt to the hand at the cast, however it does it.
+  The per-frame move stays as a backstop in case the engine resolves the alias only at load. Unverified.
+- **The plasmid wheel stopped switching from a gun (18:29).** ShockPlayer.SwitchHandModes switches to the plasmids
+  only while LastAbility is a class the player has (GetAbilityClassIndex >= 0); OnAbilityEquippingFinished sets
+  LastAbility to the ability whose equip finished - and the second hands, owned by the player, call it too. With
+  Telekinesis in the left hand the right one's class is TelekinesisTwoAbility, which the player does not have. While
+  second hands exist, LastAbility is held on the class of the game's own hands' plasmid (second_hands tick).
+- **The right hand's plasmid row** takes only a plasmid the player owns (AvailableAbilities); an unowned family leaves
+  the right hand on the left's plasmid (the 18:29 run picked Winter Blast and Incinerate on a save with two plasmids).
+- **The second hands' Destroy is refused every time** (Destroy returned 0, bDeleteMe clear, on each switch to a gun).
+  Retrying it every frame cost 20-30 fps while a gun was out, and the kept hands still held the plasmid, so its idle
+  effect played on the right hand with a gun. Now retried every 2 s, and the kept hands' plasmid effect is
+  un-triggered ('SelectedAbility' and its persistent context, as Hands.SetAbilityEffects does). Why it is refused is
+  open.
+- **The left-handed hold is the gun's.** The grab's hand-over sets the input's left-handed state, and it stayed on
+  with a plasmid in hand: the hands stayed mirrored, dual plasmids never came on, the reticle went to the ceiling (the
+  16:06 run). It is lifted while a plasmid is in hand and put back when a gun comes out (m4_frame).
+- **The right hand's placement** was the tester's own trim: re-set in the headset, it now sits right with guns and
+  plasmids.
+- **The extra arms.** On the switch to a gun the second hands' Destroy ran, the log said "done", and the same 47-bone
+  instance (847F9090) went on being skinned every 2 s: the destroy did not take, and its draw was no longer collapsed.
+  The log now gives Destroy's own result and bDeleteMe; one that stays is kept collapsed, destroyed again each frame,
+  and taken back instead of a new one when a plasmid returns. Why Destroy refuses is open.
+- **The left reticle.** "Shots leave the barrel" + "Aim along the barrel" (both on by default) lock the aim to the gun
+  and drop every per-hand trim - also from the left plasmid ray, while the right plasmid ray kept the plasmid trims
+  mirrored. The lock now applies only with a gun in hand (aim.cpp barrel_locked_now).
+- **The rapid-cast desync (evening).** The bolt is attached natively at each cast, so the per-frame move lands a
+  frame late, and a cast in quick succession re-attached it to FireballSocket before the move ran. The socket-table
+  alias had no effect (frame 1 was still 50 cm off). AActor::AttachToBone (Actor.AttachToBone's C++, RVA 0x379EF0,
+  found from the native table entry intAActorexecAttachToBone by tools/ida/at1_attach_to_bone.py; thiscall, this =
+  the parent, then the attachment, the bone FName index and number) is now hooked: a FireballSocket attach to the
+  game's hands or the second hands goes onto Bip01_L_Hand in the same call, with the hand's relative and aim.
+  Unverified in the headset.
+- **Why Destroy refused (tools/ida/at2_destroy_actor.py).** Actor.Destroy's exec thunk (+0x548370, from the native
+  table entry intAActorexecDestroy) calls the actor's XLevel (+0xFC) through its vtable +0x134, ULevel::DestroyActor
+  (+0x52D350, ULevel's table found from its RTTI), with bNetForce 0. DestroyActor returns 0 with no log when the
+  actor's flags at +0xCC hold 0xA0, or, without bNetForce, when its Role (byte +0xE9) is not ROLE_Authority (4) and
+  the +0xD0 & 4 flag is clear. The pooled-actor and deferred branches do not apply to Hands (its vtable +0x26C returns
+  0). The second hands are now removed by the same engine call with bNetForce set (second_hands.cpp destroy_actor),
+  after their plasmid's effect is un-triggered. The log gives the Role and flags read back, so a refusal that remains
+  names its branch. Destroying the effects attached to the kept hands was wrong and is gone: the game pools its effect
+  actors (the bolt among them) and takes one back by attaching it to the hands that cast next. Unverified.
+- **The right hand wore the left plasmid's look.** A plasmid's look (Winter Blast's frost, Incinerate's fire) is the
+  material and overlay of the hands ACTOR that holds it, and the right hand was drawn by the game's own hands' mesh
+  with the second hands' skins copied in. Now the second hands' own draw shows the right arm (palette.cpp): their left
+  hand's skins mirrored onto their right arm and placed exactly as the game's mesh placed its right arm, in the game's
+  hands' space, then carried into their own actor's space (both actors' Location, Rotation and DrawScale, the model
+  rig2_place already puts them by); their left arm folds away at the head, and the game's mesh folds its right arm
+  away the same frame. F10 Controls > Dual plasmids > "Right hand shows its own plasmid" (default on) puts it back.
+  Unverified.
+
+## 2026-10-25 (night) - Each hand its own plasmid object; the second hands made robust
+
+The 20:24 run (the right hand's own look): the looks were mostly right, but the right hand often had no hand effect
+until a switch away and back, twice it never appeared, and a few times a hand effect showed on both hands with a gun.
+- **One object per class per player is the cause of the effect faults.** Hands.SetAbilityEffects turns a plasmid's
+  hand effect on only when the ability object's AbilityEffectsTriggered is clear, and off only when it is set - and the
+  player keeps ONE object per class (ShockPlayer.GetAbilityFromClass, native). With the same plasmid in both hands (the
+  RightPlasmid row's default) the right hand held the left's very object: its flag was already set, so the right
+  hand's effect never came on; and when one hand cleared the flag, the other's clear was skipped, leaving its effect
+  (and look) on with a gun in hand - on both hands, since the game's mesh draws both then.
+- **The fix: an object of its own** (own_ability.cpp). StaticConstructObject (+0x700500, tools/ida/at3_construct_object.py:
+  the constructor exec New calls, cdecl, ten dwords - class, outer, name, flags, 0, 0, an error device, 0, 0) makes
+  one of the class as the script's `new` does (class defaults). The cast still charges the player (Ability.UseAbility
+  takes the instigator) and no ability script reads its Outer. Nothing saved points at it; unreferenced, the engine
+  collects it, so only the object a live hands actor holds is ever trusted. Telekinesis stays on the player's object
+  of the Telekinesis class the left does not hold (its native state object is proven only there). A plasmid effect
+  still off 400 ms after the second hands settle into idling is turned on by their own SetAbilityEffects (logged).
+  The persistent context (the effects system's, by class name) is left in place on teardown while the left hand holds
+  the same plasmid.
+- **The right hand that never appeared** (20:29:45 and 20:31:28): on a spawn, the first pose read was the new
+  skeleton's unfilled array (a palm 117 km out), the second hands were placed there, and an actor out of sight is
+  neither drawn nor evaluated - so no good pose ever came to bring it back. A pose is now taken only when every bone
+  is finite and within 500 uu of the root, and is stamped with its skeleton; with no sound pose, or an offset beyond
+  200 uu, the second hands stand on the game's hands (no offset), where they are drawn and evaluated again. And the
+  game's mesh hides its right arm only while the second hands drew it in the last 100 ms, so the right hand is never
+  missing whatever happens to them.
+- **The rigs' DrawScale belongs in the space map.** The two actors stand at DrawScale 0.8 (the game's hands) and 1.0
+  (the second hands). A build that left the ratio out, on the reading that the hands' DrawScale never sizes the drawn
+  mesh (session 16, measured through the foreground path), drew the right arm too large in the headset; with the ratio
+  in (the 20:24 build) its size was right. So in this draw a palette point is at L + DrawScale * p * B. The mismatch
+  itself was the defect: the game's player hands are authored at 0.8 (above, "AHands ships with DrawScale = 0.8000"),
+  and a script Spawn of the same class gives 1.0 - so the second hands' bones, and every effect on them, stood at a
+  different size from the left's. They now take the game's hands' DrawScale through SetDrawScale (second_hands.cpp
+  match_scale), and the ratio in the map is 1.
+- **LastAbility.** The old guard held LastAbility on the game's hands' class every frame and lagged a wheel pick by a
+  frame, putting each pick back to the plasmid before it. Now only the right hand's own write is undone: a change to
+  the class the second hands hold while the game's hands hold another goes back to the value before it.
+Unverified in the headset.

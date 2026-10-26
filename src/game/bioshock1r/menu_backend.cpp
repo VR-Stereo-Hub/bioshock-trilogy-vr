@@ -84,6 +84,7 @@ float raw_read(Setting id,int hand) {
         case S::ShowArms: return bones::menu_read(S::ArmAppearance,hand)==1;
         case S::PlasmidFxAlong: case S::PlasmidFxAcross: case S::PlasmidFxOut:
             bones::plasmid_fx_cm(&a,&b,&c);return id==S::PlasmidFxAlong?a:id==S::PlasmidFxAcross?b:c;
+        case S::PlasmidBeamDown: return bones::plasmid_beam_down_deg();
         case S::ShoulderBarForward: case S::ShoulderBarRight: case S::ShoulderBarUp: case S::ShoulderWidth: {
             float width; bones::m4_shoulders(&a,&b,&c,&width);
             return id==S::ShoulderBarForward?a:id==S::ShoulderBarRight?b:id==S::ShoulderBarUp?c:width;
@@ -192,6 +193,7 @@ bool raw_write(Setting id,int hand,float value) {
         case S::PlasmidFxAlong: case S::PlasmidFxAcross: case S::PlasmidFxOut:
             bones::plasmid_fx_cm(&a,&b,&c);
             bones::set_plasmid_fx_cm(id==S::PlasmidFxAlong?value:a,id==S::PlasmidFxAcross?value:b,id==S::PlasmidFxOut?value:c);break;
+        case S::PlasmidBeamDown: bones::set_plasmid_beam_down_deg(value); break;
         case S::ShoulderBarForward: case S::ShoulderBarRight: case S::ShoulderBarUp: case S::ShoulderWidth: {
             float width; bones::m4_shoulders(&a,&b,&c,&width);
             bones::set_m4_shoulders(id==S::ShoulderBarForward?value:a,id==S::ShoulderBarRight?value:b,

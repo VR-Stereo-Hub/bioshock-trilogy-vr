@@ -2,6 +2,50 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-10-25 (night) - BS1: dual-wielded plasmids, the dynamic reticle, one plasmid aim
+
+**Branch `claude/bs1-dual-plasmids`** off `staging` at da0015f (#105). Local commits, not pushed (the local-only
+rule). **INSTALLED in BS1 at 01:05 (2026-10-25) from this tree.** Host tests 22 suites green (the new `hand-loadout`),
+no core change. Everything below is SIMULATOR-verified; none of it has been in the headset yet.
+
+### Current state
+
+- **Dual-wielded plasmids** (F10 Controls > Dual plasmids > "Cast plasmids from both hands", OFF by default): with
+  a plasmid in hand the right trigger casts too, from the right hand. The right hand's plasmid is a SECOND HANDS
+  ACTOR (second_hands.cpp; ENGINE_NOTES 2026-10-25 night, later): its own cast, animation, effects and EVE use, its
+  animation shown mirrored on the right hand. Each hand has its own reticle.
+- **A different plasmid in each hand** (F10 Controls > Dual plasmids > "Right hand's plasmid": the left's, or any of
+  the eleven families; the right takes the highest level the player owns). The first mix-and-match step. 01:06 and
+  01:09 simulator runs: Telekinesis left with Electro Bolt right, and the reverse. The bolt casts from its own hand
+  (one EVE cost, -15) while the other hand's Telekinesis hold goes on and moves. The hand is told from the casting
+  ability object when the hands differ (a Telekinesis hold keeps the left hands in their fire state the whole time).
+- **Telekinesis on controller aim, two holds at once** (TELEKINESIS_RE.md). Its view ray (+0x1C0F70) is hooked: each
+  hand's own Telekinesis object aims with that hand's ray. With Telekinesis in both hands the right takes the
+  player's TelekinesisTwoAbility object (the same native code), so each hand has its own target and hold; the mod
+  ticks the right one at the game's 30 Hz. 00:52-00:55 run: the left held a physics prop and the right a corpse at
+  once, `[telekinesis] LEFT HOLDING ... | RIGHT HOLDING ...`; each followed its own hand.
+- **Cheats** (F10 > Cheats > Plasmids and EVE): "Give all plasmids" and "Infinite EVE". Harness commands:
+  `vrcheat plasmids | plasmid <AbilityClass> | eve on|off`, `vrmenu set <Key> <value>` (live, not saved), and
+  `vrhands attach find <class text>` lists the level's actors of a class with their distance.
+- **SIMULATOR-VERIFIED 2026-10-25 00:02** (ENGINE_NOTES 2026-10-25 night, simulator): one EVE cost per cast (-15 /
+  -15 / -30 both); only the casting hand animates (measured per cast). Not settled: the bolt's exact start.
+- **Known, not handled:** a fast swing drops a held corpse (the game's own BreakageDistance, or the corpse snagging);
+  the hanging corpses in the Medical Pavilion are picked but never pulled (pinned). The simulator's controllers make
+  the owner's 37 deg plasmid yaw trim point the right hand's ray wide; in the headset the mirror is the intent.
+- **The reticle sits on what you aim at** (F10 Aim > Reticle > "Reticle on what you aim at", on): its ray marched
+  through the eye's depth on the GPU. Looks like BO3 Zombies VR's: white, 5 mrad (0.29 deg), dark rim. The owner's
+  saved ReticleSize 0.32 deg still wins over the new 0.29 default.
+- **One aim for all plasmids** (F10 Aim > Reticle > "One aim for all plasmids", on): the "Plasmid" profile, seeded from
+  the plasmid in hand at first use.
+
+### Next steps
+
+- **Tester:** turn on Dual plasmids, hold Electro Bolt, pull the right trigger alone, then both. Then hold
+  Telekinesis and grab two objects, one per hand (crates and loose props; the hanging corpses do not come). Then set
+  "Right hand's plasmid" to Electro Bolt with Telekinesis in hand. Read `[dualcast]`, `[telekinesis]` and `[hands2]`.
+- Then the mix-and-match wheels: a wheel on either hand filling that hand's slot (today the right hand's plasmid is
+  the F10 row), and guns in the mix.
+
 ## Session 2026-10-25 - BS1: the left-held flamethrower mirrored; this branch to staging
 
 **Branch `claude/bs1-manual-reload-2` is published and goes to `staging` by PR, at the owner's word** ("good enough

@@ -2135,6 +2135,8 @@ void handle_command(const char* args) {
         palette::log_status();
     } else if (strcmp(verb, "beamaim") == 0) {
         bones::set_beam_aim(strncmp(rest, "flip", 4) == 0 ? 2 : strstr(rest, "on") ? 1 : 0);
+    } else if (strcmp(verb, "boltfollow") == 0) {
+        bones::set_bolt_follow(strncmp(rest, "pos", 3) == 0 ? 1 : strncmp(rest, "off", 3) == 0 ? 0 : 2);
     } else if (strcmp(verb, "sockfollow") == 0) {
         // s91: "sockfollow on|off|axes on|axes off"
         const bool axes = strncmp(rest, "axes", 4) == 0;

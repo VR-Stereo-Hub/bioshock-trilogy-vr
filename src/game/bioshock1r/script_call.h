@@ -28,6 +28,11 @@ bool properties_ready(void* anyActor);
 // (UClass Defaults, patterns.h kClassDefaultsOffset): a default value is defaults + offset.
 int32_t class_property_offset(void* cls, const wchar_t* name);
 void* class_defaults(void* cls);
+// 2026-10-25: a script BOOL property (a bit in a packed dword: UBoolProperty's BitMask follows UProperty's fields).
+// The mask is the first single-bit dword after UProperty::Offset (+0x78..+0xB0; logged once per property). False
+// when the property or its mask is not found.
+bool get_bool(void* obj, const wchar_t* name, bool* value);
+bool set_bool(void* obj, const wchar_t* name, bool value);
 
 // GNames index of `text` (exact, case-insensitive), -1 when absent. Scans once per text.
 int32_t name_index(const char* text);

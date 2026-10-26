@@ -99,6 +99,9 @@ add_library(bioshockvr SHARED
     game/bioshock1r/hands.cpp
     game/bioshock1r/palette.cpp
     game/bioshock1r/gun_flip.cpp
+    game/bioshock1r/second_hands.cpp
+    game/bioshock1r/own_ability.cpp
+    game/bioshock1r/own_ability.h
     game/bioshock1r/handback.cpp
     game/bioshock1r/hud_elements.cpp
     game/bioshock1r/hud_elements.h

@@ -4,8 +4,10 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/arm_ik.h"
 #include "game/bioshock1r/gun_flip.h"
+#include "game/bioshock1r/second_hands.h"
 #include "game/bioshock1r/mirror_math.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 
@@ -50,9 +52,14 @@ struct Published {
     WeaponXform weapon;
     bool hideArms = false;
     bool mirror = false; // each hand shows the other's layout, mirrored (mirror_math.h)
+    bool copyLeft = false; // 2026-10-25: the right hand shows the left's layout, mirrored; the left its own
+    bool holdRight = false; // 2026-10-25: the right hand keeps its skins from before a one-hand cast
     uint64_t ms = 0;
 };
 Published g_pub;
+// 2026-10-25: the right hand's skin matrices from before a one-hand cast (render thread).
+float g_rightHeldSkins[patterns::kHandsRigBoneCount * 16] = {};
+bool g_rightHeldValid = false;
 
 // ---- 2026-10-25: a held gun drawn REFLECTED (gun_geometry.h trueMirror) ---------------------------------------
 // The weapon actor, the weapon-space axis flipped and the plane it is flipped about, and when it was last asked
@@ -89,6 +96,7 @@ void reflect_before(float* m, int a, float c) {
 std::mutex g_poseMutex;
 mirror::Aff g_pose[patterns::kHandsRigBoneCount];
 bool g_poseValid = false;
+float g_headAt[3] = {}; // the head bone in the rig's space (the measured pose): where a hidden arm is folded away
 mirror::Basis g_basis;
 std::atomic<int> g_mirrorState{0};
 int g_mirrorTries = 0;
@@ -105,6 +113,7 @@ void measure_mirror(const float* engine, int count) {
             if (!mirror::inverse(mirror::from_palette(engine + i * 16), &inv)) return;
             bind[i] = mirror::mul(inv, g_pose[i]);
         }
+        memcpy(g_headAt, g_pose[2].t, sizeof g_headAt); // bip01_head (bones.cpp kBoneHead)
     }
     mirror::Basis b;
     const bool ok = mirror::measure(bind, count, &b);
@@ -131,6 +140,79 @@ void mirror_skins(const float* engine, float* out, int count) {
         mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(engine + L * 16)), out + R * 16);
     }
     g_mirrored.fetch_add(1, std::memory_order_relaxed);
+}
+// 2026-10-25, dual-wielded plasmids: the right hand's bones take the LEFT hand's skin matrices, mirrored; the left's
+// stay the engine's.
+void copy_left_skins(const float* engine, float* out, int count) {
+    if (count != patterns::kHandsRigBoneCount) return;
+    // The source is the SECOND hands' left hand when they are up (their own plasmid's animation), else this mesh's.
+    const float* src = second_hands::skins();
+    if (!src) src = engine;
+    for (int k = 0; k < mirror::kPairs; ++k) {
+        const int L = mirror::kPairLeft[k], R = mirror::kPairRight[k];
+        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(src + L * 16)), out + R * 16);
+    }
+    g_mirrored.fetch_add(1, std::memory_order_relaxed);
+}
+
+// ---- 2026-10-25: the right hand drawn by the SECOND hands' own mesh ----------------------------------------------
+// A plasmid's look on the hands (Winter Blast's frost, Incinerate's fire) is the material and overlay of the hands
+// ACTOR that holds it. The game's mesh drew both hands - the right one with the second hands' skins copied in - so the
+// right hand wore the left plasmid's look. Now the second hands' own draw shows the right arm (their left hand's
+// animation mirrored onto it, placed as the game's right hand would be) and the game's mesh hides its right arm.
+std::atomic<bool> g_secondRight{true};
+std::atomic<uint32_t> g_secondDrawn{0}, g_mainRightHidden{0};
+// When the second hands last drew the right arm. The game's mesh hides its own only while that is recent: if their
+// draw stops (culled, not evaluated, gone) the game's mesh draws the right hand again within kSecondDrawGraceMs, so
+// the right hand is never missing - the 20:31 run ended with no right hand at all.
+std::atomic<uint64_t> g_secondDrawMs{0};
+constexpr uint64_t kSecondDrawGraceMs = 100;
+
+// Main-hands space to the second hands' space, from the two actors as they stand (Location, Rotation, DrawScale): a
+// palette point p is at L + DrawScale * p * B in the world (B the rotation's axes as rows - the model rig2_place puts
+// the second hands by). The DrawScale belongs in it (a build that left it out drew the right arm too large while the
+// two stood at 0.8 and 1.0); second_hands now gives the second hands the game's hands' DrawScale, so the ratio is 1
+// and this is their Location and Rotation alone. Row-vector: p' = p * lin + t.
+struct SpaceMap {
+    float lin[9];
+    float t[3];
+};
+bool actor_frame(void* a, float L[3], float B[9], float* k) {
+    uint8_t* b = static_cast<uint8_t*>(a);
+    bvr::ue::FRotator r{};
+    if (!readable(b + patterns::kActorLocOffset, 24) || !readable(b + patterns::kActorDrawScaleOffset, 4)) return false;
+    memcpy(L, b + patterns::kActorLocOffset, 12);
+    memcpy(&r, b + patterns::kActorLocOffset + 12, 12);
+    float s = 0.0f;
+    memcpy(&s, b + patterns::kActorDrawScaleOffset, 4);
+    *k = s > 0.001f && s < 1000.0f ? s : 1.0f; // 0 is Unreal's "unset": 1
+    bvr::ue::ue_rot_basis(r, B, B + 3, B + 6);
+    return std::isfinite(L[0]) && std::isfinite(L[1]) && std::isfinite(L[2]);
+}
+bool space_map(void* from, void* to, SpaceMap* m, float* dist, float* k1, float* k2) {
+    float L1[3], B1[9], L2[3], B2[9];
+    if (!from || !to || !actor_frame(from, L1, B1, k1) || !actor_frame(to, L2, B2, k2)) return false;
+    const float s = *k1 / *k2;
+    for (int j = 0; j < 3; ++j)
+        for (int c = 0; c < 3; ++c)
+            m->lin[j * 3 + c] = s * (B1[j * 3] * B2[c * 3] + B1[j * 3 + 1] * B2[c * 3 + 1] + B1[j * 3 + 2] * B2[c * 3 + 2]);
+    const float d[3] = {L1[0] - L2[0], L1[1] - L2[1], L1[2] - L2[2]};
+    for (int c = 0; c < 3; ++c) m->t[c] = (d[0] * B2[c * 3] + d[1] * B2[c * 3 + 1] + d[2] * B2[c * 3 + 2]) / *k2;
+    *dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    return true;
+}
+// A palette entry carried by the map: its direction rows by the linear part, its point row by the whole.
+void map_entry(const SpaceMap& m, float* e) {
+    for (int r = 0; r < 4; ++r) {
+        const float v[3] = {e[r * 4], e[r * 4 + 1], e[r * 4 + 2]};
+        for (int c = 0; c < 3; ++c)
+            e[r * 4 + c] = v[0] * m.lin[c] + v[1] * m.lin[3 + c] + v[2] * m.lin[6 + c] + (r == 3 ? m.t[c] : 0.0f);
+    }
+}
+bool in_pair_list(const int* list, int i) {
+    for (int k = 0; k < mirror::kPairs; ++k)
+        if (list[k] == i) return true;
+    return false;
 }
 
 std::atomic<uint32_t> g_calls{0}, g_composed{0}, g_refused{0};
@@ -431,6 +513,68 @@ int call_with_copy(void* self, void* inst, int lod, void* out, int a5, float** s
     return r;
 }
 
+// One hand's placement on the palette `g`: the per-bone fixes and the hand's correction on its cluster, then its
+// sleeve (the IK arm, or folded at the wrist).
+void finish_hand(const Published& p, int h, float* g, int count, bool diag) {
+    const HandXform& x = p.hand[h];
+    if (!x.valid) return;
+    if (diag && g_probe.load(std::memory_order_relaxed) && x.wristBone >= 0 && x.wristBone < count)
+        probe_wrist(h, x, g + x.wristBone * 16);
+    if (diag && x.wristBone >= 0 && x.wristBone < count) measure_anchor(h, x, g, count);
+    const int first = h == 1 ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
+    const int last = h == 1 ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
+    for (int i = first; i <= last && i < count; ++i) {
+        const int f = i - first;
+        if (f < HandXform::kMaxFix && x.fixValid[f]) {
+            static const float kZero[3] = {0, 0, 0};
+            apply_sim(palette_math::hand_sim(x.fixQ[f], 1.0f, kZero, x.fixT[f]), g + i * 16);
+        }
+        compose(x, g + i * 16);
+    }
+    const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+    if (x.armValid) {
+        // s88: the IK arm (Dishonored arm_ik_draw.inc): each sleeve matrix carried from the
+        // game's bone to the solved one. No hierarchy: each is set on its own.
+        for (int j = 0; j < 5; ++j)
+            if (sl[j] < count) apply_affine(x.arm[j], g + sl[j] * 16);
+    } else if (p.hideArms) {
+        for (int j = 0; j < 5; ++j)
+            if (sl[j] < count) collapse(x.wrist, g + sl[j] * 16);
+    }
+}
+
+// s88 (VR-184): the rigid wrist - the LOD this call skins, with the hand's vertices carrying no forearm weight. The
+// slot and the two pointers for call_with_copy, or all null.
+void rigid_wrist_slot(uint8_t* base, int lod, bool census, void*** vslot, void** vengine, void** vcopy) {
+    *vslot = nullptr;
+    *vengine = *vcopy = nullptr;
+    if (!g_rigidWrist.load(std::memory_order_relaxed)) return;
+    uint8_t* mesh = nullptr;
+    if (readable(base + patterns::kMeshInstMeshOffset, 4)) mesh = *reinterpret_cast<uint8_t**>(base + patterns::kMeshInstMeshOffset);
+    if (!mesh || !readable(mesh + patterns::kMeshLodsOffset, 8)) return;
+    uint8_t* lods = *reinterpret_cast<uint8_t**>(mesh + patterns::kMeshLodsOffset);
+    const int nl = *reinterpret_cast<int*>(mesh + patterns::kMeshLodCountOffset);
+    if (!lods || lod < 0 || lod >= nl || !readable(lods + patterns::kLodStride * lod, patterns::kLodStride)) return;
+    uint8_t* L = lods + patterns::kLodStride * lod;
+    if (census && g_weightCensus.exchange(false, std::memory_order_relaxed)) weight_census(L);
+    void* src = *reinterpret_cast<void**>(L + patterns::kLodSkinnedVertsOffset);
+    const int sc = *reinterpret_cast<int*>(L + patterns::kLodSkinnedCountOffset);
+    if (!src || sc <= 0 || sc >= 200000) return;
+    if (const WristCopy* wc = build_wrist_copy(L, static_cast<const uint8_t*>(src), sc)) {
+        *vslot = reinterpret_cast<void**>(L + patterns::kLodSkinnedVertsOffset);
+        *vengine = src;
+        *vcopy = wc->data;
+    }
+}
+
+// The second hands draw the right hand this frame - one answer for both draws, so the right hand is never drawn
+// twice or not at all.
+bool second_right_now(const Published& p) {
+    return g_secondRight.load(std::memory_order_relaxed) && g_enabled.load(std::memory_order_relaxed) && p.copyLeft &&
+           !p.mirror && p.hand[1].valid && GetTickCount64() - p.ms <= 250 &&
+           g_mirrorState.load(std::memory_order_acquire) == 1 && second_hands::actor() != nullptr;
+}
+
 int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, void* out, int a5) {
     g_calls.fetch_add(1, std::memory_order_relaxed);
     Published p;
@@ -475,6 +619,59 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
         owner = *reinterpret_cast<void**>(static_cast<uint8_t*>(inst) + patterns::kMeshInstOwnerOffset);
     if (owner && readable(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset, 4))
         census_note(owner, *reinterpret_cast<int*>(static_cast<uint8_t*>(inst) + patterns::kMeshInstPaletteCountOffset));
+
+    // ---- 2026-10-25: the SECOND hands (second_hands.h, the right hand's own plasmid): its skin matrices are what
+    // the main mesh's right hand shows (mirrored, below), and its own draw is collapsed away - only its effects show.
+    // A second hands actor whose Destroy has not taken yet stays collapsed too (its skins are not captured): the 12:39
+    // run left one standing in the room as "an extra pair of arms".
+    const bool liveSecond = owner && owner == second_hands::actor();
+    if (owner && inst && (liveSecond || second_hands::is_leftover(owner))) {
+        uint8_t* b = static_cast<uint8_t*>(inst);
+        if (readable(b + patterns::kMeshInstPaletteOffset, 8)) {
+            float** sslot = reinterpret_cast<float**>(b + patterns::kMeshInstPaletteOffset);
+            float* sengine = *sslot;
+            const int sn = *reinterpret_cast<int*>(b + patterns::kMeshInstPaletteCountOffset);
+            if (sengine && sn > 0 && sn <= 256 && readable(sengine, static_cast<size_t>(sn) * 64)) {
+                if (liveSecond) second_hands::capture_skins(sengine, sn);
+                memcpy(g_copy, sengine, static_cast<size_t>(sn) * 64);
+                // Their own draw shows the right arm: built in the game's hands' space exactly as that mesh's right
+                // arm was (their left hand mirrored, then placed), carried into their own space; everything else of
+                // theirs folded away at the head.
+                SpaceMap m{};
+                float dist = 0.0f, k1 = 1.0f, k2 = 1.0f;
+                if (liveSecond && sn == patterns::kHandsRigBoneCount && second_right_now(p) &&
+                    space_map(p.instance, owner, &m, &dist, &k1, &k2)) {
+                    for (int k = 0; k < mirror::kPairs; ++k)
+                        mirror::to_palette(mirror::mirrored_skin(g_basis, mirror::from_palette(sengine + mirror::kPairLeft[k] * 16)),
+                                           g_copy + mirror::kPairRight[k] * 16);
+                    finish_hand(p, 1, g_copy, sn, false);
+                    float fold[16] = {};
+                    collapse(g_headAt, fold);
+                    map_entry(m, fold);
+                    for (int i = 0; i < sn; ++i) {
+                        if (in_pair_list(mirror::kPairLeft, i)) collapse(fold + 12, g_copy + i * 16);
+                        else map_entry(m, g_copy + i * 16);
+                    }
+                    void** vslot = nullptr;
+                    void *vengine = nullptr, *vcopy = nullptr;
+                    rigid_wrist_slot(b, lod, false, &vslot, &vengine, &vcopy);
+                    const uint32_t n = g_secondDrawn.fetch_add(1, std::memory_order_relaxed);
+                    static uint64_t s_log = 0;
+                    const uint64_t now = GetTickCount64();
+                    g_secondDrawMs.store(now, std::memory_order_relaxed);
+                    if (n == 0 || now - s_log >= 5000) {
+                        s_log = now;
+                        BVR_LOG("[palette] the right hand drawn by the second hands (its own plasmid's look): %u draws, "
+                                "the game's right arm hidden %u | the two actors %.1f uu apart, DrawScale %.3f / %.3f",
+                                n + 1, g_mainRightHidden.load(std::memory_order_relaxed), dist, k1, k2);
+                    }
+                    return call_with_copy(self, inst, lod, out, a5, sslot, sengine, vslot, vengine, vcopy);
+                }
+                for (int i = 0; i < sn; ++i) collapse(kHideAllAt, g_copy + i * 16);
+                return call_with_copy(self, inst, lod, out, a5, sslot, sengine);
+            }
+        }
+    }
 
     // ---- hidden outright (the room capture sweep): every matrix of the hands' and the held
     // weapon's palettes collapsed far below the world, so nothing of either is drawn.
@@ -556,59 +753,30 @@ int __fastcall gather_detour(void* self, void* /*edx*/, void* inst, int lod, voi
     // The gun in the left hand: each hand's skin matrices become the other's, mirrored, BEFORE
     // the placement below - which the drive computed from the mirrored pose, so the two agree.
     if (p.mirror && g_mirrorState.load(std::memory_order_acquire) == 1) mirror_skins(engine, g_copy, count);
-    for (int h = 0; h < 2; ++h) {
-        const HandXform& x = p.hand[h];
-        if (!x.valid) continue;
-        if (g_probe.load(std::memory_order_relaxed) && x.wristBone >= 0 && x.wristBone < count)
-            probe_wrist(h, x, g_copy + x.wristBone * 16);
-        if (x.wristBone >= 0 && x.wristBone < count) measure_anchor(h, x, g_copy, count);
-        const int first = h == 1 ? patterns::kBoneRClusterFirst : patterns::kBoneLClusterFirst;
-        const int last = h == 1 ? patterns::kBoneRClusterLast : patterns::kBoneLClusterLast;
-        for (int i = first; i <= last && i < count; ++i) {
-            const int f = i - first;
-            if (f < HandXform::kMaxFix && x.fixValid[f]) {
-                static const float kZero[3] = {0, 0, 0};
-                apply_sim(palette_math::hand_sim(x.fixQ[f], 1.0f, kZero, x.fixT[f]), g_copy + i * 16);
-            }
-            compose(x, g_copy + i * 16);
-        }
-        const int* sl = h == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
-        if (x.armValid) {
-            // s88: the IK arm (Dishonored arm_ik_draw.inc): each sleeve matrix carried from the
-            // game's bone to the solved one. No hierarchy: each is set on its own.
-            for (int j = 0; j < 5; ++j)
-                if (sl[j] < count) apply_affine(x.arm[j], g_copy + sl[j] * 16);
-        } else if (p.hideArms) {
-            for (int j = 0; j < 5; ++j)
-                if (sl[j] < count) collapse(x.wrist, g_copy + sl[j] * 16);
+    else if (p.copyLeft && g_mirrorState.load(std::memory_order_acquire) == 1) copy_left_skins(engine, g_copy, count);
+    // 2026-10-25: only the casting hand plays the fire animation - the free right hand keeps its skins from before.
+    if (!p.mirror && !p.copyLeft && count == patterns::kHandsRigBoneCount) {
+        if (p.holdRight && g_rightHeldValid) {
+            for (int k = 0; k < mirror::kPairs; ++k)
+                memcpy(g_copy + mirror::kPairRight[k] * 16, g_rightHeldSkins + mirror::kPairRight[k] * 16, 64);
+        } else if (!p.holdRight) {
+            for (int k = 0; k < mirror::kPairs; ++k)
+                memcpy(g_rightHeldSkins + mirror::kPairRight[k] * 16, engine + mirror::kPairRight[k] * 16, 64);
+            g_rightHeldValid = true;
         }
     }
-    // s88 (VR-184): the rigid wrist, on the LOD this call skins.
+    for (int h = 0; h < 2; ++h) finish_hand(p, h, g_copy, count, true);
+    // 2026-10-25: the second hands draw the right arm (above, in their own draw): this mesh's right arm folds away -
+    // only while they are in fact drawing it.
+    if (second_right_now(p) &&
+        GetTickCount64() - g_secondDrawMs.load(std::memory_order_relaxed) <= kSecondDrawGraceMs) {
+        for (int k = 0; k < mirror::kPairs; ++k) collapse(g_headAt, g_copy + mirror::kPairRight[k] * 16);
+        g_mainRightHidden.fetch_add(1, std::memory_order_relaxed);
+    }
     void** vslot = nullptr;
     void* vengine = nullptr;
     void* vcopy = nullptr;
-    if (g_rigidWrist.load(std::memory_order_relaxed)) {
-        uint8_t* mesh = nullptr;
-        if (readable(base + patterns::kMeshInstMeshOffset, 4))
-            mesh = *reinterpret_cast<uint8_t**>(base + patterns::kMeshInstMeshOffset);
-        if (mesh && readable(mesh + patterns::kMeshLodsOffset, 8)) {
-            uint8_t* lods = *reinterpret_cast<uint8_t**>(mesh + patterns::kMeshLodsOffset);
-            const int nl = *reinterpret_cast<int*>(mesh + patterns::kMeshLodCountOffset);
-            if (lods && lod >= 0 && lod < nl && readable(lods + patterns::kLodStride * lod, patterns::kLodStride)) {
-                uint8_t* L = lods + patterns::kLodStride * lod;
-                if (g_weightCensus.exchange(false, std::memory_order_relaxed)) weight_census(L);
-                void* src = *reinterpret_cast<void**>(L + patterns::kLodSkinnedVertsOffset);
-                const int sc = *reinterpret_cast<int*>(L + patterns::kLodSkinnedCountOffset);
-                if (src && sc > 0 && sc < 200000) {
-                    if (const WristCopy* wc = build_wrist_copy(L, static_cast<const uint8_t*>(src), sc)) {
-                        vslot = reinterpret_cast<void**>(L + patterns::kLodSkinnedVertsOffset);
-                        vengine = src;
-                        vcopy = wc->data;
-                    }
-                }
-            }
-        }
-    }
+    rigid_wrist_slot(base, lod, true, &vslot, &vengine, &vcopy);
     // The skinner reads the array through the instance for the length of this one call; it
     // gets the copy, and the engine's pointer is back before anything else can look.
     const int r = call_with_copy(self, inst, lod, out, a5, slot, engine, vslot, vengine, vcopy);
@@ -847,7 +1015,8 @@ void set_gun_reflection(void* weaponActor, int axis, float planeWeaponSpace) {
     set_reflection(weaponActor, axis, planeWeaponSpace);
 }
 
-void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored) {
+void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const WeaponXform& weapon, bool mirrored,
+             bool copyLeft, bool holdRight) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_pub.instance = meshInstance;
     g_pub.weapon = weapon;
@@ -855,6 +1024,8 @@ void publish(void* meshInstance, const HandXform hands[2], bool hideArms, const 
     g_pub.hand[1] = hands[1];
     g_pub.hideArms = hideArms;
     g_pub.mirror = mirrored;
+    g_pub.copyLeft = copyLeft && !mirrored;
+    g_pub.holdRight = holdRight && !mirrored && !copyLeft;
     g_pub.ms = GetTickCount64();
 }
 
@@ -903,6 +1074,13 @@ void set_rigid_wrist(bool on) {
 }
 
 void request_weight_census() { g_weightCensus.store(true, std::memory_order_relaxed); }
+
+void set_second_draws_right(bool on) {
+    if (g_secondRight.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[palette] the right hand's own plasmid look %s", on ? "ON - the second hands draw the right hand"
+                                                                     : "off - the game's hands draw both");
+}
+bool second_draws_right() { return g_secondRight.load(std::memory_order_relaxed); }
 void set_probe(bool on) {
     g_probeState[0] = g_probeState[1] = ProbeState{};
     g_probe.store(on, std::memory_order_relaxed);

@@ -10,6 +10,7 @@
 
 struct ID3D11DeviceContext;
 struct ID3D11Texture2D;
+struct ID3D11ShaderResourceView;
 
 namespace bvr::b1r::tgpu {
 struct Camera;
@@ -32,7 +33,26 @@ struct Segment {
     // the gun body's barrel axis as last measured (the gun posed one frame earlier).
     bool muzzleValid = false;
     float muzzle[3] = {}, barrelAxis[3] = {};
+    // 2026-10-25: a SECOND reticle, for the right hand's cast with the plasmids dual-wielded (aim.cpp):
+    // its own ray, drawn like the first.
+    bool reticle2 = false;
+    float origin2[3] = {};
+    float dir2[3] = {1, 0, 0};
+    float reticle2Uu = 500.0f;
+    // 2026-10-25 (the dynamic reticle, as BO3 Zombies VR's aim aid): the reticles sit where their ray meets the
+    // scene (measure() below), at reticleUu / reticle2Uu when nothing is measured yet.
+    bool dynamic = true;
 };
+
+// 2026-10-25: the dynamic reticle distance. BO3 Zombies VR and Darkness II VR ask their engine's ray trace for the
+// distance along the muzzle ray; nothing in this mod can trace, so this marches the ray through the eye's own
+// linear view depth (temporal_gpu linear_z, the viewmodel left out by its hands mask) on the GPU and reads the
+// hit back a frame or two later. One call per fresh eye image, with that image's camera. Render thread.
+void measure(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* linearZ, ID3D11ShaderResourceView* handsMask,
+             uint32_t w, uint32_t h, const tgpu::Camera& cam, const Segment& s);
+// The last measured distance along reticle `i`'s ray (uu; the far end when nothing was hit), or < 0 when none is
+// recent. Any thread.
+float measured_uu(int i);
 
 // Draw `s` over `dst` (w x h) as seen by `cam`. False when there is nothing to draw or the
 // image cannot be rendered into (logged once).

@@ -3159,3 +3159,47 @@ Stack markers were tried first and rejected by the headset (ENGINE_NOTES 2026-10
 left-hand fork's vm_mirror), because the hands are already mirrored on the palette; a 180-degree roll so the side
 handle reaches the left hand (the gauge underneath); and putting the left hand on the top handle (not what was asked).
 Only the thrower opts in; the other guns keep the solid mirror. F10 Controls > Grab and hand-over can turn it off.
+
+### 2026-10-25: BS1 hands hold slots; a cast is run once per hand that asked
+
+The owner's plan is mix-and-match: any weapon or plasmid in either hand, the same or mixed, each hand with its own
+wheel. The engine holds one hand item at a time. `hand_loadout.h` (pure, host-tested) is the layer between: per
+PHYSICAL hand a slot (empty, a weapon, a plasmid, with its profile key), and a trigger router that feeds each slot's
+trigger to the game's matching fire trigger and latches each plasmid hand's pull, because the cast arrives later
+from an anim notify. The cast seam (`UAttackAbility::InitiateDamage`) then runs the cast once per hand in the plan,
+aiming each along its own hand's ray. Step one fills the slots by rule (dual-wielded plasmids: the right hand holds
+the plasmid in hand too); the wheels will fill them instead, and the router and the per-hand cast stay as they
+are. Rejected: casting a second time on every cast (the right hand could not cast alone, and the game's own
+scripted casts would double); a second ability actor (the game has one ability slot, `Hands +0x454`).
+
+### 2026-10-25: each plasmid hand is its own Hands actor
+
+The owner wants two fully independent plasmids, the same or different, each with its own cast, animation, effects
+and EVE use, as the base of mix-and-match. In BS1 all of that lives on the Hands actor, not on the ability: its state
+machine, its animations, its effect events (ENGINE_NOTES 2026-10-25, the script corpus). So the right hand's plasmid
+is a second Hands actor of the same class, made and driven by the mod (second_hands.cpp), hidden in the skin
+gather, its left hand shown mirrored on the main mesh's right hand, and placed by its own view offset so its effects
+land on the right hand. Rejected: running the cast twice (one EVE charge for two casts, nothing for the plasmids
+that do not use InitiateDamage, one set of effects); a second ability object fired by the mod (no animation, no
+state, its effects on the one Hands' left hand). The two-casts path stays only as the fallback when the second Hands
+cannot be spawned.
+
+### 2026-10-25: the right hand's plasmid is chosen by family, and its own ability object names the hand
+
+The second Hands actor gives the right hand a whole plasmid. The first mix-and-match step lets it hold a different one
+(F10 "Right hand's plasmid", until the wheels fill it). The row names a FAMILY, not a class: each upgrade level is
+its own class, so the right hand takes the player's own class of that family from `AvailableAbilities`, the highest
+level owned, and the player's one object of that class from `GetAbilityFromClass`. With two different ability
+objects in the hands, a cast is attributed by the object casting, ahead of the armed fire states: a Telekinesis hold
+keeps one hands actor firing for its whole length. Telekinesis in both hands takes the player's
+`TelekinesisTwoAbility` object for the right, because a hold lives on the ability object; the mod ticks it, since
+the engine ticks only the active class's object. Rejected: constructing a second ability object with
+`StaticConstructObject` (no save or load handling, and one would be made per spawn); Telekinesis's head ray patched
+in the camera detour (every caller of the camera would see it).
+
+### 2026-10-25: the BS1 reticle finds its distance in the eye's depth, not a trace
+
+The sibling mods place the reticle by the engine's ray trace. BS1 cannot call its trace. The temporal pipeline
+already makes each fresh eye's linear view depth with the viewmodel masked, so a 2-thread compute shader marches
+the reticle rays through it and the CPU reads the hit back a frame or two later (no stall). The look is BO3 Zombies
+VR's shipped aim aid: white at 90 %, 5 mrad, on a dark rim.
