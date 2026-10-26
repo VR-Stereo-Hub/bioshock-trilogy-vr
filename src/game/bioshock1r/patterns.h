@@ -444,6 +444,33 @@ inline constexpr uint32_t kActorViewDirOffset = 0x1E4;
 // (FName EffectEvent by value, Other, Material, FVector*, FRotator*, bool, bool, Observer, FName ReferenceTag by
 // value, EffectEventInfo) = 12 dwords on the stack, bool in eax. Animation cues reach the same virtual.
 inline constexpr uint32_t kActorTriggerEffectEventVtbl = 0x290;
+// 2026-10-25 (tools\ida\at1_attach_to_bone.py): AActor::AttachToBone, the C++ behind Actor.AttachToBone - the native
+// table entry "intAActorexecAttachToBone" (name pointer at RVA 0x11BBDE4, its thunk slot written by the static
+// initializer at +0x3BA32 with the exec thunk +0x541650, which calls this). thiscall(this = the parent actor, AActor*
+// Attachment, FName BoneName by value - index, number), int result; 11 call sites, the effects system's among them.
+// The Electro Bolt's effect reaches the hands' FireballSocket through it at each cast (ENGINE_NOTES 2026-10-25).
+inline constexpr uint32_t kActorAttachToBoneRva = 0x379EF0;
+inline constexpr uint8_t kActorAttachToBonePrologue[16] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC,
+                                                          0x10, 0x56, 0x57, 0x8B, 0xF9, 0x83, 0xBF, 0x28};
+// 2026-10-25 (tools\ida\at2_destroy_actor.py): ULevel::DestroyActor, the C++ behind Actor.Destroy - the native table
+// entry "intAActorexecDestroy" (name pointer at RVA 0x11BB850, exec thunk +0x548370) calls the actor's XLevel (actor
+// +0xFC) through its vtable +0x134: thiscall(this = the level, AActor*, int bNetForce, int), int result. ULevel's own
+// table (RVA 0xE0D90C, from its RTTI) holds +0x52D350 there. It refuses: actor flags +0xCC & 0xA0 set; or, without
+// bNetForce, a Role (byte +0xE9) other than ROLE_Authority (4) unless the +0xD0 & 4 flag is set. Actor.Destroy passes
+// bNetForce 0, so a script Destroy of an actor whose Role is not Authority is refused with no log.
+inline constexpr uint32_t kActorXLevelOffset = 0xFC;
+inline constexpr uint32_t kLevelDestroyActorVtbl = 0x134;
+inline constexpr uint32_t kLevelDestroyActorRva = 0x52D350;
+inline constexpr uint32_t kActorDestroyFlagsOffset = 0xCC; // & 0xA0: never destroyed
+inline constexpr uint32_t kActorRoleOffset = 0xE9;         // ENetRole, 4 = ROLE_Authority
+// 2026-10-25 (tools\ida\at3_construct_object.py): StaticConstructObject, the constructor behind the script's `new` -
+// the native table entry "intUObjectexecNew" (name at RVA 0xE33DE8, exec thunk +0x733250) calls it at +0x7333B7:
+// cdecl, ten dwords (UClass*, UObject* Outer - null is the transient package, FName by value (index, number), flags
+// (exec New masks them with 0x8784085), 0, 0, FOutputDevice* Error (exec New passes its FFrame), 0, 0), returns the
+// object. Object flags sit at +0x20 (its own check reads 0x800 there).
+inline constexpr uint32_t kStaticConstructObjectRva = 0x700500;
+inline constexpr uint8_t kStaticConstructObjectPrologue[16] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x51, 0x53,
+                                                               0x56, 0x57, 0xFF, 0x75, 0x2C, 0x8B, 0x7D, 0x18};
 // M7 session-11 actor-field probes, recorded honestly: a TRUE DrawScale has
 // NOT been located on this build. +0x16C (default 0.0) HIDES the mesh at small
 // values (0.5/0.8 both vanished the pistol - cull-distance-like semantics, and

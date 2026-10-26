@@ -15,16 +15,21 @@
 //   - spawned (the main hands' own class, owned by the player) while dual-wielded plasmids are on, a plasmid is in
 //     hand and the game is in gameplay; destroyed the moment any of that ends (a menu, a cinematic, a load), so a
 //     save never holds it;
-//   - given the main hands' plasmid (the shared per-class ability object; a different plasmid per hand is the
-//     mix-and-match step, through ShockPlayer.GetAbilityFromClass);
+//   - given the right hand's plasmid in an ability OBJECT OF ITS OWN (own_ability.h; right_choice): the F10
+//     RightPlasmid family, else the left's class - never the player's object the game's hands hold, so the two hands'
+//     effect flags and states never mix, the same plasmid included (Telekinesis: the player's object of the
+//     Telekinesis class the left does not hold);
 //   - fired from the right trigger (the router keeps that trigger off the game's own input);
-//   - its skin matrices captured and its own draw collapsed (palette.cpp): the main mesh's RIGHT hand shows its
-//     LEFT hand's animation, mirrored (bones.cpp m4_pose / palette copy_left_skins);
+//   - drawing the RIGHT arm itself (palette.cpp: its left hand mirrored onto its right arm, carried into its own
+//     space), so the right hand wears its own plasmid's look; the game's mesh hides its right arm only while that
+//     draw is happening;
 //   - placed each frame so its left palm sits on the drawn right palm, so its effects - attached to its own left
-//     hand - appear on the right hand.
-// Known, not handled yet: its AbilityIdling reads and clears the controller's bHoldingFireAbility (the LEFT
-// trigger's hold) on entering; at 0 EVE both hands may inject a hypo; Telekinesis and Decoy keep one target per
-// player; the same plasmid in both hands shares one ability object (its AbilityEffectsTriggered flag).
+//     hand - appear on the right hand; with no sound pose (a fresh spawn) it stands on the game's hands instead;
+//   - removed by the engine's own DestroyActor (forced: Actor.Destroy refuses it), its effect taken away first.
+// Self-checks, each logged: a plasmid effect still off after the hands settle is turned on; a LastAbility the right
+// hand's equip wrote is put back. Known, not handled yet: its AbilityIdling reads and clears the controller's
+// bHoldingFireAbility (the LEFT trigger's hold) on entering; at 0 EVE both hands may inject a hypo; Decoy keeps one
+// target per player.
 
 namespace bvr::b1r::second_hands {
 
@@ -34,6 +39,8 @@ void tick(void* mainHands, bool wanted);
 
 // The second hands actor, or null.
 void* actor();
+// A second hands actor whose Destroy did not take yet (2026-10-25): its draw stays collapsed until it is gone.
+bool is_leftover(const void* owner);
 
 // The right hand's plasmid (F10 RightPlasmid): 0 the left's, else a family (1 Incinerate! ... 11 Hypnotize Big
 // Daddy, the row's order). The right hand takes the player's own class of that family (its highest owned level).

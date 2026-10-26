@@ -2,6 +2,7 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/hands_state.h"
+#include "game/bioshock1r/own_ability.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/script_call.h"
 
@@ -9,6 +10,7 @@
 #include <intrin.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -37,6 +39,10 @@ bool wr(void* p, const T& v) {
 }
 
 std::atomic<void*> g_rig{nullptr}; // the second hands (game thread writes)
+// Second hands whose Destroy did not take (destroy): still collapsed in the skin gather, destroyed again each tick.
+constexpr int kMaxZombies = 8;
+void* volatile g_zombie[kMaxZombies] = {};
+volatile int g_zombieN = 0;
 void* g_main = nullptr;             // the main hands it was made beside
 std::atomic<bool> g_rightDown{false};
 bool g_rightWas = false;
@@ -69,24 +75,114 @@ bool set_prop_ptr(void* obj, const wchar_t* name, void* v) {
 void drop_object(void* ability);
 void* prop_ptr(void* obj, const wchar_t* name);
 
+// 2026-10-25: Actor.Destroy refused the second hands every time (Destroy returned 0, bDeleteMe clear). Its C++,
+// ULevel::DestroyActor (patterns.h), refuses an actor whose Role is not ROLE_Authority unless the call forces it,
+// and the script's Destroy never does. This is the same engine call with bNetForce set - the game is single-player,
+// so there is no network copy to answer to. False with `role`/`flags` read back when it still refuses.
+using DestroyActorFn = int(__thiscall*)(void* level, void* actor, int netForce, int);
+bool destroy_actor(void* a, int* role, uint32_t* flags) {
+    uint8_t r = 0;
+    uint32_t f = 0;
+    rd(static_cast<uint8_t*>(a) + patterns::kActorRoleOffset, &r);
+    rd(static_cast<uint8_t*>(a) + patterns::kActorDestroyFlagsOffset, &f);
+    *role = r;
+    *flags = f;
+    void* level = nullptr;
+    void** vt = nullptr;
+    DestroyActorFn fn = nullptr;
+    const auto* image = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
+    if (!rd(static_cast<uint8_t*>(a) + patterns::kActorXLevelOffset, &level) || !level || !rd(level, &vt) || !vt ||
+        !rd(reinterpret_cast<uint8_t*>(vt) + patterns::kLevelDestroyActorVtbl, &fn) ||
+        reinterpret_cast<const uint8_t*>(fn) != image + patterns::kLevelDestroyActorRva)
+        return false; // not the level this build's table describes: nothing is called
+    __try {
+        if (!fn(level, a, 1, 0)) return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    bool deleted = false;
+    return script::get_bool(a, L"bDeleteMe", &deleted) && deleted;
+}
+
+// The plasmid's effect on `rig` taken away (Hands.SetAbilityEffects: the 'SelectedAbility' event and its persistent
+// context, keyed by the ability's class name), as the script's own ability change does - before the hands go, so no
+// idle effect is left behind (the 16:03 run's right-hand electro glow with a gun in it).
+void take_ability_effects(void* rig) {
+    void* const ab = prop_ptr(rig, L"CurrentAbility");
+    void* const cls = class_of(ab);
+    int32_t cn = -1;
+    if (!cls || !rd(static_cast<uint8_t*>(cls) + patterns::kUObjectNameIndexOffset, &cn) || cn <= 0) return;
+    const int32_t ev = script::name_index("SelectedAbility");
+    struct {
+        int32_t ev[2];
+        int32_t tag[2];
+        int32_t pad[4];
+    } ut{{ev, 0}, {cn, 0}, {}};
+    const bool u = ev >= 0 && script::call(rig, "UnTriggerEffectEvent", &ut);
+    // The persistent context is the effects system's, keyed by class name alone: while the game's hands hold the same
+    // plasmid in hand, it is theirs too, and stays.
+    void* const mainAb = g_main ? prop_ptr(g_main, L"CurrentAbility") : nullptr;
+    bool weaponMode = true;
+    const bool leftHasIt = mainAb && class_of(mainAb) == cls && g_main &&
+                           script::get_bool(g_main, L"bIsInWeaponMode", &weaponMode) && !weaponMode;
+    bool r = false;
+    if (!leftHasIt) {
+        struct {
+            int32_t ctx[2];
+            int32_t pad[6];
+        } rc{{cn, 0}, {}};
+        r = script::call(rig, "RemovePersistentContext", &rc);
+    }
+    // Its own flag goes off with it (an object of its own, or the Telekinesis object it took - never the left's).
+    if (ab != mainAb) script::set_bool(ab, L"AbilityEffectsTriggered", false);
+    BVR_LOG("[hands2] the second hands' plasmid effect taken away: %s, %s", u ? "untriggered" : "NOT untriggered",
+            leftHasIt ? "its context kept (the left hand holds the same plasmid)" : r ? "its context removed"
+                                                                                  : "context NOT removed");
+}
+
 void destroy(const char* why) {
     void* rig = g_rig.exchange(nullptr, std::memory_order_relaxed);
     if (!rig) return;
     drop_object(prop_ptr(rig, L"CurrentAbility")); // a right-hand Telekinesis hold lets go first
-    struct {
-        uint32_t ret;
-        int32_t pad[7];
-    } d{0, {}};
+    take_ability_effects(rig);
+    int role = 0;
+    uint32_t flags = 0;
     // Its PostBeginPlay spawned a gatherer tool of its own (Hands.PostBeginPlay): that goes with it.
-    if (void* tool = prop_ptr(rig, L"GathererTool")) {
-        decltype(d) td{0, {}};
-        script::call(tool, "Destroy", &td);
+    if (void* tool = prop_ptr(rig, L"GathererTool")) destroy_actor(tool, &role, &flags);
+    // One that still does not go stays on the list below: its draw stays collapsed (is_leftover) and the destroy is
+    // tried again.
+    const bool gone = destroy_actor(rig, &role, &flags);
+    BVR_LOG("[hands2] the second hands destroyed (%s): %s (Role %d, flags 0x%X) | casts %u, releases %u, plasmid sets %u",
+            why, gone ? "done" : "REFUSED - kept collapsed, tried again every 2 s", role, flags, g_casts, g_releases,
+            g_equips);
+    if (!gone) {
+        bool known = false;
+        for (int i = 0; i < g_zombieN; ++i) known = known || g_zombie[i] == rig;
+        if (!known && g_zombieN < kMaxZombies) g_zombie[g_zombieN++] = rig;
     }
-    const bool ok = script::call(rig, "Destroy", &d);
-    BVR_LOG("[hands2] the second hands destroyed (%s): %s | casts %u, releases %u, plasmid sets %u", why,
-            ok ? "done" : "Destroy refused", g_casts, g_releases, g_equips);
     g_main = nullptr;
     g_rightWas = false;
+}
+
+// The destroys that did not take, tried again (game thread, tick) - every 2 s, not every frame: per-frame retries cost
+// the 16:03 run 20-30 fps while a gun was out.
+void retry_zombies() {
+    static uint64_t s_ms = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_ms < 2000) return;
+    s_ms = now;
+    for (int i = 0; i < g_zombieN;) {
+        void* z = g_zombie[i];
+        bool deleted = false;
+        int role = 0;
+        uint32_t flags = 0;
+        if (!script::get_bool(z, L"bDeleteMe", &deleted) || deleted || destroy_actor(z, &role, &flags)) {
+            BVR_LOG("[hands2] a second hands actor that had refused to go is gone now");
+            g_zombie[i] = g_zombie[--g_zombieN];
+            continue;
+        }
+        ++i;
+    }
 }
 
 void* spawn(void* mainHands, void* pawn) {
@@ -250,6 +346,93 @@ void tick_telekinesis(void* ability, uint64_t now) {
     g_tkAcc = 0.0f;
 }
 
+const wchar_t* name_of(const void* obj) {
+    int32_t ni = -1;
+    return obj && rd(static_cast<const uint8_t*>(obj) + patterns::kUObjectNameIndexOffset, &ni) ? patterns::fname_text(ni)
+                                                                                                 : nullptr;
+}
+
+// WHAT THE RIGHT HAND HOLDS: a plasmid class - the F10 RightPlasmid row's family (the player's highest owned level),
+// else the class the left hand holds - and, for Telekinesis only, the player's object it takes instead of one of its
+// own. Telekinesis keeps a native state object beside the script one (TELEKINESIS_RE.md), proven only on the player's
+// objects: so the right hand takes the player's object of a Telekinesis class the left hand does not hold
+// (TelekinesisTwoAbility when the left holds TelekinesisAbility - config only, the same native code). Every other
+// plasmid gets an object of its own (own_ability.h).
+struct RightChoice {
+    void* cls = nullptr;
+    void* shared = nullptr;
+};
+RightChoice right_choice(void* pawn, void* mainAb) {
+    RightChoice c;
+    if (!mainAb) return c;
+    void* const mainCls = class_of(mainAb);
+    c.cls = mainCls;
+    const int fam = g_rightFamily.load(std::memory_order_relaxed);
+    if (fam > 0 && fam < kFamilyCount) {
+        void* cls = family_class(pawn, kFamilies[fam]);
+        static void* s_logged = reinterpret_cast<void*>(1);
+        if (s_logged != cls) {
+            s_logged = cls;
+            const wchar_t* cn = name_of(cls);
+            if (cls) BVR_LOG("[hands2] the right hand's plasmid: %ls (the %ls family)", cn ? cn : L"?", kFamilies[fam]);
+            else
+                BVR_LOG("[hands2] the right hand's plasmid: the player owns nothing of the %ls family - it takes the "
+                        "left's", kFamilies[fam]);
+        }
+        if (cls) c.cls = cls;
+    }
+    const wchar_t* cn = name_of(c.cls);
+    if (cn && !wcsncmp(cn, L"Telekinesis", 11)) {
+        const bool sameAsLeft = c.cls == mainCls;
+        const wchar_t* take = !sameAsLeft ? cn : !wcscmp(cn, L"TelekinesisAbility") ? L"TelekinesisTwoAbility"
+                                                                                       : L"TelekinesisAbility";
+        void* cls = sameAsLeft ? class_in(pawn, L"PossibleAbilities", [take](const wchar_t* n) { return !wcscmp(n, take) ? 1 : 0; })
+                               : c.cls;
+        void* ab = cls ? ability_for(pawn, cls) : nullptr;
+        static void* s_logged = reinterpret_cast<void*>(1);
+        if (s_logged != ab) {
+            s_logged = ab;
+            BVR_LOG("[telekinesis] the right hand's object: the player's %ls -> %p%s", take, ab,
+                    ab ? "" : " - not found: the right hand gets one of its own");
+        }
+        if (ab && ab != mainAb) {
+            c.cls = cls;
+            c.shared = ab;
+        }
+    }
+    return c;
+}
+
+// The second hands at the game's hands' DrawScale. The game's player hands stand at 0.8 (ENGINE_NOTES: the foreground
+// rig path scales their bone translations and their draw by it); a script Spawn of the same class gives 1.0. Left
+// unmatched, the right arm and every effect on the second hands' bones came out at a different size from the left
+// (the 2026-10-25 builds compensated in the draw instead). SetDrawScale is the engine's own change, dirty flags and
+// all; logged when it changes something.
+void match_scale(void* rig, void* mainHands) {
+    float want = 0.0f, have = 0.0f;
+    if (!rd(static_cast<uint8_t*>(mainHands) + patterns::kActorDrawScaleOffset, &want) ||
+        !rd(static_cast<uint8_t*>(rig) + patterns::kActorDrawScaleOffset, &have) || !(want > 0.01f && want < 100.0f) ||
+        fabsf(have - want) < 1e-4f)
+        return;
+    struct {
+        float s;
+        int32_t pad[3];
+    } ds{want, {}};
+    const bool called = script::call(rig, "SetDrawScale", &ds);
+    float now = 0.0f;
+    rd(static_cast<uint8_t*>(rig) + patterns::kActorDrawScaleOffset, &now);
+    static uint64_t s_logMs = 0;
+    const uint64_t t = GetTickCount64();
+    if (fabsf(now - want) < 1e-4f || t - s_logMs >= 5000) s_logMs = t;
+    else return; // a change that does not take is logged every 5 s, not every frame
+    BVR_LOG("[hands2] the second hands' DrawScale %.3f -> %.3f, the game's hands' (%s)", have, now,
+            called && fabsf(now - want) < 1e-4f ? "matched" : called ? "the call ran, NOT matched" : "the call FAILED");
+}
+
+// Its hand effect is checked this long after it settles into idling with a new plasmid.
+constexpr uint64_t kEffectsSettleMs = 400;
+uint64_t g_effectsCheckMs = 0;
+
 bool call_name(void* obj, const char* fn, const char* nameArg) {
     const int32_t nm = script::name_index(nameArg);
     if (nm < 0) return false;
@@ -263,6 +446,13 @@ bool call_name(void* obj, const char* fn, const char* nameArg) {
 } // namespace
 
 void* actor() { return g_rig.load(std::memory_order_relaxed); }
+
+bool is_leftover(const void* owner) {
+    if (!owner) return false;
+    for (int i = 0; i < g_zombieN && i < kMaxZombies; ++i)
+        if (g_zombie[i] == owner) return true;
+    return false;
+}
 
 void set_right_plasmid(int family) {
     if (family < 0 || family >= kFamilyCount) family = 0;
@@ -290,16 +480,54 @@ void tick(void* mainHands, bool wanted) {
         explicit Guard(bool& b) : f(b) { f = true; }
         ~Guard() { f = false; }
     } guard(s_in);
+    if (g_zombieN) retry_zombies();
     void* rig = g_rig.load(std::memory_order_relaxed);
     if (rig && (!wanted || mainHands != g_main)) {
         // A new main hands is a new level (the old actors are the level's to free): forget, never touch.
         if (mainHands != g_main) {
             g_rig.store(nullptr, std::memory_order_relaxed);
+            own_ability::forget_all();
             BVR_LOG("[hands2] the main hands changed (a level change): the second hands forgotten");
         } else {
             destroy("dual plasmids off, no plasmid in hand, or not in gameplay");
         }
         rig = nullptr;
+    }
+    // 2026-10-25 (the 18:29 run: after a while the plasmid wheel would no longer switch from a gun to the plasmids):
+    // ShockPlayer.SwitchHandModes switches to the plasmids only while LastAbility is one the player has
+    // (GetAbilityClassIndex >= 0), and OnAbilityEquippingFinished sets LastAbility to the ability whose equip just
+    // finished - called by the SECOND hands too, the player being their owner. So the right hand's equip could leave
+    // LastAbility on its own class (with Telekinesis, the player's TelekinesisTwoAbility, which the player does not
+    // have) and the wheel then only re-equipped the gun. Only the second hands' own writes are undone: a change of
+    // LastAbility to the class the SECOND hands hold, while the game's hands hold another, goes back to the value before
+    // it. (The 20:24 run's first guard held LastAbility on the game's hands' class every frame, and lagged a wheel pick
+    // by a frame - each pick was put back to the plasmid before it.)
+    if (mainHands && script::ready()) {
+        static void* s_accepted = nullptr;
+        void* pw = prop_ptr(mainHands, L"PawnOwner");
+        void* la = pw ? prop_ptr(pw, L"LastAbility") : nullptr;
+        void* const live = g_rig.load(std::memory_order_relaxed);
+        void* const rigCls = live ? class_of(prop_ptr(live, L"CurrentAbility")) : nullptr;
+        void* const mainCls = class_of(prop_ptr(mainHands, L"CurrentAbility"));
+        if (pw && la != s_accepted) {
+            if (la && la == rigCls && la != mainCls && s_accepted && set_prop_ptr(pw, L"LastAbility", s_accepted)) {
+                const wchar_t* was = patterns::fname_text([&] {
+                    int32_t ni = -1;
+                    rd(static_cast<uint8_t*>(la) + patterns::kUObjectNameIndexOffset, &ni);
+                    return ni;
+                }());
+                const wchar_t* back = patterns::fname_text([&] {
+                    int32_t ni = -1;
+                    rd(static_cast<uint8_t*>(s_accepted) + patterns::kUObjectNameIndexOffset, &ni);
+                    return ni;
+                }());
+                BVR_LOG("[hands2] the right hand's equip set the player's LastAbility to %ls - put back to %ls, so the "
+                        "wheel switches to the left hand's plasmid",
+                        was ? was : L"?", back ? back : L"?");
+            } else {
+                s_accepted = la;
+            }
+        }
     }
     if (!wanted || !mainHands || !script::ready()) return;
     void* pawn = prop_ptr(mainHands, L"PawnOwner");
@@ -307,7 +535,18 @@ void tick(void* mainHands, bool wanted) {
     const uint64_t now = GetTickCount64();
     if (!rig) {
         if (now - g_spawnFailMs < 2000) return;
-        rig = spawn(mainHands, pawn);
+        // One that refused to be destroyed is taken back rather than a new one made beside it (in gameplay; it is
+        // still owned by the player).
+        if (g_zombieN > 0) {
+            rig = g_zombie[--g_zombieN];
+            bool deleted = false;
+            if (script::get_bool(rig, L"bDeleteMe", &deleted) && !deleted) {
+                BVR_LOG("[hands2] the second hands that refused to go are taken back: %p", rig);
+            } else {
+                rig = nullptr;
+            }
+        }
+        if (!rig) rig = spawn(mainHands, pawn);
         if (!rig) {
             g_spawnFailMs = now;
             BVR_LOG("[hands2] Spawn of the second hands returned nothing (retrying in 2 s)");
@@ -327,62 +566,60 @@ void tick(void* mainHands, bool wanted) {
         uint8_t none[32] = {};
         script::call(rig, "UpdateLocation", none);
     }
+    match_scale(rig, mainHands);
     // Its plasmid: the main hands', unless the F10 RightPlasmid row picks another family for the right hand (the
     // mix-and-match step): then the player's own ability object of their class in that family, from the game's
     // GetAbilityFromClass - its own state, cast and effects. SetActiveAbility takes it only while no change is in
     // flight (OldAbility none).
     void* const mainAb = prop_ptr(mainHands, L"CurrentAbility");
-    void* want = mainAb;
-    const int fam = g_rightFamily.load(std::memory_order_relaxed);
-    if (mainAb && fam > 0 && fam < kFamilyCount) {
-        void* cls = family_class(pawn, kFamilies[fam]);
-        void* ab = cls ? ability_for(pawn, cls) : nullptr;
-        static void* s_logged = reinterpret_cast<void*>(1);
-        if (s_logged != ab) {
-            s_logged = ab;
-            const wchar_t* an = ab ? patterns::object_class_name(ab) : nullptr;
-            if (ab)
-                BVR_LOG("[hands2] the right hand's plasmid: %S (the %S family, its own object %p)", an ? an : L"?",
-                        kFamilies[fam], ab);
-            else
-                BVR_LOG("[hands2] the right hand's plasmid: the player owns nothing of the %S family - it keeps the "
-                        "left's", kFamilies[fam]);
+    void* const have = prop_ptr(rig, L"CurrentAbility");
+    const RightChoice c = right_choice(pawn, mainAb);
+    // The held object is kept while it is the one this choice makes: of the wanted class AND the right hand's own
+    // (made for it, or the Telekinesis object it takes) - never the player's object the game's hands hold.
+    const bool keep = have && class_of(have) == c.cls && (c.shared ? have == c.shared : own_ability::is_own(have));
+    if (c.cls && !keep && !prop_ptr(rig, L"OldAbility")) {
+        void* obj = c.shared;
+        if (!obj) obj = own_ability::make(c.cls, pawn);
+        if (!obj) { // the constructor is not there: the player's object, shared as before
+            obj = ability_for(pawn, c.cls);
+            BVR_LOG("[hands2] the right hand SHARES the player's %ls object (no object of its own could be made)",
+                    name_of(c.cls) ? name_of(c.cls) : L"?");
         }
-        if (ab) want = ab;
-    }
-    // 2026-10-25 (TELEKINESIS_RE.md section 3): Telekinesis keeps its target and hold on the ability OBJECT, one per
-    // class per player, so two holds need two objects. With Telekinesis in both hands the right hand takes the
-    // player's object of the OTHER Telekinesis class (TelekinesisTwoAbility: config only, the same native code).
-    // Found by name in the player's own ShockPlayer.PossibleAbilities (loading it by path gives nothing - 00:35 run).
-    if (want && want == mainAb && is_telekinesis(want)) {
-        const wchar_t* cn = patterns::object_class_name(want);
-        const bool two = cn && !wcscmp(cn, L"TelekinesisAbility");
-        const wchar_t* other = two ? L"TelekinesisTwoAbility" : L"TelekinesisAbility";
-        static void* s_cls[2] = {nullptr, nullptr};
-        void*& cls = s_cls[two ? 1 : 0];
-        if (!cls)
-            cls = class_in(pawn, L"PossibleAbilities", [other](const wchar_t* n) { return !wcscmp(n, other) ? 1 : 0; });
-        void* ab = cls ? ability_for(pawn, cls) : nullptr;
-        static void* s_logged = reinterpret_cast<void*>(1);
-        if (s_logged != ab) {
-            s_logged = ab;
-            BVR_LOG("[telekinesis] the right hand's own object: %S -> %p%s", other, ab,
-                    ab ? "" : " - not found: the right hand shares the left's object");
+        if (obj && obj != have) {
+            if (have) drop_object(have); // a hold the old object had goes first
+            // A fresh hold: its hand effect is off until this hands actor's own script turns it on. (Never on an
+            // object the game's hands may hold: their flag is theirs.)
+            if (own_ability::is_own(obj) || obj == c.shared) script::set_bool(obj, L"AbilityEffectsTriggered", false);
+            struct {
+                void* ability;
+                int32_t pad[7];
+            } p{obj, {}};
+            if (script::call(rig, "SetActiveAbility", &p)) {
+                ++g_equips;
+                g_effectsCheckMs = now;
+                const wchar_t* cn = patterns::object_class_name(obj);
+                BVR_LOG("[hands2] the second hands take the plasmid %ls (object %p, %s)", cn ? cn : L"?", obj,
+                        own_ability::is_own(obj) ? "the right hand's own" : "the player's");
+            }
         }
-        if (ab && ab != want) want = ab;
     }
-    void* have = prop_ptr(rig, L"CurrentAbility");
-    if (want && want != have && !prop_ptr(rig, L"OldAbility")) {
-        // A hold the old object had goes first.
-        if (have) drop_object(have);
-        struct {
-            void* ability;
-            int32_t pad[7];
-        } p{want, {}};
-        if (script::call(rig, "SetActiveAbility", &p)) {
-            ++g_equips;
-            const wchar_t* cn = patterns::object_class_name(want);
-            BVR_LOG("[hands2] the second hands take the plasmid %S", cn ? cn : L"?");
+    // Its hand effect, checked once it has settled into idling: an own object whose effect never came on is turned on
+    // by the hands' own SetAbilityEffects (the script's path: the 'SelectedAbility' event, its persistent context).
+    {
+        void* rab = prop_ptr(rig, L"CurrentAbility");
+        const wchar_t* st = hands_state::current_name(rig);
+        const bool idling = st && !wcsncmp(st, L"AbilityIdling", 13);
+        bool on = true;
+        if (!idling || !rab || prop_ptr(rig, L"OldAbility")) {
+            g_effectsCheckMs = now;
+        } else if (now >= g_effectsCheckMs + kEffectsSettleMs &&
+                   script::get_bool(rab, L"AbilityEffectsTriggered", &on) && !on) {
+            uint8_t none[32] = {};
+            const bool called = script::call(rig, "SetAbilityEffects", none);
+            script::get_bool(rab, L"AbilityEffectsTriggered", &on);
+            BVR_LOG("[hands2] the right hand's plasmid effect was still off after it settled - turned on: %s",
+                    called && on ? "done" : called ? "the call ran, the effect is still off" : "the call FAILED");
+            g_effectsCheckMs = now + 5000; // then not again for 5 s
         }
     }
     // The right hand's own Telekinesis object, ticked as the player ticks the active one.

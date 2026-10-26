@@ -112,7 +112,6 @@ bool dual_plasmids();
 bool gameplay_view();
 bool plasmid_ray_right(float origin[3], float dir[3]);
 bool dual_cast_pad(bvr::input::PadOverride* pad);
-
 // 2026-10-14: this frame's laser and reticle on the fire ray, in world UU, for the in-image
 // laser (laser_draw.h). Game thread: temporal.cpp's note_camera carries it with the build.
 // Invalid when neither would show, or when the in-image laser is switched off.

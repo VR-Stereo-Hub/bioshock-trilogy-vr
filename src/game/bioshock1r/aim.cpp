@@ -140,6 +140,13 @@ Barrel g_barrel;
 bool barrel_locked() {
     return g_barrelOrigin.load(std::memory_order_relaxed) && g_barrelAim.load(std::memory_order_relaxed);
 }
+// 2026-10-25: the lock is the GUN's. With a plasmid in hand there is no barrel, and the lock took the plasmid trims
+// and origin offsets off the left hand's ray only - the right hand's plasmid ray (mirrored from the same trims)
+// always had them, so the two reticles disagreed (the owner: the right one is good, the left feels off). With a
+// plasmid in hand both plasmid rays are built the same way, trims and offsets on.
+bool barrel_locked_now() {
+    return barrel_locked() && hands::active_hand() != 0;
+}
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 // Defaults = the user's in-headset calibration (their explicit ask: the
@@ -693,6 +700,7 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
         if (rig2) g_forceRight = true;
         bool subbed = substitute(g_abilityFire, h, outs, 3);
         g_forceRight = wasForced;
+        bones::note_bolt_cast(h == Hand::Right ? 1 : 0); // the bolt probe (bones.cpp), log only
         if (subbed) {
             note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
             note_hand(g_abilityFire, h);
@@ -1898,7 +1906,7 @@ void apply_origin_offset(int i, Ray& out, float worldScale) {
         of = g_barrel.rayCm[0];
         orr = g_barrel.rayCm[1];
         ou = g_barrel.rayCm[2];
-    } else if (barrel_locked() && !out.synthetic) {
+    } else if (barrel_locked_now() && !out.synthetic) {
         // Locked: the last barrel this hand had with this gun (a reload, a frame the muzzle could
         // not be read), else the hand itself - never the per-hand origin sliders.
         const bool held = g_barrel.held && g_barrel.hand == i;
@@ -2284,7 +2292,7 @@ void on_calcview(const FrameContext& ctx) {
         // with `vraim synccheck` (roll forced 0 there - the camera owns roll).
         // Locked to the barrel (barrel_locked): no tilt/turn trim, ever - the barrel gives the
         // direction, and without a barrel the controller's own aim pose does.
-        const bool lock = barrel_locked();
+        const bool lock = barrel_locked_now();
         GamePose gp = ray_pose_from_xr(ctx, pos, quat,
                                        lock ? 0.0f : g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
                                        lock ? 0.0f : g_yawOffsetDeg[i].load(std::memory_order_relaxed));
@@ -2390,7 +2398,7 @@ void on_calcview(const FrameContext& ctx) {
     int lh = lc.hand == 0 ? 0 : 1;
     // Locked to the barrel: the laser takes no trim either (it draws the fire ray when there is
     // one; without one it is the controller's own aim).
-    const bool lockL = barrel_locked();
+    const bool lockL = barrel_locked_now();
     lc.pitchTrimDeg = lockL ? 0.0f : g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
     lc.yawTrimDeg = lockL ? 0.0f : g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
     lc.posFwdCm = lockL ? 0.0f : g_posFwdCm[lh].load(std::memory_order_relaxed);

@@ -135,4 +135,11 @@ void set_probe(bool on);
 // s91: log, once, which skeleton bones carry hand skin weight (the next gather of the hands).
 void request_weight_census();
 
+// 2026-10-25: with dual plasmids and the second hands up, the RIGHT hand drawn by the second hands' own mesh - their
+// left hand's animation mirrored onto their right arm, carried into their actor's space - so it wears their own
+// plasmid's look (materials and overlays are per actor); the game's hands then draw only the left. F10 Controls >
+// Dual plasmids > "Right hand shows its own plasmid", default on. Off: the game's mesh draws both, as before.
+void set_second_draws_right(bool on);
+bool second_draws_right();
+
 } // namespace bvr::b1r::palette

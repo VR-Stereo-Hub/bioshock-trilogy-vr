@@ -1,6 +1,7 @@
 #include "game/bioshock1r/sound_engine.h"
 
 #include "core/util/log.h"
+#include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/script_call.h"
 
@@ -256,9 +257,12 @@ int __fastcall detour(void* self, void* /*edx*/, int32_t n0, int32_t n1, void* o
         t_event = name;
         const int r = g_orig(self, n0, n1, other, mat, loc, rot, b0, b1, obs, r0, r1, info);
         t_event = was;
+        bones::on_effect_event(self); // 2026-10-25: a bolt it attached to the head socket goes onto the hand at once
         return r;
     }
-    return g_orig(self, n0, n1, other, mat, loc, rot, b0, b1, obs, r0, r1, info);
+    const int r = g_orig(self, n0, n1, other, mat, loc, rot, b0, b1, obs, r0, r1, info);
+    bones::on_effect_event(self); // the player's and the second hands' events (bones.h)
+    return r;
 }
 
 } // namespace

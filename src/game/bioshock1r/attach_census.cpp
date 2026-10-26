@@ -378,13 +378,15 @@ void tick() {
         const wchar_t* attachName = nm[0] > 0 ? patterns::fname_text(nm[0]) : nullptr;
         float loc[3];
         memcpy(loc, buf + kActorLocationOffset, 12);
+        int32_t rot[3];
+        memcpy(rot, buf + kActorLocationOffset + 12, 12); // AActor Rotation follows Location (+0x1E4)
         const wchar_t* cls = patterns::object_class_name(a);
-        BVR_LOG("[attach] NEW +%llums %ls %p | location %.1f %.1f %.1f (%.1f UU from the hands origin) | attach "
-                "name '%ls' | links%s",
+        BVR_LOG("[attach] NEW +%llums %ls %p | location %.1f %.1f %.1f (%.1f UU from the hands origin), rotation "
+                "%d %d %d | attach name '%ls' | links%s",
                 static_cast<unsigned long long>(now - g_watchStart), cls ? cls : L"?", a, loc[0], loc[1], loc[2],
                 sqrtf((loc[0] - handsLoc[0]) * (loc[0] - handsLoc[0]) + (loc[1] - handsLoc[1]) * (loc[1] - handsLoc[1]) +
                       (loc[2] - handsLoc[2]) * (loc[2] - handsLoc[2])),
-                attachName ? attachName : L"", at ? links : " none");
+                rot[0], rot[1], rot[2], attachName ? attachName : L"", at ? links : " none");
     }
 }
 

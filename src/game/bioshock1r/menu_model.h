@@ -67,7 +67,7 @@ enum class Setting {
     HandPitch, HandYaw, HandRoll, HandGripForward, HandGripRight, HandGripUp,
     UpperArmLength, ForearmLength, ShowArms,
     Upscaler, DlssQuality, DlssModel, StereoMethod, AfwTint, TemporalAudit,
-    PlasmidFxAlong, PlasmidFxAcross, PlasmidFxOut,
+    PlasmidFxAlong, PlasmidFxAcross, PlasmidFxOut, PlasmidBeamDown,
     AfwRebuild, AfwHandGain, AfwHandsMask, HandDepthProbe,
     OutputWidth, OutputHeight, TemporalTaa, HandMotionVectors, BarrelOrigin, BarrelAim, LaserInImage,
     ReloadPlace, ReloadGunMotion, ReloadJoin, GunRecoil,
@@ -94,6 +94,8 @@ enum class Setting {
     AnimShots,
     // 2026-10-25: the dynamic reticle, one aim for every plasmid, dual-wielded plasmids (aim.cpp).
     ReticleDynamic, PlasmidSharedAim, DualPlasmids, RightPlasmid, CastHandOnly,
+    // 2026-10-25: the right hand drawn by the second hands' own mesh (palette.cpp), so it shows its own plasmid.
+    RightHandOwnLook,
     Count
 };
 struct Spec {
